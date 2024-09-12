@@ -1,0 +1,21 @@
+source https://api.nuget.org/v3/index.json
+
+storage: none
+framework:auto-detect
+
+nuget FSharp.Core
+nuget FSharp.Interop.Dynamic
+nuget Microsoft.Extensions.Configuration
+nuget Serilog
+nuget Akkling.Streams
+nuget Microsoft.Data.SQLite
+nuget SQLProvider
+nuget SQLitePCLRaw.core
+nuget Akkling.Persistence
+nuget Akka.Persistence.Query.Sql
+nuget Akka.Persistence.Sql
+nuget Akka.Cluster.Sharding
+nuget Akkling.Cluster.Sharding
+nuget Akka.Logger.Serilog
+nuget FSharp.SystemTextJson
+nuget FsToolkit.ErrorHandling
