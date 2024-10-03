@@ -1,5 +1,5 @@
 [<System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage>]
-module AkklingHelpers
+module CQRS.AkklingHelpers
 
 open Akka.Actor
 open Akka.Cluster.Sharding

@@ -38,7 +38,7 @@ type STJSerializer(system: ExtendedActorSystem) =
         JsonSerializer.Serialize(memoryStream, o, jsonOptions)
         memoryStream.ToArray()
 
-    override _.Manifest(o: obj) : string = o.GetType().FullName
+    override _.Manifest(o: obj) : string = o.GetType().AssemblyQualifiedName
 
     override _.FromBinary(bytes: byte[], manifest: string) : obj =
         JsonSerializer.Deserialize(new MemoryStream(bytes), Type.GetType(manifest), jsonOptions)

@@ -5,7 +5,7 @@ open Akkling.Streams
 open CQRS.Actor
 open Akka.Streams
 open Akka.Streams.Dsl
-
+open Microsoft.Extensions.Logging
 
 [<Interface>]
 type IAPI<'TDataEvent,'TPredicate> =
@@ -60,7 +60,7 @@ let subscribeCmdWithFilter<'TDataEvent> (source:Source<'TDataEvent,unit>)  (acto
     
 let init<'TDataEvent,'TPredicate,'t> (actorApi: IActor) offsetCount  handler (query: _ -> Async<seq<obj>>)=
     let source = (readJournal actorApi.System).AllEvents(Offset.Sequence(offsetCount))
-
+    let logger = actorApi.LoggerFactory.CreateLogger("Query")
     let subQueue = Source.queue OverflowStrategy.Fail 1024
     let subSink = (Sink.broadcastHub 1024)
 
@@ -79,7 +79,7 @@ let init<'TDataEvent,'TPredicate,'t> (actorApi: IActor) offsetCount  handler (qu
     subscribeToStream
         source
         actorApi.Materializer
-        (Sink.ForEach(fun x -> Serilog.Log.Verbose("data event : {@dataevent}", x)))|> ignore
+        (Sink.ForEach(fun x -> logger.LogTrace("data event : {@dataevent}", x)))|> ignore
 
     let subscribeCmd = subscribeCmd subRunnable actorApi
     let subscribeCmdWithFilter = subscribeCmdWithFilter subRunnable actorApi

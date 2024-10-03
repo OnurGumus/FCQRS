@@ -8,9 +8,8 @@ open Akka.Cluster.Tools.PublishSubscribe
 open Akka
 open Akkling.Cluster.Sharding
 open Akka.Actor
-open Serilog
-open Akka.Logger.Serilog
 open Akka.Event
+open Microsoft.Extensions.Logging
 
 type OriginatorName =
     | OriginatorName of string
@@ -72,6 +71,7 @@ type PrefixConversion = PrefixConversion of ((string -> string) option)
 
 module SagaStarter =
     open Microsoft.FSharp.Reflection
+    open Microsoft.Extensions.Logging
 
     let toOriginatorName (name: string) =
         let index = name.IndexOf(SAGA_Suffix)
@@ -130,13 +130,12 @@ module SagaStarter =
         (mediator <? (message)) |> Async.RunSynchronously |> ignore
         event |> box
 
-    let publishEvent (mailbox: Actor<_>) (mediator) event (cid) =
+    let publishEvent (logger:ILogger) (mailbox: Actor<_>) (mediator)  event (cid) =
         let sender = mailbox.Sender()
-        let log = mailbox.UntypedContext.GetLogger()
         
         let self = mailbox.Self
-        log.Debug("Publishing event {event} from {self}", event, self.Path.ToString())
-        log.Debug("sender: {sender}", sender.Path.ToString())
+        logger.LogDebug("sender: {sender}", sender.Path.ToString())
+        logger.LogDebug("Publishing event {event} from {self}", event, self.Path.ToString())
 
         if sender.Path.Name |> isSaga then
 
@@ -310,11 +309,11 @@ module CommandHandler =
                             state.Value.Sender.Tell e
                             return! Stop
                         else
-                            Log.Debug("Ignoring from subscriber message {msg}", msg)
+                            log.Debug("Ignoring from subscriber message {msg}", msg)
                             return! set state
                     | LifecycleEvent _ -> return! Ignore
                     | _ ->
-                        Log.Error("Unexpected message {msg}", msg)
+                        log.Error("Unexpected message {msg}", msg)
                         return! Ignore
                 }
 

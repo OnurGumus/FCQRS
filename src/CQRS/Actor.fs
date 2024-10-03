@@ -7,7 +7,6 @@ open Akka.Persistence.Journal
 open Akka.Actor
 open Akka.Cluster
 open Akka.Cluster.Tools.PublishSubscribe
-open Akka.Persistence
 open Akkling
 open Microsoft.Extensions.Configuration
 open Common.DynamicConfig
@@ -15,13 +14,15 @@ open System.Dynamic
 open Akkling.Persistence
 open Akka
 open Common
-open Akka.Logger.Serilog
 open Akka.Event
 open AkklingHelpers
 open System
+open Microsoft.Extensions.Logging
+open AkkaTimeProvider
 
 let commonSaga<'TEvent, 'TState, 'TInnerState>
     (mailbox: Eventsourced<obj>)
+    (log: ILogger)
     mediator
     (set: 'TState -> _)
     (state: 'TState)
@@ -32,9 +33,8 @@ let commonSaga<'TEvent, 'TState, 'TInnerState>
     =
     let rec innerSet (startingEvent: option<SagaStarter.SagaStartingEvent<_>>, subscribed) =
         actor {
-            let log = mailbox.UntypedContext.GetLogger()
             let! msg = mailbox.Receive()
-            log.Info("Saga:{@name} SagaMessage: {MSG}", mailbox.Self.Path.ToString(), msg)
+            log.LogInformation("Saga:{@name} SagaMessage: {MSG}", mailbox.Self.Path.ToString(), msg)
 
             match msg with
             | :? (SagaStarter.SagaStartingEvent<'TEvent>) when subscribed ->
@@ -44,7 +44,7 @@ let commonSaga<'TEvent, 'TState, 'TInnerState>
                 return! innerSet ((Some e), subscribed)
             | :? Persistence.RecoveryCompleted ->
                 SagaStarter.subscriber mediator mailbox
-                log.Info("Saga RecoveryCompleted")
+                log.LogInformation("Saga RecoveryCompleted")
                 return! innerSet (startingEvent, subscribed)
             | Recovering mailbox (:? Common.SagaEvent<'TInnerState> as event) ->
                 match event with
@@ -83,7 +83,7 @@ let commonSaga<'TEvent, 'TState, 'TInnerState>
                             return! (newSagaState |> set) <@> (newState |> StateChanged |> box |> Persist)
                         | None -> return! newSagaState |> set
                 | other ->
-                    log.Error("Unknown event:{@event}, expecting :{@ev}", other.GetType(), typeof<SagaEvent<'TState>>)
+                    log.LogInformation("Unknown event:{@event}, expecting :{@ev}", other.GetType(), typeof<SagaEvent<'TState>>)
                     return! state |> set
             | _ -> return! (body msg)
         }
@@ -96,9 +96,10 @@ type BodyInput<'TEvent> ={
     PublishEvent:Event<'TEvent> -> unit
     SendToSagaStarter: Event<'TEvent> -> obj
     Mediator: IActorRef<Publish>
-    Log : ILoggingAdapter
+    Log : ILogger
 }
 let common<'TEvent, 'TState>
+    (logger: ILogger)
     (mailbox: Eventsourced<obj>)
     mediator
     (set: 'TState -> _)
@@ -109,13 +110,13 @@ let common<'TEvent, 'TState>
     
     let mediatorS = retype mediator
     let publishEvent event =
-        SagaStarter.publishEvent mailbox mediator event event.CorrelationId
+        SagaStarter.publishEvent logger mailbox mediator event event.CorrelationId
     actor {
-        let log = mailbox.UntypedContext.GetLogger()
+        let log = logger
         let! msg = mailbox.Receive()
 
 
-        log.Info("Actor:{@name} Message: {MSG}", mailbox.Self.Path.ToString(), msg)
+        log.LogInformation("Actor:{@name} Message: {MSG}", mailbox.Self.Path.ToString(), msg)
 
         match msg with
         | PersistentLifecycleEvent _
@@ -176,6 +177,8 @@ type IActor =
     abstract System: ActorSystem
     abstract SubscribeForCommand: Common.CommandHandler.Command<'a, 'b> -> Async<Common.Event<'b>>
     abstract Stop: unit -> System.Threading.Tasks.Task
+    abstract LoggerFactory: ILoggerFactory
+    abstract TimeProvider: TimeProvider
 
 let createCommandSubscription (actorApi: IActor) factory (cidValue) (id: string) command filter =
     let corID = id |> Uri.EscapeDataString |> SagaStarter.toNewCid (cidValue)
@@ -193,13 +196,14 @@ let createCommandSubscription (actorApi: IActor) factory (cidValue) (id: string)
     let ex = Execute e
     ex |> actorApi.SubscribeForCommand
 
-let api (config: IConfiguration) =
+let api (config: IConfiguration) (loggerFactory: ILoggerFactory) =
     let (akkaConfig: ExpandoObject) =
         unbox<_> (config.GetSectionAsDynamic("config:akka"))
 
     let config = Akka.Configuration.ConfigurationFactory.FromObject akkaConfig
 
     let system = System.create "cluster-system" config
+    let logger = loggerFactory.CreateLogger("Actor")
 
 
     Cluster.Get(system).SelfAddress |> Cluster.Get(system).Join
@@ -215,6 +219,8 @@ let api (config: IConfiguration) =
         member _.Mediator = mediator
         member _.Materializer = mat
         member _.System = system
+        member _.TimeProvider = new AkkaTimeProvider(system)
+        member _.LoggerFactory = loggerFactory
         member _.SubscribeForCommand command = subscribeForCommand command
         member _.Stop() = system.Terminate() }
 
