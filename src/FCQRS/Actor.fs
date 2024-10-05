@@ -1,5 +1,5 @@
 [<System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage>]
-module CQRS.Actor
+module FCQRS.Actor
 
 open System.Collections.Immutable
 open Akka.Streams

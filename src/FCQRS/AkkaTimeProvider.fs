@@ -1,6 +1,6 @@
 // Define a message type to trigger the callback
 [<System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage>]
-module CQRS.AkkaTimeProvider
+module FCQRS.AkkaTimeProvider
 
 open Akka.Actor
 open Akkling

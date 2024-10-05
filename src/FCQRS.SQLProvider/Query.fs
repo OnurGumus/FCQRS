@@ -1,4 +1,4 @@
-﻿module CQRS.SQLProvider.Query
+﻿module FCQRS.SQLProvider.Query
 open FSharp.Data.Sql.Common
 open System.Linq
 let sortByEval column =

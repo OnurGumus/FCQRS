@@ -1,6 +1,6 @@
-module CQRS.Serialization
+module FCQRS.Serialization
 
-open CQRS
+open FCQRS
 open Akkling
 open Akka.Actor
 open Akka.Serialization

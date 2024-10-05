@@ -1,5 +1,5 @@
 [<System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage>]
-module CQRS.Common
+module FCQRS.Common
 
 open System
 open Akkling

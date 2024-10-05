@@ -1,8 +1,8 @@
-module CQRS.Query
+module FCQRS.Query
 open Akka.Persistence.Query
 open Akka.Persistence.Query.Sql
 open Akkling.Streams
-open CQRS.Actor
+open FCQRS.Actor
 open Akka.Streams
 open Akka.Streams.Dsl
 open Microsoft.Extensions.Logging
