@@ -11,6 +11,8 @@ open Akka.Actor
 open Akka.Event
 open Microsoft.Extensions.Logging
 
+type ToEvent<'Event> = string option -> string -> int64 -> 'Event -> Event<'Event>
+
 type OriginatorName =
     | OriginatorName of string
 

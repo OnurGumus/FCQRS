@@ -11,3 +11,4 @@ Microsoft.Extensions.Configuration
 FsToolkit.ErrorHandling
 FSharp.SystemTextJson
 Akka.Persistence.Query.Sql
+FCQRS.Serialization

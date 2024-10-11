@@ -111,6 +111,8 @@ NUGET
     Dynamitey (3.0.3)
       Microsoft.CSharp (>= 4.7)
       System.ComponentModel (>= 4.3)
+    FCQRS.Serialization (1.0.2)
+      FSharp.SystemTextJson (>= 1.3.13)
     FSharp.Core (8.0.401)
     FSharp.Interop.Dynamic (5.0.1.268)
       Dynamitey (>= 2.0.10.189)
