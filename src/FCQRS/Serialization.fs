@@ -1,4 +1,4 @@
-module FCQRS.Actor.Serialization
+module FCQRS.ActorSerialization
 
 open Akkling
 open Akka.Actor
