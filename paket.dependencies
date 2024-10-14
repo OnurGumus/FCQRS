@@ -19,3 +19,4 @@ nuget FSharp.SystemTextJson
 nuget FsToolkit.ErrorHandling
 nuget FCQRS.Serialization
 nuget Fable.Package.SDK
+nuget FCQRS.Model

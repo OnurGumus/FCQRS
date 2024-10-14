@@ -4,14 +4,13 @@
     <TargetFramework>net8.0</TargetFramework>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <PackageId>FCQRS.SqlProvider</PackageId>
+    <FablePackageType>library</FablePackageType>
+      <PackageTags>fable-dotnet;</PackageTags>
     <DebugType>embedded</DebugType>
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="Query.fs" />
     <Content Include="paket.references" />
-  </ItemGroup>
-  <ItemGroup>
-    <ProjectReference Include="..\FCQRS.Model\FCQRS.Model.fsproj" />
   </ItemGroup>
   <Import Project="..\..\.paket\Paket.Restore.targets" />
 </Project>
