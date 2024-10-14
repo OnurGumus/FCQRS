@@ -1,10 +1,24 @@
 ﻿module FCQRS.SQLProvider.Query
 open FSharp.Data.Sql.Common
 open System.Linq
+open FCQRS.Model
 let sortByEval column =
     <@@ fun (x: SqlEntity) -> x.GetColumn<System.IComparable>(column) @@>
 
-let augment filter eval orderby orderbydesc thenby thenbydesc (take:int option) skip db =
+
+let rec eval (t) =
+        match t with
+        | Equal(s, n) -> <@@ fun (x: SqlEntity) -> x.GetColumn(s) = n @@>
+        | NotEqual(s, n) -> <@@ fun (x: SqlEntity) -> x.GetColumn(s) <> n @@>
+        | Greater(s, n) -> <@@ fun (x: SqlEntity) -> x.GetColumn(s) > n @@>
+        | GreaterOrEqual(s, n) -> <@@ fun (x: SqlEntity) -> x.GetColumn(s) >= n @@>
+        | Smaller(s, n) -> <@@ fun (x: SqlEntity) -> x.GetColumn(s) < n @@>
+        | SmallerOrEqual(s, n) -> <@@ fun (x: SqlEntity) -> x.GetColumn(s) <= n @@>
+        | And(t1, t2) -> <@@ fun (x: SqlEntity) -> (%%eval t1) x && (%%eval t2) x @@>
+        | Or(t1, t2) -> <@@ fun (x: SqlEntity) -> (%%eval t1) x || (%%eval t2) x @@>
+        | Not(t0) -> <@@ fun (x: SqlEntity) -> not ((%%eval t0) x) @@>
+
+let augment eval filter orderby orderbydesc thenby thenbydesc (take:int option) skip db =
     let db =
         match filter with
         | Some filter ->
@@ -85,3 +99,6 @@ let augment filter eval orderby orderbydesc thenby thenbydesc (take:int option) 
         for u in (%db) do
             select u
     }
+
+let augmentQuery filter orderby orderbydesc thenby thenbydesc (take:int option) skip db =
+    augment eval  filter orderby orderbydesc thenby thenbydesc take skip db

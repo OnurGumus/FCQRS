@@ -20,7 +20,7 @@ open System
 open Microsoft.Extensions.Logging
 open AkkaTimeProvider
 
-let commonSaga<'TEvent, 'TState, 'TInnerState>
+let runSaga<'TEvent, 'TState, 'TInnerState>
     (mailbox: Eventsourced<obj>)
     (log: ILogger)
     mediator
@@ -98,7 +98,7 @@ type BodyInput<'TEvent> ={
     Mediator: IActorRef<Publish>
     Log : ILogger
 }
-let common<'TEvent, 'TState>
+let runActor<'TEvent, 'TState>
     (logger: ILogger)
     (mailbox: Eventsourced<obj>)
     mediator
