@@ -83,7 +83,7 @@ module SagaStarter =
         let index = name.LastIndexOf(CID_Separator)
         name.Substring(index + 1).Replace(SAGA_Suffix, "")
 
-    let toNewCid (cid: string) name = name + CID_Separator + cid
+    let toNewCid (cid: string) name =  cid
 
     let toCidWithExisting (name: string) (existing: string) =
         let originator = name

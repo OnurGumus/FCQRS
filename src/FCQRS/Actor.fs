@@ -154,13 +154,6 @@ let runActor<'TEvent, 'TState>
 
 let private defaultTag = ImmutableHashSet.Create("default")
 
-type Tagger =
-    interface IWriteEventAdapter with
-        member _.Manifest _ = ""
-        member _.ToJournal evt = evt //box <| Tagged(evt, defaultTag)
-
-    public new() = { }
-
 
 type MyEventAdapter =
     interface IEventAdapter with
