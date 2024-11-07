@@ -46,7 +46,7 @@ type ShortString =
     static member TryCreate(s: string) =
         single (fun t ->
             t.TestOne s
-            |> t.MinLen 1 ShortStringError.EmptyString
+            |> t.NotBlank ShortStringError.EmptyString
             |> t.MaxLen 255 ShortStringError.TooLongString
             |> t.Map ShortString
             |> t.End)
@@ -63,7 +63,7 @@ type LongString =
     member this.Value = let (LongString lng) = this in lng
 
     static member TryCreate(s: string) =
-        single (fun t -> t.TestOne s |> t.MinLen 1 EmptyString |> t.Map LongString |> t.End)
+        single (fun t -> t.TestOne s |> t.NotBlank EmptyString |> t.Map LongString |> t.End)
 
     static member Validate(s: LongString) =
         s.Value |> LongString.TryCreate |> forceValidate
