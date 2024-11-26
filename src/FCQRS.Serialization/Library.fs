@@ -17,10 +17,17 @@ let jsonOptions =
 
 let encode obj = JsonSerializer.Serialize(obj, jsonOptions)
 
-let decode<'T> (json: string) =
-            JsonSerializer.Deserialize<'T>(json, jsonOptions)
+
+
+let decode<'T> (json: JsonElement) =
+            match JsonSerializer.Deserialize<'T>(json, jsonOptions) with
+            | null -> invalidOp "null values not supported on deserialization"
+            | value ->  value
         
+            
 let encodeToBytes obj = JsonSerializer.SerializeToUtf8Bytes(obj, jsonOptions)
 
 let decodeFromBytes<'T> (json: byte array) =
-            JsonSerializer.Deserialize<'T>(json, jsonOptions)
+    match JsonSerializer.Deserialize<'T>(json, jsonOptions) with
+    | null -> invalidOp "null values not supported on deserialization"
+    | value ->  value

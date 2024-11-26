@@ -121,7 +121,7 @@ module SagaStarter =
         | Event of Event
 
     let toCheckSagas (event, originator, cid) =
-        ((event |> box), originator, cid) |> CheckSagas |> Command
+        ((event |> box |> Unchecked.nonNull), originator, cid) |> CheckSagas |> Command
 
     let toSendMessage mediator (originator: IActorRef<_>) event =
         let cid = toCidWithExisting (originator.Path.Name) event.CorrelationId
@@ -130,7 +130,7 @@ module SagaStarter =
             Send(SagaStarterPath, (event, untyped originator, cid) |> toCheckSagas, true)
 
         (mediator <? (message)) |> Async.RunSynchronously |> ignore
-        event |> box
+        event |> box |> Unchecked.nonNull
 
     let publishEvent (logger:ILogger) (mailbox: Actor<_>) (mediator)  event (cid) =
         let sender = mailbox.Sender()
@@ -332,7 +332,7 @@ module DynamicConfig =
     open System.Dynamic
     open System.Collections.Generic
 
-    let rec replaceWithArray (parent: ExpandoObject) (key: string) (input: ExpandoObject option) =
+    let rec replaceWithArray (parent: ExpandoObject | null) (key: string | null) (input: ExpandoObject option) =
         match input with
         | None -> ()
         | Some input ->
@@ -345,7 +345,7 @@ module DynamicConfig =
                 for kvp in dict do
                     arr.[kvp.Key |> Int32.Parse] <- kvp.Value
 
-                let parentDict = parent :> IDictionary<_, _>
+                let parentDict = parent :> IDictionary<string|null, _>
                 parentDict.Remove key |> ignore
                 parentDict.Add(key, arr)
             else
@@ -387,11 +387,6 @@ module DynamicConfig =
         [<Extension>]
 
         static member GetSectionAsDynamic(configuration: IConfiguration, section: string) : obj =
-            if configuration |> isNull then
-                "configuration" |> ArgumentNullException |> raise
-
-            if section |> isNull then
-                "section" |> ArgumentNullException |> raise
 
             let configs =
                 configuration.GetSection(section).AsEnumerable()
@@ -417,8 +412,6 @@ module DynamicConfig =
         /// <exception cref="System.ArgumentNullException">Thrown configuration is null</exception>
         [<Extension>]
         static member GetRootAsDynamic(configuration: IConfiguration) : obj =
-            if configuration |> isNull then
-                "configuration" |> ArgumentNullException |> raise
 
             let configs = configuration.AsEnumerable()
             getSection configs

@@ -141,11 +141,12 @@ let runActor<'TEvent, 'TState>
             let state = applyNewState event state
             return! state |> set
         | _ ->
+                let starter =  SagaStarter.toSendMessage mediatorS mailbox.Self 
                 let bodyInput = {
                     Message = msg
                     State = state
                     PublishEvent = publishEvent
-                    SendToSagaStarter = SagaStarter.toSendMessage mediatorS mailbox.Self
+                    SendToSagaStarter = starter
                     Mediator = mediator
                     Log = log
                 }
@@ -159,7 +160,7 @@ type MyEventAdapter =
     interface IEventAdapter with
         member this.FromJournal(evt: obj, manifest: string) : IEventSequence = EventSequence.Single(evt)
         member this.Manifest(evt: obj) : string = ""
-        member this.ToJournal(evt: obj) : obj = box <| Tagged(evt, defaultTag)
+        member this.ToJournal(evt: obj) : obj =( box <| Tagged(evt, defaultTag) ) |> Unchecked.nonNull
 
     public new() = { }
 

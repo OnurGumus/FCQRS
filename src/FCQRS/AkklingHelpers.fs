@@ -19,7 +19,7 @@ type internal TypedMessageExtractor<'Envelope, 'Message>
                 let shardId, _, _ = extractor env
                 shardId
             | :? ShardRegion.StartEntity as e -> shardResolver (e.EntityId)
-            | _ -> invalidOp <| message.ToString()
+            | _ -> invalidOp <| (message .ToString() |> Unchecked.nonNull)
 
         member _.EntityId message =
             match message with

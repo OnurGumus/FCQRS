@@ -1,6 +1,6 @@
 
 module FCQRS.ModelQuery
-open Model
+open Data
 open System.Threading
 
 type DataEvent<'TDataEventType> = { Type: 'TDataEventType; CID: CID }

@@ -30,7 +30,7 @@ type CallbackActor(callback: TimerCallback, state: obj) =
 type AkkaTimer(callback: TimerCallback, state: obj, dueTime: TimeSpan, period: TimeSpan, actorSystem: ActorSystem) =
     let scheduler = actorSystem.Scheduler
     let mutable isDisposed = false
-    let mutable timerHandle: ICancelable = null
+    let mutable timerHandle: ICancelable | null = null
 
     // Convert dueTime and period to milliseconds
     let initialDelayMs = 
@@ -72,7 +72,7 @@ type AkkaTimer(callback: TimerCallback, state: obj, dueTime: TimeSpan, period: T
         member this.Dispose() =
             isDisposed <- true
             if timerHandle <> null then
-                timerHandle.Cancel()
+                (timerHandle |> Unchecked.nonNull).Cancel()
             // Stop the actor
             callbackActorRef.Tell(PoisonPill.Instance)
 
@@ -90,7 +90,7 @@ type AkkaTimer(callback: TimerCallback, state: obj, dueTime: TimeSpan, period: T
             if isDisposed then false
             else
                 if timerHandle <> null then
-                    timerHandle.Cancel()
+                    (timerHandle |> Unchecked.nonNull).Cancel()
                 timerHandle <- 
                     if periodMs = Timeout.Infinite || periodMs = 0 then
                         // Schedule a one-time execution
