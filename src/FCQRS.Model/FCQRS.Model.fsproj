@@ -1,4 +1,3 @@
-<?xml version="1.0" encoding="utf-8"?>
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <TargetFramework>net9.0</TargetFramework>
@@ -8,6 +7,7 @@
     <PackageTags>fable-all;fsharp;</PackageTags>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="Aether.fs" />
     <Compile Include="Validation.fs" />
     <Compile Include="Model.fs" />
     <Compile Include="Query.fs" />
