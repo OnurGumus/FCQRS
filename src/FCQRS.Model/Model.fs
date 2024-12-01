@@ -13,8 +13,11 @@ let inline value<'T, 'U, 'K when ValueLens<'T, 'U, 'K>> (this: 'T) = fst 'T.Valu
 let inline toString<'T, 'U, 'K when ValueLens<'T, 'U, 'K>> (this: 'T) =
     (value this).ToString() |> Unchecked.nonNull
 
-let inline isValid<'T, 'U, 'K when ValueLens<'T, 'U, 'K>> (this: 'T) =
+let inline isValidValue<'T, 'U, 'K when ValueLens<'T, 'U, 'K>> (this: 'T) =
     (Optic.set 'T.Value_ (value this) this).IsOk
+
+let inline isValid t =
+    isValidValue t && (value t) |> isValidValue
 
 let inline tryCreate<'T, 'U, 'K when ValueLens<'T, 'U, 'K>> (s: 'U) = snd 'T.Value_ s
 
@@ -61,6 +64,8 @@ type Version =
         (fun (Version v) -> v), (fun v _ -> if v >= 0L then Ok(Version v) else Error MustBeNonNegative)
 
     static member Zero = Version 0L
+    member this.IsValid = isValidValue this
+    override this.ToString() = (value this).ToString()
 
 type ShortString =
     private
@@ -76,6 +81,10 @@ type ShortString =
                 |> t.Map ShortString
                 |> t.End))
 
+    member this.IsValid = isValidValue this
+
+    override this.ToString() = (value this).ToString()
+
 type LongString =
     private
     | LongString of string
@@ -89,6 +98,10 @@ type CID =
     | CID of ShortString
 
     static member Value_ = (fun (CID v) -> v), (fun v _ -> Ok(CID v))
+
+    member this.IsValid = isValid this
+    override this.ToString() = (value this).ToString()
+
 
 // let cid: CID = Unchecked.defaultof<CID>
 // let s2 = cid |> toString
