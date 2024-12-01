@@ -115,8 +115,8 @@ type CID =
     private
     | CID of ShortString
 
-    static member Value_ = (fun (CID v) -> v), (fun v _ -> Ok(CID v))
-    member this.IsValid = ValueLens.IsValidValue this && (ValueLens.Value this).IsValid
+    static member Value_ = (fun (CID v) -> v), (fun v _ ->(CID v))
+    member this.IsValid =  (ValueLens.Value this).IsValid
     override this.ToString() = (ValueLens.Value this).ToString()
 
 
