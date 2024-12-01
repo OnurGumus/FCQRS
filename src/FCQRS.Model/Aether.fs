@@ -1,4 +1,4 @@
-module FCQRS.Aether
+module FCQRS.Model.Aether
 
 open System
 

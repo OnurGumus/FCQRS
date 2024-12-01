@@ -1,9 +1,9 @@
-module rec FCQRS.Data
+module rec FCQRS.Model.Data
 
 
 open System
-open Model.Validation
-open FCQRS.Aether
+open FCQRS.Model.Validation
+open FCQRS.Model.Aether
 
 type ValueLensResult<'Wrapped, 'Inner, 'Error
     when 'Wrapped: (static member Value_: (('Wrapped -> 'Inner) * ('Inner -> 'Wrapped -> Result<'Wrapped, 'Error>)))> =
