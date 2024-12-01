@@ -1,4 +1,4 @@
-﻿module FCQRS.ModelValidation
+﻿module FCQRS.Model.Validation
 
 open System
 open System.Text.RegularExpressions
