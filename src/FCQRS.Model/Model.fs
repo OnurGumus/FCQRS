@@ -39,6 +39,9 @@ type ValueLens =
 
     static member inline TryCreate<'Wrapped, 'Inner, 'Error when ValueLensResult<'Wrapped, 'Inner, 'Error>>(innerValue: 'Inner) =
         snd 'Wrapped.Value_ innerValue Unchecked.defaultof<'Wrapped> 
+        
+    static member inline Create<'Wrapped, 'Inner when ValueLens<'Wrapped, 'Inner>>(innerValue: 'Inner) =
+            snd 'Wrapped.Value_ innerValue Unchecked.defaultof<'Wrapped> 
 
 [<RequireQualifiedAccessAttribute>]
 module Result =
