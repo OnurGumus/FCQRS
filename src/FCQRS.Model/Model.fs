@@ -37,9 +37,8 @@ type ValueLens =
     static member inline Isvalid this =
         ValueLens.IsValidValue this && (ValueLens.Value this) |> ValueLens.IsValidValue
 
-    static member inline TryCreate<'Wrapped, 'Inner, 'Error when ValueLensResult<'Wrapped, 'Inner, 'Error>>(s: 'Inner) =
-        snd 'Wrapped.Value_ s
-
+    static member inline TryCreate<'Wrapped, 'Inner, 'Error when ValueLensResult<'Wrapped, 'Inner, 'Error>>(innerValue: 'Inner) =
+        snd 'Wrapped.Value_ innerValue Unchecked.defaultof<'Wrapped> 
 
 [<RequireQualifiedAccessAttribute>]
 module Result =
