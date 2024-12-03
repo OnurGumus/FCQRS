@@ -5,31 +5,26 @@ open System
 open FCQRS.Model.Validation
 open FCQRS.Model.Aether
 
-type ValueLensResult<'Wrapped, 'Inner, 'Error
+type ValueLensResultType<'Wrapped, 'Inner, 'Error
     when 'Wrapped: (static member Value_: (('Wrapped -> 'Inner) * ('Inner -> 'Wrapped -> Result<'Wrapped, 'Error>)))> =
     'Wrapped
 
-type ValueLens<'Wrapped, 'Inner
+type ValueLensType<'Wrapped, 'Inner
     when 'Wrapped: (static member Value_: (('Wrapped -> 'Inner) * ('Inner -> 'Wrapped -> 'Wrapped)))> = 'Wrapped
 
 type ValueLens =
-    static member inline Value<'Wrapped, 'Inner, 'Error when ValueLensResult<'Wrapped, 'Inner, 'Error>>
+    static member inline Value<'Wrapped, 'Inner, 'Error when ValueLensResultType<'Wrapped, 'Inner, 'Error>>
         (this: 'Wrapped)
         =
         fst 'Wrapped.Value_ this
 
-    static member inline Value<'Wrapped, 'Inner when ValueLens<'Wrapped, 'Inner>>(this: 'Wrapped) =
+    static member inline Value<'Wrapped, 'Inner when ValueLensType<'Wrapped, 'Inner>>(this: 'Wrapped) =
         fst 'Wrapped.Value_ this
 
-    static member inline toString<'Wrapped, 'Inner, 'Error when ValueLensResult<'Wrapped, 'Inner, 'Error>>
-        (this: 'Wrapped)
-        =
+    static member inline ToString<'Wrapped, 'Inner when ValueLensType<'Wrapped, 'Inner>>(this: 'Wrapped) =
         (ValueLens.Value this).ToString() |> Unchecked.nonNull
 
-    static member inline ToString<'Wrapped, 'Inner when ValueLens<'Wrapped, 'Inner>>(this: 'Wrapped) =
-        (ValueLens.Value this).ToString() |> Unchecked.nonNull
-
-    static member inline IsValidValue<'Wrapped, 'Inner, 'Error when ValueLensResult<'Wrapped, 'Inner, 'Error>>
+    static member inline IsValidValue<'Wrapped, 'Inner, 'Error when ValueLensResultType<'Wrapped, 'Inner, 'Error>>
         (this: 'Wrapped)
         =
         (Optic.set 'Wrapped.Value_ (ValueLens.Value this) this).IsOk
@@ -37,11 +32,22 @@ type ValueLens =
     static member inline Isvalid this =
         ValueLens.IsValidValue this && (ValueLens.Value this) |> ValueLens.IsValidValue
 
-    static member inline TryCreate<'Wrapped, 'Inner, 'Error when ValueLensResult<'Wrapped, 'Inner, 'Error>>(innerValue: 'Inner) =
-        snd 'Wrapped.Value_ innerValue Unchecked.defaultof<'Wrapped> 
+    static member inline TryCreate<'Wrapped, 'Inner, 'Error when ValueLensResultType<'Wrapped, 'Inner, 'Error>>
+        (innerValue: 'Inner)
+        =
+        snd 'Wrapped.Value_ innerValue Unchecked.defaultof<'Wrapped>
+
+    static member inline Create<'Wrapped, 'Inner when ValueLensType<'Wrapped, 'Inner>>(innerValue: 'Inner) =
+        snd 'Wrapped.Value_ innerValue Unchecked.defaultof<'Wrapped>
+
+    static member inline CreateAsResult v =
+        v |> ValueLens.TryCreate |> Result.map ValueLens.Create
         
-    static member inline Create<'Wrapped, 'Inner when ValueLens<'Wrapped, 'Inner>>(innerValue: 'Inner) =
-            snd 'Wrapped.Value_ innerValue Unchecked.defaultof<'Wrapped> 
+
+let inline (|ResultValue|) x = ValueLens.Value<_, _, _> x
+
+let inline (|Value|) x = ValueLens.Value<_, _> x
+
 
 [<RequireQualifiedAccessAttribute>]
 module Result =
@@ -117,8 +123,8 @@ type CID =
     private
     | CID of ShortString
 
-    static member Value_ = (fun (CID v) -> v), (fun v _ ->(CID v))
-    member this.IsValid =  (ValueLens.Value this).IsValid
+    static member Value_ = (fun (CID v) -> v), (fun v _ -> (CID v))
+    member this.IsValid = (ValueLens.Value this).IsValid
     override this.ToString() = (ValueLens.Value this).ToString()
 
 
