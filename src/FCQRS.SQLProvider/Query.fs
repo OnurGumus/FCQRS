@@ -1,7 +1,7 @@
 ﻿module FCQRS.SQLProvider.Query
 open FSharp.Data.Sql.Common
 open System.Linq
-open FCQRS.Model
+open FCQRS.Model.Data
 let sortByEval column =
     <@@ fun (x: SqlEntity) -> x.GetColumn<System.IComparable>(column) @@>
 
