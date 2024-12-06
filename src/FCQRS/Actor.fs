@@ -154,15 +154,18 @@ let runActor<'TEvent, 'TState>
                 }
                 return! (body bodyInput)
     }
-
+type EventAction<'T> = 
+        | PersistEvent of 'T * int64
+        | DeferEvent of 'T * int64
+        | PublishEvent of Event<'T>
+        | IgnoreEvent
+        | UnhandledEvent
 let private defaultTag = ImmutableHashSet.Create("default")
-
 
 type Id = string option
 type CorId = string
 type Version = int64
 type ToEvent<'Event> = Id -> CorId -> int64 -> 'Event -> Event<'Event>
-
 let  actorProp<'Command,'State,'Event,'Env> (loggerFactory:ILoggerFactory) handleCommand apply  initialState  (name:string) (toEvent: ToEvent<'Event>) (mediator: IActorRef<Publish>) (mailbox: Eventsourced<obj>)  =
     let logger = loggerFactory.CreateLogger(name)
     let rec set (state: 'State) =
@@ -176,9 +179,15 @@ let  actorProp<'Command,'State,'Event,'Env> (loggerFactory:ILoggerFactory) handl
                     let toEvent = toEvent (msg.Id) msg.CorrelationId
 
                     match handleCommand msg state  with
-                    | Some(Persist event, version) ->
+                    | PersistEvent(event, version) ->
                         return! event |> toEvent version |> bodyInput.SendToSagaStarter |> Persist
-                    | _ -> return set state
+                    | DeferEvent( event ,version) ->
+                        return! seq {event  |> toEvent version |> bodyInput.SendToSagaStarter } |> Defer
+                    | PublishEvent(event)->
+                        event |> bodyInput.SendToSagaStarter |> ignore  
+                        return set state
+                    | IgnoreEvent -> return set state
+                    | UnhandledEvent -> return Unhandled
                 | _ ->
                     bodyInput.Log.LogWarning("Unhandled message: {msg}", msg)
                     return Unhandled

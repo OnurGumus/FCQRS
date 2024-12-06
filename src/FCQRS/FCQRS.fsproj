@@ -11,6 +11,7 @@
     <Compile Include="AkklingHelpers.fs" />
     <Compile Include="AkkaTimeProvider.fs" />
     <Compile Include="Actor.fs" />
+    <Compile Include="Saga.fs" />
     <Compile Include="Serialization.fs" />
     <Compile Include="Query.fs" />
     <Content Include="paket.references" />
