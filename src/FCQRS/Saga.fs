@@ -71,7 +71,7 @@ let actorProp<'SagaData,'TEvent,'Env,'State> (loggerFactory:ILoggerFactory) init
                             let name = 
                                 match n with
                                 | Name n -> n
-                                | Originator -> cid |> toOriginatorName
+                                | Originator -> mailbox.Self.Path.Name |> toOriginatorName
                             let factory = factory :?> (string -> IEntityRef<obj>)
                             factory  name
                     
