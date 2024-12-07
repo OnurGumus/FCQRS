@@ -10,8 +10,8 @@ open Akkling.Cluster.Sharding
 open Akka.Actor
 open Akka.Event
 open Microsoft.Extensions.Logging
+open FCQRS.Model.Data
 
-type ToEvent<'Event> = delegate of string option * string * int64 * 'Event -> Event<'Event>
 
 type OriginatorName =
     | OriginatorName of string
@@ -26,7 +26,7 @@ type Command<'CommandDetails> =
     { CommandDetails: 'CommandDetails
       CreationDate: DateTime
       Id: string option
-      CorrelationId: string }
+      CorrelationId: CID }
 
     override this.ToString() = sprintf "%A" this
 
@@ -36,7 +36,7 @@ type Event<'EventDetails> =
     { EventDetails: 'EventDetails
       CreationDate: DateTime
       Id: string option
-      CorrelationId: string
+      CorrelationId: CID
       Version: int64 }
 
     override this.ToString() = sprintf "%A" this
@@ -83,7 +83,6 @@ module SagaStarter =
         let index = name.LastIndexOf(CID_Separator)
         name.Substring(index + 1).Replace(SAGA_Suffix, "")
 
-    let toNewCid (cid: string) name =  cid
 
     let toCidWithExisting (name: string) (existing: string) =
         let originator = name
@@ -124,7 +123,7 @@ module SagaStarter =
         ((event |> box |> Unchecked.nonNull), originator, cid) |> CheckSagas |> Command
 
     let toSendMessage mediator (originator: IActorRef<_>) event =
-        let cid = toCidWithExisting (originator.Path.Name) event.CorrelationId
+        let cid = toCidWithExisting (originator.Path.Name) (event.CorrelationId |> ValueLens.Value |> ValueLens.Value)
 
         let message =
             Send(SagaStarterPath, (event, untyped originator, cid) |> toCheckSagas, true)
@@ -293,7 +292,7 @@ module CommandHandler =
                                     Subscribe(
                                         (cd.EntityRef.EntityId |> System.Uri.EscapeDataString)
                                         + CID_Separator
-                                        + cd.Cmd.CorrelationId,
+                                        + (cd.Cmd.CorrelationId |> ValueLens.Value |> ValueLens.Value),
                                         untyped mailbox.Self
                                     )
                                 )

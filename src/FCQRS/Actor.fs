@@ -19,6 +19,7 @@ open AkklingHelpers
 open System
 open Microsoft.Extensions.Logging
 open AkkaTimeProvider
+open FCQRS.Model.Data
 
 
 
@@ -112,7 +113,7 @@ let runActor<'TEvent, 'TState>
     
     let mediatorS = retype mediator
     let publishEvent event =
-        SagaStarter.publishEvent logger mailbox mediator event event.CorrelationId
+        SagaStarter.publishEvent logger mailbox mediator event (event.CorrelationId |> ValueLens.Value |> ValueLens.Value)
     actor {
         let log = logger
         let! msg = mailbox.Receive()
@@ -165,10 +166,8 @@ type EventAction<'T> =
 let private defaultTag = ImmutableHashSet.Create("default")
 
 type Id = string option
-type CorId = string
 type Version = int64
-type ToEvent<'Event> = Id -> CorId -> int64 -> 'Event -> Event<'Event>
-let  actorProp<'Command,'State,'Event,'Env> (loggerFactory:ILoggerFactory) handleCommand apply  initialState  (name:string) (toEvent: ToEvent<'Event>) (mediator: IActorRef<Publish>) (mailbox: Eventsourced<obj>)  =
+let  actorProp<'Command,'State,'Event,'Env> (loggerFactory:ILoggerFactory) handleCommand apply  initialState  (name:string) (toEvent) (mediator: IActorRef<Publish>) (mailbox: Eventsourced<obj>)  =
     let logger = loggerFactory.CreateLogger(name)
     let rec set (state: 'State) =
         let body (bodyInput: BodyInput<'Event>) =
@@ -178,7 +177,7 @@ let  actorProp<'Command,'State,'Event,'Env> (loggerFactory:ILoggerFactory) handl
                 match msg, state with
                 | :? Persistence.RecoveryCompleted, _ -> return! state |> set
                 | :? (Common.Command<'Command>) as msg, _ ->
-                    let toEvent = toEvent (msg.Id) msg.CorrelationId
+                    let toEvent = toEvent (msg.Id) (msg.CorrelationId)
 
                     match handleCommand msg state  with
                     | PersistEvent(event, version) ->
@@ -225,15 +224,14 @@ type IActor =
     abstract LoggerFactory: ILoggerFactory
     abstract TimeProvider: TimeProvider
 
-let createCommandSubscription (actorApi: IActor) factory (cidValue) (id: string) command filter =
-    let corID = id |> Uri.EscapeDataString |> SagaStarter.toNewCid (cidValue)
+let createCommandSubscription (actorApi: IActor) factory (cid:CID) (id: string) command filter =
     let actor = factory id
 
     let commonCommand: Command<_> = {
         CommandDetails = command
         Id = Some(Guid.NewGuid().ToString())
         CreationDate = actorApi.System.Scheduler.Now.UtcDateTime
-        CorrelationId = corID
+        CorrelationId = cid
     }
 
     let e = { Cmd = commonCommand; EntityRef = actor; Filter = filter }

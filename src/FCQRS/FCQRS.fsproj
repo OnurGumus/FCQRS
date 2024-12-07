@@ -3,6 +3,8 @@
     <TargetFramework>net9.0</TargetFramework>
     <Nullable>enable</Nullable>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <FablePackageType>library</FablePackageType>
+      <PackageTags>fable-dotnet;</PackageTags>
     <PackageId>FCQRS</PackageId>
     <DebugType>embedded</DebugType>
   </PropertyGroup>

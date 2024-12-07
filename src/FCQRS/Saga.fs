@@ -12,6 +12,7 @@ open Akka.Event
 open Microsoft.Extensions.Logging
 open Akkling.Cluster.Sharding
 open Microsoft.FSharp.Reflection
+open FCQRS.Model.Data
 
 
 type SagaState<'SagaData,'State> = { Data: 'SagaData; State: 'State }
@@ -41,7 +42,7 @@ let createCommand (mailbox:Eventsourced<_>) (command:'TCommand) cid = {
 
 
 let actorProp<'SagaData,'TEvent,'Env,'State> (loggerFactory:ILoggerFactory) initialState name (handleEvent: _ -> _ -> EventAction<'State>) applySideEffects2  apply (actorApi: IActor)  (mediator: IActorRef<_>) (mailbox: Eventsourced<obj>) =
-    let cid = (mailbox.Self.Path.Name |> SagaStarter.toRawGuid)
+    let cid:CID = (mailbox.Self.Path.Name |> SagaStarter.toRawGuid) |> ValueLens.CreateAsResult |> Result.value
     let log = mailbox.UntypedContext.GetLogger()
     let logger = loggerFactory.CreateLogger(name)
 
