@@ -30,7 +30,7 @@ type Effect =
 type NextState = obj option
 
 
-let toStateChange state = state |> StateChanged |> box |> Persist :> Effect<_> 
+let toStateChange state = state |> StateChanged |> box |> Persist :> Effect<obj> 
 
 let createCommand (mailbox:Eventsourced<_>) (command:'TCommand) cid = {
     CommandDetails = command
@@ -40,7 +40,7 @@ let createCommand (mailbox:Eventsourced<_>) (command:'TCommand) cid = {
 }
 
 
-let actorProp<'SagaData,'TEvent,'Env,'State> (loggerFactory:ILoggerFactory) initialState name handleEvent applySideEffects2  apply (actorApi: IActor)  (mediator: IActorRef<_>) (mailbox: Eventsourced<obj>) =
+let actorProp<'SagaData,'TEvent,'Env,'State> (loggerFactory:ILoggerFactory) initialState name (handleEvent: _ -> _ -> EventAction<'State>) applySideEffects2  apply (actorApi: IActor)  (mediator: IActorRef<_>) (mailbox: Eventsourced<obj>) =
     let cid = (mailbox.Self.Path.Name |> SagaStarter.toRawGuid)
     let log = mailbox.UntypedContext.GetLogger()
     let logger = loggerFactory.CreateLogger(name)
@@ -97,7 +97,7 @@ let actorProp<'SagaData,'TEvent,'Env,'State> (loggerFactory:ILoggerFactory) init
             actor {
                 match msg, sagaState with
                 | msg, state ->
-                    let state = handleEvent msg state
+                    let state:EventAction<'State> = handleEvent msg state
                     match state with
                     | StateChangedEvent newState ->
                         let newState = newState |> toStateChange
