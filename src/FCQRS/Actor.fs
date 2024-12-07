@@ -92,7 +92,10 @@ let runSaga<'TEvent, 'TState, 'TInnerState>
         }
 
     innerSet (None, false)
-
+type State<'InnerState>={
+    Version: int64
+    State: 'InnerState
+}
 type BodyInput<'TEvent> ={
     Message: obj
     State: obj
@@ -105,8 +108,8 @@ let runActor<'TEvent, 'TState>
     (logger: ILogger)
     (mailbox: Eventsourced<obj>)
     mediator
-    (set: 'TState -> _)
-    (state: 'TState)
+    (set: State<'TState> -> _)
+    (state: State<'TState>)
     (applyNewState: Event<'TEvent> -> 'TState -> 'TState)
     (body: BodyInput<'TEvent> -> _) : Effect<obj> =
 
@@ -133,7 +136,9 @@ let runActor<'TEvent, 'TState>
             let version = event.Version
             publishEvent event
 
-            let state = applyNewState event state
+            let innerState = applyNewState event (state.State)
+            let newState = { Version = version; State = innerState }
+            let state = newState
 
             if (version >= 30L && version % 30L = 0L) then
                 return! state |> set <@> SaveSnapshot(state)
@@ -141,8 +146,9 @@ let runActor<'TEvent, 'TState>
                 return! state |> set
 
         | Recovering mailbox (:? Common.Event<'TEvent> as event) ->
-            let state = applyNewState event state
-            return! state |> set
+            let state = applyNewState event (state.State)
+            let newState = { Version = event.Version; State = state }
+            return! newState |> set
         | _ ->
                 let starter =  SagaStarter.toSendMessage mediatorS mailbox.Self 
                 let bodyInput = {
@@ -156,8 +162,8 @@ let runActor<'TEvent, 'TState>
                 return! (body bodyInput)
     }
 type EventAction<'T> = 
-        | PersistEvent of 'T * int64
-        | DeferEvent of 'T * int64
+        | PersistEvent of 'T
+        | DeferEvent of 'T
         | PublishEvent of Event<'T>
         | IgnoreEvent
         | UnhandledEvent
@@ -167,9 +173,10 @@ let private defaultTag = ImmutableHashSet.Create("default")
 
 type Id = string option
 type Version = int64
-let  actorProp<'Command,'State,'Event,'Env> (loggerFactory:ILoggerFactory) handleCommand apply  initialState  (name:string) (toEvent) (mediator: IActorRef<Publish>) (mailbox: Eventsourced<obj>)  =
+
+let  actorProp<'Command,'State,'Event,'Env> (loggerFactory:ILoggerFactory) handleCommand apply  (initialState:'State)  (name:string) (toEvent) (mediator: IActorRef<Publish>) (mailbox: Eventsourced<obj>)  =
     let logger = loggerFactory.CreateLogger(name)
-    let rec set (state: 'State) =
+    let rec set (state: State<'State>) =
         let body (bodyInput: BodyInput<'Event>) =
             let msg = bodyInput.Message
 
@@ -179,11 +186,11 @@ let  actorProp<'Command,'State,'Event,'Env> (loggerFactory:ILoggerFactory) handl
                 | :? (Common.Command<'Command>) as msg, _ ->
                     let toEvent = toEvent (msg.Id) (msg.CorrelationId)
 
-                    match handleCommand msg state  with
-                    | PersistEvent(event, version) ->
-                        return! event |> toEvent version |> bodyInput.SendToSagaStarter |> Persist
-                    | DeferEvent( event ,version) ->
-                        return! seq {event  |> toEvent version |> bodyInput.SendToSagaStarter } |> Defer
+                    match handleCommand msg state.State  with
+                    | PersistEvent(event) ->
+                        return! event |> toEvent (state.Version + 1L) |> bodyInput.SendToSagaStarter |> Persist
+                    | DeferEvent( event) ->
+                        return! seq {event  |> (toEvent (state.Version))  |> bodyInput.SendToSagaStarter } |> Defer
                     | PublishEvent(event)->
                         event |> bodyInput.SendToSagaStarter |> ignore  
                         return set state
@@ -195,7 +202,8 @@ let  actorProp<'Command,'State,'Event,'Env> (loggerFactory:ILoggerFactory) handl
                     return Unhandled
             }
 
-        runActor logger mailbox mediator set state apply body
+        runActor logger mailbox mediator set state (apply:Event<_> -> 'State -> 'State) body
+    let initialState = { Version = 0L; State = initialState }
     set  initialState
 
 
