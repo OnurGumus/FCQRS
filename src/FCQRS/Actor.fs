@@ -160,6 +160,8 @@ type EventAction<'T> =
         | PublishEvent of Event<'T>
         | IgnoreEvent
         | UnhandledEvent
+        | StateChangedEvent of 'T
+
 let private defaultTag = ImmutableHashSet.Create("default")
 
 type Id = string option
@@ -187,6 +189,7 @@ let  actorProp<'Command,'State,'Event,'Env> (loggerFactory:ILoggerFactory) handl
                         event |> bodyInput.SendToSagaStarter |> ignore  
                         return set state
                     | IgnoreEvent -> return set state
+                    | StateChangedEvent _ 
                     | UnhandledEvent -> return Unhandled
                 | _ ->
                     bodyInput.Log.LogWarning("Unhandled message: {msg}", msg)

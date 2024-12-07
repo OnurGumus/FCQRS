@@ -30,7 +30,7 @@ type Effect =
 type NextState = obj option
 
 
-let toStateChange state = state |> StateChanged |> box |> Persist :> Effect<_> |> Some
+let toStateChange state = state |> StateChanged |> box |> Persist :> Effect<_> 
 
 let createCommand (mailbox:Eventsourced<_>) (command:'TCommand) cid = {
     CommandDetails = command
@@ -87,7 +87,7 @@ let actorProp<'SagaData,'TEvent,'Env,'State> (loggerFactory:ILoggerFactory) init
             | Stop  -> 
                 let poision = Akka.Cluster.Sharding.Passivate <| Actor.PoisonPill.Instance 
                 mailbox.Parent() <! poision
-                log.Info("SubscriptionsSaga Completed");
+                log.Info("{name} Completed",name);
                 newState
                 
           
@@ -99,9 +99,14 @@ let actorProp<'SagaData,'TEvent,'Env,'State> (loggerFactory:ILoggerFactory) init
                 | msg, state ->
                     let state = handleEvent msg state
                     match state with
-                    | Some newState ->
+                    | StateChangedEvent newState ->
+                        let newState = newState |> toStateChange
                         return! newState
-                    | None -> return! sagaState |> set
+                    | IgnoreEvent -> return! sagaState |> set
+                    | UnhandledEvent 
+                    | PublishEvent _ 
+                    | PersistEvent _ 
+                    | DeferEvent _ -> return Unhandled
             }
         let wrapper = fun (s:'State) -> { Data = sagaState.Data; State = s }
         runSaga mailbox logger mediator set  sagaState applySideEffects apply wrapper body
