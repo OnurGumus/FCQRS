@@ -72,7 +72,10 @@ type EventAction<'T> =
         | NoEffect
     
 
-type SagaState<'SagaData,'State> = { Data: 'SagaData; State: 'State }
+type SagaState<'SagaData,'State> = 
+        { Data: 'SagaData; State: 'State }
+        with interface ISerializable
+
 [<Interface>]
 type IActor =
     abstract Mediator: Akka.Actor.IActorRef

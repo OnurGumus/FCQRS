@@ -26,6 +26,8 @@ type State<'InnerState>={
     Version: int64
     State: 'InnerState
 }
+    with interface ISerializable
+    
 type BodyInput<'TEvent> ={
     Message: obj
     State: obj
