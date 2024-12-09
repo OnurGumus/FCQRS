@@ -4,7 +4,7 @@
     <Nullable>enable</Nullable>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <FablePackageType>library</FablePackageType>
-      <PackageTags>fable-dotnet;</PackageTags>
+    <PackageTags>fable-dotnet;</PackageTags>
     <PackageId>FCQRS</PackageId>
     <DebugType>embedded</DebugType>
   </PropertyGroup>
@@ -12,8 +12,8 @@
     <Compile Include="Common.fs" />
     <Compile Include="AkklingHelpers.fs" />
     <Compile Include="AkkaTimeProvider.fs" />
-    <Compile Include="Actor.fs" />
     <Compile Include="Saga.fs" />
+    <Compile Include="Actor.fs" />
     <Compile Include="Serialization.fs" />
     <Compile Include="Query.fs" />
     <Content Include="paket.references" />

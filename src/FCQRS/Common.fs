@@ -1,5 +1,5 @@
 [<System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage>]
-module FCQRS.Common
+module rec FCQRS.Common
 
 open System
 open Akkling
@@ -11,6 +11,8 @@ open Akka.Actor
 open Akka.Event
 open Microsoft.Extensions.Logging
 open FCQRS.Model.Data
+open Akka.Streams
+open SagaStarter
 
 
 type OriginatorName =
@@ -49,7 +51,43 @@ type SagaEvent<'TState> =
 
     interface ISerializable
 
+type EventAction<'T> = 
+    | PersistEvent of 'T
+    | DeferEvent of 'T
+    | PublishEvent of Event<'T>
+    | IgnoreEvent
+    | UnhandledEvent
+    | StateChangedEvent of 'T
 
+    type TargetName = Name of string | Originator
+    type FactoryAndName = { Factory:   obj;Name :TargetName }
+    type TargetActor=
+            | FactoryAndName of FactoryAndName
+            | Sender
+    
+    type ExecuteCommand = { TargetActor: TargetActor; Command : obj;  }
+    type Effect = 
+        | ResumeFirstEvent
+        | StopActor
+        | NoEffect
+    
+
+type SagaState<'SagaData,'State> = { Data: 'SagaData; State: 'State }
+[<Interface>]
+type IActor =
+    abstract Mediator: Akka.Actor.IActorRef
+    abstract Materializer: ActorMaterializer
+    abstract System: ActorSystem
+    abstract SubscribeForCommand: CommandHandler.Command<'a, 'b> -> Async<Common.Event<'b>>
+    abstract Stop: unit -> System.Threading.Tasks.Task
+    abstract LoggerFactory: ILoggerFactory
+    abstract TimeProvider: TimeProvider
+    abstract CreateCommandSubscription: (string -> IEntityRef<obj>) -> CID -> string -> 'b -> ('c -> bool) -> Async<Event<'c>>
+    abstract InitializeActor: ILoggerFactory -> 'a -> string -> (Command<'c >-> 'a -> EventAction<'b>) -> (Event<'b> -> 'a -> 'a) -> EntityFac<obj>
+    abstract InitializeSaga: ILoggerFactory -> SagaState<'SagaState,'State>  -> (obj-> SagaState<'SagaState,'State>-> EventAction<'State>) -> 
+        (SagaState<'SagaState,'State> -> option<SagaStartingEvent<Event<'c>>> -> bool -> Effect * option<'State> * ExecuteCommand list) -> 
+        (SagaState<'SagaState,'State> -> SagaState<'SagaState,'State>) -> string ->EntityFac<obj>
+    abstract InitializeSagStarter: (obj  -> list<(string -> IEntityRef<obj>) * PrefixConversion * obj>) -> unit
 
 let toEvent (sch: IScheduler) id ci version event =
     { EventDetails = event

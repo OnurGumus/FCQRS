@@ -5,7 +5,6 @@ open Akkling
 open Akkling.Persistence
 open Akka
 open Common
-open Actor
 open Akka.Cluster.Sharding
 open Common.SagaStarter
 open Akka.Event
@@ -13,20 +12,9 @@ open Microsoft.Extensions.Logging
 open Akkling.Cluster.Sharding
 open Microsoft.FSharp.Reflection
 open FCQRS.Model.Data
+open AkklingHelpers
 
 
-type SagaState<'SagaData,'State> = { Data: 'SagaData; State: 'State }
-type TargetName = Name of string | Originator
-type FactoryAndName = { Factory:   obj;Name :TargetName }
-type TargetActor=
-        | FactoryAndName of FactoryAndName
-        | Sender
-
-type ExecuteCommand = { TargetActor: TargetActor; Command : obj;  }
-type Effect = 
-    | ResumeFirstEvent
-    | Stop
-    | NoEffect
 
 type NextState = obj option
 
@@ -40,6 +28,78 @@ let createCommand (mailbox:Eventsourced<_>) (command:'TCommand) cid = {
     Id = None
 }
 
+
+
+
+let runSaga<'TEvent, 'TState, 'TInnerState>
+    (mailbox: Eventsourced<obj>)
+    (log: ILogger)
+    mediator
+    (set: 'TState -> _)
+    (state: 'TState)
+    (applySideEffects: 'TState -> option<SagaStarter.SagaStartingEvent<'TEvent>> -> bool -> 'TInnerState option)
+    (applyNewState: 'TState -> 'TState)
+    (wrapper: 'TInnerState -> 'TState)
+    body
+    =
+    let rec innerSet (startingEvent: option<SagaStarter.SagaStartingEvent<_>>, subscribed) =
+        actor {
+            let! msg = mailbox.Receive()
+            log.LogInformation("Saga:{@name} SagaMessage: {MSG}", mailbox.Self.Path.ToString(), msg)
+
+            match msg with
+            | :? (SagaStarter.SagaStartingEvent<'TEvent>) when subscribed ->
+                SagaStarter.cont mediator
+                return! innerSet (startingEvent, subscribed)
+            | :? (SagaStarter.SagaStartingEvent<'TEvent>) as e when startingEvent.IsNone ->
+                return! innerSet ((Some e), subscribed)
+            | :? Persistence.RecoveryCompleted ->
+                SagaStarter.subscriber mediator mailbox
+                log.LogInformation("Saga RecoveryCompleted")
+                return! innerSet (startingEvent, subscribed)
+            | Recovering mailbox (:? Common.SagaEvent<'TInnerState> as event) ->
+                match event with
+                | StateChanged s ->
+
+                    let newState = applyNewState (wrapper s)
+                    return! newState |> set
+
+            | PersistentLifecycleEvent _
+            | :? Akka.Persistence.SaveSnapshotSuccess
+            | LifecycleEvent _ -> return! state |> set
+            | SnapshotOffer(snapState: obj) -> return! snapState |> unbox<_> |> set
+            | SagaStarter.SubscrptionAcknowledged mailbox _ ->
+                // notify saga starter about the subscription completed
+                let newState = applySideEffects state startingEvent true
+
+                match newState with
+                | Some newState ->
+                    return! (newState |> StateChanged |> box |> Persist) <@> innerSet (startingEvent, true)
+                | None -> return! state |> set <@> innerSet (startingEvent, true)
+
+            | Deferred mailbox (obj)
+            | Persisted mailbox (obj) ->
+                match obj with
+                | (:? SagaEvent<'TInnerState> as e) ->
+                    match e with
+                    | StateChanged originalState ->
+                        let outerState = wrapper originalState
+                        let newSagaState = applyNewState outerState
+
+                        let newState = applySideEffects outerState None false
+
+
+                        match newState with
+                        | Some newState ->
+                            return! (newSagaState |> set) <@> (newState |> StateChanged |> box |> Persist)
+                        | None -> return! newSagaState |> set
+                | other ->
+                    log.LogInformation("Unknown event:{@event}, expecting :{@ev}", other.GetType(), typeof<SagaEvent<'TState>>)
+                    return! state |> set
+            | _ -> return! (body msg)
+        }
+
+    innerSet (None, false)
 
 let actorProp<'SagaData,'TEvent,'Env,'State> (loggerFactory:ILoggerFactory) initialState name (handleEvent: _ -> _ -> EventAction<'State>) applySideEffects2  apply (actorApi: IActor)  (mediator: IActorRef<_>) (mailbox: Eventsourced<obj>) =
     let cid:CID = (mailbox.Self.Path.Name |> SagaStarter.toRawGuid) |> ValueLens.CreateAsResult |> Result.value
@@ -77,7 +137,7 @@ let actorProp<'SagaData,'TEvent,'Env,'State> (loggerFactory:ILoggerFactory) init
                             factory  name
                     
                         | Sender -> mailbox.Sender() 
-                targetActor.Tell(finalCommand, mailbox.Self.Underlying :?> IActorRef)
+                targetActor.Tell(finalCommand, mailbox.Self.Underlying :?> Akka.Actor.IActorRef)
                 
             match effect with
             | NoEffect -> 
@@ -85,7 +145,7 @@ let actorProp<'SagaData,'TEvent,'Env,'State> (loggerFactory:ILoggerFactory) init
             |  ResumeFirstEvent -> 
                 SagaStarter.cont mediator; 
                 newState
-            | Stop  -> 
+            | StopActor  -> 
                 let poision = Akka.Cluster.Sharding.Passivate <| Actor.PoisonPill.Instance 
                 mailbox.Parent() <! poision
                 log.Info("{name} Completed",name);

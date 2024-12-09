@@ -6,6 +6,7 @@ open FCQRS.Actor
 open Akka.Streams
 open Akka.Streams.Dsl
 open Microsoft.Extensions.Logging
+open Common
 
 [<Interface>]
 type IAPI<'TDataEvent,'TPredicate> =

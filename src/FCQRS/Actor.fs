@@ -20,78 +20,8 @@ open System
 open Microsoft.Extensions.Logging
 open AkkaTimeProvider
 open FCQRS.Model.Data
+open Akkling.Cluster.Sharding
 
-
-
-let runSaga<'TEvent, 'TState, 'TInnerState>
-    (mailbox: Eventsourced<obj>)
-    (log: ILogger)
-    mediator
-    (set: 'TState -> _)
-    (state: 'TState)
-    (applySideEffects: 'TState -> option<SagaStarter.SagaStartingEvent<'TEvent>> -> bool -> 'TInnerState option)
-    (applyNewState: 'TState -> 'TState)
-    (wrapper: 'TInnerState -> 'TState)
-    body
-    =
-    let rec innerSet (startingEvent: option<SagaStarter.SagaStartingEvent<_>>, subscribed) =
-        actor {
-            let! msg = mailbox.Receive()
-            log.LogInformation("Saga:{@name} SagaMessage: {MSG}", mailbox.Self.Path.ToString(), msg)
-
-            match msg with
-            | :? (SagaStarter.SagaStartingEvent<'TEvent>) when subscribed ->
-                SagaStarter.cont mediator
-                return! innerSet (startingEvent, subscribed)
-            | :? (SagaStarter.SagaStartingEvent<'TEvent>) as e when startingEvent.IsNone ->
-                return! innerSet ((Some e), subscribed)
-            | :? Persistence.RecoveryCompleted ->
-                SagaStarter.subscriber mediator mailbox
-                log.LogInformation("Saga RecoveryCompleted")
-                return! innerSet (startingEvent, subscribed)
-            | Recovering mailbox (:? Common.SagaEvent<'TInnerState> as event) ->
-                match event with
-                | StateChanged s ->
-
-                    let newState = applyNewState (wrapper s)
-                    return! newState |> set
-
-            | PersistentLifecycleEvent _
-            | :? Akka.Persistence.SaveSnapshotSuccess
-            | LifecycleEvent _ -> return! state |> set
-            | SnapshotOffer(snapState: obj) -> return! snapState |> unbox<_> |> set
-            | SagaStarter.SubscrptionAcknowledged mailbox _ ->
-                // notify saga starter about the subscription completed
-                let newState = applySideEffects state startingEvent true
-
-                match newState with
-                | Some newState ->
-                    return! (newState |> StateChanged |> box |> Persist) <@> innerSet (startingEvent, true)
-                | None -> return! state |> set <@> innerSet (startingEvent, true)
-
-            | Deferred mailbox (obj)
-            | Persisted mailbox (obj) ->
-                match obj with
-                | (:? SagaEvent<'TInnerState> as e) ->
-                    match e with
-                    | StateChanged originalState ->
-                        let outerState = wrapper originalState
-                        let newSagaState = applyNewState outerState
-
-                        let newState = applySideEffects outerState None false
-
-
-                        match newState with
-                        | Some newState ->
-                            return! (newSagaState |> set) <@> (newState |> StateChanged |> box |> Persist)
-                        | None -> return! newSagaState |> set
-                | other ->
-                    log.LogInformation("Unknown event:{@event}, expecting :{@ev}", other.GetType(), typeof<SagaEvent<'TState>>)
-                    return! state |> set
-            | _ -> return! (body msg)
-        }
-
-    innerSet (None, false)
 type State<'InnerState>={
     Version: int64
     State: 'InnerState
@@ -161,13 +91,7 @@ let runActor<'TEvent, 'TState>
                 }
                 return! (body bodyInput)
     }
-type EventAction<'T> = 
-        | PersistEvent of 'T
-        | DeferEvent of 'T
-        | PublishEvent of Event<'T>
-        | IgnoreEvent
-        | UnhandledEvent
-        | StateChangedEvent of 'T
+
 
 let private defaultTag = ImmutableHashSet.Create("default")
 
@@ -222,15 +146,6 @@ type MyEventAdapter =
 
     public new() = { }
 
-[<Interface>]
-type IActor =
-    abstract Mediator: Akka.Actor.IActorRef
-    abstract Materializer: ActorMaterializer
-    abstract System: ActorSystem
-    abstract SubscribeForCommand: Common.CommandHandler.Command<'a, 'b> -> Async<Common.Event<'b>>
-    abstract Stop: unit -> System.Threading.Tasks.Task
-    abstract LoggerFactory: ILoggerFactory
-    abstract TimeProvider: TimeProvider
 
 let createCommandSubscription (actorApi: IActor) factory (cid:CID) (id: string) command filter =
     let actor = factory id
@@ -254,8 +169,6 @@ let api (config: IConfiguration) (loggerFactory: ILoggerFactory) =
     let config = Akka.Configuration.ConfigurationFactory.FromObject akkaConfig
 
     let system = System.create "cluster-system" config
-    let logger = loggerFactory.CreateLogger("Actor")
-
 
     Cluster.Get(system).SelfAddress |> Cluster.Get(system).Join
 
@@ -273,5 +186,23 @@ let api (config: IConfiguration) (loggerFactory: ILoggerFactory) =
         member _.TimeProvider = new AkkaTimeProvider(system)
         member _.LoggerFactory = loggerFactory
         member _.SubscribeForCommand command = subscribeForCommand command
-        member _.Stop() = system.Terminate() }
+        member _.Stop() = system.Terminate()        
+        member this.CreateCommandSubscription factory cid id command filter = 
+                createCommandSubscription this factory cid id command filter
 
+        member this.InitializeActor loggerFactory initialState name handleCommand apply = 
+                let  toEvent v e =
+                    Common.toEvent system.Scheduler v e
+                init (loggerFactory) initialState name toEvent this handleCommand apply
+
+        member this.InitializeSaga(env: ILoggerFactory) 
+                (initialState: SagaState<'SagaState,'State>) 
+                    (handleEvent: obj -> SagaState<'SagaState,'State> -> EventAction<'State>) 
+                    (applySideEffects: SagaState<'SagaState,'State> -> SagaStarter.SagaStartingEvent<Event<'c>> option -> bool -> Effect * 'State option * ExecuteCommand list) 
+                    (apply: SagaState<'SagaState,'State> -> SagaState<'SagaState,'State>) (name: string): EntityFac<obj> = 
+                Saga.init env this initialState  handleEvent  applySideEffects apply name
+
+        member this.InitializeSagStarter   (rules:(obj  -> list<(string -> IEntityRef<obj>) * PrefixConversion * obj>)): unit = 
+            SagaStarter.init system mediator  rules
+        
+    }
