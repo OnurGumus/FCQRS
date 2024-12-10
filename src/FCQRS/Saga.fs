@@ -85,17 +85,17 @@ let runSaga<'TEvent,'SagaData,'State>
                     | StateChanged originalState ->
                         let outerState = wrapper originalState
                         let newSagaState = applyNewState outerState
-                        let newState = applySideEffects outerState None false
+                        let newState = applySideEffects newSagaState None false
                         match newState with
                         | Some st ->
-                            let updatedState = { outerState with State = st }
-                            let withVersion = { SagaState = updatedState; Version = state.Version + 1L }
+                            let updatedState = { newSagaState with State = st }
+                            let withVersion = { state with SagaState = updatedState; Version = state.Version + 1L }
                             if (withVersion.Version >= 30L && withVersion.Version % 30L = 0L) then
                                 return! (withVersion |> set) <@> (SaveSnapshot (box withVersion))
                             else
                                 return! withVersion |> set
                         | None ->
-                            let withVersion = { SagaState = newSagaState; Version = state.Version + 1L }
+                            let withVersion = { state with SagaState = newSagaState; Version = state.Version + 1L }
                             if (withVersion.Version >= 30L && withVersion.Version % 30L = 0L) then
                                 // Use 'SaveSnapshot' to trigger a snapshot. The '<@>' operator chains effects.
                                 return! (withVersion |> set) <@> (SaveSnapshot (box withVersion))
