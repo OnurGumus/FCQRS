@@ -75,6 +75,10 @@ type EventAction<'T> =
 type SagaState<'SagaData,'State> = 
         { Data: 'SagaData; State: 'State }
         with interface ISerializable
+        
+type SagaStateWithVersion<'SagaData,'State> = 
+        { SagaState : SagaState<'SagaData,'State>; Version: int64 }
+        with interface ISerializable
 
 [<Interface>]
 type IActor =
