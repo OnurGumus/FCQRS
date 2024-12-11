@@ -85,10 +85,11 @@ let runSaga<'TEvent, 'SagaData, 'State>
                     match e with
                     | StateChanged originalState ->
                         let outerState = wrapper originalState
+                       
                         let newSagaState = applyNewState outerState.SagaState
                         let parentState = {outerState with SagaState = newSagaState}
                         let newState = applySideEffects parentState None false
-
+                        let version = parentState.Version + 1L
                         match newState with
                         | Some newState ->
                             let newSagaState :ParentSaga<_,_>= 
@@ -96,9 +97,18 @@ let runSaga<'TEvent, 'SagaData, 'State>
                                 let newInnerState = {newInnerState with State = newState}
                                 {parentState with SagaState = newInnerState}
                                
-                            return! (newSagaState |> set) <@> (newState |> StateChanged |> box |> Persist)
+                          
+                            if (version >= 30L && version % 30L = 0L) then
+                                return! parentState |> set <@> SaveSnapshot(parentState)
+                            else
+                                return! (newSagaState |> set) <@> (newState |> StateChanged |> box |> Persist)
                         | None -> 
+                        if (version >= 30L && version % 30L = 0L) then
+                            return! parentState |> set <@> SaveSnapshot(parentState)
+                        else
                             return! parentState |> set
+                        
+                          
                 | other ->
                     log.LogInformation("Unknown event:{@event}, expecting :{@ev}", other.GetType(), typeof<SagaEvent<'State>>)
                     return! state |> set
