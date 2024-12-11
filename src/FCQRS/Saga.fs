@@ -31,15 +31,15 @@ let createCommand (mailbox:Eventsourced<_>) (command:'TCommand) cid = {
 
 
 
-let runSaga<'TEvent, 'TState, 'TInnerState>
+let runSaga<'TEvent, 'SagaData, 'State>
     (mailbox: Eventsourced<obj>)
     (log: ILogger)
     mediator
-    (set: 'TState -> _)
-    (state: 'TState)
-    (applySideEffects: 'TState -> option<SagaStarter.SagaStartingEvent<'TEvent>> -> bool -> 'TInnerState option)
-    (applyNewState: 'TState -> 'TState)
-    (wrapper: 'TInnerState -> 'TState)
+    (set: SagaState<'SagaData,'State> -> _)
+    (state:  SagaState<'SagaData,'State>)
+    (applySideEffects:  SagaState<'SagaData,'State> -> option<SagaStarter.SagaStartingEvent<'TEvent>> -> bool -> 'State option)
+    (applyNewState: SagaState<'SagaData,'State> -> SagaState<'SagaData,'State>)
+    (wrapper: 'State -> SagaState<'SagaData,'State>)
     body
     =
     let rec innerSet (startingEvent: option<SagaStarter.SagaStartingEvent<_>>, subscribed) =
@@ -57,7 +57,7 @@ let runSaga<'TEvent, 'TState, 'TInnerState>
                 SagaStarter.subscriber mediator mailbox
                 log.LogInformation("Saga RecoveryCompleted")
                 return! innerSet (startingEvent, subscribed)
-            | Recovering mailbox (:? Common.SagaEvent<'TInnerState> as event) ->
+            | Recovering mailbox (:? Common.SagaEvent<'State> as event) ->
                 match event with
                 | StateChanged s ->
 
@@ -80,7 +80,7 @@ let runSaga<'TEvent, 'TState, 'TInnerState>
             | Deferred mailbox (obj)
             | Persisted mailbox (obj) ->
                 match obj with
-                | (:? SagaEvent<'TInnerState> as e) ->
+                | (:? SagaEvent<'State> as e) ->
                     match e with
                     | StateChanged originalState ->
                         let outerState = wrapper originalState
@@ -94,7 +94,7 @@ let runSaga<'TEvent, 'TState, 'TInnerState>
                             return! (newSagaState |> set) <@> (newState |> StateChanged |> box |> Persist)
                         | None -> return! newSagaState |> set
                 | other ->
-                    log.LogInformation("Unknown event:{@event}, expecting :{@ev}", other.GetType(), typeof<SagaEvent<'TState>>)
+                    log.LogInformation("Unknown event:{@event}, expecting :{@ev}", other.GetType(), typeof<SagaEvent<'State>>)
                     return! state |> set
             | _ -> return! (body msg)
         }
