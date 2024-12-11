@@ -29,17 +29,17 @@ let createCommand (mailbox:Eventsourced<_>) (command:'TCommand) cid = {
 }
 
 
-
+type ParentSaga<'SagaData,'State> = SagaStateWithVersion<'SagaData,'State>
 
 let runSaga<'TEvent, 'SagaData, 'State>
     (mailbox: Eventsourced<obj>)
     (log: ILogger)
     mediator
-    (set: SagaState<'SagaData,'State> -> _)
-    (state:  SagaState<'SagaData,'State>)
-    (applySideEffects:  SagaState<'SagaData,'State> -> option<SagaStarter.SagaStartingEvent<'TEvent>> -> bool -> 'State option)
+    (set: ParentSaga<'SagaData,'State> -> _)
+    (state:  ParentSaga<'SagaData,'State>)
+    (applySideEffects:  ParentSaga<'SagaData,'State> -> option<SagaStarter.SagaStartingEvent<'TEvent>> -> bool -> 'State option)
     (applyNewState: SagaState<'SagaData,'State> -> SagaState<'SagaData,'State>)
-    (wrapper: 'State -> SagaState<'SagaData,'State>)
+    (wrapper: 'State -> ParentSaga<'SagaData,'State>)
     body
     =
     let rec innerSet (startingEvent: option<SagaStarter.SagaStartingEvent<_>>, subscribed) =
@@ -61,7 +61,8 @@ let runSaga<'TEvent, 'SagaData, 'State>
                 match event with
                 | StateChanged s ->
 
-                    let newState = applyNewState (wrapper s)
+                    let newState = applyNewState (wrapper s).SagaState
+                    let newState = {state with SagaState = newState}    
                     return! newState |> set
 
             | PersistentLifecycleEvent _
@@ -84,15 +85,20 @@ let runSaga<'TEvent, 'SagaData, 'State>
                     match e with
                     | StateChanged originalState ->
                         let outerState = wrapper originalState
-                        let newSagaState = applyNewState outerState
-
-                        let newState = applySideEffects outerState None false
-
+                        let newSagaState = applyNewState outerState.SagaState
+                        let parentState = {outerState with SagaState = newSagaState}
+                        let newState = applySideEffects parentState None false
 
                         match newState with
                         | Some newState ->
+                            let newSagaState :ParentSaga<_,_>= 
+                                let newInnerState =parentState.SagaState
+                                let newInnerState = {newInnerState with State = newState}
+                                {parentState with SagaState = newInnerState}
+                               
                             return! (newSagaState |> set) <@> (newState |> StateChanged |> box |> Persist)
-                        | None -> return! newSagaState |> set
+                        | None -> 
+                            return! parentState |> set
                 | other ->
                     log.LogInformation("Unknown event:{@event}, expecting :{@ev}", other.GetType(), typeof<SagaEvent<'State>>)
                     return! state |> set
@@ -101,14 +107,14 @@ let runSaga<'TEvent, 'SagaData, 'State>
 
     innerSet (None, false)
 
-let actorProp<'SagaData,'TEvent,'Env,'State> (loggerFactory:ILoggerFactory) initialState name (handleEvent: _ -> _ -> EventAction<'State>) applySideEffects2  apply (actorApi: IActor)  (mediator: IActorRef<_>) (mailbox: Eventsourced<obj>) =
+let actorProp<'SagaData,'TEvent,'Env,'State> (loggerFactory:ILoggerFactory) initialState name (handleEvent: obj -> SagaState<'SagaData,'State> -> EventAction<'State>) (applySideEffects2:SagaState<'SagaData,'State> ->_ -> _)  (apply:SagaState<'SagaData,'State> ->SagaState<'SagaData,'State> ) (actorApi: IActor)  (mediator: IActorRef<_>) (mailbox: Eventsourced<obj>) =
     let cid:CID = (mailbox.Self.Path.Name |> SagaStarter.toRawGuid) |> ValueLens.CreateAsResult |> Result.value
     let log = mailbox.UntypedContext.GetLogger()
     let logger = loggerFactory.CreateLogger(name)
 
 
-    let applySideEffects  (sagaState: SagaState<'SagaData,'State>) (startingEvent: option<SagaStartingEvent<'TEvent>>) recovering =
-            let effect, newState, (cmds:ExecuteCommand list) = applySideEffects2 sagaState startingEvent recovering
+    let applySideEffects  (sagaState: ParentSaga<'SagaData,'State>) (startingEvent: option<SagaStartingEvent<'TEvent>>) recovering =
+            let effect, newState, (cmds:ExecuteCommand list) = applySideEffects2 sagaState.SagaState startingEvent recovering
             for cmd in cmds do
                 
                 let baseType = 
@@ -152,13 +158,13 @@ let actorProp<'SagaData,'TEvent,'Env,'State> (loggerFactory:ILoggerFactory) init
                 newState
                 
           
-    let rec set   (sagaState: SagaState<'SagaData,'State>) =
+    let rec set   (sagaState: ParentSaga<'SagaData,'State>) =
 
         let body (msg: obj) =
             actor {
                 match msg, sagaState with
                 | msg, state ->
-                    let state:EventAction<'State> = handleEvent msg state
+                    let state:EventAction<'State> = handleEvent msg state.SagaState
                     match state with
                     | StateChangedEvent newState ->
                         let newState = newState |> toStateChange
@@ -169,12 +175,14 @@ let actorProp<'SagaData,'TEvent,'Env,'State> (loggerFactory:ILoggerFactory) init
                     | PersistEvent _ 
                     | DeferEvent _ -> return Unhandled
             }
-        let wrapper = fun (s:'State) -> { Data = sagaState.Data; State = s }
+        let wrapper = fun (s:'State) -> { sagaState with SagaState ={ Data = sagaState.SagaState.Data; State = s }}
         runSaga mailbox logger mediator set  sagaState applySideEffects apply wrapper body
 
     set initialState
 
-let init (env: _) (actorApi: IActor) initialState handleEvent applySideEffects apply name=
+let init (env: _) (actorApi: IActor) (initialState: SagaState<_,_>) (handleEvent:obj->SagaState<'SagaData,'State> ->_) (applySideEffects:SagaState<'SagaData,'State> ->_ -> _) (apply:SagaState<'SagaData,'State> ->SagaState<'SagaData,'State> ) name=
+    let initialState = { Version = 0L; SagaState = initialState }
+    
     (AkklingHelpers.entityFactoryFor actorApi.System shardResolver name
         <| propsPersist (actorProp env  initialState name handleEvent applySideEffects  apply  actorApi (typed actorApi.Mediator))
         <| true)
