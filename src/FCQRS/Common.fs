@@ -66,9 +66,11 @@ type EventAction<'T> =
 
     type TargetName = Name of string | Originator
     type FactoryAndName = { Factory:   obj;Name :TargetName }
-    type TargetActor=
+    type TargetActor =
             | FactoryAndName of FactoryAndName
+            | ActorRef of obj
             | Sender
+            | Self
     
     type ExecuteCommand = { TargetActor: TargetActor; Command : obj;  }
     type Effect = 

@@ -127,22 +127,24 @@ let actorProp<'SagaData,'TEvent,'Env,'State> (loggerFactory:ILoggerFactory) init
             let effect, newState, (cmds:ExecuteCommand list) = applySideEffects2 sagaState.SagaState startingEvent recovering
             for cmd in cmds do
                 
-                let baseType = 
-                    let x =  cmd.Command.GetType().BaseType
-                    if x = typeof<obj> then
-                        cmd.Command.GetType()
-                    else
-                        x |> Unchecked.nonNull
-
-                let command = createCommand mailbox cmd.Command cid
-                let unboxx (msg: Command<obj>) =
-                    let genericType =
-                        (typedefof<Command<_>>).MakeGenericType([|baseType |])
+     
+                let createFinalCommand cmd=
+                    let baseType = 
+                        let x =  cmd.Command.GetType().BaseType
+                        if x = typeof<obj> then
+                            cmd.Command.GetType()
+                        else
+                            x |> Unchecked.nonNull
+                    let command = createCommand mailbox cmd.Command cid
+                    let unboxx (msg: Command<obj>) =
+                        let genericType =
+                            (typedefof<Command<_>>).MakeGenericType([|baseType |])
+                
+                        FSharpValue.MakeRecord(genericType, [| msg.CommandDetails; msg.CreationDate; msg.Id; msg.CorrelationId |])
+                    let finalCommand = unboxx command
+                    finalCommand
             
-                    FSharpValue.MakeRecord(genericType, [| msg.CommandDetails; msg.CreationDate; msg.Id; msg.CorrelationId |])
-                let finalCommand = unboxx command
-            
-                let targetActor : ICanTell<_> 
+                let (targetActor : ICanTell<_>), finalCommand 
                     = match cmd.TargetActor with
                         | FactoryAndName { Factory = factory; Name = n } -> 
                             let name = 
@@ -150,9 +152,11 @@ let actorProp<'SagaData,'TEvent,'Env,'State> (loggerFactory:ILoggerFactory) init
                                 | Name n -> n
                                 | Originator -> mailbox.Self.Path.Name |> toOriginatorName
                             let factory = factory :?> (string -> IEntityRef<obj>)
-                            factory  name
+                            factory  name, createFinalCommand cmd
                     
-                        | Sender -> mailbox.Sender() 
+                        | Sender -> mailbox.Sender(), createFinalCommand cmd 
+                        | ActorRef actor -> actor :?> ICanTell<_>,cmd.Command
+                        | Self -> mailbox.Self, cmd
                 targetActor.Tell(finalCommand, mailbox.Self.Underlying :?> Akka.Actor.IActorRef)
                 
             match effect with
@@ -164,7 +168,7 @@ let actorProp<'SagaData,'TEvent,'Env,'State> (loggerFactory:ILoggerFactory) init
             | StopActor  -> 
                 let poision = Akka.Cluster.Sharding.Passivate <| Actor.PoisonPill.Instance 
                 mailbox.Parent() <! poision
-                log.Info("{name} Completed",name);
+                log.Info("{0} Completed",name);
                 newState
                 
           
