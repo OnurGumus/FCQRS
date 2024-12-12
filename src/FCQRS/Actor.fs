@@ -37,6 +37,7 @@ type BodyInput<'TEvent> ={
     Log : ILogger
 }
 let runActor<'TEvent, 'TState>
+    snapshotVersionCount
     (logger: ILogger)
     (mailbox: Eventsourced<obj>)
     mediator
@@ -72,7 +73,7 @@ let runActor<'TEvent, 'TState>
             let newState = { Version = version; State = innerState }
             let state = newState
 
-            if (version >= 30L && version % 30L = 0L) then
+            if (version >= snapshotVersionCount && version % snapshotVersionCount = 0L) then
                 return! state |> set <@> SaveSnapshot(state)
             else
                 return! state |> set
@@ -100,8 +101,16 @@ let private defaultTag = ImmutableHashSet.Create("default")
 type Id = string option
 type Version = int64
 
-let  actorProp<'Command,'State,'Event,'Env> (loggerFactory:ILoggerFactory) handleCommand apply  (initialState:'State)  (name:string) (toEvent) (mediator: IActorRef<Publish>) (mailbox: Eventsourced<obj>)  =
+let  actorProp env handleCommand apply  (initialState:'State)  (name:string) (toEvent) (mediator: IActorRef<Publish>) (mailbox: Eventsourced<obj>)  =
+    let loggerFactory = env:> ILoggerFactory
+    let config = env:> IConfiguration
     let logger = loggerFactory.CreateLogger(name)
+    let snapshotVersionCount = 
+        let (s:string|null) =  config["config:akka:persistence:snapshot-version-count"]  
+        match s |> System.Int32.TryParse with
+        | true, v -> v
+        | _ -> 30
+
     let rec set (state: State<'State>) =
         let body (bodyInput: BodyInput<'Event>) =
             let msg = bodyInput.Message
@@ -128,15 +137,14 @@ let  actorProp<'Command,'State,'Event,'Env> (loggerFactory:ILoggerFactory) handl
                     return Unhandled
             }
 
-        runActor logger mailbox mediator set state (apply:Event<_> -> 'State -> 'State) body
+        runActor  snapshotVersionCount logger mailbox mediator set state (apply:Event<_> -> 'State -> 'State) body
     let initialState = { Version = 0L; State = initialState }
     set  initialState
 
 
-let init (env: _) initialState name toEvent (actorApi: IActor) handleCommand apply =
-    let loggerFactory = env :> ILoggerFactory
+let init env initialState name toEvent (actorApi: IActor) handleCommand apply =
     AkklingHelpers.entityFactoryFor actorApi.System shardResolver name
-    <| propsPersist (actorProp loggerFactory handleCommand apply initialState  name  toEvent (typed actorApi.Mediator)) 
+    <| propsPersist (actorProp env  handleCommand apply initialState  name  toEvent (typed actorApi.Mediator)) 
     <| false
 
 
@@ -192,12 +200,13 @@ let api (config: IConfiguration) (loggerFactory: ILoggerFactory) =
         member this.CreateCommandSubscription factory cid id command filter = 
                 createCommandSubscription this factory cid id command filter
 
-        member this.InitializeActor loggerFactory initialState name handleCommand apply = 
+        member this.InitializeActor env initialState name handleCommand apply = 
                 let  toEvent v e =
                     Common.toEvent system.Scheduler v e
-                init (loggerFactory) initialState name toEvent this handleCommand apply
+                init env initialState name toEvent this handleCommand apply
 
-        member this.InitializeSaga(env: ILoggerFactory) 
+        member this.InitializeSaga
+                env
                 (initialState: SagaState<'SagaState,'State>) 
                     (handleEvent: obj -> SagaState<'SagaState,'State> -> EventAction<'State>) 
                     (applySideEffects: SagaState<'SagaState,'State> -> SagaStarter.SagaStartingEvent<Event<'c>> option -> bool -> Effect * 'State option * ExecuteCommand list) 

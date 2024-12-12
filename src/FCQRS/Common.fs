@@ -13,6 +13,7 @@ open Microsoft.Extensions.Logging
 open FCQRS.Model.Data
 open Akka.Streams
 open SagaStarter
+open Microsoft.Extensions.Configuration
 
 
 type OriginatorName =
@@ -93,8 +94,8 @@ type IActor =
     abstract LoggerFactory: ILoggerFactory
     abstract TimeProvider: TimeProvider
     abstract CreateCommandSubscription: (string -> IEntityRef<obj>) -> CID -> string -> 'b -> ('c -> bool) -> Async<Event<'c>>
-    abstract InitializeActor: ILoggerFactory -> 'a -> string -> (Command<'c >-> 'a -> EventAction<'b>) -> (Event<'b> -> 'a -> 'a) -> EntityFac<obj>
-    abstract InitializeSaga: ILoggerFactory -> SagaState<'SagaState,'State>  -> (obj-> SagaState<'SagaState,'State>-> EventAction<'State>) -> 
+    abstract InitializeActor: #IConfiguration & #ILoggerFactory -> 'a -> string -> (Command<'c >-> 'a -> EventAction<'b>) -> (Event<'b> -> 'a -> 'a) -> EntityFac<obj>
+    abstract InitializeSaga: #IConfiguration & #ILoggerFactory-> SagaState<'SagaState,'State>  -> (obj-> SagaState<'SagaState,'State>-> EventAction<'State>) -> 
         (SagaState<'SagaState,'State> -> option<SagaStartingEvent<Event<'c>>> -> bool -> Effect * option<'State> * ExecuteCommand list) -> 
         (SagaState<'SagaState,'State> -> SagaState<'SagaState,'State>) -> string ->EntityFac<obj>
     abstract InitializeSagStarter: (obj  -> list<(string -> IEntityRef<obj>) * PrefixConversion * obj>) -> unit

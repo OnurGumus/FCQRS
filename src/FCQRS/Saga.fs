@@ -13,6 +13,7 @@ open Akkling.Cluster.Sharding
 open Microsoft.FSharp.Reflection
 open FCQRS.Model.Data
 open AkklingHelpers
+open Microsoft.Extensions.Configuration
 
 
 
@@ -32,6 +33,7 @@ let createCommand (mailbox:Eventsourced<_>) (command:'TCommand) cid = {
 type ParentSaga<'SagaData,'State> = SagaStateWithVersion<'SagaData,'State>
 
 let runSaga<'TEvent, 'SagaData, 'State>
+    snapshotVersionCount
     (mailbox: Eventsourced<obj>)
     (log: ILogger)
     mediator
@@ -98,12 +100,12 @@ let runSaga<'TEvent, 'SagaData, 'State>
                                 {parentState with SagaState = newInnerState}
                                
                           
-                            if (version >= 30L && version % 30L = 0L) then
+                            if (version >= snapshotVersionCount && version % snapshotVersionCount = 0L) then
                                 return! parentState |> set <@> SaveSnapshot(parentState)
                             else
                                 return! (newSagaState |> set) <@> (newState |> StateChanged |> box |> Persist)
                         | None -> 
-                        if (version >= 30L && version % 30L = 0L) then
+                        if (version >= snapshotVersionCount && version % snapshotVersionCount = 0L) then
                             return! parentState |> set <@> SaveSnapshot(parentState)
                         else
                             return! parentState |> set
@@ -117,10 +119,18 @@ let runSaga<'TEvent, 'SagaData, 'State>
 
     innerSet (None, false)
 
-let actorProp<'SagaData,'TEvent,'Env,'State> (loggerFactory:ILoggerFactory) initialState name (handleEvent: obj -> SagaState<'SagaData,'State> -> EventAction<'State>) (applySideEffects2:SagaState<'SagaData,'State> ->_ -> _)  (apply:SagaState<'SagaData,'State> ->SagaState<'SagaData,'State> ) (actorApi: IActor)  (mediator: IActorRef<_>) (mailbox: Eventsourced<obj>) =
+let actorProp env initialState name (handleEvent: obj -> SagaState<'SagaData,'State> -> EventAction<'State>) (applySideEffects2:SagaState<'SagaData,'State> ->_ -> _)  (apply:SagaState<'SagaData,'State> ->SagaState<'SagaData,'State> ) (actorApi: IActor)  (mediator: IActorRef<_>) (mailbox: Eventsourced<obj>) =
     let cid:CID = (mailbox.Self.Path.Name |> SagaStarter.toRawGuid) |> ValueLens.CreateAsResult |> Result.value
     let log = mailbox.UntypedContext.GetLogger()
+    let loggerFactory = env :> ILoggerFactory
+    let config = env :> IConfiguration
     let logger = loggerFactory.CreateLogger(name)
+    let snapshotVersionCount = 
+        let (s:string|null) =  config["config:akka:persistence:snapshot-version-count"]  
+        match s |> System.Int32.TryParse with
+        | true, v -> v
+        | _ -> 30
+
 
 
     let applySideEffects  (sagaState: ParentSaga<'SagaData,'State>) (startingEvent: option<SagaStartingEvent<'TEvent>>) recovering =
@@ -190,11 +200,11 @@ let actorProp<'SagaData,'TEvent,'Env,'State> (loggerFactory:ILoggerFactory) init
                     | DeferEvent _ -> return Unhandled
             }
         let wrapper = fun (s:'State) -> { sagaState with SagaState ={ Data = sagaState.SagaState.Data; State = s }}
-        runSaga mailbox logger mediator set  sagaState applySideEffects apply wrapper body
+        runSaga snapshotVersionCount mailbox logger mediator set  sagaState applySideEffects apply wrapper body
 
     set initialState
 
-let init (env: _) (actorApi: IActor) (initialState: SagaState<_,_>) (handleEvent:obj->SagaState<'SagaData,'State> ->_) (applySideEffects:SagaState<'SagaData,'State> ->_ -> _) (apply:SagaState<'SagaData,'State> ->SagaState<'SagaData,'State> ) name=
+let init env  (actorApi: IActor) (initialState: SagaState<_,_>) (handleEvent:obj->SagaState<'SagaData,'State> ->_) (applySideEffects:SagaState<'SagaData,'State> ->_ -> _) (apply:SagaState<'SagaData,'State> ->SagaState<'SagaData,'State> ) name=
     let initialState = { Version = 0L; SagaState = initialState }
     
     (AkklingHelpers.entityFactoryFor actorApi.System shardResolver name
