@@ -200,15 +200,15 @@ module SagaStarter =
         mediator <! box (Send(SagaStarterPath, Continue |> Command, true))
 
     let subscriber (mediator: IActorRef<_>) (mailbox: Eventsourced<_>) =
-        let originatorName = mailbox.Self.Path.Name |> toOriginatorName
+        let topic = mailbox.Self.Path.Name |> toCid
 
-        mediator <! box (Subscribe(originatorName, untyped mailbox.Self))
+        mediator <! box (Subscribe(topic, untyped mailbox.Self))
 
     let (|SubscrptionAcknowledged|_|) (context: Actor<obj>) (msg: obj) : obj option =
-        let originatorName = context.Self.Path.Name |> toOriginatorName
+        let topic = context.Self.Path.Name |> toCid
 
         match msg with
-        | :? SubscribeAck as s when s.Subscribe.Topic = originatorName -> Some msg
+        | :? SubscribeAck as s when s.Subscribe.Topic = topic -> Some msg
         | _ -> None
 
 
