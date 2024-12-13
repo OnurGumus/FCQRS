@@ -167,7 +167,10 @@ let actorProp env initialState name (handleEvent: obj -> SagaState<'SagaData,'St
                         | Sender -> mailbox.Sender(), createFinalCommand cmd 
                         | ActorRef actor -> actor :?> ICanTell<_>,cmd.Command
                         | Self -> mailbox.Self, cmd
-                targetActor.Tell(finalCommand, mailbox.Self.Underlying :?> Akka.Actor.IActorRef)
+                match cmd.DelayInMs with
+                | Some delay ->
+                    mailbox.Schedule (System.TimeSpan.FromMilliseconds delay) (targetActor :?> IActorRef<_>) finalCommand |> ignore
+                | None -> targetActor <! finalCommand
                 
             match effect with
             | NoEffect -> 

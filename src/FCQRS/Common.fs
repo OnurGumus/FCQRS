@@ -73,7 +73,8 @@ type EventAction<'T> =
             | Sender
             | Self
     
-    type ExecuteCommand = { TargetActor: TargetActor; Command : obj;  }
+    type ExecuteCommand = { TargetActor: TargetActor; Command : obj;  DelayInMs : int64 option }
+    
     type Effect = 
         | ResumeFirstEvent
         | StopActor
