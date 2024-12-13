@@ -20,4 +20,3 @@ type IQuery<'TDataEventType> =
 
     abstract Subscribe<'TDataEventType>: callback:(DataEvent<'TDataEventType> -> unit) * CancellationToken -> unit
     abstract Subscribe: filter:(DataEvent<'TDataEventType> -> bool) * numberOfEvents:int * callback:(DataEvent<'TDataEventType> -> unit) * CancellationToken -> Async<unit>
-

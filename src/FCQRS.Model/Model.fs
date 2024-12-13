@@ -118,6 +118,8 @@ type LongString =
     static member Value_ =
         (fun (LongString s) -> s),
         (fun (s: string) _ -> single (fun t -> t.TestOne s |> t.NotBlank EmptyString |> t.Map LongString |> t.End))
+    member this.IsValid = ValueLens.IsValidValue this
+    override this.ToString() = (ValueLens.Value this).ToString()
 
 type CID =
     private
@@ -127,19 +129,3 @@ type CID =
     member this.IsValid = (ValueLens.Value this).IsValid
     override this.ToString() = (ValueLens.Value this).ToString()
 
-
-// let cid: CID = Unchecked.defaultof<CID>
-// let s1 =  ValueLens.Value cid
-// let s2 = cid |> toString
-// member this.Value: string = let (CID v) = this in v |> ShortString.Value
-
-// static member CreateNew() =
-//     Guid.NewGuid().ToString() |> ShortString.TryCreate |> Result.value |> CID
-
-// static member Create(s: string) =
-//     let s = if (s.Contains "~") then s.Split("~")[1] else s
-//     s |> ShortString.TryCreate |> Result.value |> CID
-
-// let v1 =   (01L ^= Version.Value_)  Version.Zero
-// let v2 =v1 |> Result.value
-// let v3 = Optic.get Version.Value_ v2
