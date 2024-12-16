@@ -115,7 +115,7 @@ NUGET
     FCQRS.Model (1.7.3)
       Fable.Package.SDK (>= 1.3)
       FSharp.Core (>= 9.0.100)
-    FCQRS.Serialization (1.1.4)
+    FCQRS.Serialization (1.7.3)
       FSharp.SystemTextJson (>= 1.3.13)
     FSharp.Core (9.0.100)
     FSharp.Interop.Dynamic (5.0.1.268)
