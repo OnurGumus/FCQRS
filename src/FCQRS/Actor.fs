@@ -1,10 +1,7 @@
 [<System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage>]
 module rec FCQRS.Actor
 
-open System.Collections.Immutable
 open Akka.Streams
-open Akka.Persistence.Journal
-open Akka.Actor
 open Akka.Cluster
 open Akka.Cluster.Tools.PublishSubscribe
 open Akkling
@@ -14,7 +11,6 @@ open System.Dynamic
 open Akkling.Persistence
 open Akka
 open Common
-open Akka.Event
 open AkklingHelpers
 open System
 open Microsoft.Extensions.Logging
@@ -96,11 +92,6 @@ let runActor<'TEvent, 'TState>
     }
 
 
-let private defaultTag = ImmutableHashSet.Create("default")
-
-type Id = string option
-type Version = int64
-
 let  actorProp env handleCommand apply  (initialState:'State)  (name:string) (toEvent) (mediator: IActorRef<Publish>) (mailbox: Eventsourced<obj>)  =
     let loggerFactory = env:> ILoggerFactory
     let config = env:> IConfiguration
@@ -127,7 +118,7 @@ let  actorProp env handleCommand apply  (initialState:'State)  (name:string) (to
                     | DeferEvent( event) ->
                         return! seq {event  |> (toEvent (state.Version))  |> bodyInput.SendToSagaStarter } |> Defer
                     | PublishEvent(event)->
-                        event |> bodyInput.SendToSagaStarter |> ignore  
+                        event |> bodyInput.PublishEvent |> ignore  
                         return set state
                     | IgnoreEvent -> return set state
                     | StateChangedEvent _ 
@@ -147,14 +138,6 @@ let init env initialState name toEvent (actorApi: IActor) handleCommand apply =
     <| propsPersist (actorProp env  handleCommand apply initialState  name  toEvent (typed actorApi.Mediator)) 
     <| false
 
-
-type MyEventAdapter =
-    interface IEventAdapter with
-        member this.FromJournal(evt: obj, manifest: string) : IEventSequence = EventSequence.Single(evt)
-        member this.Manifest(evt: obj) : string = ""
-        member this.ToJournal(evt: obj) : obj =( box <| Tagged(evt, defaultTag) ) |> Unchecked.nonNull
-
-    public new() = { }
 
 
 let createCommandSubscription (actorApi: IActor) factory (cid:CID) (id: string) command filter =
@@ -213,7 +196,7 @@ let api (config: IConfiguration) (loggerFactory: ILoggerFactory) =
                     (apply: SagaState<'SagaState,'State> -> SagaState<'SagaState,'State>) (name: string): EntityFac<obj> = 
                 Saga.init env this initialState  handleEvent  applySideEffects apply name
 
-        member this.InitializeSagStarter   (rules:(obj  -> list<(string -> IEntityRef<obj>) * PrefixConversion * obj>)): unit = 
+        member this.InitializeSagaStarter   (rules:(obj  -> list<(string -> IEntityRef<obj>) * PrefixConversion * obj>)): unit = 
             SagaStarter.init system mediator  rules
         
     }

@@ -99,7 +99,7 @@ type IActor =
     abstract InitializeSaga: #IConfiguration & #ILoggerFactory-> SagaState<'SagaState,'State>  -> (obj-> SagaState<'SagaState,'State>-> EventAction<'State>) -> 
         (SagaState<'SagaState,'State> -> option<SagaStartingEvent<Event<'c>>> -> bool -> Effect * option<'State> * ExecuteCommand list) -> 
         (SagaState<'SagaState,'State> -> SagaState<'SagaState,'State>) -> string ->EntityFac<obj>
-    abstract InitializeSagStarter: (obj  -> list<(string -> IEntityRef<obj>) * PrefixConversion * obj>) -> unit
+    abstract InitializeSagaStarter: (obj  -> list<(string -> IEntityRef<obj>) * PrefixConversion * obj>) -> unit
 
 let toEvent (sch: IScheduler) id ci version event =
     { EventDetails = event
