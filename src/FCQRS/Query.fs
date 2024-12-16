@@ -72,7 +72,17 @@ let init<'TDataEvent,'TPredicate,'t> (actorApi: IActor) offsetCount  handler (qu
     source
     |> Source.recover (fun ex ->
         None)
-    |> Source.runForEach actorApi.Materializer (handler actorApi queue)
+    |> Source.runForEach actorApi.Materializer (
+        fun envelop -> 
+        try
+            let offsetValue = (envelop.Offset :?> Sequence).Value
+            let res = handler  offsetValue envelop.Event
+            res |> List.iter (fun x -> queue.OfferAsync(x).Wait())
+         with
+            | ex -> 
+                logger.LogCritical(ex, "Error in query handler")
+                System.Environment.Exit(-1)
+        )
     |> Async.StartAsTask
     |> ignore
 
