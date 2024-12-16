@@ -2,8 +2,13 @@
 module FCQRS.Model.Query
 open FCQRS.Model.Data
 open System.Threading
+open System
 
 type DataEvent<'TDataEventType> = { Type: 'TDataEventType; CID: CID }
+
+let emptyDisposable : IDisposable =
+    { new IDisposable with
+        member _.Dispose() = () }
 
 [<Interface>]
 type IQuery<'TDataEventType> =
@@ -18,5 +23,5 @@ type IQuery<'TDataEventType> =
         ?cacheKey: string ->
             list<'t> Async
 
-    abstract Subscribe<'TDataEventType>: callback:(DataEvent<'TDataEventType> -> unit) * CancellationToken -> unit
-    abstract Subscribe: filter:(DataEvent<'TDataEventType> -> bool) * numberOfEvents:int * callback:(DataEvent<'TDataEventType> -> unit) * CancellationToken -> Async<unit>
+    abstract Subscribe<'TDataEventType>: callback:(DataEvent<'TDataEventType> -> unit) * CancellationToken -> IDisposable
+    abstract Subscribe: filter:(DataEvent<'TDataEventType> -> bool) * numberOfEvents:int * callback:(DataEvent<'TDataEventType> -> unit) * CancellationToken -> Async<IDisposable>
