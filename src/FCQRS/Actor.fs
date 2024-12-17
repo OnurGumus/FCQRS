@@ -19,7 +19,7 @@ open FCQRS.Model.Data
 open Akkling.Cluster.Sharding
 
 type State<'InnerState>={
-    Version: int64
+    Version: Version
     State: 'InnerState
 }
     with interface ISerializable
@@ -33,7 +33,7 @@ type BodyInput<'TEvent> ={
     Log : ILogger
 }
 let runActor<'TEvent, 'TState>
-    snapshotVersionCount
+   ( snapshotVersionCount:int64)
     (logger: ILogger)
     (mailbox: Eventsourced<obj>)
     mediator
@@ -62,14 +62,14 @@ let runActor<'TEvent, 'TState>
 
         // actor level events will come here
         | Persisted mailbox (:? Common.Event<'TEvent> as event) ->
-            let version = event.Version
+            let versionN = event.Version |> ValueLens.Value
             publishEvent event
 
             let innerState = applyNewState event (state.State)
-            let newState = { Version = version; State = innerState }
+            let newState = { Version = event.Version ; State = innerState }
             let state = newState
 
-            if (version >= snapshotVersionCount && version % snapshotVersionCount = 0L) then
+            if (versionN >= snapshotVersionCount && versionN % snapshotVersionCount = 0L) then
                 return! state |> set <@> SaveSnapshot(state)
             else
                 return! state |> set
@@ -114,9 +114,10 @@ let  actorProp env handleCommand apply  (initialState:'State)  (name:string) (to
 
                     match handleCommand msg state.State  with
                     | PersistEvent(event) ->
-                        return! event |> toEvent (state.Version + 1L) |> bodyInput.SendToSagaStarter |> Persist
+                        let nextVersion:Version = ((state.Version  |> ValueLens.Value)  + 1L) |> ValueLens.TryCreate  |> Result.value
+                        return! event |> toEvent  nextVersion |> bodyInput.SendToSagaStarter |> Persist
                     | DeferEvent( event) ->
-                        return! seq {event  |> (toEvent (state.Version))  |> bodyInput.SendToSagaStarter } |> Defer
+                        return! seq {event  |>toEvent state.Version |> bodyInput.SendToSagaStarter } |> Defer
                     | PublishEvent(event)->
                         event |> bodyInput.PublishEvent |> ignore  
                         return set state
@@ -129,7 +130,7 @@ let  actorProp env handleCommand apply  (initialState:'State)  (name:string) (to
             }
 
         runActor  snapshotVersionCount logger mailbox mediator set state (apply:Event<_> -> 'State -> 'State) body
-    let initialState = { Version = 0L; State = initialState }
+    let initialState = { Version = 0L |> ValueLens.TryCreate |> Result.value ; State = initialState }
     set  initialState
 
 
@@ -140,12 +141,12 @@ let init env initialState name toEvent (actorApi: IActor) handleCommand apply =
 
 
 
-let createCommandSubscription (actorApi: IActor) factory (cid:CID) (id: string) command filter =
-    let actor = factory id
+let createCommandSubscription (actorApi: IActor) factory (cid:CID) (id: ActorId) command filter =
+    let actor = factory (id |> ValueLens.Value |> ValueLens.Value)  
 
     let commonCommand: Command<_> = {
         CommandDetails = command
-        Id = Some(Guid.NewGuid().ToString())
+        Id = Some(Guid.NewGuid().ToString() |> ValueLens.CreateAsResult |> Result.value)
         CreationDate = actorApi.System.Scheduler.Now.UtcDateTime
         CorrelationId = cid
     }

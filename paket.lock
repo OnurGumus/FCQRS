@@ -112,7 +112,7 @@ NUGET
       Microsoft.CSharp (>= 4.7)
       System.ComponentModel (>= 4.3)
     Fable.Package.SDK (1.3)
-    FCQRS.Model (1.7.3)
+    FCQRS.Model (1.8)
       Fable.Package.SDK (>= 1.3)
       FSharp.Core (>= 9.0.100)
     FCQRS.Serialization (1.7.3)

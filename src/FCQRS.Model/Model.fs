@@ -42,7 +42,7 @@ type ValueLens =
 
     static member inline CreateAsResult v =
         v |> ValueLens.TryCreate |> Result.map ValueLens.Create
-        
+
 
 let inline (|ResultValue|) x = ValueLens.Value<_, _, _> x
 
@@ -118,6 +118,7 @@ type LongString =
     static member Value_ =
         (fun (LongString s) -> s),
         (fun (s: string) _ -> single (fun t -> t.TestOne s |> t.NotBlank EmptyString |> t.Map LongString |> t.End))
+
     member this.IsValid = ValueLens.IsValidValue this
     override this.ToString() = (ValueLens.Value this).ToString()
 
@@ -129,3 +130,18 @@ type CID =
     member this.IsValid = (ValueLens.Value this).IsValid
     override this.ToString() = (ValueLens.Value this).ToString()
 
+type ActorId =
+    private
+    | ActorId of ShortString
+
+    static member Value_ = (fun (ActorId v) -> v), (fun v _ -> (ActorId v))
+    member this.IsValid = (ValueLens.Value this).IsValid
+    override this.ToString() = (ValueLens.Value this).ToString()
+
+type MessageId =
+    private
+    | MessageId of ShortString
+
+    static member Value_ = (fun (MessageId v) -> v), (fun v _ -> (MessageId v))
+    member this.IsValid = (ValueLens.Value this).IsValid
+    override this.ToString() = (ValueLens.Value this).ToString()

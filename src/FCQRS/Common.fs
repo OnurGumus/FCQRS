@@ -28,7 +28,7 @@ type IDefaultTag = interface end
 type Command<'CommandDetails> =
     { CommandDetails: 'CommandDetails
       CreationDate: DateTime
-      Id: string option
+      Id: MessageId option
       CorrelationId: CID }
 
     override this.ToString() = sprintf "%A" this
@@ -38,9 +38,9 @@ type Command<'CommandDetails> =
 type Event<'EventDetails> =
     { EventDetails: 'EventDetails
       CreationDate: DateTime
-      Id: string option
+      Id: MessageId option
       CorrelationId: CID
-      Version: int64 }
+      Version: Version }
 
     override this.ToString() = sprintf "%A" this
 
@@ -94,7 +94,7 @@ type IActor =
     abstract Stop: unit -> System.Threading.Tasks.Task
     abstract LoggerFactory: ILoggerFactory
     abstract TimeProvider: TimeProvider
-    abstract CreateCommandSubscription: (string -> IEntityRef<obj>) -> CID -> string -> 'b -> ('c -> bool) -> Async<Event<'c>>
+    abstract CreateCommandSubscription: (string -> IEntityRef<obj>) -> CID -> ActorId -> 'b -> ('c -> bool) -> Async<Event<'c>>
     abstract InitializeActor: #IConfiguration & #ILoggerFactory -> 'a -> string -> (Command<'c >-> 'a -> EventAction<'b>) -> (Event<'b> -> 'a -> 'a) -> EntityFac<obj>
     abstract InitializeSaga: #IConfiguration & #ILoggerFactory-> SagaState<'SagaState,'State>  -> (obj-> SagaState<'SagaState,'State>-> EventAction<'State>) -> 
         (SagaState<'SagaState,'State> -> option<SagaStartingEvent<Event<'c>>> -> bool -> Effect * option<'State> * ExecuteCommand list) -> 
