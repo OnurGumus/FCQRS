@@ -22,7 +22,7 @@ type ValueLens =
         fst 'Wrapped.Value_ this
 
     static member inline ToString<'Wrapped, 'Inner when ValueLensType<'Wrapped, 'Inner>>(this: 'Wrapped) =
-        (ValueLens.Value this).ToString() |> Unchecked.nonNull
+        (ValueLens.Value this).ToString()
 
     static member inline IsValidValue<'Wrapped, 'Inner, 'Error when ValueLensResultType<'Wrapped, 'Inner, 'Error>>
         (this: 'Wrapped)
@@ -56,14 +56,14 @@ module Result =
         | Ok x -> x
         | Error x ->
             let errors =
-                x |> List.map (fun x -> x.ToString() |> Unchecked.nonNull) |> String.concat ", "
+                x |> List.map (fun x -> x.ToString() ) |> String.concat ", "
 
             invalidOp errors
 
     let inline value e =
         match e with
         | Ok x -> x
-        | Error x -> invalidOp (x.ToString() |> Unchecked.nonNull)
+        | Error x -> invalidOp (x.ToString() )
 
 type Predicate =
     | Greater of string * IComparable
