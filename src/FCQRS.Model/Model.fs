@@ -56,14 +56,14 @@ module Result =
         | Ok x -> x
         | Error x ->
             let errors =
-                x |> List.map (fun x -> x.ToString() ) |> String.concat ", "
+                x |> List.map (fun x -> x |> string ) |> String.concat ", "
 
             invalidOp errors
 
     let inline value e =
         match e with
         | Ok x -> x
-        | Error x -> invalidOp (x.ToString() )
+        | Error x -> invalidOp (x |> string)
 
 type Predicate =
     | Greater of string * IComparable
