@@ -110,7 +110,7 @@ let  actorProp env handleCommand apply  (initialState:'State)  (name:string) (to
                 match msg, state with
                 | :? Persistence.RecoveryCompleted, _ -> return! state |> set
                 | :? (Common.Command<'Command>) as msg, _ ->
-                    let toEvent = toEvent (msg.Id) (msg.CorrelationId)
+                    let toEvent = toEvent (msg.Id) (msg.CorrelationId) (mailbox.Self.Path.Name |> ValueLens.CreateAsResult |> Result.value |> Some)
 
                     match handleCommand msg state.State  with
                     | PersistEvent(event) ->
@@ -149,6 +149,7 @@ let createCommandSubscription (actorApi: IActor) factory (cid:CID) (id: ActorId)
         Id = Some(Guid.NewGuid().ToString() |> ValueLens.CreateAsResult |> Result.value)
         CreationDate = actorApi.System.Scheduler.Now.UtcDateTime
         CorrelationId = cid
+        Sender = None
     }
 
     let e = { Cmd = commonCommand; EntityRef = actor; Filter = filter }
@@ -185,8 +186,8 @@ let api (config: IConfiguration) (loggerFactory: ILoggerFactory) =
                 createCommandSubscription this factory cid id command filter
 
         member this.InitializeActor env initialState name handleCommand apply = 
-                let  toEvent v e =
-                    Common.toEvent system.Scheduler v e
+                let  toEvent mid v sender =
+                    Common.toEvent system.Scheduler mid v sender
                 init env initialState name toEvent this handleCommand apply
 
         member this.InitializeSaga

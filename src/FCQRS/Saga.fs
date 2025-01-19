@@ -16,7 +16,6 @@ open AkklingHelpers
 open Microsoft.Extensions.Configuration
 
 
-
 type NextState = obj option
 
 
@@ -27,6 +26,7 @@ let createCommand (mailbox:Eventsourced<_>) (command:'TCommand) cid = {
     CreationDate = mailbox.System.Scheduler.Now.UtcDateTime
     CorrelationId = cid
     Id = None
+    Sender = mailbox.Self.Path.Name |> ValueLens.CreateAsResult |> Result.value |> Some
 }
 
 

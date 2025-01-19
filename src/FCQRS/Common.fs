@@ -29,6 +29,7 @@ type Command<'CommandDetails> =
     { CommandDetails: 'CommandDetails
       CreationDate: DateTime
       Id: MessageId option
+      Sender: ActorId option
       CorrelationId: CID }
 
     override this.ToString() = sprintf "%A" this
@@ -39,6 +40,7 @@ type Event<'EventDetails> =
     { EventDetails: 'EventDetails
       CreationDate: DateTime
       Id: MessageId option
+      Sender: ActorId option
       CorrelationId: CID
       Version: Version }
 
@@ -101,10 +103,11 @@ type IActor =
         (SagaState<'SagaState,'State> -> SagaState<'SagaState,'State>) -> string ->EntityFac<obj>
     abstract InitializeSagaStarter: (obj  -> list<(string -> IEntityRef<obj>) * PrefixConversion * obj>) -> unit
 
-let toEvent (sch: IScheduler) id ci version event =
+let toEvent (sch: IScheduler) id ci sender version event   =
     { EventDetails = event
       Id = id
       CreationDate = sch.Now.UtcDateTime
+      Sender = sender
       CorrelationId = ci
       Version = version }
 
