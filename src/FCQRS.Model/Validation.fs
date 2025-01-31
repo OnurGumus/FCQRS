@@ -35,19 +35,17 @@ type ValidateResult<'T> =
 
     member x.IsInvalid_ = x.IsValid_ |> not
 
-type FieldInfo<'T, 'T0, 'E> = {
-    key: string
-    original: 'T
-    result: ValidateResult<'T0>
-    validator: Validator<'E>
-} with
+type FieldInfo<'T, 'T0, 'E> =
+    { key: string
+      original: 'T
+      result: ValidateResult<'T0>
+      validator: Validator<'E> }
 
-    member x.Replace<'T1>(result: ValidateResult<'T1>) : FieldInfo<'T, 'T1, 'E> = {
-        key = x.key
-        original = x.original
-        result = result
-        validator = x.validator
-    }
+    member x.Replace<'T1>(result: ValidateResult<'T1>) : FieldInfo<'T, 'T1, 'E> =
+        { key = x.key
+          original = x.original
+          result = result
+          validator = x.validator }
 
 and Validator<'E>(all) =
     let mutable errors: Map<string, 'E list> = Map.empty
@@ -66,19 +64,15 @@ and Validator<'E>(all) =
         errors <- Map.add name [] errors
 
         if not all && hasError then
-            {
-                key = name
-                original = value
-                result = Invalid
-                validator = x
-            }
+            { key = name
+              original = value
+              result = Invalid
+              validator = x }
         else
-            {
-                key = name
-                original = value
-                result = Valid value
-                validator = x
-            }
+            { key = name
+              original = value
+              result = Valid value
+              validator = x }
 
     member inline x.TestAsync name (value: 'T) = async { return x.Test name value }
 

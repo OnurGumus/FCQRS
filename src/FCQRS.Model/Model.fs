@@ -55,8 +55,7 @@ module Result =
         match e with
         | Ok x -> x
         | Error x ->
-            let errors =
-                x |> List.map (fun x -> x |> string ) |> String.concat ", "
+            let errors = x |> List.map (fun x -> x |> string) |> String.concat ", "
 
             invalidOp errors
 
