@@ -10,12 +10,10 @@ type Lens<'a, 'b> = ('a -> 'b) * ('b -> 'a -> 'a)
 /// Prism from 'a -> 'b.
 type Prism<'a, 'b> = ('a -> 'b option) * ('b -> 'a -> 'a)
 
-//  Morphisms
-
-/// Isomorphism between 'a <> 'b.
+/// Isomorphism between 'a and 'b.
 type Isomorphism<'a, 'b> = ('a -> 'b) * ('b -> 'a)
 
-/// Epimorphism between 'a <> 'b.
+/// Epimorphism between 'a and 'b.
 type Epimorphism<'a, 'b> = ('a -> 'b option) * ('b -> 'a)
 
 /// Validated Lens from 'a -> 'b with error type 'e.
@@ -23,6 +21,15 @@ type ValidatedLens<'a, 'b, 'e> = ('a -> 'b) * ('b -> 'a -> Result<'a, 'e>)
 
 /// Validated Prism from 'a -> 'b with error type 'e.
 type ValidatedPrism<'a, 'b, 'e> = ('a -> 'b option) * ('b -> 'a -> Result<'a, 'e>)
+
+/// Async Validated Lens from 'a -> 'b with error type 'e.
+/// The getter remains synchronous while the setter returns an asynchronous Result.
+type AsyncValidatedLens<'a, 'b, 'e> = ('a -> 'b) * ('b -> 'a -> Async<Result<'a, 'e>>)
+
+
+// ----------------------------------------------------------------------------
+// Compose Module (with AsyncValidatedLens and ValidatedLens support)
+// ----------------------------------------------------------------------------
 
 [<RequireQualifiedAccess>]
 module Compose =
@@ -53,6 +60,24 @@ module Compose =
                     s2 c (g1 a) |> Result.bind (fun b' -> s1 b' a)
 
                 (get, set): ValidatedLens<'a, 'c, 'e>
+
+        /// Compose a Lens with an AsyncValidatedLens.
+        static member (>->)(Lens, asyncValidatedLens: AsyncValidatedLens<'b, 'c, 'e>) =
+            fun (aLens: AsyncValidatedLens<'a, 'b, 'e>) ->
+                let (g1, s1) = aLens
+                let (g2, s2) = asyncValidatedLens
+                let get a = g2 (g1 a)
+
+                let set c a =
+                    async {
+                        let! res = s2 c (g1 a)
+
+                        match res with
+                        | Ok b' -> return! s1 b' a
+                        | Error e -> return Error e
+                    }
+
+                (get, set): AsyncValidatedLens<'a, 'c, 'e>
 
     /// Compose a lens with an optic or morphism.
     let inline lens l o = (Lens >-> o) l
@@ -105,44 +130,90 @@ module Compose =
     /// Compose a prism with an optic or morphism.
     let inline prism p o = (Prism >?> o) p
 
-    module ValidatedLens =
+    // ------------------------------------------------------------------------
+    // AsyncValidatedLens composition and helpers
+    // ------------------------------------------------------------------------
 
-        /// Compose two ValidatedLens instances.
-        let compose (lens1: ValidatedLens<'a, 'b, 'e>) (lens2: ValidatedLens<'b, 'c, 'e>) : ValidatedLens<'a, 'c, 'e> =
+    [<RequireQualifiedAccess>]
+    module AsyncValidatedLens =
+
+        /// Compose two AsyncValidatedLens instances.
+        let compose
+            (lens1: AsyncValidatedLens<'a, 'b, 'e>)
+            (lens2: AsyncValidatedLens<'b, 'c, 'e>)
+            : AsyncValidatedLens<'a, 'c, 'e> =
             let (get1, set1) = lens1
             let (get2, set2) = lens2
             let get a = get2 (get1 a)
 
             let set c a =
-                set2 c (get1 a) |> Result.bind (fun b' -> set1 b' a)
+                async {
+                    let! res = set2 c (get1 a)
+
+                    match res with
+                    | Ok b' -> return! set1 b' a
+                    | Error e -> return Error e
+                }
 
             (get, set)
 
-        /// Compose a ValidatedLens with a standard Lens.
-        let composeValidatedLens (vLens: ValidatedLens<'a, 'b, 'e>) (lens: Lens<'b, 'c>) : ValidatedLens<'a, 'c, 'e> =
+        /// Compose an AsyncValidatedLens with a standard Lens.
+        let composeAsyncValidatedLens
+            (vLens: AsyncValidatedLens<'a, 'b, 'e>)
+            (lens: Lens<'b, 'c>)
+            : AsyncValidatedLens<'a, 'c, 'e> =
             let (get1, set1) = vLens
             let (get2, set2) = lens
             let get a = get2 (get1 a)
 
             let set c a =
-                let b = get1 a
-                let b' = set2 c b
-                set1 b' a
+                async {
+                    let b = get1 a
+                    let b' = set2 c b
+                    return! set1 b' a
+                }
 
             (get, set)
 
-        /// Compose a standard Lens with a ValidatedLens.
-        let composeLensValidated (lens: Lens<'a, 'b>) (vLens: ValidatedLens<'b, 'c, 'e>) : ValidatedLens<'a, 'c, 'e> =
-            let (get1, set1) = lens
-            let (get2, set2) = vLens
-            let get a = get2 (get1 a)
+        /// Compose a standard Lens with an AsyncValidatedLens.
+        let composeLensAsyncValidated
+            (lens: Lens<'a, 'b>)
+            (vLens: AsyncValidatedLens<'b, 'c, 'e>)
+            : AsyncValidatedLens<'a, 'c, 'e> =
+            let (get1, set1) = lens // get1 : 'a -> 'b, set1 : 'b -> 'a -> 'a
+            let (get2, set2) = vLens // get2 : 'b -> 'c, set2 : 'c -> 'b -> Async<Result<'b, 'e>>
+            let get a = get2 (get1 a) // get : 'a -> 'c
 
             let set c a =
-                set2 c (get1 a) |> Result.map (fun b' -> set1 b' a)
+                async {
+                    let b = get1 a // extract the inner value from a
+                    let! res = set2 c b // update the inner value asynchronously
+
+                    match res with
+                    | Ok b' -> return Ok(set1 b' a) // use set1 to reconstruct the outer structure
+                    | Error e -> return Error e
+                }
 
             (get, set)
 
+        /// Map the error of an AsyncValidatedLens using the provided function.
+        let mapError (f: 'e1 -> 'e2) (lens: AsyncValidatedLens<'a, 'b, 'e1>) : AsyncValidatedLens<'a, 'b, 'e2> =
+            let (get, set) = lens
 
+            let set' b a =
+                async {
+                    let! res = set b a
+                    return Result.mapError f res
+                }
+
+            (get, set')
+
+    // ------------------------------------------------------------------------
+    // ValidatedLens composition and helpers
+    // ------------------------------------------------------------------------
+    [<RequireQualifiedAccess>]
+    module ValidatedLens =
+        /// Compose two ValidatedLens instances while mapping errors.
         let composeMapErrors
             (lens1: ValidatedLens<'a, 'b, 'e1>)
             (lens2: ValidatedLens<'b, 'c, 'e2>)
@@ -329,6 +400,8 @@ module Optic =
 
         static member (^.)(Get, (g, _): ValidatedPrism<'a, 'b, 'e>) = fun (a: 'a) -> g a: 'b option
 
+        static member (^.)(Get, (g, _): AsyncValidatedLens<'a, 'b, 'e>) = fun (a: 'a) -> g a: 'b
+
     /// Get a value using an optic.
     let inline get optic target = (Get ^. optic) target
 
@@ -345,6 +418,9 @@ module Optic =
 
         static member (^=)(Set, (_, s): ValidatedPrism<'a, 'b, 'e>) =
             fun (b: 'b) -> s b: 'a -> Result<'a, 'e>
+
+        static member (^=)(Set, (_, s): AsyncValidatedLens<'a, 'b, 'e>) =
+            fun (b: 'b) -> s b: 'a -> Async<Result<'a, 'e>>
 
     /// Set a value using an optic.
     let inline set optic value = (Set ^= optic) value
@@ -376,10 +452,16 @@ module Optic =
                     | None -> Ok a)
                 : 'a -> Result<'a, 'e>
 
+        static member (^%)(Map, (g, s): AsyncValidatedLens<'a, 'b, 'e>) =
+            fun (f: 'b -> 'b) -> (fun a -> async { return! s (f (g a)) a }): 'a -> Async<Result<'a, 'e>>
+
     /// Modify a value using an optic.
     let inline map optic f = (Map ^% optic) f
 
-/// Functions for creating or using lenses.
+// ----------------------------------------------------------------------------
+// Creating or Using Lenses
+// ----------------------------------------------------------------------------
+
 [<RequireQualifiedAccess>]
 module Lens =
 
@@ -391,7 +473,11 @@ module Lens =
         let (get, set) = lens
         get, (fun b a -> Ok(set b a))
 
-/// Functions for creating or using prisms.
+    /// Lift a ValidatedLens into an AsyncValidatedLens with no asynchronous work.
+    let toAsyncValidated (lens: ValidatedLens<'a, 'b, 'e>) : AsyncValidatedLens<'a, 'b, 'e> =
+        let (get, set) = lens
+        get, (fun b a -> async { return set b a })
+        
 [<RequireQualifiedAccess>]
 module Prism =
 
@@ -412,7 +498,6 @@ module Optics =
 
     let snd_: Lens<('a * 'b), 'b> = snd, (fun b t -> fst t, b)
 
-/// Operators for working with optics, including validated optics.
 module Operators =
 
     /// Compose a lens with an optic or morphism.
