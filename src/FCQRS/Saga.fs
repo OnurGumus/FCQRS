@@ -149,8 +149,8 @@ let actorProp env initialState name (handleEvent: obj -> SagaState<'SagaData,'St
                     let unboxx (msg: Command<obj>) =
                         let genericType =
                             (typedefof<Command<_>>).MakeGenericType([|baseType |])
-                
-                        FSharpValue.MakeRecord(genericType, [| msg.CommandDetails; msg.CreationDate; msg.Id; msg.CorrelationId |])
+                        let actorId :ActorId option = mailbox.Self.Path.Name |> ValueLens.CreateAsResult |> Result.value |> Some
+                        FSharpValue.MakeRecord(genericType, [| msg.CommandDetails; msg.CreationDate; msg.Id; actorId; msg.CorrelationId |])
                     let finalCommand = unboxx command
                     finalCommand
             
