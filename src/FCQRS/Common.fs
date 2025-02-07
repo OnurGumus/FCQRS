@@ -48,6 +48,8 @@ type Event<'EventDetails> =
 
     interface ISerializable
 
+type ContinueOrAbort<'EventDetails> = ContinueOrAbort of Event<'EventDetails>    interface ISerializable
+type AbortedEvent = AbortedEvent   interface ISerializable
 
 type SagaEvent<'TState> =
     | StateChanged of 'TState
@@ -55,7 +57,7 @@ type SagaEvent<'TState> =
     interface ISerializable
     
 type SagaStateWithVersion<'SagaData,'State> = 
-        { SagaState : SagaState<'SagaData,'State>; Version: int64 }
+        { SagaState : SagaState<'SagaData,'State>; Version: int64; }
         with interface ISerializable
 
 

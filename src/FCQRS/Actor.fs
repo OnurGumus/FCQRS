@@ -18,34 +18,42 @@ open AkkaTimeProvider
 open FCQRS.Model.Data
 open Akkling.Cluster.Sharding
 
-type State<'InnerState>={
-    Version: Version
-    State: 'InnerState
-}
-    with interface ISerializable
-    
-type BodyInput<'TEvent> ={
-    Message: obj
-    State: obj
-    PublishEvent:Event<'TEvent> -> unit
-    SendToSagaStarter: Event<'TEvent> -> obj
-    Mediator: IActorRef<Publish>
-    Log : ILogger
-}
+type State<'InnerState> =
+    { Version: Version
+      State: 'InnerState }
+
+    interface ISerializable
+
+type BodyInput<'TEvent> =
+    { Message: obj
+      State: obj
+      PublishEvent: Event<'TEvent> -> unit
+      SendToSagaStarter: Event<'TEvent> -> obj
+      Mediator: IActorRef<Publish>
+      Log: ILogger }
+
 let runActor<'TEvent, 'TState>
-   ( snapshotVersionCount:int64)
+    (snapshotVersionCount: int64)
     (logger: ILogger)
     (mailbox: Eventsourced<obj>)
     mediator
     (set: State<'TState> -> _)
     (state: State<'TState>)
     (applyNewState: Event<'TEvent> -> 'TState -> 'TState)
-    (body: BodyInput<'TEvent> -> _) : Effect<obj> =
+    (body: BodyInput<'TEvent> -> _)
+    : Effect<obj> =
 
-    
+
     let mediatorS = retype mediator
+
     let publishEvent event =
-        SagaStarter.publishEvent logger mailbox mediator event (event.CorrelationId |> ValueLens.Value |> ValueLens.Value)
+        SagaStarter.publishEvent
+            logger
+            mailbox
+            mediator
+            event
+            (event.CorrelationId |> ValueLens.Value |> ValueLens.Value)
+
     actor {
         let log = logger
         let! msg = mailbox.Receive()
@@ -59,6 +67,24 @@ let runActor<'TEvent, 'TState>
         | LifecycleEvent _ -> return! state |> set
 
         | SnapshotOffer(snapState: obj) -> return! snapState |> unbox<_> |> set
+        | :? Command<ContinueOrAbort<'TEvent>> as (cmd) ->
+            let (ContinueOrAbort(e: Event<'TEvent>)) = cmd.CommandDetails
+            let currentVersion = state.Version |> ValueLens.Value
+            let eventVersion = e.Version |> ValueLens.Value
+
+            if currentVersion = eventVersion then
+                publishEvent e
+                return! state |> set
+            else
+                SagaStarter.publishEvent
+                    logger
+                    mailbox
+                    mediator
+                    AbortedEvent
+                    (e.CorrelationId |> ValueLens.Value |> ValueLens.Value)
+
+                return! state |> set
+
 
         // actor level events will come here
         | Persisted mailbox (:? Common.Event<'TEvent> as event) ->
@@ -66,7 +92,11 @@ let runActor<'TEvent, 'TState>
             publishEvent event
 
             let innerState = applyNewState event (state.State)
-            let newState = { Version = event.Version ; State = innerState }
+
+            let newState =
+                { Version = event.Version
+                  State = innerState }
+
             let state = newState
 
             if (versionN >= snapshotVersionCount && versionN % snapshotVersionCount = 0L) then
@@ -76,28 +106,44 @@ let runActor<'TEvent, 'TState>
 
         | Recovering mailbox (:? Common.Event<'TEvent> as event) ->
             let state = applyNewState event (state.State)
-            let newState = { Version = event.Version; State = state }
+
+            let newState =
+                { Version = event.Version
+                  State = state }
+
             return! newState |> set
         | _ ->
-                let starter =  SagaStarter.toSendMessage mediatorS mailbox.Self 
-                let bodyInput = {
-                    Message = msg
-                    State = state
-                    PublishEvent = publishEvent
-                    SendToSagaStarter = starter
-                    Mediator = mediator
-                    Log = log
-                }
-                return! (body bodyInput)
+            let starter = SagaStarter.toSendMessage mediatorS mailbox.Self
+
+            let bodyInput =
+                { Message = msg
+                  State = state
+                  PublishEvent = publishEvent
+                  SendToSagaStarter = starter
+                  Mediator = mediator
+                  Log = log }
+
+            return! (body bodyInput)
     }
 
 
-let  actorProp env handleCommand apply  (initialState:'State)  (name:string) (toEvent) (mediator: IActorRef<Publish>) (mailbox: Eventsourced<obj>)  =
-    let loggerFactory = env:> ILoggerFactory
-    let config = env:> IConfiguration
+let actorProp
+    env
+    handleCommand
+    apply
+    (initialState: 'State)
+    (name: string)
+    (toEvent)
+    (mediator: IActorRef<Publish>)
+    (mailbox: Eventsourced<obj>)
+    =
+    let loggerFactory = env :> ILoggerFactory
+    let config = env :> IConfiguration
     let logger = loggerFactory.CreateLogger(name)
-    let snapshotVersionCount = 
-        let (s:string|null) =  config["config:akka:persistence:snapshot-version-count"]  
+
+    let snapshotVersionCount =
+        let (s: string | null) = config["config:akka:persistence:snapshot-version-count"]
+
         match s |> System.Int32.TryParse with
         | true, v -> v
         | _ -> 30
@@ -110,49 +156,61 @@ let  actorProp env handleCommand apply  (initialState:'State)  (name:string) (to
                 match msg, state with
                 | :? Persistence.RecoveryCompleted, _ -> return! state |> set
                 | :? (Common.Command<'Command>) as msg, _ ->
-                    let toEvent = toEvent (msg.Id) (msg.CorrelationId) (mailbox.Self.Path.Name |> ValueLens.CreateAsResult |> Result.value |> Some)
+                    let toEvent =
+                        toEvent
+                            (msg.Id)
+                            (msg.CorrelationId)
+                            (mailbox.Self.Path.Name |> ValueLens.CreateAsResult |> Result.value |> Some)
 
-                    match handleCommand msg state.State  with
+                    match handleCommand msg state.State with
                     | PersistEvent(event) ->
-                        let nextVersion:Version = ((state.Version  |> ValueLens.Value)  + 1L) |> ValueLens.TryCreate  |> Result.value
-                        return! event |> toEvent  nextVersion |> bodyInput.SendToSagaStarter |> Persist
-                    | DeferEvent( event) ->
-                        return! seq {event  |>toEvent state.Version |> bodyInput.SendToSagaStarter } |> Defer
-                    | PublishEvent(event)->
-                        event |> bodyInput.PublishEvent |> ignore  
+                        let nextVersion: Version =
+                            ((state.Version |> ValueLens.Value) + 1L) |> ValueLens.TryCreate |> Result.value
+
+                        return! event |> toEvent nextVersion |> bodyInput.SendToSagaStarter |> Persist
+                    | DeferEvent(event) ->
+                        return! seq { event |> toEvent state.Version |> bodyInput.SendToSagaStarter } |> Defer
+                    | PublishEvent(event) ->
+                        event |> bodyInput.PublishEvent |> ignore
                         return set state
                     | IgnoreEvent -> return set state
-                    | StateChangedEvent _ 
+                    | StateChangedEvent _
                     | UnhandledEvent -> return Unhandled
                 | _ ->
                     bodyInput.Log.LogWarning("Unhandled message: {msg}", msg)
                     return Unhandled
             }
 
-        runActor  snapshotVersionCount logger mailbox mediator set state (apply:Event<_> -> 'State -> 'State) body
-    let initialState = { Version = 0L |> ValueLens.TryCreate |> Result.value ; State = initialState }
-    set  initialState
+        runActor snapshotVersionCount logger mailbox mediator set state (apply: Event<_> -> 'State -> 'State) body
+
+    let initialState =
+        { Version = 0L |> ValueLens.TryCreate |> Result.value
+          State = initialState }
+
+    set initialState
 
 
 let init env initialState name toEvent (actorApi: IActor) handleCommand apply =
     AkklingHelpers.entityFactoryFor actorApi.System shardResolver name
-    <| propsPersist (actorProp env  handleCommand apply initialState  name  toEvent (typed actorApi.Mediator)) 
+    <| propsPersist (actorProp env handleCommand apply initialState name toEvent (typed actorApi.Mediator))
     <| false
 
 
 
-let createCommandSubscription (actorApi: IActor) factory (cid:CID) (id: ActorId) command filter =
-    let actor = factory (id |> ValueLens.Value |> ValueLens.Value)  
+let createCommandSubscription (actorApi: IActor) factory (cid: CID) (id: ActorId) command filter =
+    let actor = factory (id |> ValueLens.Value |> ValueLens.Value)
 
-    let commonCommand: Command<_> = {
-        CommandDetails = command
-        Id = Some(Guid.NewGuid().ToString() |> ValueLens.CreateAsResult |> Result.value)
-        CreationDate = actorApi.System.Scheduler.Now.UtcDateTime
-        CorrelationId = cid
-        Sender = None
-    }
+    let commonCommand: Command<_> =
+        { CommandDetails = command
+          Id = Some(Guid.NewGuid().ToString() |> ValueLens.CreateAsResult |> Result.value)
+          CreationDate = actorApi.System.Scheduler.Now.UtcDateTime
+          CorrelationId = cid
+          Sender = None }
 
-    let e = { Cmd = commonCommand; EntityRef = actor; Filter = filter }
+    let e =
+        { Cmd = commonCommand
+          EntityRef = actor
+          Filter = filter }
 
     let ex = Execute e
     ex |> actorApi.SubscribeForCommand
@@ -181,24 +239,34 @@ let api (config: IConfiguration) (loggerFactory: ILoggerFactory) =
         member _.TimeProvider = new AkkaTimeProvider(system)
         member _.LoggerFactory = loggerFactory
         member _.SubscribeForCommand command = subscribeForCommand command
-        member _.Stop() = system.Terminate()        
-        member this.CreateCommandSubscription factory cid id command filter = 
-                createCommandSubscription this factory cid id command filter
+        member _.Stop() = system.Terminate()
 
-        member this.InitializeActor env initialState name handleCommand apply = 
-                let  toEvent mid v sender =
-                    Common.toEvent system.Scheduler mid v sender
-                init env initialState name toEvent this handleCommand apply
+        member this.CreateCommandSubscription factory cid id command filter =
+            createCommandSubscription this factory cid id command filter
+
+        member this.InitializeActor env initialState name handleCommand apply =
+            let toEvent mid v sender =
+                Common.toEvent system.Scheduler mid v sender
+
+            init env initialState name toEvent this handleCommand apply
 
         member this.InitializeSaga
-                env
-                (initialState: SagaState<'SagaState,'State>) 
-                    (handleEvent: obj -> SagaState<'SagaState,'State> -> EventAction<'State>) 
-                    (applySideEffects: SagaState<'SagaState,'State> -> SagaStarter.SagaStartingEvent<Event<'c>> option -> bool -> Effect * 'State option * ExecuteCommand list) 
-                    (apply: SagaState<'SagaState,'State> -> SagaState<'SagaState,'State>) (name: string): EntityFac<obj> = 
-                Saga.init env this initialState  handleEvent  applySideEffects apply name
+            env
+            (initialState: SagaState<'SagaState, 'State>)
+            (handleEvent: obj -> SagaState<'SagaState, 'State> -> EventAction<'State>)
+            (applySideEffects:
+                SagaState<'SagaState, 'State>
+                    -> SagaStarter.SagaStartingEvent<Event<'c>> option
+                    -> bool
+                    -> Effect * 'State option * ExecuteCommand list)
+            (apply: SagaState<'SagaState, 'State> -> SagaState<'SagaState, 'State>)
+            (name: string)
+            : EntityFac<obj> =
+            Saga.init env this initialState handleEvent applySideEffects apply name
 
-        member this.InitializeSagaStarter   (rules:(obj  -> list<(string -> IEntityRef<obj>) * PrefixConversion * obj>)): unit = 
-            SagaStarter.init system mediator  rules
-        
+        member this.InitializeSagaStarter
+            (rules: (obj -> list<(string -> IEntityRef<obj>) * PrefixConversion * obj>))
+            : unit =
+            SagaStarter.init system mediator rules
+
     }
