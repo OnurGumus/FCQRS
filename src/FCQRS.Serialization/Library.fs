@@ -11,7 +11,7 @@ let jsonOptions =
         .WithSkippableOptionFields()
         .WithUnionInternalTag()
         .WithUnionNamedFields()
-        .WithUnionFieldNamesFromTypes()
+        //.WithUnionFieldNamesFromTypes()
         .WithUnionUnwrapSingleCaseUnions(false)
         .ToJsonSerializerOptions()
 
