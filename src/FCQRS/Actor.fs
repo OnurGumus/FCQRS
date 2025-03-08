@@ -43,7 +43,6 @@ let runActor<'TEvent, 'TState>
     (body: BodyInput<'TEvent> -> _)
     : Effect<obj> =
 
-
     let mediatorS = retype mediator
 
     let publishEvent event =
@@ -87,6 +86,15 @@ let runActor<'TEvent, 'TState>
 
 
         // actor level events will come here
+        | Deferred mailbox (:? Common.Event<'TEvent> as event) ->
+            let state = applyNewState event (state.State)
+
+            let newState =
+                { Version = event.Version
+                  State = state }
+
+            return! newState |> set
+
         | Persisted mailbox (:? Common.Event<'TEvent> as event) ->
             let versionN = event.Version |> ValueLens.Value
             publishEvent event
@@ -99,7 +107,7 @@ let runActor<'TEvent, 'TState>
 
             let state = newState
 
-            if (versionN >= snapshotVersionCount && versionN % snapshotVersionCount = 0L) then
+            if versionN >= snapshotVersionCount && versionN % snapshotVersionCount = 0L then
                 return! state |> set <@> SaveSnapshot(state)
             else
                 return! state |> set
@@ -123,7 +131,7 @@ let runActor<'TEvent, 'TState>
                   Mediator = mediator
                   Log = log }
 
-            return! (body bodyInput)
+            return! body bodyInput
     }
 
 
