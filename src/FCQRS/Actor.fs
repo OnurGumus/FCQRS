@@ -240,40 +240,125 @@ let api (config: IConfiguration) (loggerFactory: ILoggerFactory) =
         Common.CommandHandler.subscribeForCommand system (typed mediator) command
 
     { new IActor with
+        /// <summary>
+        /// Gets the mediator actor reference which serves as the central hub for publish/subscribe messaging.
+        /// This mediator is used to broadcast and route messages across the cluster, enabling distributed coordination.
+        /// </summary>
         member _.Mediator = mediator
+        
+        /// <summary>
+        /// Gets the actor materializer instance used to run Akka Streams.
+        /// This materializer is essential for processing streaming data and handling asynchronous event flows within actors.
+        /// </summary>
         member _.Materializer = mat
+        
+        /// <summary>
+        /// Gets the underlying actor system that manages actor lifecycles, message dispatch, and cluster membership.
+        /// </summary>
         member _.System = system
+        
+        /// <summary>
+        /// Provides a time provider based on the system's scheduler, useful for timestamping messages and scheduling tasks.
+        /// </summary>
         member _.TimeProvider = new AkkaTimeProvider(system)
+        
+        /// <summary>
+        /// Gets the logger factory used to create loggers for detailed diagnostics and operational logging.
+        /// This factory aids in capturing context-rich log entries across the actor system.
+        /// </summary>
         member _.LoggerFactory = loggerFactory
+        
+        /// <summary>
+        /// Subscribes for a command by instantiating a temporary actor that listens for a specific command.
+        /// This dynamic subscription mechanism allows decoupled command handling by setting up an independent listener.
+        /// </summary>
+        /// <remarks>
+        /// Under the hood, this method creates an actor that awaits a subscription acknowledgment before forwarding the command.
+        /// Such a pattern is common in systems that separate command dispatch from command processing.
+        /// </remarks>
         member _.SubscribeForCommand command = subscribeForCommand command
+        
+        /// <summary>
+        /// Stops the actor system gracefully by terminating all actors and releasing associated resources.
+        /// This method should be invoked during system shutdown to ensure a clean termination.
+        /// </summary>
         member _.Stop() = system.Terminate()
-
+        
+        /// <summary>
+        /// Creates a command subscription by using a provided factory to generate an entity reference,
+        /// while applying a filter predicate to ensure only relevant commands are processed.
+        /// </summary>
+        /// <remarks>
+        /// This approach encapsulates the wiring required to connect a command source with its handler,
+        /// including setting up filters, delay mechanisms, and processing pipelines.
+        /// </remarks>
         member this.CreateCommandSubscription factory cid id command filter =
             createCommandSubscription this factory cid id command filter
-
+        
+        /// <summary>
+        /// Initializes a persistent actor with the defined configuration, initial state, unique name, command handler, and event applier.
+        /// The actor leverages event sourcing to persist its state, enabling state recovery after failures or restarts.
+        /// </summary>
+        /// <remarks>
+        /// This method orchestrates the conversion of incoming commands to events, then applies those events to update the state.
+        /// Such a mechanism is key to implementing CQRS patterns, where events represent the source of truth for state changes.
+        /// </remarks>
+        /// <example>
+        /// <code lang="fsharp">
+        /// // Example: Initialize an actor that handles user management.
+        /// // The command handler maps commands (e.g. Login, Register) to domain events,
+        /// // while the event applier incorporates these events into the current state.
+        /// let userActor = 
+        ///     actorApi.InitializeActor(
+        ///         config, 
+        ///         userInitialState, 
+        ///         "UserActor", 
+        ///         userCommandHandler, 
+        ///         userEventApplier)
+        /// </code>
+        /// </example>
         member this.InitializeActor env initialState name handleCommand apply =
-            let toEvent mid v sender =
-                Common.toEvent system.Scheduler mid v sender
-
+            let toEvent mid v sender = Common.toEvent system.Scheduler mid v sender
             init env initialState name toEvent this handleCommand apply
-
+        
+        /// <summary>
+        /// Initializes a saga to manage a long-running business process across multiple actors.
+        /// The saga coordinates state transitions, side effects, and inter-actor communications.
+        /// </summary>
+        /// <remarks>
+        /// Sagas are used to implement complex workflows that require orchestrating multiple steps,
+        /// and this method bootstraps such a saga using event sourcing principles.
+        /// </remarks>
+        /// <example>
+        /// <code lang="fsharp">
+        /// // Example: Initialize an order processing saga.
+        /// let orderSaga = 
+        ///     actorApi.InitializeSaga(
+        ///         config, 
+        ///         initialOrderSagaState, 
+        ///         orderEventHandler, 
+        ///         orderSideEffects, 
+        ///         orderStateApplier, 
+        ///         "OrderSaga")
+        /// </code>
+        /// </example>
         member this.InitializeSaga
             env
             (initialState: SagaState<'SagaState, 'State>)
-            (handleEvent: obj -> SagaState<'SagaState, 'State> -> EventAction<'State>)
-            (applySideEffects:
-                SagaState<'SagaState, 'State>
-                    -> SagaStarter.SagaStartingEvent<Event<'c>> option
-                    -> bool
-                    -> Effect * 'State option * ExecuteCommand list)
-            (apply: SagaState<'SagaState, 'State> -> SagaState<'SagaState, 'State>)
-            (name: string)
-            : EntityFac<obj> =
+            handleEvent
+            applySideEffects
+            apply
+            name : EntityFac<obj> =
             Saga.init env this initialState handleEvent applySideEffects apply name
-
-        member _.InitializeSagaStarter
-            (rules: (obj -> list<(string -> IEntityRef<obj>) * PrefixConversion * obj>))
-            : unit =
+        
+        /// <summary>
+        /// Initializes the saga starter actor with specific rules for saga initiation.
+        /// The saga starter listens for incoming messages and triggers saga workflows based on configured rules.
+        /// </summary>
+        /// <remarks>
+        /// The rules determine which messages should launch a saga and how entities associated with the saga are created.
+        /// This enables dynamic saga management in a distributed environment.
+        /// </remarks>
+        member _.InitializeSagaStarter (rules: (obj -> list<(string -> IEntityRef<obj>) * PrefixConversion * obj>)) : unit =
             SagaStarter.init system mediator rules
-
     }

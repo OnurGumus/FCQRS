@@ -11,8 +11,48 @@ open System
 
 [<Interface>]
 type ISubscribe<'TDataEvent> =
-    abstract Subscribe: ('TDataEvent -> unit)* CancellationToken -> IDisposable
-    abstract Subscribe: ('TDataEvent -> bool) * int * ('TDataEvent -> unit) * CancellationToken -> Async<IDisposable>
+    /// <summary>
+    /// Subscribes to all events and invokes the specified callback for each event.
+    /// </summary>
+    /// <param name="callback">Function invoked for each event, e.g. printing or processing the event.</param>
+    /// <param name="cancellationToken">An optional cancellation token to cancel the subscription.</param>
+    /// <example>
+    /// <code lang="fsharp">
+    /// // Example usage: subscribe to all events and write them to the console.
+    /// let subscription = 
+    ///     query.Subscribe((fun event -> printfn "Received event: %A" event))
+    /// 
+    /// // Later, to cancel the subscription:
+    /// subscription.Dispose()
+    /// </code>
+    /// </example>
+    abstract Subscribe: callback: ('TDataEvent -> unit) * ?cancellationToken: CancellationToken -> IDisposable
+    /// <summary>
+    /// Subscribes to events using a filter. Only events for which the predicate returns true
+    /// are processed, and the callback is invoked for each matching event up to a specified count.
+    /// </summary>
+    /// <param name="filter">
+    /// Predicate function to determine if an event should be processed, e.g. 
+    /// <c>fun event -> event.CorrelationId = targetId</c>.
+    /// </param>
+    /// <param name="take">Maximum number of events to process.</param>
+    /// <param name="callback">
+    /// Optional callback function to handle the event (defaults to ignoring the event if not provided).
+    /// </param>
+    /// <param name="cancellationToken">An optional cancellation token to cancel the subscription.</param>
+    /// <example>
+    /// <code lang="fsharp">
+    /// // Typical usage: subscribe for a filtered event by matching on CorrelationId,
+    /// // process only one event, and omit the callback and cancellation token.
+    /// async {
+    ///     let targetId = some-correlation-id
+    ///     // Here, take is set to 1 and no callback or cancellation token is provided.
+    ///     let! subscription = query.Subscribe((fun event -> event.CorrelationId = targetId), 1)
+    ///     // Use the asynchronous subscription as needed.
+    /// } |> Async.Start
+    /// </code>
+    /// </example>
+    abstract Subscribe: filter: ('TDataEvent -> bool) * take: int * ?callback: ('TDataEvent -> unit) * ?cancellationToken: CancellationToken -> Async<IDisposable>
 
 let readJournal system =
     PersistenceQuery
@@ -31,25 +71,25 @@ let subscribeCmd<'TDataEvent> (source:Source<'TDataEvent,unit>) (actorApi :IActo
         let ks, _ = subscribeToStream source actorApi.Materializer sink
         ks :> IKillSwitch
 
-let subscribeCmdWithFilter<'TDataEvent> (source:Source<'TDataEvent,unit>)  (actorApi:IActor) =
-        fun filter take (cb: 'TDataEvent -> unit) ->
-            let subscribeToStream source filter take mat (sink: Sink<'TDataEvent, _>) =
-                source
-                |> Source.viaMat KillSwitch.single Keep.right
-                |> Source.filter filter
-                |> Source.take take
-                |> Source.toMat sink Keep.both
-                |> Graph.run mat
-
-            let sink = Sink.forEach (fun event -> cb event)
-            let ks, d = subscribeToStream source filter take actorApi.Materializer sink
-            let d = d |> Async.Ignore
-            ks :> IKillSwitch, d
+let subscribeCmdWithFilter<'TDataEvent> (source:Source<'TDataEvent,unit>) (actorApi:IActor) =
+    fun filter take cb ->
+        // cb is now a required parameter (it will be provided as default if needed)
+        let subscribeToStream source filter take mat (sink: Sink<'TDataEvent, _>) =
+            source
+            |> Source.viaMat KillSwitch.single Keep.right
+            |> Source.filter filter
+            |> Source.take take
+            |> Source.toMat sink Keep.both
+            |> Graph.run mat
+        let sink = Sink.forEach (fun event -> cb event)
+        let ks, d = subscribeToStream source filter take actorApi.Materializer sink
+        let d = d |> Async.Ignore
+        ks :> IKillSwitch, d
     
-let init<'TDataEvent,'TPredicate,'t> (actorApi: IActor) offsetCount  handler =
+let init<'TDataEvent,'TPredicate,'t> (actorApi: IActor) offsetCount handler =
     let source = (readJournal actorApi.System).AllEvents(Offset.Sequence offsetCount)
     let logger = actorApi.LoggerFactory.CreateLogger"Query"
-    logger.LogInformation("Query started")
+    logger.LogInformation "Query started"
     let subQueue = Source.queue OverflowStrategy.Fail 1024
     let subSink = Sink.broadcastHub 1024
 
@@ -68,7 +108,7 @@ let init<'TDataEvent,'TPredicate,'t> (actorApi: IActor) offsetCount  handler =
          with
             | ex -> 
                 logger.LogCritical(ex, "Error in query handler")
-                System.Environment.Exit -1
+                Environment.Exit -1
         )
     |> Async.Start
 
@@ -82,13 +122,17 @@ let init<'TDataEvent,'TPredicate,'t> (actorApi: IActor) offsetCount  handler =
     let subscribeCmdWithFilter = subscribeCmdWithFilter subRunnable actorApi
 
     { new ISubscribe<'TDataEvent> with
-        override _.Subscribe(callback, cancellationToken) =
-            let ks =  subscribeCmd callback
-            cancellationToken.Register(fun _ -> ks.Shutdown())
-
-        override _.Subscribe(filter, take, callback, cancellationToken) = 
-            let ks, res =  subscribeCmdWithFilter filter take callback
-            let d = cancellationToken.Register(fun _ -> ks.Shutdown())
+        override _.Subscribe(callback, ?cancellationToken) =
+            let token = defaultArg cancellationToken CancellationToken.None
+            let ks = subscribeCmd callback
+            token.Register(fun _ -> ks.Shutdown())
+            
+        override _.Subscribe(filter, take, ?callback, ?cancellationToken) = 
+            let token = defaultArg cancellationToken CancellationToken.None
+            // Default callback to ignore if not provided.
+            let cb = defaultArg callback ignore
+            let ks, res = subscribeCmdWithFilter filter take cb
+            let d = token.Register(fun _ -> ks.Shutdown())
             async {
                 do! res
                 return d
