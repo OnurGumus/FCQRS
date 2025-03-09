@@ -13,7 +13,7 @@ open System.Diagnostics
 type ExecuteCallback = ExecuteCallback
 
 // Actor that executes the timer callback
-type CallbackActor(callback: TimerCallback, state: obj) =
+type CallbackActor(callback: TimerCallback, state: obj | null) =
     inherit UntypedActor()
 
     override x.OnReceive(message: obj) =
@@ -27,7 +27,7 @@ type CallbackActor(callback: TimerCallback, state: obj) =
         | _ -> ()
 
 // Timer implementation using Akka.NET's scheduler
-type AkkaTimer(callback: TimerCallback, state: obj, dueTime: TimeSpan, period: TimeSpan, actorSystem: ActorSystem) =
+type AkkaTimer(callback: TimerCallback, state: obj | null, dueTime: TimeSpan, period: TimeSpan, actorSystem: ActorSystem) =
     let scheduler = actorSystem.Scheduler
     let mutable isDisposed = false
     let mutable timerHandle: ICancelable | null = null
@@ -133,5 +133,5 @@ type AkkaTimeProvider(actorSystem: ActorSystem) =
 
     // Implement CreateTimer to use AkkaTimer
     override _.CreateTimer(callback: TimerCallback, state: obj, dueTime: TimeSpan, period: TimeSpan) : ITimer =
-        let timer = new AkkaTimer(callback, state, dueTime, period, actorSystem)
+        let timer = new AkkaTimer(callback , state, dueTime, period, actorSystem) 
         timer :> ITimer

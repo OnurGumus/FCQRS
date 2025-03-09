@@ -15,7 +15,6 @@ open Akka.Streams
 open SagaStarter
 open Microsoft.Extensions.Configuration
 
-
 type OriginatorName =
     | OriginatorName of string
 
@@ -53,13 +52,11 @@ type AbortedEvent = AbortedEvent   interface ISerializable
 
 type SagaEvent<'TState> =
     | StateChanged of 'TState
-
     interface ISerializable
     
 type SagaStateWithVersion<'SagaData,'State> = 
         { SagaState : SagaState<'SagaData,'State>; Version: int64; }
         with interface ISerializable
-
 
 type EventAction<'T> = 
     | PersistEvent of 'T
@@ -128,7 +125,6 @@ type PrefixConversion = PrefixConversion of ((string -> string) option)
 
 module SagaStarter =
     open Microsoft.FSharp.Reflection
-    open Microsoft.Extensions.Logging
 
     let toOriginatorName (name: string) =
         let index = name.IndexOf(SAGA_Suffix)
@@ -166,7 +162,6 @@ module SagaStarter =
 
     type SagaStartingEvent<'T> =
         { Event: 'T }
-
         interface ISerializable
 
 
@@ -175,15 +170,15 @@ module SagaStarter =
         | Event of Event
 
     let toCheckSagas (event, originator, cid) =
-        ((event |> box |> Unchecked.nonNull), originator, cid) |> CheckSagas |> Command
+        (event |> box |> Unchecked.nonNull, originator, cid) |> CheckSagas |> Command
 
     let toSendMessage mediator (originator: IActorRef<_>) event =
-        let cid = toCidWithExisting (originator.Path.Name) (event.CorrelationId |> ValueLens.Value |> ValueLens.Value)
+        let cid = toCidWithExisting originator.Path.Name (event.CorrelationId |> ValueLens.Value |> ValueLens.Value)
 
         let message =
             Send(SagaStarterPath, (event, untyped originator, cid) |> toCheckSagas, true)
 
-        (mediator <? (message)) |> Async.RunSynchronously |> ignore
+        mediator <? message |> Async.RunSynchronously |> ignore
         event |> box |> Unchecked.nonNull
 
     let publishEvent (logger:ILogger) (mailbox: Actor<_>) (mediator)  event (cid) =
@@ -217,7 +212,6 @@ module SagaStarter =
         match msg with
         | :? SubscribeAck as s when s.Subscribe.Topic = topic -> Some msg
         | _ -> None
-
 
     let unboxx (msg: obj) =
         let genericType =
@@ -266,7 +260,7 @@ module SagaStarter =
 
             actor {
                 match! mailbox.Receive() with
-                | Command(Continue) ->
+                | Command Continue ->
                     //check if all sagas are started. if so issue SagaCheckDone to originator else keep wait
                     let sender = untyped <| mailbox.Sender()
                     let originName = sender.Path.Name |> toOriginatorName
@@ -276,7 +270,7 @@ module SagaStarter =
                     if not matchFound then
                         return! set state
                     else
-                        let (originator, subscribers) = state.[originName]
+                        let originator, subscribers = state.[originName]
                         let targetList = subscribers |> List.find (fun a -> a |> List.contains sender.Path.Name)
                         let newList = targetList |> List.filter (fun a -> a <> sender.Path.Name)
                         let subscibersWithoutTarget = subscribers |> List.filter (fun a -> a <> targetList)
@@ -377,95 +371,5 @@ module CommandHandler =
 
         async {
             let! res = spawnAnonymous system (props (actorProp mediator)) <? box command
-            return box res :?> Event<'Event>
+            return box res |> nonNull :?> Event<'Event> 
         }
-
-module DynamicConfig =
-    open System.Runtime.CompilerServices
-    open Microsoft.Extensions.Configuration
-    open System.Dynamic
-    open System.Collections.Generic
-
-    let rec replaceWithArray (parent: ExpandoObject | null) (key: string | null) (input: ExpandoObject option) =
-        match input with
-        | None -> ()
-        | Some input ->
-            let dict = input :> IDictionary<_, _>
-            let keys = dict.Keys |> List.ofSeq
-
-            if keys |> Seq.forall (Int32.TryParse >> fst) then
-                let arr = keys.Length |> Array.zeroCreate
-
-                for kvp in dict do
-                    arr.[kvp.Key |> Int32.Parse] <- kvp.Value
-
-                let parentDict = parent :> IDictionary<string|null, _>
-                parentDict.Remove key |> ignore
-                parentDict.Add(key, arr)
-            else
-                for childKey in keys do
-                    let newInput =
-                        match dict.[childKey] with
-                        | :? ExpandoObject as e -> Some e
-                        | _ -> None
-
-                    replaceWithArray input childKey newInput
-
-    let getSection (configs: KeyValuePair<string, _> seq) : obj =
-        let result = ExpandoObject()
-
-        for kvp in configs do
-            let mutable parent = result :> IDictionary<_, _>
-            let path = kvp.Key.Split(':')
-            let mutable i = 0
-
-            while i < path.Length - 1 do
-                if parent.ContainsKey(path.[i]) |> not then
-                    parent.Add(path.[i], ExpandoObject())
-
-                parent <- downcast parent.[path.[i]]
-                i <- i + 1
-
-            if kvp.Value |> isNull |> not then
-                parent.Add(path.[i], kvp.Value)
-
-        replaceWithArray null null (Some result)
-        upcast result
-
-    [<Extension>]
-    type ConfigExtension() =
-        /// <summary>
-        /// An extension method that returns given string as an dynamic Expando object
-        /// </summary>
-        /// <exception cref="System.ArgumentNullException">Thrown configuration or section is null</exception>
-        [<Extension>]
-
-        static member GetSectionAsDynamic(configuration: IConfiguration, section: string) : obj =
-
-            let configs =
-                configuration.GetSection(section).AsEnumerable()
-                |> Seq.filter (fun k -> k.Key.StartsWith(sprintf "%s:" section))
-
-            let res = getSection configs
-
-            let paths = section.Split(":", StringSplitOptions.None) |> List.ofArray
-
-            let rec loop paths (res: obj) =
-                match paths, res with
-                | head :: (_ :: _ as tail), (:? IDictionary<string, obj> as d) ->
-                    let v = d.[head]
-                    loop tail v
-                | _ -> res
-
-            loop paths res
-
-        /// <summary>
-        /// An extension method that returns given string as an dynamic Expando object
-        /// </summary>
-        /// <returns>An expando object represents given section</returns>
-        /// <exception cref="System.ArgumentNullException">Thrown configuration is null</exception>
-        [<Extension>]
-        static member GetRootAsDynamic(configuration: IConfiguration) : obj =
-
-            let configs = configuration.AsEnumerable()
-            getSection configs

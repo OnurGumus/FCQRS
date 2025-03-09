@@ -10,7 +10,7 @@ open Akkling.Cluster.Sharding
 type Extractor<'Envelope, 'Message> = 'Envelope -> string * string * 'Message
 type ShardResolver = string -> string
 
-type internal TypedMessageExtractor<'Envelope, 'Message>
+type internal TypedMessageExtractor<'Envelope, 'Message> when 'Envelope : not null
     (extractor: Extractor<_, 'Message>, shardResolver: ShardResolver) =
     interface IMessageExtractor with
         member _.ShardId message =

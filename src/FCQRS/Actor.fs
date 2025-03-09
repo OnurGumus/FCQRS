@@ -6,7 +6,7 @@ open Akka.Cluster
 open Akka.Cluster.Tools.PublishSubscribe
 open Akkling
 open Microsoft.Extensions.Configuration
-open Common.DynamicConfig
+open DynamicConfig
 open System.Dynamic
 open Akkling.Persistence
 open Akka
@@ -57,7 +57,6 @@ let runActor<'TEvent, 'TState>
         let log = logger
         let! msg = mailbox.Receive()
 
-
         log.LogInformation("Actor:{@name} Message: {MSG}", mailbox.Self.Path.ToString(), msg)
 
         match msg with
@@ -86,8 +85,8 @@ let runActor<'TEvent, 'TState>
 
         // actor level events will come here
         | Deferred mailbox (:? Common.Event<'TEvent> as event) ->
-            publishEvent event
             let state = applyNewState event (state.State)
+            publishEvent event
 
             let newState =
                 { Version = event.Version
@@ -97,9 +96,9 @@ let runActor<'TEvent, 'TState>
 
         | Persisted mailbox (:? Common.Event<'TEvent> as event) ->
             let versionN = event.Version |> ValueLens.Value
-            publishEvent event
 
             let innerState = applyNewState event state.State
+            publishEvent event
 
             let newState =
                 { Version = event.Version
@@ -108,12 +107,12 @@ let runActor<'TEvent, 'TState>
             let state = newState
 
             if versionN > 0L && versionN % snapshotVersionCount = 0L then
-                return! state |> set <@> SaveSnapshot(state)
+                return! state |> set <@> SaveSnapshot state
             else
                 return! state |> set
 
         | Recovering mailbox (:? Common.Event<'TEvent> as event) ->
-            let state = applyNewState event (state.State)
+            let state = applyNewState event state.State
 
             let newState =
                 { Version = event.Version
@@ -224,7 +223,7 @@ let createCommandSubscription (actorApi: IActor) factory (cid: CID) (id: ActorId
     ex |> actorApi.SubscribeForCommand
 
 let api (config: IConfiguration) (loggerFactory: ILoggerFactory) =
-    let (akkaConfig: ExpandoObject) =
+    let akkaConfig: ExpandoObject =
         unbox<_> (config.GetSectionAsDynamic("config:akka"))
 
     let config = Akka.Configuration.ConfigurationFactory.FromObject akkaConfig
@@ -235,7 +234,7 @@ let api (config: IConfiguration) (loggerFactory: ILoggerFactory) =
 
     let mediator = DistributedPubSub.Get(system).Mediator
 
-    let mat = ActorMaterializer.Create(system)
+    let mat = ActorMaterializer.Create system
 
     let subscribeForCommand command =
         Common.CommandHandler.subscribeForCommand system (typed mediator) command
@@ -272,7 +271,7 @@ let api (config: IConfiguration) (loggerFactory: ILoggerFactory) =
             : EntityFac<obj> =
             Saga.init env this initialState handleEvent applySideEffects apply name
 
-        member this.InitializeSagaStarter
+        member _.InitializeSagaStarter
             (rules: (obj -> list<(string -> IEntityRef<obj>) * PrefixConversion * obj>))
             : unit =
             SagaStarter.init system mediator rules
