@@ -49,6 +49,7 @@ let subscribeCmdWithFilter<'TDataEvent> (source:Source<'TDataEvent,unit>)  (acto
 let init<'TDataEvent,'TPredicate,'t> (actorApi: IActor) offsetCount  handler =
     let source = (readJournal actorApi.System).AllEvents(Offset.Sequence offsetCount)
     let logger = actorApi.LoggerFactory.CreateLogger"Query"
+    logger.LogInformation("Query started")
     let subQueue = Source.queue OverflowStrategy.Fail 1024
     let subSink = Sink.broadcastHub 1024
 
