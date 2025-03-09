@@ -8,7 +8,7 @@ open Microsoft.Extensions.Logging
 open Common
 
 [<Interface>]
-type ISubscribe<'TDataEvent,'TPredicate> =
+type ISubscribe<'TDataEvent> =
     abstract Subscribe: ('TDataEvent -> unit) -> IKillSwitch
     abstract Subscribe: ('TDataEvent -> bool) * int * ('TDataEvent -> unit) -> IKillSwitch * Async<unit>
 
@@ -78,7 +78,7 @@ let init<'TDataEvent,'TPredicate,'t> (actorApi: IActor) offsetCount  handler =
     let subscribeCmd = subscribeCmd subRunnable actorApi
     let subscribeCmdWithFilter = subscribeCmdWithFilter subRunnable actorApi
 
-    { new ISubscribe<'TDataEvent,'TPredicate> with
+    { new ISubscribe<'TDataEvent> with
         override _.Subscribe cb = subscribeCmd cb
         override _.Subscribe(filter, take, cb) = subscribeCmdWithFilter filter take cb
     }
