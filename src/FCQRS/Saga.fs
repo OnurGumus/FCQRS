@@ -83,7 +83,7 @@ let runSaga<'TEvent, 'SagaData, 'State>
             | :? Akka.Persistence.SaveSnapshotSuccess
             | LifecycleEvent _ -> return! innerSet (startingEvent, true)
             | SnapshotOffer(snapState: obj) -> return! snapState |> unbox<_> |> set innerSetValue
-            | SagaStarter.SubscrptionAcknowledged mailbox _ ->
+            | SagaStarter.SubscriptionAcknowledged mailbox _ -> 
                 // notify saga starter about the subscription completed
                 let newState = applySideEffects state startingEvent true
 
@@ -149,7 +149,7 @@ let runSaga<'TEvent, 'SagaData, 'State>
                 SagaStarter.cont mediator
                 return! innerSet (startingEvent, subscribed)
 
-            | _ -> return! (body msg)
+            | _ -> return! body msg
         }
 
     innerSet innerStateDefaults
@@ -176,7 +176,7 @@ let actorProp
     let logger = loggerFactory.CreateLogger(name)
 
     let snapshotVersionCount =
-        let (s: string | null) = config["config:akka:persistence:snapshot-version-count"]
+        let s: string | null = config["config:akka:persistence:snapshot-version-count"]
 
         match s |> System.Int32.TryParse with
         | true, v -> v

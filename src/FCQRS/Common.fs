@@ -211,7 +211,7 @@ module SagaStarter =
 
         mediator <! box (Subscribe(topic, untyped mailbox.Self))
 
-    let (|SubscrptionAcknowledged|_|) (context: Actor<obj>) (msg: obj) : obj option =
+    let (|SubscriptionAcknowledged|_|) (context: Actor<obj>) (msg: obj) : obj option =
         let topic = context.Self.Path.Name |> toCid
 
         match msg with
@@ -330,9 +330,9 @@ module CommandHandler =
                 actor {
                     let! msg = mailbox.Receive()
 
-                    match box msg with
+                    match box msg |>Unchecked.nonNull with
                     | SubscriptionAcknowledged _ ->
-                        let cmd = (state.Value.CommandDetails.Cmd) |> box
+                        let cmd = state.Value.CommandDetails.Cmd |> box
                         state.Value.CommandDetails.EntityRef <! cmd
 
                         return! set state

@@ -84,9 +84,9 @@ let runActor<'TEvent, 'TState>
 
                 return! state |> set
 
-
         // actor level events will come here
         | Deferred mailbox (:? Common.Event<'TEvent> as event) ->
+            publishEvent event
             let state = applyNewState event (state.State)
 
             let newState =
@@ -99,7 +99,7 @@ let runActor<'TEvent, 'TState>
             let versionN = event.Version |> ValueLens.Value
             publishEvent event
 
-            let innerState = applyNewState event (state.State)
+            let innerState = applyNewState event state.State
 
             let newState =
                 { Version = event.Version
@@ -107,7 +107,7 @@ let runActor<'TEvent, 'TState>
 
             let state = newState
 
-            if versionN >= snapshotVersionCount && versionN % snapshotVersionCount = 0L then
+            if versionN > 0L && versionN % snapshotVersionCount = 0L then
                 return! state |> set <@> SaveSnapshot(state)
             else
                 return! state |> set
@@ -141,16 +141,16 @@ let actorProp
     apply
     (initialState: 'State)
     (name: string)
-    (toEvent)
+    toEvent
     (mediator: IActorRef<Publish>)
     (mailbox: Eventsourced<obj>)
     =
     let loggerFactory = env :> ILoggerFactory
     let config = env :> IConfiguration
-    let logger = loggerFactory.CreateLogger(name)
+    let logger = loggerFactory.CreateLogger name
 
     let snapshotVersionCount =
-        let (s: string | null) = config["config:akka:persistence:snapshot-version-count"]
+        let s: string | null = config["config:akka:persistence:snapshot-version-count"]
 
         match s |> System.Int32.TryParse with
         | true, v -> v
@@ -166,19 +166,19 @@ let actorProp
                 | :? (Common.Command<'Command>) as msg, _ ->
                     let toEvent =
                         toEvent
-                            (msg.Id)
-                            (msg.CorrelationId)
+                            msg.Id
+                            msg.CorrelationId
                             (mailbox.Self.Path.Name |> ValueLens.CreateAsResult |> Result.value |> Some)
 
                     match handleCommand msg state.State with
-                    | PersistEvent(event) ->
+                    | PersistEvent event ->
                         let nextVersion: Version =
-                            ((state.Version |> ValueLens.Value) + 1L) |> ValueLens.TryCreate |> Result.value
+                            (state.Version |> ValueLens.Value) + 1L |> ValueLens.TryCreate |> Result.value
 
                         return! event |> toEvent nextVersion |> bodyInput.SendToSagaStarter |> Persist
-                    | DeferEvent(event) ->
+                    | DeferEvent event ->
                         return! seq { event |> toEvent state.Version |> bodyInput.SendToSagaStarter } |> Defer
-                    | PublishEvent(event) ->
+                    | PublishEvent event ->
                         event |> bodyInput.PublishEvent |> ignore
                         return set state
                     | IgnoreEvent -> return set state
