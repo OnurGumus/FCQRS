@@ -6,11 +6,13 @@ open Akka.Streams
 open Akka.Streams.Dsl
 open Microsoft.Extensions.Logging
 open Common
+open System.Threading
+open System
 
 [<Interface>]
 type ISubscribe<'TDataEvent> =
-    abstract Subscribe: ('TDataEvent -> unit) -> IKillSwitch
-    abstract Subscribe: ('TDataEvent -> bool) * int * ('TDataEvent -> unit) -> IKillSwitch * Async<unit>
+    abstract Subscribe: ('TDataEvent -> unit)* CancellationToken -> IDisposable
+    abstract Subscribe: ('TDataEvent -> bool) * int * ('TDataEvent -> unit) * CancellationToken -> Async<IDisposable>
 
 let readJournal system =
     PersistenceQuery
@@ -79,6 +81,15 @@ let init<'TDataEvent,'TPredicate,'t> (actorApi: IActor) offsetCount  handler =
     let subscribeCmdWithFilter = subscribeCmdWithFilter subRunnable actorApi
 
     { new ISubscribe<'TDataEvent> with
-        override _.Subscribe cb = subscribeCmd cb
-        override _.Subscribe(filter, take, cb) = subscribeCmdWithFilter filter take cb
+        override _.Subscribe(callback, cancellationToken) =
+            let ks =  subscribeCmd callback
+            cancellationToken.Register(fun _ -> ks.Shutdown())
+
+        override _.Subscribe(filter, take, callback, cancellationToken) = 
+            let ks, res =  subscribeCmdWithFilter filter take callback
+            let d = cancellationToken.Register(fun _ -> ks.Shutdown())
+            async {
+                do! res
+                return d
+            }
     }
