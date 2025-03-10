@@ -34,8 +34,8 @@ type internal TypedMessageExtractor<'Envelope, 'Message> when 'Envelope : not nu
                 let _, _, msg = extractor env
                 box msg
             | other -> invalidOp <| string other
-        member this.ShardId(entityId: string, messageHint: obj): string = 
-            shardResolver (entityId)
+        member this.ShardId(entityId: string, _: obj): string = 
+            shardResolver entityId
 
 
 // HACK over persistent actors
@@ -59,13 +59,12 @@ let internal adjustPersistentProps (props: Props<'Message>) : Props<'Message> =
     else
         props
 
-
 let entityFactoryFor
     (system: ActorSystem)
     (shardResolver: ShardResolver)
     (name: string)
     (props: Props<'Message>)
-    (rememberEntities)
+    rememberEntities
     : EntityFac<'Message> =
 
     let clusterSharding = ClusterSharding.Get(system)

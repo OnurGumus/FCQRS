@@ -125,16 +125,22 @@ let init<'TDataEvent,'TPredicate,'t> (actorApi: IActor) offsetCount handler =
         override _.Subscribe(callback, ?cancellationToken) =
             let token = defaultArg cancellationToken CancellationToken.None
             let ks = subscribeCmd callback
-            token.Register(fun _ -> ks.Shutdown())
+            let reg = token.Register(fun _ -> ks.Shutdown())
+            { new IDisposable with
+                member __.Dispose() =
+                    reg.Dispose()
+                    if not token.IsCancellationRequested then ks.Shutdown() }
             
-        override _.Subscribe(filter, take, ?callback, ?cancellationToken) = 
+        override _.Subscribe(filter, take, ?callback, ?cancellationToken) =
             let token = defaultArg cancellationToken CancellationToken.None
-            // Default callback to ignore if not provided.
             let cb = defaultArg callback ignore
             let ks, res = subscribeCmdWithFilter filter take cb
-            let d = token.Register(fun _ -> ks.Shutdown())
+            let reg = token.Register(fun _ -> ks.Shutdown())
             async {
                 do! res
-                return d
+                return { new IDisposable with
+                            member __.Dispose() =
+                                reg.Dispose()
+                                if not token.IsCancellationRequested then ks.Shutdown() }
             }
     }

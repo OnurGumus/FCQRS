@@ -15,14 +15,11 @@ open Akka.Streams
 open SagaStarter
 open Microsoft.Extensions.Configuration
 
-type OriginatorName =
-    | OriginatorName of string
-
-    member this.Value = let (OriginatorName on) = this in on
-
 type ISerializable = interface end
 
-type IDefaultTag = interface end
+// Add the new interface for messages with CID
+type IMessageWithCID =
+    abstract member CID : CID
 
 type Command<'CommandDetails> =
     { CommandDetails: 'CommandDetails
@@ -30,10 +27,12 @@ type Command<'CommandDetails> =
       Id: MessageId option
       Sender: ActorId option
       CorrelationId: CID }
-
+      
     override this.ToString() = sprintf "%A" this
 
     interface ISerializable
+    interface IMessageWithCID with
+        member this.CID = this.CorrelationId
 
 type Event<'EventDetails> =
     { EventDetails: 'EventDetails
@@ -46,6 +45,8 @@ type Event<'EventDetails> =
     override this.ToString() = sprintf "%A" this
 
     interface ISerializable
+    interface IMessageWithCID with
+        member this.CID = this.CorrelationId
 
 type ContinueOrAbort<'EventDetails> = ContinueOrAbort of Event<'EventDetails>    interface ISerializable
 type AbortedEvent = AbortedEvent   interface ISerializable
@@ -81,7 +82,6 @@ type EventAction<'T> =
         | StopActor
         | NoEffect
     
-
 type SagaState<'SagaData,'State> = 
         { Data: 'SagaData; State: 'State }
         with interface ISerializable
@@ -134,7 +134,6 @@ module SagaStarter =
         let index = name.LastIndexOf(CID_Separator)
         name.Substring(index + 1).Replace(SAGA_Suffix, "")
 
-
     let toCidWithExisting (name: string) (existing: string) =
         let originator = name
         let guid = existing |> toRawGuid
@@ -164,7 +163,6 @@ module SagaStarter =
         { Event: 'T }
         interface ISerializable
 
-
     type Message =
         | Command of Command
         | Event of Event
@@ -193,7 +191,7 @@ module SagaStarter =
             let originatorName = sender.Path.Name |> toOriginatorName
 
             if originatorName <> self.Path.Name then
-                sender <! (event)
+                sender <! event
 
         mediator <! Publish(self.Path.Name, event)
         mediator <! Publish(self.Path.Name + CID_Separator + cid, event)
@@ -215,20 +213,19 @@ module SagaStarter =
 
     let unboxx (msg: obj) =
         let genericType =
-            (typedefof<SagaStartingEvent<_>>).MakeGenericType([| msg.GetType() |])
+            typedefof<SagaStartingEvent<_>>.MakeGenericType [| msg.GetType() |]
 
         FSharpValue.MakeRecord(genericType, [| msg |])
-
 
     let actorProp
         (sagaCheck: obj -> (((string -> IEntityRef<obj>) * PrefixConversion * obj) list))
         (mailbox: Actor<_>)
         =
-        let rec set (state: Map<string, (Actor.IActorRef * string list list)>) =
+        let rec set (state: Map<string, (IActorRef * string list list)>) =
 
             let startSaga
                 cid
-                (originator: Actor.IActorRef)
+                (originator: IActorRef)
                 (list: ((string -> IEntityRef<obj>) * PrefixConversion * obj) list)
                 =
                 let sender = untyped <| mailbox.Sender()
@@ -237,11 +234,11 @@ module SagaStarter =
                     [ for (factory, prefix, e) in list do
                           let saga =
                               cid
-                              |> fun name ->
+                              |> fun name -> 
                                   match prefix with
                                   | PrefixConversion None -> name
-                                  | PrefixConversion(Some f) ->
-                                      originator.Path.Name + SAGA_Suffix + (f (name |> toRawGuid))
+                                  | PrefixConversion(Some f) -> 
+                                      originator.Path.Name + SAGA_Suffix + f (name |> toRawGuid)
                               |> factory
 
                           let msg = unboxx e
@@ -252,7 +249,7 @@ module SagaStarter =
                 let name = originator.Path.Name
 
                 let state =
-                    match state.TryFind(name) with
+                    match state.TryFind name with
                     | None -> state.Add(name, (sender, [sagas]))
                     | Some(_, lists) -> state.Remove(name).Add(name, (sender, sagas ::lists ))
 
@@ -265,7 +262,7 @@ module SagaStarter =
                     let sender = untyped <| mailbox.Sender()
                     let originName = sender.Path.Name |> toOriginatorName
                     //weird bug cause an NRE with TryGet
-                    let matchFound = state.ContainsKey(originName)
+                    let matchFound = state.ContainsKey originName
 
                     if not matchFound then
                         return! set state
@@ -277,7 +274,7 @@ module SagaStarter =
 
                         if newList.IsEmpty then
                             originator.Tell(SagaCheckDone, untyped mailbox.Self)
-                            return! set <| state.Remove(originName)
+                            return! set <| state.Remove originName
                         else
                             return! set <| state.Remove(originName).Add(originName, (originator, newList::subscibersWithoutTarget))
 
@@ -345,7 +342,6 @@ module CommandHandler =
                                         untyped mailbox.Self
                                     )
                                 )
-
                                 cd
 
                         return!

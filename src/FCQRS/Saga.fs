@@ -5,7 +5,6 @@ open Akkling
 open Akkling.Persistence
 open Akka
 open Common
-open Akka.Cluster.Sharding
 open Common.SagaStarter
 open Akka.Event
 open Microsoft.Extensions.Logging
@@ -14,10 +13,6 @@ open Microsoft.FSharp.Reflection
 open FCQRS.Model.Data
 open AkklingHelpers
 open Microsoft.Extensions.Configuration
-
-
-type NextState = obj option
-
 
 let toStateChange state =
     state |> StateChanged |> box |> Persist :> Effect<obj>
@@ -29,12 +24,10 @@ let createCommand (mailbox: Eventsourced<_>) (command: 'TCommand) cid =
       Id = None
       Sender = mailbox.Self.Path.Name |> ValueLens.CreateAsResult |> Result.value |> Some }
 
-
 type ParentSaga<'SagaData, 'State> = SagaStateWithVersion<'SagaData, 'State>
 
 type SagaStartingEventWrapper<'TEvent> =
     | SagaStartingEventWrapper of SagaStartingEvent<'TEvent>
-
     interface ISerializable
 
 let runSaga<'TEvent, 'SagaData, 'State>
@@ -52,7 +45,7 @@ let runSaga<'TEvent, 'SagaData, 'State>
     innerStateDefaults
     =
     let rec innerSet (startingEvent: option<SagaStarter.SagaStartingEvent<_>>, subscribed) =
-        let innerSetValue = (startingEvent, subscribed)
+        let innerSetValue = startingEvent, subscribed
 
         actor {
             let! msg = mailbox.Receive()
@@ -66,8 +59,8 @@ let runSaga<'TEvent, 'SagaData, 'State>
                 return! innerSet (startingEvent, subscribed)
 
             | :? Persistence.RecoveryCompleted ->
-                SagaStarter.subscriber mediator mailbox
-                log.LogInformation("Saga RecoveryCompleted")
+                subscriber mediator mailbox
+                log.LogInformation "Saga RecoveryCompleted"
                 return! innerSet (startingEvent, subscribed)
             | Recovering mailbox (:? SagaStartingEventWrapper<'TEvent> as SagaStartingEventWrapper event) ->
                 return! innerSet (Some event, true)
@@ -80,23 +73,23 @@ let runSaga<'TEvent, 'SagaData, 'State>
                     return! newState |> set innerSetValue //<@> innerSet (startingEvent, true)
 
             | PersistentLifecycleEvent _
-            | :? Akka.Persistence.SaveSnapshotSuccess
+            | :? Persistence.SaveSnapshotSuccess
             | LifecycleEvent _ -> return! innerSet (startingEvent, true)
             | SnapshotOffer(snapState: obj) -> return! snapState |> unbox<_> |> set innerSetValue
-            | SagaStarter.SubscriptionAcknowledged mailbox _ -> 
+            | SubscriptionAcknowledged mailbox _ -> 
                 // notify saga starter about the subscription completed
                 let newState = applySideEffects state startingEvent true
 
                 match newState with
                 | Some newState ->
-                    return! (newState |> StateChanged |> box |> Persist) <@> innerSet (startingEvent, true)
+                    return! newState |> StateChanged |> box |> Persist <@> innerSet (startingEvent, true)
                 | None -> return! state |> set innerSetValue <@> innerSet (startingEvent, true)
 
-            | Deferred mailbox (obj)
-            | Persisted mailbox (obj) ->
+            | Deferred mailbox obj
+            | Persisted mailbox obj ->
                 match obj with
-                | (:? SagaStartingEventWrapper<'TEvent> as SagaStartingEventWrapper e) -> return innerSet (Some e, true)
-                | (:? SagaEvent<'State> as e) ->
+                | :? SagaStartingEventWrapper<'TEvent> as SagaStartingEventWrapper e -> return innerSet (Some e, true)
+                | :? SagaEvent<'State> as e ->
                     match e with
                     | StateChanged originalState ->
                         let outerState = wrapper originalState
@@ -120,15 +113,15 @@ let runSaga<'TEvent, 'SagaData, 'State>
                                     SagaState = newInnerState }
 
 
-                            if (version >= snapshotVersionCount && version % snapshotVersionCount = 0L) then
-                                return! parentState |> set innerSetValue <@> SaveSnapshot(parentState)
+                            if version >= snapshotVersionCount && version % snapshotVersionCount = 0L then
+                                return! parentState |> set innerSetValue <@> SaveSnapshot parentState
                             else
                                 return!
-                                    (newSagaState |> set innerSetValue)
+                                    newSagaState |> set innerSetValue
                                     <@> (newState |> StateChanged |> box |> Persist)
                         | None ->
-                            if (version >= snapshotVersionCount && version % snapshotVersionCount = 0L) then
-                                return! parentState |> set innerSetValue <@> SaveSnapshot(parentState)
+                            if version >= snapshotVersionCount && version % snapshotVersionCount = 0L then
+                                return! parentState |> set innerSetValue <@> SaveSnapshot parentState
                             else
                                 return! parentState |> set innerSetValue
 
@@ -144,9 +137,8 @@ let runSaga<'TEvent, 'SagaData, 'State>
 
             | :? (SagaStarter.SagaStartingEvent<'TEvent>) as e when startingEvent.IsNone ->
                 return! SagaStartingEventWrapper e |> box |> Persist
-            //  return! innerSet ((Some e), subscribed)
             | :? (SagaStarter.SagaStartingEvent<'TEvent>) when subscribed ->
-                SagaStarter.cont mediator
+                cont mediator
                 return! innerSet (startingEvent, subscribed)
 
             | _ -> return! body msg
@@ -166,14 +158,14 @@ let actorProp
     (mailbox: Eventsourced<obj>)
     =
     let cid: CID =
-        (mailbox.Self.Path.Name |> SagaStarter.toRawGuid)
+        mailbox.Self.Path.Name |> SagaStarter.toRawGuid
         |> ValueLens.CreateAsResult
         |> Result.value
 
     let log = mailbox.UntypedContext.GetLogger()
     let loggerFactory = env :> ILoggerFactory
     let config = env :> IConfiguration
-    let logger = loggerFactory.CreateLogger(name)
+    let logger = loggerFactory.CreateLogger name
 
     let snapshotVersionCount =
         let s: string | null = config["config:akka:persistence:snapshot-version-count"]
@@ -181,8 +173,6 @@ let actorProp
         match s |> System.Int32.TryParse with
         | true, v -> v
         | _ -> 30
-
-
 
     let applySideEffects
         (sagaState: ParentSaga<'SagaData, 'State>)
@@ -193,7 +183,6 @@ let actorProp
             applySideEffects2 sagaState.SagaState startingEvent recovering
 
         for cmd in cmds do
-
 
             let createFinalCommand cmd =
                 let baseType =
@@ -207,7 +196,7 @@ let actorProp
                 let command = createCommand mailbox cmd.Command cid
 
                 let unboxx (msg: Command<obj>) =
-                    let genericType = (typedefof<Command<_>>).MakeGenericType([| baseType |])
+                    let genericType = typedefof<Command<_>>.MakeGenericType [| baseType |]
 
                     let actorId: ActorId option =
                         mailbox.Self.Path.Name |> ValueLens.CreateAsResult |> Result.value |> Some
@@ -244,14 +233,13 @@ let actorProp
         match effect with
         | NoEffect -> newState
         | ResumeFirstEvent ->
-            SagaStarter.cont mediator
+            cont mediator
             newState
         | StopActor ->
-            let poision = Akka.Cluster.Sharding.Passivate <| Actor.PoisonPill.Instance
+            let poision = Cluster.Sharding.Passivate <| Actor.PoisonPill.Instance
             mailbox.Parent() <! poision
             log.Info("{0} Completed", name)
             newState
-
 
     let rec set innerStateDefaults (sagaState: ParentSaga<'SagaData, 'State>) =
 
@@ -284,7 +272,7 @@ let actorProp
             mailbox
             logger
             mediator
-            (set)
+            set
             sagaState
             applySideEffects
             apply
@@ -307,8 +295,8 @@ let init
         { Version = 0L
           SagaState = initialState }
 
-    (AkklingHelpers.entityFactoryFor actorApi.System shardResolver name
+    entityFactoryFor actorApi.System shardResolver name
      <| propsPersist (
          actorProp env initialState name handleEvent applySideEffects apply actorApi (typed actorApi.Mediator)
      )
-     <| true)
+     <| true

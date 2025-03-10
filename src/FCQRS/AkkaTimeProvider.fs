@@ -69,14 +69,14 @@ type AkkaTimer(callback: TimerCallback, state: obj | null, dueTime: TimeSpan, pe
     do start()
 
     interface ITimer with
-        member this.Dispose() =
+        member _.Dispose() =
             isDisposed <- true
             if timerHandle <> null then
                 (timerHandle |> Unchecked.nonNull).Cancel()
             // Stop the actor
             callbackActorRef.Tell(PoisonPill.Instance)
 
-        member this.Change(newDueTime: TimeSpan, newPeriod: TimeSpan) : bool =
+        member _.Change(newDueTime: TimeSpan, newPeriod: TimeSpan) : bool =
             let initialDelayMs = 
                 if newDueTime < TimeSpan.Zero then 0
                 elif newDueTime.TotalMilliseconds > double Int32.MaxValue then Int32.MaxValue

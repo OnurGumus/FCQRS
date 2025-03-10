@@ -237,7 +237,7 @@ let api (config: IConfiguration) (loggerFactory: ILoggerFactory) =
     let mat = ActorMaterializer.Create system
 
     let subscribeForCommand command =
-        Common.CommandHandler.subscribeForCommand system (typed mediator) command
+        subscribeForCommand system (typed mediator) command
 
     { new IActor with
         /// <summary>
