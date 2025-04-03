@@ -2,11 +2,11 @@
 open FSharp.Data.Sql.Common
 open System.Linq
 open FCQRS.Model.Data
-let sortByEval column =
+let private sortByEval column =
     <@@ fun (x: SqlEntity) -> x.GetColumn<System.IComparable>(column) @@>
 
 
-let rec eval (t) =
+let rec private eval t =
         match t with
         | Equal(s, n) -> <@@ fun (x: SqlEntity) -> x.GetColumn(s) = n @@>
         | NotEqual(s, n) -> <@@ fun (x: SqlEntity) -> x.GetColumn(s) <> n @@>
@@ -18,7 +18,7 @@ let rec eval (t) =
         | Or(t1, t2) -> <@@ fun (x: SqlEntity) -> (%%eval t1) x || (%%eval t2) x @@>
         | Not(t0) -> <@@ fun (x: SqlEntity) -> not ((%%eval t0) x) @@>
 
-let augment eval filter orderby orderbydesc thenby thenbydesc (take:int option) skip db =
+let private augment  eval filter orderby orderbydesc thenby thenbydesc (take:int option) skip db =
     let db =
         match filter with
         | Some filter ->

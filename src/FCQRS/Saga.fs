@@ -1,4 +1,4 @@
-module Saga
+module FCQRS.Saga
 
 open FCQRS
 open Akkling
@@ -14,23 +14,23 @@ open FCQRS.Model.Data
 open AkklingHelpers
 open Microsoft.Extensions.Configuration
 
-let toStateChange state =
+let private toStateChange state =
     state |> StateChanged |> box |> Persist :> Effect<obj>
 
-let createCommand (mailbox: Eventsourced<_>) (command: 'TCommand) cid =
+let private createCommand (mailbox: Eventsourced<_>) (command: 'TCommand) cid =
     { CommandDetails = command
       CreationDate = mailbox.System.Scheduler.Now.UtcDateTime
       CorrelationId = cid
       Id = None
       Sender = mailbox.Self.Path.Name |> ValueLens.CreateAsResult |> Result.value |> Some }
 
-type ParentSaga<'SagaData, 'State> = SagaStateWithVersion<'SagaData, 'State>
+type internal ParentSaga<'SagaData, 'State> = SagaStateWithVersion<'SagaData, 'State>
 
-type SagaStartingEventWrapper<'TEvent> =
+type internal SagaStartingEventWrapper<'TEvent> =
     | SagaStartingEventWrapper of SagaStartingEvent<'TEvent>
     interface ISerializable
 
-let runSaga<'TEvent, 'SagaData, 'State>
+let private runSaga<'TEvent, 'SagaData, 'State>
     snapshotVersionCount
     (mailbox: Eventsourced<obj>)
     (log: ILogger)
@@ -146,7 +146,7 @@ let runSaga<'TEvent, 'SagaData, 'State>
 
     innerSet innerStateDefaults
 
-let actorProp
+let private actorProp
     env
     initialState
     name

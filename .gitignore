@@ -1,3 +1,5 @@
 *.cached
 bin/
 obj/
+tmp/
+.fsdocs/cache
