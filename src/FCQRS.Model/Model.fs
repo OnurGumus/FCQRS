@@ -21,7 +21,7 @@ type ValueLens =
     static member inline Value<'Wrapped, 'Inner when ValueLensType<'Wrapped, 'Inner>>(this: 'Wrapped) =
         fst 'Wrapped.Value_ this
 
-    static member inline ToString<'Wrapped, 'Inner when ValueLensType<'Wrapped, 'Inner>>(this: 'Wrapped) =
+    static member inline ToString<'Wrapped, 'Inner when 'Inner: not null and ValueLensType<'Wrapped, 'Inner>>(this: 'Wrapped) =
         (ValueLens.Value this).ToString()
 
     static member inline IsValidValue<'Wrapped, 'Inner, 'Error when ValueLensResultType<'Wrapped, 'Inner, 'Error>>
@@ -30,7 +30,7 @@ type ValueLens =
         (Optic.set 'Wrapped.Value_ (ValueLens.Value this) this).IsOk
 
     static member inline Isvalid this =
-        ValueLens.IsValidValue this && (ValueLens.Value this) |> ValueLens.IsValidValue
+        ValueLens.IsValidValue this && ValueLens.Value this|> ValueLens.IsValidValue
 
     static member inline TryCreate<'Wrapped, 'Inner, 'Error when ValueLensResultType<'Wrapped, 'Inner, 'Error>>
         (innerValue: 'Inner)
@@ -125,7 +125,7 @@ type CID =
     private
     | CID of ShortString
 
-    static member Value_ = (fun (CID v) -> v), (fun v _ -> (CID v))
+    static member Value_ = (fun (CID v) -> v), (fun v _ -> CID v)
     member this.IsValid = (ValueLens.Value this).IsValid
     override this.ToString() = (ValueLens.Value this).ToString()
 
@@ -133,7 +133,7 @@ type ActorId =
     private
     | ActorId of ShortString
 
-    static member Value_ = (fun (ActorId v) -> v), (fun v _ -> (ActorId v))
+    static member Value_ = (fun (ActorId v) -> v), (fun v _ -> ActorId v)
     member this.IsValid = (ValueLens.Value this).IsValid
     override this.ToString() = (ValueLens.Value this).ToString()
 
@@ -141,6 +141,6 @@ type MessageId =
     private
     | MessageId of ShortString
 
-    static member Value_ = (fun (MessageId v) -> v), (fun v _ -> (MessageId v))
+    static member Value_ = (fun (MessageId v) -> v), (fun v _ -> MessageId v)
     member this.IsValid = (ValueLens.Value this).IsValid
     override this.ToString() = (ValueLens.Value this).ToString()
