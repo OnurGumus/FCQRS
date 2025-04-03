@@ -5,6 +5,13 @@
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <FablePackageType>library</FablePackageType>
     <PackageTags>fable-all;fsharp;</PackageTags>
+    <DebugType>embedded</DebugType>
+    <IncludeSymbols>true</IncludeSymbols>
+    <IncludeSource>true</IncludeSource>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <RepositoryUrl>https://github.com/onurgumus/FCQRS</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="Aether.fs" />

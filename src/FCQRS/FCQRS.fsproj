@@ -7,6 +7,12 @@
     <PackageTags>fable-dotnet;</PackageTags>
     <PackageId>FCQRS</PackageId>
     <DebugType>embedded</DebugType>
+    <IncludeSymbols>true</IncludeSymbols>
+    <IncludeSource>true</IncludeSource>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <RepositoryUrl>https://github.com/onurgumus/FCQRS</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="Common.fs" />
