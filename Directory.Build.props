@@ -1,5 +1,6 @@
 <Project>
     <PropertyGroup>
          <FsDocsLogoSource>img/logo.png</FsDocsLogoSource>
+          <FsDocsFaviconSource>img/logo.png</FsDocsFaviconSource>
     </PropertyGroup>
 </Project>
