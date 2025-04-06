@@ -1,0 +1,4 @@
+FSharp.Core
+FCQRS
+Hocon.Extensions.Configuration
+Microsoft.Extensions.Logging.Console

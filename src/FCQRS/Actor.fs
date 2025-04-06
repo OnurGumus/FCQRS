@@ -1,5 +1,5 @@
 [<System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage>]
-module rec FCQRS.Actor
+module internal rec FCQRS.Actor
 
 open Akka.Streams
 open Akka.Cluster

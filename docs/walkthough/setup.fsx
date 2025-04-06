@@ -1,0 +1,95 @@
+(**
+---
+title: User Registration and Login
+category: Walkthrough
+categoryindex: 2
+index: 1
+---
+*)
+(*** hide ***)
+#load "../../references.fsx"
+open System.IO
+open Microsoft.Extensions.Configuration
+open Hocon.Extensions.Configuration
+
+(**
+
+
+## A Walkthrough: User Registration and Login
+In this example, we will create a simple user registration and login system using FCQRS. The system will consist of a `User` aggregate that handles commands for registering and logging in users.
+The aggregate will emit events based on the commands it processes. We will also implement a simple actor that will manage the state of the `User` aggregate.
+
+
+1. **Create a new F# project:**
+   dotnet new console -lang F# -n MyFCQRSApp
+2. **Add the packages:** <br>
+   dotnet add package FCQRS <br>
+   dotnet add package Hocon.Extensions.Configuration <br>
+   dotnet add package Microsoft.Extensions.Logging.Console <br>
+3. **Create a hocon configuration file:** 
+   [config.hocon](config.hocon)
+4. **Create an Environments module and implement IConfiguration: and ILoggerFactory:**
+
+*)
+
+open Microsoft.Extensions.Configuration
+open Microsoft.Extensions.Logging
+
+type AppEnv(config: IConfiguration, loggerFactory: ILoggerFactory) =
+    interface ILoggerFactory with
+        member _.AddProvider(provider: ILoggerProvider) : unit = 
+            loggerFactory.AddProvider provider
+
+        member _.CreateLogger(categoryName: string) : ILogger =
+            loggerFactory.CreateLogger categoryName 
+
+        member _.Dispose() : unit = loggerFactory.Dispose()
+
+    interface IConfiguration with
+        member _.Item
+            with get (key: string) = config.[key]
+            and set key v = config.[key] <- v
+
+        member _.GetChildren() = config.GetChildren()
+        member _.GetReloadToken() = config.GetReloadToken()
+        member _.GetSection key = config.GetSection key
+
+(**
+
+Above code acts as a composition root for the application environment. It wraps `IConfiguration` and `ILoggerFactory`, allowing you to manage configuration and logging in a clean and type-safe manner.
+*)
+
+(** 
+### User Aggregate
+The `User` aggregate is responsible for handling user registration and login commands. It maintains the state of the user, including the username and password.
+*)
+
+(** 
+#### State, Command, and Event Types
+*)
+
+open FCQRS.Common
+
+type State =
+    { Username: string option
+      Password: string option }
+
+type Command =
+    | Login of string
+    | Register of string * string
+
+type Event =
+    | LoginSucceeded
+    | LoginFailed
+    | RegisterSucceeded of string * string
+    | AlreadyRegistered
+
+(**
+For each aggregate, we define State, Command, and Event types. The `State` type represents the current state of the aggregate, while the `Command` type defines the commands that can be sent to the aggregate. The `Event` type defines the events that can be emitted by the aggregate.
+*)
+
+let numbers = [ 0 .. 99 ]
+(*** include-value: numbers ***)
+
+List.sum numbers
+(*** include-it ***)

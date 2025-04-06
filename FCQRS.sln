@@ -13,6 +13,8 @@ Project("{F2A71F9B-5D33-465A-A702-920D77279786}") = "FCQRS.Serialization", "src\
 EndProject
 Project("{F2A71F9B-5D33-465A-A702-920D77279786}") = "FCQRS.Model", "src\FCQRS.Model\FCQRS.Model.fsproj", "{D660326B-8249-4AEB-AA64-3EFCE126FDD2}"
 EndProject
+Project("{F2A71F9B-5D33-465A-A702-920D77279786}") = "sample", "sample\sample.fsproj", "{FDC7413A-E829-48B4-8A60-52BF57267716}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -38,6 +40,10 @@ Global
 		{D660326B-8249-4AEB-AA64-3EFCE126FDD2}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{D660326B-8249-4AEB-AA64-3EFCE126FDD2}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{D660326B-8249-4AEB-AA64-3EFCE126FDD2}.Release|Any CPU.Build.0 = Release|Any CPU
+		{FDC7413A-E829-48B4-8A60-52BF57267716}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{FDC7413A-E829-48B4-8A60-52BF57267716}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{FDC7413A-E829-48B4-8A60-52BF57267716}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{FDC7413A-E829-48B4-8A60-52BF57267716}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(NestedProjects) = preSolution
 		{2DAAE17B-B82F-49E5-BC62-CC869454C08A} = {7A58B977-7039-4112-85F6-E1939968BE77}
