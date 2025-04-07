@@ -87,9 +87,3 @@ type Event =
 (**
 For each aggregate, we define State, Command, and Event types. The `State` type represents the current state of the aggregate, while the `Command` type defines the commands that can be sent to the aggregate. The `Event` type defines the events that can be emitted by the aggregate.
 *)
-
-let numbers = [ 0 .. 99 ]
-(*** include-value: numbers ***)
-
-List.sum numbers
-(*** include-it ***)

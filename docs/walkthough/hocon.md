@@ -8,9 +8,10 @@ index: 2
 
 ## Hocon file
 
+You don't need a hocon file. But hocon is well documented for akka.net. The below sets up connections string for sqlite. Consule to akka.net docs for customization.
+
 
 ```hocon
-
 config {
      connection-string = "Data Source=demo.db;"
      akka {

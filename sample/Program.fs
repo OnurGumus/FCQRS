@@ -1,6 +1,6 @@
 ﻿open FCQRS.Model.Data
 open Command
-
+async{
 // Start query side and get an ISubscribe to wait for the query side to catch up with the command side.
 let sub = BootStrap.sub Query.handleEventWrapper 0L
 
@@ -21,26 +21,27 @@ let cid1 = cid()
 let s = sub.Subscribe((fun e -> e.CID = cid1), 1)
 
 // Send the command to register a new user.
-let result = register cid1 userName password |> Async.RunSynchronously
+let! result = register cid1 userName password
 
 // Wait for the event to happen.
 (s |> Async.RunSynchronously).Dispose()
 printfn "%A" result
 
 // Try registering the same user again.
-let resultFailure = register (cid()) userName password |> Async.RunSynchronously
+let! resultFailure = register (cid()) userName password
 printfn "%A" resultFailure
 
 System.Console.ReadKey() |> ignore
 
 // Login the user with incorrect password.
-let loginResultF = login (cid()) userName "wrong pass" |> Async.RunSynchronously
+let! loginResultF = login (cid()) userName "wrong pass"
 printfn "%A" loginResultF
 
 // Login the user with correct password.
-let loginResultS = login (cid()) userName password |> Async.RunSynchronously
+let! loginResultS = login (cid()) userName password 
 printfn "%A" loginResultS
 
 
 // Best to wait for hit key to exit.
 System.Console.ReadKey() |> ignore
+} |> Async.RunSynchronously
