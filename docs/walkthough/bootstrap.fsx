@@ -8,19 +8,17 @@ index: 3
 *)
 (*** hide ***)
 #load "../../references.fsx"
-open System.IO
-open Microsoft.Extensions.Configuration
-open Hocon.Extensions.Configuration
-open Microsoft.Extensions.Logging
 
 (**
-
-
 ## Bootstrapping
 The ultimate objective of write site boottrapping is to make a call to FCQRS.Actor.api which initializes the actor system and starts the write site.
 This API requires a configuration and a logger factory. The configuration is used to configure the actor system and the logger factory is used to log messages from the actor system.
 
 *)
+open System.IO
+open Microsoft.Extensions.Configuration
+open Hocon.Extensions.Configuration
+open Microsoft.Extensions.Logging
 
 let configBuilder =
     ConfigurationBuilder()
@@ -28,7 +26,7 @@ let configBuilder =
 
 let config = configBuilder.Build()
 
-let loggerF =
+let loggerFactory =
     LoggerFactory.Create(fun builder -> builder.AddConsole() |> ignore) 
 (**
 You don't have to use HOCON configuration. You can use any configuration system you like , as long as you can build a configuration object that implements `IConfiguration`.
@@ -36,17 +34,15 @@ You don't have to use HOCON configuration. You can use any configuration system 
 *)
 
 
-let actorApi = FCQRS.Actor.api config loggerF
-
+let actorApi = FCQRS.Actor.api config loggerFactory
 
 actorApi.InitializeSagaStarter (fun _ -> [])
-
 
 (**
 Next we create a shard for the User aggregate. A shard is like parent of aggregate actors. And initilize the shard.
 *)
 
-let env = new Environments.AppEnv(config,loggerF)
+let env = new Environments.AppEnv(config,loggerFactory)
 
 let userShard = User.factory env actorApi
 

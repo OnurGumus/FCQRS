@@ -1,7 +1,7 @@
 module Command
 
 open FCQRS.Model.Data
-open BootStrap
+open Bootstrap
 
 // function handles the registration of a new user.
 let register cid userName password =

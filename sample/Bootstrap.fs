@@ -1,4 +1,4 @@
-module BootStrap
+module Bootstrap
 
 open Microsoft.Extensions.Configuration
 open Microsoft.Extensions.Logging

@@ -2,7 +2,7 @@
 open Command
 async{
 // Start query side and get an ISubscribe to wait for the query side to catch up with the command side.
-let sub = BootStrap.sub Query.handleEventWrapper 0L
+let sub = Bootstrap.sub Query.handleEventWrapper 0L
 
 // Helper function to create a new CID.
 let cid (): CID =

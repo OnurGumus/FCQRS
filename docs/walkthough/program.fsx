@@ -10,7 +10,6 @@ index: 6
 #load "../../references.fsx"
 
 open FCQRS.Model.Data
-open BootStrap
 open Command
 
 (**
@@ -18,7 +17,7 @@ open Command
 ## Running the example
  Above code is where we Bootstrap the read side and aquire some handle to subscribe to the events. 
 *)
-let sub = BootStrap.sub Query.handleEventWrapper 0L
+let sub = Bootstrap.sub Query.handleEventWrapper 0L
 
 (**
 Then we create a function to generate a correlation id. This is used to track the command. We will explain ValueLens later. For now, just know that it is a way to create a value from a function.
@@ -42,7 +41,7 @@ We are interested in the first event that has the same CID as the one we are sen
 let s = sub.Subscribe((fun e -> e.CID = cid1), 1)
 
 (** Send the command to register a new user. You can also use async block here *)
-let result = (register cid1 userName password) |> Async.RunSynchronously
+let result = register cid1 userName password |> Async.RunSynchronously
 
 (** Wait for the event to happen. Means read-side is completed *)
 (s |> Async.RunSynchronously).Dispose()
