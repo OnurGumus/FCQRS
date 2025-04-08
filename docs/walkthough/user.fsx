@@ -13,6 +13,8 @@ index: 3
 (** 
 ### User Aggregate
 The `User` aggregate is responsible for handling user registration and login commands. It maintains the state of the user, including the username and password.
+In this example we will try to implement below flows <br>
+<img src="../img/flows.png" alt="User Flow" width="800"/> <br>
 *)
 
 (** 
