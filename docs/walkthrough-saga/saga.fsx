@@ -24,7 +24,7 @@ open SendMail
 ##   Saga
  Sagas also like aggregates have a state. They work the same way but instead they take events and issue commands whereas aggregates take commands and issue events.
  Sagas autostart and don't passivate, also need to implement an additional function called apply side effects.
- Below image denotes saga starting process
+ Below image denotes saga starting process <br/>
  <img src="../img/saga-starter.png" alt="Saga Starter" width="800"/> <br>
 
 ### Defining states
