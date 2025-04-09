@@ -16,8 +16,11 @@ open Command
 
 ## Running the example
  Above code is where we Bootstrap the read side and aquire some handle to subscribe to the events. 
+ Last known offset is the last event that was processed. 
+ Here for demo purposes, we are using 0L. In production, you should get the last known offset from the database or persistent storage.
 *)
-let sub = Bootstrap.sub Query.handleEventWrapper 0L
+let lastKnownOffset = 0L
+let sub = Bootstrap.sub Query.handleEventWrapper lastKnownOffset
 
 (**
 Then we create a function to generate a correlation id. This is used to track the command. We will explain ValueLens later. For now, just know that it is a way to create a value from a function.

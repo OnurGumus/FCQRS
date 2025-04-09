@@ -33,3 +33,8 @@ let sagaCheck (o: obj) =
     | _ -> []
 
 actorApi.InitializeSagaStarter sagaCheck
+
+(** 
+We also need to initialize the user and saga actors.
+*)
+UserSaga.init env actorApi |> ignore

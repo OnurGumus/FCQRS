@@ -43,8 +43,10 @@ let behavior (m: Actor<_>) =
             match mail with
             | :? Mail as mail ->
                 printfn "Sending mail to %A !!" mail
-                m.Sender().Tell("sent", m.Self.Underlying :?> Akka.Actor.IActorRef)
+                m.Sender().Tell("sent", m.Self.Underlying 
+                    :?> Akka.Actor.IActorRef)
                 return! loop ()
+                
             | _ ->
                 return! loop ()
         }

@@ -20,11 +20,12 @@ open Command
 
 
 ##  Running the Program 
-We start as usual.
+We start as usual. Make sure you get proper lastKnownOffset. This is the last offset value that was persisted to the database.
 *)
 
 
-let sub = Bootstrap.sub Query.handleEventWrapper 0L
+let lastKnownOffset = 0L
+let sub = Bootstrap.sub Query.handleEventWrapper lastKnownOffset
 
 let cid (): CID =
     System.Guid.NewGuid().ToString() |> ValueLens.CreateAsResult |> Result.value
