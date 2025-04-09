@@ -22,7 +22,7 @@ Aggregates takes commands and emits events.
 The commands are the requests to change the state of the aggregate. When an event is generated it is persisted and
 applied to the state of the aggregate. Then the event is published so that it may start a saga.
  Below image shows an aggregate <br/>
- <img src="../img/aggregate.png" alt="Aggragtes" width="800"/> <br>
+ <img src="/img/aggregate.png" alt="Aggragtes" width="800"/> <br>
 *)
 
 (**
@@ -37,6 +37,6 @@ back the originator. The CID is also used to correlate the events and commands.
 
 Sagas listen events but issue commands.
 Below image shows a saga <br/>
-<img src="../img/saga2.png" alt="Saga" width="800"/> <br>
+<img src="/img/saga2.png" alt="Saga" width="800"/> <br>
 
 *)

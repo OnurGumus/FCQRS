@@ -31,6 +31,7 @@ System.Console.ReadKey() |> ignore
 
 let loginResultF = login (cid()) userName "wrong pass" |> Async.RunSynchronously
 printfn "%A" loginResultF
+System.Console.ReadKey() |> ignore
 
 let loginResultS = login (cid()) userName password |> Async.RunSynchronously
 printfn "%A" loginResultS

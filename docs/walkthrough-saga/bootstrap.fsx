@@ -22,7 +22,7 @@ open FCQRS.Common
 We just have to make a small change in our bootstrapper. So that VerificationRequested event will start the saga.
 We only need the below change.
 *)
-
+let userSagaShard = UserSaga.factory env actorApi
 let sagaCheck (o: obj) =
     match o with
     | :? (FCQRS.Common.Event<User.Event>) as e ->
