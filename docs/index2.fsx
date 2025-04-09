@@ -1,21 +1,11 @@
 (**
 ---
-title: Other documentation2
-category: Other documentation
+title: Introduction
+category: Home
 categoryindex: 1
 index: 1
 ---
 *)
-
-(*** hide ***)
-//#load "../../walkthrough_references.fsx"
-#r  "nuget: FCQRS, *"
-#r  "nuget: Hocon.Extensions.Configuration, *"
-
-
-open System.IO
-open Microsoft.Extensions.Configuration
-open Hocon.Extensions.Configuration
 
 
 (**
@@ -54,48 +44,4 @@ FCQRS supports sagas (process managers) that orchestrate long-running business p
    - `FCQRS`
    - `Hocon.Extensions.Configuration` (optional, for HOCON configuration)
    - `Microsoft.Extensions.Logging.Console` (optional, for logging)
-
-## A Walkthrough: User Registration and Login
-In this example, we will create a simple user registration and login system using FCQRS. The system will consist of a `User` aggregate that handles commands for registering and logging in users.
-The aggregate will emit events based on the commands it processes. We will also implement a simple actor that will manage the state of the `User` aggregate.
-
-
-1. **Create a new F# project:**
-   dotnet new console -lang F# -n MyFCQRSApp
-2. **Add the packages:** <br>
-   dotnet add package FCQRS <br>
-   dotnet add package Hocon.Extensions.Configuration <br>
-   dotnet add package Microsoft.Extensions.Logging.Console <br>
-3. **Create a hocon configuration file:** 
-   [config.hocon](config.hocon)
-4. **Create an Environments module and implement IConfiguration: and ILoggerFactory:**
-
 *)
-
-open Microsoft.Extensions.Configuration
-open Microsoft.Extensions.Logging
-
-type AppEnv(config: IConfiguration, loggerFactory: ILoggerFactory) =
-    interface ILoggerFactory with
-        member _.AddProvider(provider: ILoggerProvider) : unit = 
-            loggerFactory.AddProvider provider
-
-        member _.CreateLogger(categoryName: string) : ILogger =
-            loggerFactory.CreateLogger categoryName 
-
-        member _.Dispose() : unit = loggerFactory.Dispose()
-
-    interface IConfiguration with
-        member _.Item
-            with get (key: string) = config.[key]
-            and set key v = config.[key] <- v
-
-        member _.GetChildren() = config.GetChildren()
-        member _.GetReloadToken() = config.GetReloadToken()
-        member _.GetSection key = config.GetSection key
-
-(**
-
-Above code acts as a composition root for the application environment. It wraps `IConfiguration` and `ILoggerFactory`, allowing you to manage configuration and logging in a clean and type-safe manner.
-*)
-

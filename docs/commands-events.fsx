@@ -8,7 +8,9 @@ index: 3
 *)
 
 (*** hide ***)
-#load "../walkthrough_references.fsx"
+#r  "nuget: FCQRS, *"
+#r  "nuget: Hocon.Extensions.Configuration, *"
+
 open System.IO
 open Microsoft.Extensions.Configuration
 open Hocon.Extensions.Configuration

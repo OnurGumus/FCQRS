@@ -7,7 +7,9 @@ index: 1
 ---
 *)
 (*** hide ***)
-#load "../../saga_references.fsx"
+#r  "nuget: FCQRS, *"
+#r  "nuget: Hocon.Extensions.Configuration, *"
+#r  "../../saga_sample/bin/Debug/net9.0/saga_sample.dll"
 open System.IO
 open Microsoft.Extensions.Configuration
 open Hocon.Extensions.Configuration

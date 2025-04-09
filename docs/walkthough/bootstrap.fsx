@@ -7,7 +7,10 @@ index: 3
 ---
 *)
 (*** hide ***)
-#load "../../walkthrough_references.fsx"
+#r  "nuget: FCQRS, *"
+#r  "nuget: Hocon.Extensions.Configuration, *"
+#r  "nuget: Microsoft.Extensions.Logging.Console, *"
+#r  "../../sample/bin/Debug/net9.0/sample.dll"
 
 (**
 ## Bootstrapping
