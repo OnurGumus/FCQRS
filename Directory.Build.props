@@ -1,5 +1,6 @@
 <Project>
     <PropertyGroup>
+         <GenerateDocumentationFile>true</GenerateDocumentationFile> 
          <FsDocsLogoSource>img/logo.png</FsDocsLogoSource>
           <FsDocsFaviconSource>img/logo.png</FsDocsFaviconSource>
     </PropertyGroup>
