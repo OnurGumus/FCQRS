@@ -66,7 +66,10 @@ let handleCommand (cmd: Command<_>) state =
 
 
 (**
-
+ The command handler takes a Command<_> object which wraps the command details. Command details is our defined command type. Notice the function either return PersistEvent or DeferEvent.
+ PersistEvent is used to persist the event to the event store and send it to the subscribers. DeferEvent is actually same thing but we don't want to persist it. Even though we don't persist it 
+ allows us to wait until the event is generated from the command side.
+ 
  It handles the `Register` command by checking if the username is already registered. If not, it emits a `RegisterSucceeded` event. If the username is already registered, it emits an `AlreadyRegistered` event.
  The `Login` command is handled by checking if the username and password match. If they do, it emits a `LoginSucceeded` event. If not, it emits a `LoginFailed` event.
 

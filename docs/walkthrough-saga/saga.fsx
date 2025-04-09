@@ -92,7 +92,7 @@ let handleEvent (event: obj) (state: SagaState<SagaData, State>) =
 (**
 The first event we handle is for demo cases is a simple string showing that the mail was sent. The second event is the verification requested event. This is the event that will be sent from the user aggregate.
  It will contain the email address and the code. We will use this information to send the email. The third event is the unhandled event. This is just a catch all for any other events that are not handled.
-
+Observe that for state changes we use StateChangedEvent. These state changes are persisted.
  *)
 
 (**
