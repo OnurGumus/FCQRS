@@ -7,10 +7,10 @@ index: 4
 ---
 *)
 (*** hide ***)
-#load "../../references.fsx"
+#load "../../walkthrough_references.fsx"
 
 open FCQRS.Model.Data
-open BootStrap
+open Bootstrap
 
 (**
 

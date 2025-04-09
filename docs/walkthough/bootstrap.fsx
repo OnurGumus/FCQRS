@@ -7,7 +7,7 @@ index: 3
 ---
 *)
 (*** hide ***)
-#load "../../references.fsx"
+#load "../../walkthrough_references.fsx"
 
 (**
 ## Bootstrapping

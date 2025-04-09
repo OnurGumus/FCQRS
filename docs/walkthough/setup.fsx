@@ -7,7 +7,7 @@ index: 1
 ---
 *)
 (*** hide ***)
-#load "../../references.fsx"
+#load "../../walkthrough_references.fsx"
 open System.IO
 open Microsoft.Extensions.Configuration
 open Hocon.Extensions.Configuration
@@ -17,7 +17,8 @@ open Hocon.Extensions.Configuration
 
 ## A Walkthrough: User Registration and Login
 In this example, we will create a simple user registration and login system using FCQRS. The system will consist of a `User` aggregate that handles commands for registering and logging in users.
-The aggregate will emit events based on the commands it processes. We will also implement a simple actor that will manage the state of the `User` aggregate.
+The aggregate will emit events based on the commands it processes. We will also implement a simple actor that will manage the state of the `User` aggregate. You can find the full sample code
+in the sample folder of repo.
 
 
 1. **Create a new F# project:**
@@ -27,7 +28,7 @@ The aggregate will emit events based on the commands it processes. We will also 
    dotnet add package Hocon.Extensions.Configuration <br>
    dotnet add package Microsoft.Extensions.Logging.Console <br>
 3. **Create a hocon configuration file:** 
-   [config.hocon](config.hocon)
+   [config.hocon](hocon.html)
 4. **Create an Environments module and implement IConfiguration: and ILoggerFactory:**
 
 *)

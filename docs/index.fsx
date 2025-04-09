@@ -1,6 +1,6 @@
 
 (*** hide ***)
-#load "../references.fsx"
+#load "../walkthrough_references.fsx"
 open System.IO
 open Microsoft.Extensions.Configuration
 open Hocon.Extensions.Configuration

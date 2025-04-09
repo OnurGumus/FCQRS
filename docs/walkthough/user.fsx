@@ -8,7 +8,7 @@ index: 3
 *)
 
 (*** hide ***)
-#load "../../references.fsx"
+#load "../../walkthrough_references.fsx"
 
 (** 
 ### User Aggregate
@@ -91,12 +91,14 @@ And the cycle continues with  the new state when a future command is received.
 #### Wiring to Akka.net
 *)
 
-(**Finally some boilerplate code to bind the above functions to the actor. Also initiates a shard. For aggregates it is okay not to call this function directly.*)
+(**Finally some boilerplate code to bind the above functions to the actor. Also initiates a shard. 
+"User" here is the shard region name acts like a type
+*)
 let init (env: _) (actorApi: IActor) =
     let initialState = { Username = None; Password = None }
     actorApi.InitializeActor env initialState "User" handleCommand applyEvent
 
-let factory (env: #_) actorApi entityId =
+let factory (env: _) actorApi entityId =
     (init env actorApi).RefFor DEFAULT_SHARD entityId
 
 (** You will call factory to create or resume an actor. Actually clusterd sharded actors are eternal. They are never born and never die. You can pretend
