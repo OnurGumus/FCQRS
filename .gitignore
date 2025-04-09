@@ -1,7 +1,8 @@
 *.cached
-bin/
+
 obj/
 tmp/
 .fsdocs/cache
 *.db
 /output
+/src/**/bin/
