@@ -24,9 +24,9 @@ let private createCommand (mailbox: Eventsourced<_>) (command: 'TCommand) cid =
       Id = None
       Sender = mailbox.Self.Path.Name |> ValueLens.CreateAsResult |> Result.value |> Some }
 
-type internal ParentSaga<'SagaData, 'State> = SagaStateWithVersion<'SagaData, 'State>
+type private ParentSaga<'SagaData, 'State> = SagaStateWithVersion<'SagaData, 'State>
 
-type internal SagaStartingEventWrapper<'TEvent> =
+type private SagaStartingEventWrapper<'TEvent> =
     | SagaStartingEventWrapper of SagaStartingEvent<'TEvent>
     interface ISerializable
 
@@ -64,7 +64,7 @@ let private runSaga<'TEvent, 'SagaData, 'State>
                 return! innerSet (startingEvent, subscribed)
             | Recovering mailbox (:? SagaStartingEventWrapper<'TEvent> as SagaStartingEventWrapper event) ->
                 return! innerSet (Some event, true)
-            | Recovering mailbox (:? Common.SagaEvent<'State> as event) ->
+            | Recovering mailbox (:? SagaEvent<'State> as event) ->
                 match event with
                 | StateChanged s ->
 
@@ -158,7 +158,7 @@ let private actorProp
     (mailbox: Eventsourced<obj>)
     =
     let cid: CID =
-        mailbox.Self.Path.Name |> SagaStarter.toRawGuid
+        mailbox.Self.Path.Name |> SagaStarter.Internal.toRawGuid
         |> ValueLens.CreateAsResult
         |> Result.value
 

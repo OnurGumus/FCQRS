@@ -1,5 +1,4 @@
 // Define a message type to trigger the callback
-[<System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage>]
 module FCQRS.AkkaTimeProvider
 
 open Akka.Actor
@@ -10,87 +9,48 @@ open System.Threading
 open System.Threading.Tasks
 open System.Diagnostics
 
-type ExecuteCallback = ExecuteCallback
+[<AutoOpen>]
+module Internal = 
 
-// Actor that executes the timer callback
-type CallbackActor(callback: TimerCallback, state: obj | null) =
-    inherit UntypedActor()
+    type internal ExecuteCallback = ExecuteCallback
 
-    override x.OnReceive(message: obj) =
-        match message with
-        | :? ExecuteCallback ->
-            try
-                callback.Invoke(state)
-            with ex ->
-                // Log or handle exceptions as needed
-                Console.Error.WriteLine($"Error during timer execution: {ex.Message}")
-        | _ -> ()
+    // Actor that executes the timer callback
+    type internal CallbackActor(callback: TimerCallback, state: obj | null) =
+        inherit UntypedActor()
 
-// Timer implementation using Akka.NET's scheduler
-type AkkaTimer(callback: TimerCallback, state: obj | null, dueTime: TimeSpan, period: TimeSpan, actorSystem: ActorSystem) =
-    let scheduler = actorSystem.Scheduler
-    let mutable isDisposed = false
-    let mutable timerHandle: ICancelable | null = null
+        override x.OnReceive(message: obj) =
+            match message with
+            | :? ExecuteCallback ->
+                try
+                    callback.Invoke(state)
+                with ex ->
+                    // Log or handle exceptions as needed
+                    Console.Error.WriteLine($"Error during timer execution: {ex.Message}")
+            | _ -> ()
 
-    // Convert dueTime and period to milliseconds
-    let initialDelayMs = 
-        if dueTime < TimeSpan.Zero then 0
-        elif dueTime.TotalMilliseconds > double Int32.MaxValue then Int32.MaxValue
-        else int dueTime.TotalMilliseconds
+    // Timer implementation using Akka.NET's scheduler
+    type internal AkkaTimer(callback: TimerCallback, state: obj | null, dueTime: TimeSpan, period: TimeSpan, actorSystem: ActorSystem) =
+        let scheduler = actorSystem.Scheduler
+        let mutable isDisposed = false
+        let mutable timerHandle: ICancelable | null = null
 
-    let periodMs = 
-        if period < TimeSpan.Zero then Timeout.Infinite
-        elif period.TotalMilliseconds > double Int32.MaxValue then Int32.MaxValue
-        else int period.TotalMilliseconds
+        // Convert dueTime and period to milliseconds
+        let initialDelayMs = 
+            if dueTime < TimeSpan.Zero then 0
+            elif dueTime.TotalMilliseconds > double Int32.MaxValue then Int32.MaxValue
+            else int dueTime.TotalMilliseconds
 
-    // Create the actor that will execute the callback
-    let callbackActorRef = actorSystem.ActorOf(Props.Create(fun () -> CallbackActor(callback, state)))
+        let periodMs = 
+            if period < TimeSpan.Zero then Timeout.Infinite
+            elif period.TotalMilliseconds > double Int32.MaxValue then Int32.MaxValue
+            else int period.TotalMilliseconds
 
-    // Start the timer with the initial due time and period
-    let rec start() =
-        if not isDisposed then
-            timerHandle <- 
-                if periodMs = Timeout.Infinite || periodMs = 0 then
-                    // Schedule a one-time execution
-                    scheduler.ScheduleTellOnceCancelable(
-                        initialDelayMs,
-                        callbackActorRef,
-                        ExecuteCallback,
-                        ActorRefs.NoSender)
-                else
-                    // Schedule repeated executions
-                    scheduler.ScheduleTellRepeatedlyCancelable(
-                        initialDelayMs,
-                        periodMs,
-                        callbackActorRef,
-                        ExecuteCallback,
-                        ActorRefs.NoSender)
+        // Create the actor that will execute the callback
+        let callbackActorRef = actorSystem.ActorOf(Props.Create(fun () -> CallbackActor(callback, state)))
 
-    do start()
-
-    interface ITimer with
-        member _.Dispose() =
-            isDisposed <- true
-            if timerHandle <> null then
-                (timerHandle |> Unchecked.nonNull).Cancel()
-            // Stop the actor
-            callbackActorRef.Tell(PoisonPill.Instance)
-
-        member _.Change(newDueTime: TimeSpan, newPeriod: TimeSpan) : bool =
-            let initialDelayMs = 
-                if newDueTime < TimeSpan.Zero then 0
-                elif newDueTime.TotalMilliseconds > double Int32.MaxValue then Int32.MaxValue
-                else int newDueTime.TotalMilliseconds
-
-            let periodMs = 
-                if newPeriod < TimeSpan.Zero then Timeout.Infinite
-                elif newPeriod.TotalMilliseconds > double Int32.MaxValue then Int32.MaxValue
-                else int newPeriod.TotalMilliseconds
-
-            if isDisposed then false
-            else
-                if timerHandle <> null then
-                    (timerHandle |> Unchecked.nonNull).Cancel()
+        // Start the timer with the initial due time and period
+        let rec start() =
+            if not isDisposed then
                 timerHandle <- 
                     if periodMs = Timeout.Infinite || periodMs = 0 then
                         // Schedule a one-time execution
@@ -107,12 +67,54 @@ type AkkaTimer(callback: TimerCallback, state: obj | null, dueTime: TimeSpan, pe
                             callbackActorRef,
                             ExecuteCallback,
                             ActorRefs.NoSender)
-                true
 
-        member this.DisposeAsync(): ValueTask = 
-            (this :> ITimer).Dispose()
-            ValueTask.CompletedTask
-            
+        do start()
+
+        interface ITimer with
+            member _.Dispose() =
+                isDisposed <- true
+                if timerHandle <> null then
+                    (timerHandle |> Unchecked.nonNull).Cancel()
+                // Stop the actor
+                callbackActorRef.Tell(PoisonPill.Instance)
+
+            member _.Change(newDueTime: TimeSpan, newPeriod: TimeSpan) : bool =
+                let initialDelayMs = 
+                    if newDueTime < TimeSpan.Zero then 0
+                    elif newDueTime.TotalMilliseconds > double Int32.MaxValue then Int32.MaxValue
+                    else int newDueTime.TotalMilliseconds
+
+                let periodMs = 
+                    if newPeriod < TimeSpan.Zero then Timeout.Infinite
+                    elif newPeriod.TotalMilliseconds > double Int32.MaxValue then Int32.MaxValue
+                    else int newPeriod.TotalMilliseconds
+
+                if isDisposed then false
+                else
+                    if timerHandle <> null then
+                        (timerHandle |> Unchecked.nonNull).Cancel()
+                    timerHandle <- 
+                        if periodMs = Timeout.Infinite || periodMs = 0 then
+                            // Schedule a one-time execution
+                            scheduler.ScheduleTellOnceCancelable(
+                                initialDelayMs,
+                                callbackActorRef,
+                                ExecuteCallback,
+                                ActorRefs.NoSender)
+                        else
+                            // Schedule repeated executions
+                            scheduler.ScheduleTellRepeatedlyCancelable(
+                                initialDelayMs,
+                                periodMs,
+                                callbackActorRef,
+                                ExecuteCallback,
+                                ActorRefs.NoSender)
+                    true
+
+            member this.DisposeAsync(): ValueTask = 
+                (this :> ITimer).Dispose()
+                ValueTask.CompletedTask
+                
             // Custom TimeProvider that uses Akka.NET's scheduler
 type AkkaTimeProvider(actorSystem: ActorSystem) =
     inherit TimeProvider()

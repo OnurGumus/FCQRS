@@ -7,8 +7,6 @@ index: 2
 ---
 *)
 
-
-
 (**
 ## Persistence
 
@@ -21,6 +19,30 @@ index: 2
 (**
 ## Serialization
 You can configure the serialization of the events and commands. By default FCQRS uses a custom json serializer based on FSharp.SystemText.Json.
+The `FCQRS.Serialization` module provides the following functions for JSON serialization:
+
+* `encode` - Serializes an object to a JSON string
+* `decode` - Deserializes a JSON element to a strongly-typed object
+* `encodeToBytes` - Serializes an object to a UTF-8 byte array
+* `decodeFromBytes` - Deserializes a byte array to a strongly-typed object
+
+Example usage:
+*)
+
+(*** hide ***)
+let exampleObject = {| Name = "Test"; Value = 42 |}
+
+(**
+```fsharp
+// Serialize to JSON string
+let json = Serialization.encode exampleObject
+
+// Deserialize from JSON string
+let decoded = Serialization.decode<{| Name: string; Value: int |}> json
+```
+*)
+
+(**
 In the hocon file you can see it configured 
 
           serializers {
@@ -31,5 +53,4 @@ In the hocon file you can see it configured
                     "System.Object" = json
                     "FCQRS.Common+ISerializable, FCQRS" = stj
                }
-
 *)

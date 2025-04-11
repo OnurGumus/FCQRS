@@ -1,63 +1,64 @@
 [<System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage>]
-module FCQRS.AkklingHelpers
+module internal FCQRS.AkklingHelpers
 
 open Akka.Actor
 open Akka.Cluster.Sharding
 open Akkling
 open Akkling.Persistence
 open Akkling.Cluster.Sharding
+[<AutoOpen>]
+module Internal =
+    type internal Extractor<'Envelope, 'Message> = 'Envelope -> string * string * 'Message
+    type internal ShardResolver = string -> string
 
-type Extractor<'Envelope, 'Message> = 'Envelope -> string * string * 'Message
-type ShardResolver = string -> string
+    type internal TypedMessageExtractor<'Envelope, 'Message> when 'Envelope : not null
+        (extractor: Extractor<_, 'Message>, shardResolver: ShardResolver) =
+        interface IMessageExtractor with
+            member _.ShardId message =
+                match message with
+                | :? 'Envelope as env ->
+                    let shardId, _, _ = extractor env
+                    shardId
+                | :? ShardRegion.StartEntity as e -> shardResolver (e.EntityId)
+                | _ -> invalidOp <| (message .ToString() |> Unchecked.nonNull)
 
-type internal TypedMessageExtractor<'Envelope, 'Message> when 'Envelope : not null
-    (extractor: Extractor<_, 'Message>, shardResolver: ShardResolver) =
-    interface IMessageExtractor with
-        member _.ShardId message =
-            match message with
-            | :? 'Envelope as env ->
-                let shardId, _, _ = extractor env
-                shardId
-            | :? ShardRegion.StartEntity as e -> shardResolver (e.EntityId)
-            | _ -> invalidOp <| (message .ToString() |> Unchecked.nonNull)
+            member _.EntityId message =
+                match message with
+                | :? 'Envelope as env ->
+                    let _, entityId, _ = extractor env
+                    entityId
+                | other -> invalidOp <| string other
 
-        member _.EntityId message =
-            match message with
-            | :? 'Envelope as env ->
-                let _, entityId, _ = extractor env
-                entityId
-            | other -> invalidOp <| string other
-
-        member _.EntityMessage message =
-            match message with
-            | :? 'Envelope as env ->
-                let _, _, msg = extractor env
-                box msg
-            | other -> invalidOp <| string other
-        member this.ShardId(entityId: string, _: obj): string = 
-            shardResolver entityId
+            member _.EntityMessage message =
+                match message with
+                | :? 'Envelope as env ->
+                    let _, _, msg = extractor env
+                    box msg
+                | other -> invalidOp <| string other
+            member this.ShardId(entityId: string, _: obj): string = 
+                shardResolver entityId
 
 
-// HACK over persistent actors
-type FunPersistentShardingActor<'Message>(actor: Eventsourced<'Message> -> Effect<'Message>) as this =
-    inherit FunPersistentActor<'Message>(actor)
-    // sharded actors are produced in path like /user/{name}/{shardId}/{entityId}, therefore "{name}/{shardId}/{entityId}" is peristenceId of an actor
-    let pid =
-        this.Self.Path.Parent.Parent.Name
-        + "/"
-        + this.Self.Path.Parent.Name
-        + "/"
-        + this.Self.Path.Name
+    // HACK over persistent actors
+    type  internal FunPersistentShardingActor<'Message>(actor: Eventsourced<'Message> -> Effect<'Message>) as this =
+        inherit FunPersistentActor<'Message>(actor)
+        // sharded actors are produced in path like /user/{name}/{shardId}/{entityId}, therefore "{name}/{shardId}/{entityId}" is peristenceId of an actor
+        let pid =
+            this.Self.Path.Parent.Parent.Name
+            + "/"
+            + this.Self.Path.Parent.Name
+            + "/"
+            + this.Self.Path.Name
 
-    override _.PersistenceId = pid
+        override _.PersistenceId = pid
 
-// this function hacks persistent functional actors props by replacing them with dedicated sharded version using different PeristenceId strategy
-let internal adjustPersistentProps (props: Props<'Message>) : Props<'Message> =
-    if props.ActorType = typeof<FunPersistentActor<'Message>> then
-        { props with
-            ActorType = typeof<FunPersistentShardingActor<'Message>> }
-    else
-        props
+    // this function hacks persistent functional actors props by replacing them with dedicated sharded version using different PeristenceId strategy
+    let internal adjustPersistentProps (props: Props<'Message>) : Props<'Message> =
+        if props.ActorType = typeof<FunPersistentActor<'Message>> then
+            { props with
+                ActorType = typeof<FunPersistentShardingActor<'Message>> }
+        else
+            props
 
 let entityFactoryFor
     (system: ActorSystem)
