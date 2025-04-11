@@ -1,4 +1,10 @@
-/// Contains common types, interfaces, constants, and utility functions used across the FCQRS framework.
+/// <summary>
+///  Contains common types like Events and Commands
+/// </summary>
+///
+/// <namespacedoc>
+///   <summary>Functionality for Write Side.</summary>
+/// </namespacedoc>
 module rec FCQRS.Common
 
 open System
