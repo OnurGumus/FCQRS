@@ -68,6 +68,8 @@ type Event<'EventDetails> =
     interface IMessageWithCID with
         member this.CID = this.CorrelationId
 
+[<Literal>]
+let DEFAULT_SHARD = "default-shard"
 // Internal types related to saga flow control
 
 
@@ -83,9 +85,6 @@ module internal Internal =
     type SagaStateWithVersion<'SagaData,'State> =
             { SagaState : SagaState<'SagaData,'State>; Version: int64; }
             with interface ISerializable
-
-    [<Literal>]
-    let DEFAULT_SHARD = "default-shard"
     
     // Internal constants for saga naming conventions
     [<Literal>]
