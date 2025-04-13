@@ -72,6 +72,8 @@ type Event<'EventDetails> =
 let DEFAULT_SHARD = "default-shard"
 // Internal types related to saga flow control
 
+type  ContinueOrAbort<'EventDetails> = ContinueOrAbort of Event<'EventDetails>    interface ISerializable
+type  AbortedEvent = AbortedEvent   interface ISerializable
 
 [<AutoOpen>]
 module internal Internal =
@@ -79,8 +81,6 @@ module internal Internal =
         | StateChanged of 'TState
         interface ISerializable
 
-    type  ContinueOrAbort<'EventDetails> = ContinueOrAbort of Event<'EventDetails>    interface ISerializable
-    type  AbortedEvent = AbortedEvent   interface ISerializable
 
     type SagaStateWithVersion<'SagaData,'State> =
             { SagaState : SagaState<'SagaData,'State>; Version: int64; }

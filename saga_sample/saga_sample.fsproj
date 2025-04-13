@@ -15,5 +15,8 @@
     <Compile Include="Program.fs" />
     <Content Include="config.hocon" />
   </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\src\FCQRS\FCQRS.fsproj" />
+  </ItemGroup>
   <Import Project="..\.paket\Paket.Restore.targets" />
 </Project>

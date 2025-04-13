@@ -88,61 +88,61 @@ module Internal =
             let d = d |> Async.Ignore
             ks :> IKillSwitch, d
         
-    let internal init<'TDataEvent,'TPredicate,'t> (actorApi: IActor) offsetCount handler =
-        let source = (readJournal actorApi.System).AllEvents(Offset.Sequence offsetCount)
-        let logger = actorApi.LoggerFactory.CreateLogger"Query"
-        logger.LogInformation "Query started"
-        let subQueue = Source.queue OverflowStrategy.Fail 1024
-        let subSink = Sink.broadcastHub 1024
+let  init<'TDataEvent,'TPredicate,'t> (actorApi: IActor) offsetCount handler =
+    let source = (readJournal actorApi.System).AllEvents(Offset.Sequence offsetCount)
+    let logger = actorApi.LoggerFactory.CreateLogger"Query"
+    logger.LogInformation "Query started"
+    let subQueue = Source.queue OverflowStrategy.Fail 1024
+    let subSink = Sink.broadcastHub 1024
 
-        let runnableGraph = subQueue |> Source.toMat subSink Keep.both
+    let runnableGraph = subQueue |> Source.toMat subSink Keep.both
 
-        let queue, subRunnable = runnableGraph |> Graph.run actorApi.Materializer
+    let queue, subRunnable = runnableGraph |> Graph.run actorApi.Materializer
 
+    source
+    |> Source.recover (fun ex -> logger.LogError(ex, "Error in query source");None)
+    |> Source.runForEach actorApi.Materializer (
+        fun envelop -> 
+        try
+            let offsetValue = (envelop.Offset :?> Sequence).Value
+            let res = handler  offsetValue envelop.Event
+            res |> List.iter (fun x -> queue.OfferAsync(x).Wait())
+        with
+            | ex -> 
+                logger.LogCritical(ex, "Error in query handler")
+                Environment.Exit -1
+        )
+    |> Async.Start
+
+    System.Threading.Thread.Sleep 1000
+    subscribeToStream
         source
-        |> Source.recover (fun ex -> logger.LogError(ex, "Error in query source");None)
-        |> Source.runForEach actorApi.Materializer (
-            fun envelop -> 
-            try
-                let offsetValue = (envelop.Offset :?> Sequence).Value
-                let res = handler  offsetValue envelop.Event
-                res |> List.iter (fun x -> queue.OfferAsync(x).Wait())
-            with
-                | ex -> 
-                    logger.LogCritical(ex, "Error in query handler")
-                    Environment.Exit -1
-            )
-        |> Async.Start
+        actorApi.Materializer
+        (Sink.ForEach(fun x -> logger.LogTrace("data event : {@dataevent}", x)))|> ignore
 
-        System.Threading.Thread.Sleep 1000
-        subscribeToStream
-            source
-            actorApi.Materializer
-            (Sink.ForEach(fun x -> logger.LogTrace("data event : {@dataevent}", x)))|> ignore
+    let subscribeCmd = subscribeCmd subRunnable actorApi
+    let subscribeCmdWithFilter = subscribeCmdWithFilter subRunnable actorApi
 
-        let subscribeCmd = subscribeCmd subRunnable actorApi
-        let subscribeCmdWithFilter = subscribeCmdWithFilter subRunnable actorApi
-
-        { new ISubscribe<'TDataEvent> with
-            override _.Subscribe(callback, ?cancellationToken) =
-                let token = defaultArg cancellationToken CancellationToken.None
-                let ks = subscribeCmd callback
-                let reg = token.Register(fun _ -> ks.Shutdown())
-                { new IDisposable with
-                    member __.Dispose() =
-                        reg.Dispose()
-                        if not token.IsCancellationRequested then ks.Shutdown() }
-                
-            override _.Subscribe(filter, take, ?callback, ?cancellationToken) =
-                let token = defaultArg cancellationToken CancellationToken.None
-                let cb = defaultArg callback ignore
-                let ks, res = subscribeCmdWithFilter filter take cb
-                let reg = token.Register(fun _ -> ks.Shutdown())
-                async {
-                    do! res
-                    return { new IDisposable with
-                                member __.Dispose() =
-                                    reg.Dispose()
-                                    if not token.IsCancellationRequested then ks.Shutdown() }
-                }
-        }
+    { new ISubscribe<'TDataEvent> with
+        override _.Subscribe(callback, ?cancellationToken) =
+            let token = defaultArg cancellationToken CancellationToken.None
+            let ks = subscribeCmd callback
+            let reg = token.Register(fun _ -> ks.Shutdown())
+            { new IDisposable with
+                member __.Dispose() =
+                    reg.Dispose()
+                    if not token.IsCancellationRequested then ks.Shutdown() }
+            
+        override _.Subscribe(filter, take, ?callback, ?cancellationToken) =
+            let token = defaultArg cancellationToken CancellationToken.None
+            let cb = defaultArg callback ignore
+            let ks, res = subscribeCmdWithFilter filter take cb
+            let reg = token.Register(fun _ -> ks.Shutdown())
+            async {
+                do! res
+                return { new IDisposable with
+                            member __.Dispose() =
+                                reg.Dispose()
+                                if not token.IsCancellationRequested then ks.Shutdown() }
+            }
+    }

@@ -1,4 +1,4 @@
-module internal rec FCQRS.Actor
+module  rec FCQRS.Actor
 
 open Akka.Streams
 open Akka.Cluster

@@ -17,7 +17,7 @@ let result = register cid1 userName password |> Async.RunSynchronously
 (s |> Async.RunSynchronously).Dispose()
 printfn "%A" result
 
-let code = System.Console.ReadLine() 
+let code = System.Console.ReadLine()  |> nonNull
 
 let resultVerify = verify (cid()) userName code |> Async.RunSynchronously
 printfn "%A" resultVerify

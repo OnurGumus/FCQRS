@@ -4,7 +4,7 @@ module Query
 
 open Microsoft.Extensions.Logging
 open FCQRS.Common
-
+open FCQRS.Model.Data
 // All persisted events will come with monotonically increasing offset value.
 let handleEventWrapper env (offsetValue: int64) (event:obj)=
     let log = (env :> ILoggerFactory).CreateLogger "Event"
