@@ -13,6 +13,7 @@ let handleEventWrapper env (offsetValue: int64) (event:obj)=
     let dataEvent =
         match event with
         | :? FCQRS.Common.Event<User.Event> as  event ->
+            printfn "!!Event: %A" event
 
             // typically do your regular insert , update ,delete for read side projection.
             // then 'update' the offset value to a table or  persistent storage in the same transaction.

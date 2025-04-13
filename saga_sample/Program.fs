@@ -13,6 +13,7 @@ let password = "password"
 let cid1 = cid()
 
 let s = sub.Subscribe((fun e -> e.CID = cid1), 1)
+System.Console.ReadKey() |> ignore
 let result = register cid1 userName password |> Async.RunSynchronously
 (s |> Async.RunSynchronously).Dispose()
 printfn "%A" result
