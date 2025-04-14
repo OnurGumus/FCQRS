@@ -28,7 +28,7 @@ applied to the state of the aggregate. Then the event is published so that it ma
 (**
 ## Sagas
 
-A saga is a long-running process that can be used to manage. Their main purpose is 
+A saga manages a long-running process. Their main purpose is 
 to make the aggregates to talk to each other or external services by acting like persistent mediators.
 They are also made as cluster sharded actors. But thanks to akka.net they are always auto started. 
 They are not passivated. In FCQRS CorrelationID  (CID) is critical in sagas. A sagas name is generated

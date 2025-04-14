@@ -123,7 +123,7 @@ The rest of the states can be any name you like. *)
 
      NotStarted -> NoEffect, Some(Started startingEvent.Value), []
 (** 
-Below sectio  is almost biolerplate. We check if recovering is true. If it is a rare case where the saga is recovering from a crash.
+Below section is almost boilerplate. We check if recovering is true. If it is a rare case where the saga is recovering from a crash.
 Therefore we check if actually Aggregate resumed or not. Depending on the case we abort the saga or continue. More on this later.
 *)
     | Started _ ->

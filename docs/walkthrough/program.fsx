@@ -26,7 +26,8 @@ let lastKnownOffset = 0L
 let sub = Bootstrap.sub Query.handleEventWrapper lastKnownOffset
 
 (**
-Then we create a function to generate a correlation id. This is used to track the command. We will explain ValueLens later. For now, just know that it is a way to create a value from a function.
+Then we create a function to generate a correlation id. This is used to track the command. We will explain ValueLens later. 
+For now, just know that it is a way to create a value from a function.
 *)
 
 let cid (): CID =
