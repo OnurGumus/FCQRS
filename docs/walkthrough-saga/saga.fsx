@@ -149,11 +149,10 @@ which is coming from SendMail *)
             DelayInMs = None } ]
 
 (** 
-Finally we define the completed state. This is the final state of the saga. It stops the saga 
-
+Finally we define the completed state. This is the final state of the saga. It stops the saga . Notice the usage of StopActor internal effect.
 *)
     | Completed ->
-        NoEffect, None, []
+        StopActor, None, []
 
 
 (**
