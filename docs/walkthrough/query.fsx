@@ -42,6 +42,6 @@ let handleEventWrapper env (offsetValue: int64) (event:obj)=
         |  _ -> []
 
 (**
-  Finally, we return a list of IMessageWithCID. This is a list of messages that are sent to the read side. Then optionall you can subribe to these messages.
-  Which will be done in the next section. You can also return something completely custom. Your cross bounded context event or a DTO like event is preferred.
+  Finally, we return a list of IMessageWithCID. This is a list of messages that are sent to the read side. Then optionally you can subscribe to these messages.
+  Which will be done in the next section. You can also return something completely custom. Your cross-bounded context event or a DTO like event is preferred.
 *)

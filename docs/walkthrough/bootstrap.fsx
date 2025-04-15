@@ -14,7 +14,7 @@ index: 3
 
 (**
 ## Bootstrapping
-The ultimate objective of write site boottrapping is to make a call to FCQRS.Actor.api which initializes the actor system and starts the write site.
+The ultimate objective of write side bootstrapping is to make a call to FCQRS.Actor.api which initializes the actor system and starts the write side.
 This API requires a configuration and a logger factory. The configuration is used to configure the actor system and the logger factory is used to log messages from the actor system.
 
 *)

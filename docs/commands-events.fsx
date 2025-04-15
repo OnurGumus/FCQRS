@@ -21,10 +21,10 @@ open FCQRS.Model.Data
 (**
 ## Commands
 
-Both Commands and Events are actor messages. The differens is semantic whereas a command represents something
+Both Commands and Events are actor messages. The difference is semantic whereas a command represents something
 that is requested to be done, an event represents something that has already happened. We don't persist the commands but only events.
-In your aggregates you define your commands as plain discriminated uniones. But they they are auto wrapped
-in to FCQRS commands which have additional metadata.
+In your aggregates you define your commands as plain discriminated unions. But they they are auto wrapped
+into FCQRS commands which have additional metadata.
 *)
 
 type Command<'CommandDetails> =
@@ -36,7 +36,7 @@ type Command<'CommandDetails> =
 
 
 (**
- You typically provide the CID which is a guid like string and the command details which is your command object.
+ You typically provide the CID which is a guid-like string and the command details which is your command object.
  Rest of the details are filled in by the framework. The command is then sent to the actor. 
 *)
 
