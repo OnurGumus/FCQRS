@@ -49,7 +49,8 @@ type State =
 type SagaData = NA
 
 (**
-   And the initial state. Apply function doesn't do anything. It is just a placeholder for now.
+   And the initial state. Apply function doesn't do anything. It is just a placeholder for this particular example. In general , you can use 
+   Data as a cross state data, you want to share between states.
 *)
 
 let initialState =
