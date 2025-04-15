@@ -56,24 +56,24 @@ type ISubscribe<'TDataEvent> =
 
 [<AutoOpen>]
 module Internal = 
-    let internal readJournal system =
+    let readJournal system =
         PersistenceQuery
             .Get(system)
             .ReadJournalFor<Akka.Persistence.Sql.Query.SqlReadJournal>SqlReadJournal.Identifier
 
-    let internal subscribeToStream source mat (sink: Sink<'TDataEvent, _>) =
+    let subscribeToStream source mat (sink: Sink<'TDataEvent, _>) =
         source
         |> Source.viaMat KillSwitch.single Keep.right
         |> Source.toMat sink Keep.both
         |> Graph.run mat
 
-    let internal subscribeCmd<'TDataEvent> (source:Source<'TDataEvent,unit>) (actorApi :IActor) =
+    let subscribeCmd<'TDataEvent> (source:Source<'TDataEvent,unit>) (actorApi :IActor) =
         fun (cb: 'TDataEvent -> unit) ->
             let sink = Sink.forEach (fun event -> cb event)
             let ks, _ = subscribeToStream source actorApi.Materializer sink
             ks :> IKillSwitch
 
-    let internal subscribeCmdWithFilter<'TDataEvent> (source:Source<'TDataEvent,unit>) (actorApi:IActor) =
+    let subscribeCmdWithFilter<'TDataEvent> (source:Source<'TDataEvent,unit>) (actorApi:IActor) =
         fun filter take cb ->
             // cb is now a required parameter (it will be provided as default if needed)
             let subscribeToStream source filter take mat (sink: Sink<'TDataEvent, _>) =

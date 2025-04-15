@@ -8,10 +8,10 @@ open Akkling.Persistence
 open Akkling.Cluster.Sharding
 [<AutoOpen>]
 module Internal =
-    type internal Extractor<'Envelope, 'Message> = 'Envelope -> string * string * 'Message
-    type internal ShardResolver = string -> string
+    type  Extractor<'Envelope, 'Message> = 'Envelope -> string * string * 'Message
+    type  ShardResolver = string -> string
 
-    type internal TypedMessageExtractor<'Envelope, 'Message> when 'Envelope : not null
+    type TypedMessageExtractor<'Envelope, 'Message> when 'Envelope : not null
         (extractor: Extractor<_, 'Message>, shardResolver: ShardResolver) =
         interface IMessageExtractor with
             member _.ShardId message =
@@ -40,7 +40,7 @@ module Internal =
 
 
     // HACK over persistent actors
-    type  internal FunPersistentShardingActor<'Message>(actor: Eventsourced<'Message> -> Effect<'Message>) as this =
+    type  FunPersistentShardingActor<'Message>(actor: Eventsourced<'Message> -> Effect<'Message>) as this =
         inherit FunPersistentActor<'Message>(actor)
         // sharded actors are produced in path like /user/{name}/{shardId}/{entityId}, therefore "{name}/{shardId}/{entityId}" is peristenceId of an actor
         let pid =
@@ -53,7 +53,7 @@ module Internal =
         override _.PersistenceId = pid
 
     // this function hacks persistent functional actors props by replacing them with dedicated sharded version using different PeristenceId strategy
-    let internal adjustPersistentProps (props: Props<'Message>) : Props<'Message> =
+    let  adjustPersistentProps (props: Props<'Message>) : Props<'Message> =
         if props.ActorType = typeof<FunPersistentActor<'Message>> then
             { props with
                 ActorType = typeof<FunPersistentShardingActor<'Message>> }

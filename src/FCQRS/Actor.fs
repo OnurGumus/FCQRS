@@ -17,15 +17,16 @@ open AkkaTimeProvider
 open FCQRS.Model.Data
 open Akkling.Cluster.Sharding
 
-type State<'InnerState> =
-    { Version: Version
-      State: 'InnerState }
-    interface ISerializable
 
  [<AutoOpen>]
 module internal Internal =
 
-    type internal BodyInput<'TEvent> =
+    type State<'InnerState> =
+        { Version: Version
+          State: 'InnerState }
+        interface ISerializable
+
+    type BodyInput<'TEvent> =
         { 
         Message: obj
         State: obj
@@ -33,7 +34,7 @@ module internal Internal =
         SendToSagaStarter: Event<'TEvent> -> obj
         Mediator: IActorRef<Publish>
         Log: ILogger }
-    let internal runActor<'TEvent, 'TState>
+    let runActor<'TEvent, 'TState>
         (snapshotVersionCount: int64)
         (logger: ILogger)
         (mailbox: Eventsourced<obj>)
@@ -135,7 +136,7 @@ module internal Internal =
         }
 
 
-    let internal actorProp
+    let actorProp
         env
         handleCommand
         apply
@@ -222,10 +223,10 @@ module internal Internal =
         let ex = Execute e
         ex |> actorApi.SubscribeForCommand
 
-let init env initialState name toEvent (actorApi: IActor) handleCommand apply =
-    AkklingHelpers.entityFactoryFor actorApi.System shardResolver name
-    <| propsPersist (actorProp env handleCommand apply initialState name toEvent (typed actorApi.Mediator))
-    <| false
+    let init env initialState name toEvent (actorApi: IActor) handleCommand apply =
+        AkklingHelpers.entityFactoryFor actorApi.System shardResolver name
+        <| propsPersist (actorProp env handleCommand apply initialState name toEvent (typed actorApi.Mediator))
+        <| false
 
 let api (config: IConfiguration) (loggerFactory: ILoggerFactory) =
     let akkaConfig: ExpandoObject =
