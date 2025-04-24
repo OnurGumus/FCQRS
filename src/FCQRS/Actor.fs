@@ -224,7 +224,7 @@ module internal Internal =
         ex |> actorApi.SubscribeForCommand
 
     let init env initialState name toEvent (actorApi: IActor) handleCommand apply =
-        AkklingHelpers.entityFactoryFor actorApi.System shardResolver name
+        AkklingHelpers.Internal.entityFactoryFor actorApi.System shardResolver name
         <| propsPersist (actorProp env handleCommand apply initialState name toEvent (typed actorApi.Mediator))
         <| false
 

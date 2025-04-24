@@ -60,32 +60,34 @@ module Internal =
         else
             props
 
-let entityFactoryFor
-    (system: ActorSystem)
-    (shardResolver: ShardResolver)
-    (name: string)
-    (props: Props<'Message>)
-    rememberEntities
-    : EntityFac<'Message> =
 
-    let clusterSharding = ClusterSharding.Get(system)
-    let adjustedProps = adjustPersistentProps props
+    let entityFactoryFor
+        (system: ActorSystem)
+        (shardResolver: ShardResolver)
+        (name: string)
+        (props: Props<'Message>)
+        rememberEntities
+        : EntityFac<'Message> =
 
-    let shardSettings =
-        match rememberEntities with
-        | true -> ClusterShardingSettings.Create(system).WithRememberEntities(true)
-        | _ -> ClusterShardingSettings.Create(system)
+        let clusterSharding = ClusterSharding.Get(system)
+        let adjustedProps = adjustPersistentProps props
 
-    let shardRegion =
-        clusterSharding.Start(
-            name,
-            adjustedProps.ToProps(),
-            shardSettings,
-            new TypedMessageExtractor<_, _>(EntityRefs.entityRefExtractor, shardResolver)
-        )
+        let shardSettings =
+            match rememberEntities with
+            | true -> ClusterShardingSettings.Create(system).WithRememberEntities(true)
+            | _ -> ClusterShardingSettings.Create(system)
 
-    { ShardRegion = shardRegion
-      TypeName = name }
+        let shardRegion =
+            clusterSharding.Start(
+                name,
+                adjustedProps.ToProps(),
+                shardSettings,
+                new TypedMessageExtractor<_, _>(EntityRefs.entityRefExtractor, shardResolver)
+            )
 
-let (|Recovering|_|) (context: Eventsourced<'Message>) (msg: 'Message) : 'Message option =
-    if context.IsRecovering() then Some msg else None
+        { 
+            ShardRegion = shardRegion
+            TypeName = name }
+
+    let (|Recovering|_|) (context: Eventsourced<'Message>) (msg: 'Message) : 'Message option =
+        if context.IsRecovering() then Some msg else None
