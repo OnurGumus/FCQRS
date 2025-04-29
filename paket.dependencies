@@ -21,3 +21,5 @@ nuget FCQRS.Serialization
 nuget Fable.Package.SDK
 nuget Hocon.Extensions.Configuration
 nuget Microsoft.Extensions.Logging.Console
+nuget FCQRS8.Model
+nuget FCQRS8.Serialization
