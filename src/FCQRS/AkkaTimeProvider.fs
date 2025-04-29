@@ -15,7 +15,7 @@ module Internal =
     type internal ExecuteCallback = ExecuteCallback
 
     // Actor that executes the timer callback
-    type internal CallbackActor(callback: TimerCallback, state: obj | null) =
+    type internal CallbackActor(callback: TimerCallback, state: obj) =
         inherit UntypedActor()
 
         override x.OnReceive(message: obj) =
@@ -29,10 +29,10 @@ module Internal =
             | _ -> ()
 
     // Timer implementation using Akka.NET's scheduler
-    type internal AkkaTimer(callback: TimerCallback, state: obj | null, dueTime: TimeSpan, period: TimeSpan, actorSystem: ActorSystem) =
+    type internal AkkaTimer(callback: TimerCallback, state: obj, dueTime: TimeSpan, period: TimeSpan, actorSystem: ActorSystem) =
         let scheduler = actorSystem.Scheduler
         let mutable isDisposed = false
-        let mutable timerHandle: ICancelable | null = null
+        let mutable timerHandle: ICancelable  = null
 
         // Convert dueTime and period to milliseconds
         let initialDelayMs = 

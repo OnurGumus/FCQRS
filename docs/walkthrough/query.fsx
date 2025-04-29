@@ -10,7 +10,7 @@ index: 5
 #r  "nuget: FCQRS, *"
 #r  "nuget: Hocon.Extensions.Configuration, *"
 #r  "nuget: Microsoft.Extensions.Logging.Console, *"
-#r  "../../sample/bin/Debug/net9.0/sample.dll"
+#r  "../../sample/bin/Debug/net8.0/sample.dll"
 
 
 open FCQRS.Model.Data

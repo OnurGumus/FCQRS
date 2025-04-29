@@ -1,0 +1,516 @@
+<?xml version="1.0" encoding="utf-8"?>
+<doc>
+<assembly><name>FCQRS.Model</name></assembly>
+<members>
+<member name="T:FCQRS.Model.Aether.AsyncValidatedLens`3">
+<summary>
+ Async Validated Lens from &apos;a -&gt; &apos;b with error type &apos;e.
+ The getter remains synchronous while the setter returns an asynchronous Result.
+</summary>
+</member>
+<member name="T:FCQRS.Model.Aether.ValidatedPrism`3">
+<summary>
+ Validated Prism from &apos;a -&gt; &apos;b with error type &apos;e.
+</summary>
+</member>
+<member name="T:FCQRS.Model.Aether.ValidatedLens`3">
+<summary>
+ Validated Lens from &apos;a -&gt; &apos;b with error type &apos;e.
+</summary>
+</member>
+<member name="T:FCQRS.Model.Aether.Epimorphism`2">
+<summary>
+ Epimorphism between &apos;a and &apos;b.
+</summary>
+</member>
+<member name="T:FCQRS.Model.Aether.Isomorphism`2">
+<summary>
+ Isomorphism between &apos;a and &apos;b.
+</summary>
+</member>
+<member name="T:FCQRS.Model.Aether.Prism`2">
+<summary>
+ Prism from &apos;a -&gt; &apos;b.
+</summary>
+</member>
+<member name="T:FCQRS.Model.Aether.Lens`2">
+<summary>
+ Lens from &apos;a -&gt; &apos;b.
+</summary>
+</member>
+<member name="M:FCQRS.Model.Aether.Operators.op_HatPercent``3(Microsoft.FSharp.Core.FSharpFunc{FCQRS.Model.Aether.Optic.Map,Microsoft.FSharp.Core.FSharpFunc{``1,Microsoft.FSharp.Core.FSharpFunc{``0,``2}}},``0,``1)">
+<summary>
+ Modify a value using an optic.
+</summary>
+</member>
+<member name="M:FCQRS.Model.Aether.Operators.op_HatEquals``3(Microsoft.FSharp.Core.FSharpFunc{FCQRS.Model.Aether.Optic.Set,Microsoft.FSharp.Core.FSharpFunc{``1,Microsoft.FSharp.Core.FSharpFunc{``0,``2}}},``0,``1)">
+<summary>
+ Set a value using an optic.
+</summary>
+</member>
+<member name="M:FCQRS.Model.Aether.Operators.op_HatDot``3(Microsoft.FSharp.Core.FSharpFunc{FCQRS.Model.Aether.Optic.Get,Microsoft.FSharp.Core.FSharpFunc{``1,Microsoft.FSharp.Core.FSharpFunc{``0,``2}}},``0,``1)">
+<summary>
+ Get a value using an optic.
+</summary>
+</member>
+<member name="M:FCQRS.Model.Aether.Operators.op_GreaterQmarkGreater``3(Microsoft.FSharp.Core.FSharpFunc{FCQRS.Model.Aether.Compose.Prism,Microsoft.FSharp.Core.FSharpFunc{``1,Microsoft.FSharp.Core.FSharpFunc{``0,``2}}},``0,``1)">
+<summary>
+ Compose a prism with an optic or morphism.
+</summary>
+</member>
+<member name="M:FCQRS.Model.Aether.Operators.op_GreaterMinusGreater``3(Microsoft.FSharp.Core.FSharpFunc{FCQRS.Model.Aether.Compose.Lens,Microsoft.FSharp.Core.FSharpFunc{``1,Microsoft.FSharp.Core.FSharpFunc{``0,``2}}},``0,``1)">
+<summary>
+ Compose a lens with an optic or morphism.
+</summary>
+</member>
+<member name="M:FCQRS.Model.Aether.Optics.snd_``2">
+<summary>
+ Lens to the second item of a tuple.
+</summary>
+</member>
+<member name="M:FCQRS.Model.Aether.Optics.fst_``2">
+<summary>
+ Lens to the first item of a tuple.
+</summary>
+</member>
+<member name="M:FCQRS.Model.Aether.Optics.box_``1">
+<summary>
+ Isomorphism between a boxed and unboxed type.
+</summary>
+</member>
+<member name="M:FCQRS.Model.Aether.Optics.Option.value_``1">
+<summary>
+ Prism to the value in an Option.
+</summary>
+</member>
+<member name="M:FCQRS.Model.Aether.Optics.Map.list_``2">
+<summary>
+ Weak Isomorphism to a list of key-value pairs.
+</summary>
+</member>
+<member name="M:FCQRS.Model.Aether.Optics.Map.array_``2">
+<summary>
+ Weak Isomorphism to an array of key-value pairs.
+</summary>
+</member>
+<member name="M:FCQRS.Model.Aether.Optics.Map.value_``2(``0)">
+<summary>
+ Lens to a value option associated with a key in a map.
+</summary>
+</member>
+<member name="M:FCQRS.Model.Aether.Optics.Map.key_``2(``0)">
+<summary>
+ Prism to a value associated with a key in a map.
+</summary>
+</member>
+<member name="M:FCQRS.Model.Aether.Optics.List.array_``1">
+<summary>
+ Isomorphism to an array.
+</summary>
+</member>
+<member name="M:FCQRS.Model.Aether.Optics.List.tail_``1">
+<summary>
+ Prism to the tail of a list.
+</summary>
+</member>
+<member name="M:FCQRS.Model.Aether.Optics.List.pos_``1(System.Int32)">
+<summary>
+ Prism to an indexed position in a list.
+</summary>
+</member>
+<member name="M:FCQRS.Model.Aether.Optics.List.head_``1">
+<summary>
+ Prism to the head of a list.
+</summary>
+</member>
+<member name="M:FCQRS.Model.Aether.Optics.Result.error_``2">
+<summary>
+ Prism to Error.
+</summary>
+</member>
+<member name="M:FCQRS.Model.Aether.Optics.Result.ok_``2">
+<summary>
+ Prism to Ok.
+</summary>
+</member>
+<member name="M:FCQRS.Model.Aether.Optics.Choice.choice2Of2_``2">
+<summary>
+ Prism to Choice2Of2.
+</summary>
+</member>
+<member name="M:FCQRS.Model.Aether.Optics.Choice.choice1Of2_``2">
+<summary>
+ Prism to Choice1Of2.
+</summary>
+</member>
+<member name="M:FCQRS.Model.Aether.Optics.Array.list_``1">
+<summary>
+ Isomorphism to an list.
+</summary>
+</member>
+<member name="T:FCQRS.Model.Aether.Optics">
+<summary>
+ Various optics implemented for common types such as tuples,
+ lists and maps, along with an identity lens.
+</summary>
+</member>
+<member name="M:FCQRS.Model.Aether.Prism.toValidated``3(Microsoft.FSharp.Core.FSharpFunc{``0,Microsoft.FSharp.Core.FSharpOption{``1}},Microsoft.FSharp.Core.FSharpFunc{``1,Microsoft.FSharp.Core.FSharpFunc{``0,``0}})">
+<summary>
+ Lift a standard Prism into a ValidatedPrism with no validation.
+</summary>
+</member>
+<member name="M:FCQRS.Model.Aether.Prism.ofEpimorphism``2(Microsoft.FSharp.Core.FSharpFunc{``0,Microsoft.FSharp.Core.FSharpOption{``1}},Microsoft.FSharp.Core.FSharpFunc{``1,``0})">
+<summary>
+ Converts an epimorphism into a prism.
+</summary>
+</member>
+<member name="M:FCQRS.Model.Aether.Lens.toAsyncValidated``3(Microsoft.FSharp.Core.FSharpFunc{``0,``1},Microsoft.FSharp.Core.FSharpFunc{``1,Microsoft.FSharp.Core.FSharpFunc{``0,Microsoft.FSharp.Core.FSharpResult{``0,``2}}})">
+<summary>
+ Lift a ValidatedLens into an AsyncValidatedLens with no asynchronous work.
+</summary>
+</member>
+<member name="M:FCQRS.Model.Aether.Lens.toValidated``3(Microsoft.FSharp.Core.FSharpFunc{``0,``1},Microsoft.FSharp.Core.FSharpFunc{``1,Microsoft.FSharp.Core.FSharpFunc{``0,``0}})">
+<summary>
+ Lift a standard Lens into a ValidatedLens with no validation.
+</summary>
+</member>
+<member name="M:FCQRS.Model.Aether.Lens.ofIsomorphism``2(Microsoft.FSharp.Core.FSharpFunc{``0,``1},Microsoft.FSharp.Core.FSharpFunc{``1,``0})">
+<summary>
+ Converts an isomorphism into a lens.
+</summary>
+</member>
+<member name="T:FCQRS.Model.Aether.Optic.Map">
+<summary>
+ Static overloads of the optic map function (%=).
+</summary>
+</member>
+<member name="T:FCQRS.Model.Aether.Optic.Set">
+<summary>
+ Static overloads of the optic set function (^=).
+</summary>
+</member>
+<member name="T:FCQRS.Model.Aether.Optic.Get">
+<summary>
+ Static overloads of the optic get function (^.).
+</summary>
+</member>
+<member name="M:FCQRS.Model.Aether.Optic.map``3(Microsoft.FSharp.Core.FSharpFunc{FCQRS.Model.Aether.Optic.Map,Microsoft.FSharp.Core.FSharpFunc{``0,Microsoft.FSharp.Core.FSharpFunc{``1,``2}}},``0,``1)">
+<summary>
+ Modify a value using an optic.
+</summary>
+</member>
+<member name="M:FCQRS.Model.Aether.Optic.set``3(Microsoft.FSharp.Core.FSharpFunc{FCQRS.Model.Aether.Optic.Set,Microsoft.FSharp.Core.FSharpFunc{``0,Microsoft.FSharp.Core.FSharpFunc{``1,``2}}},``0,``1)">
+<summary>
+ Set a value using an optic.
+</summary>
+</member>
+<member name="M:FCQRS.Model.Aether.Optic.get``3(Microsoft.FSharp.Core.FSharpFunc{FCQRS.Model.Aether.Optic.Get,Microsoft.FSharp.Core.FSharpFunc{``0,Microsoft.FSharp.Core.FSharpFunc{``1,``2}}},``0,``1)">
+<summary>
+ Get a value using an optic.
+</summary>
+</member>
+<member name="T:FCQRS.Model.Aether.Compose.Prism">
+<summary>
+ Static overloads of the composition function for prisms (&gt;?&gt;).
+</summary>
+</member>
+<member name="M:FCQRS.Model.Aether.Compose.Lens.op_GreaterMinusGreater``4(FCQRS.Model.Aether.Compose.Lens,System.Tuple{Microsoft.FSharp.Core.FSharpFunc{``0,``1},Microsoft.FSharp.Core.FSharpFunc{``1,Microsoft.FSharp.Core.FSharpFunc{``0,Microsoft.FSharp.Control.FSharpAsync{Microsoft.FSharp.Core.FSharpResult{``0,``2}}}}})">
+<summary>
+ Compose a Lens with an AsyncValidatedLens.
+</summary>
+</member>
+<member name="T:FCQRS.Model.Aether.Compose.Lens">
+<summary>
+ Static overloads of the composition function for lenses (&gt;-&gt;).
+</summary>
+</member>
+<member name="M:FCQRS.Model.Aether.Compose.prism``3(Microsoft.FSharp.Core.FSharpFunc{FCQRS.Model.Aether.Compose.Prism,Microsoft.FSharp.Core.FSharpFunc{``1,Microsoft.FSharp.Core.FSharpFunc{``0,``2}}},``0,``1)">
+<summary>
+ Compose a prism with an optic or morphism.
+</summary>
+</member>
+<member name="M:FCQRS.Model.Aether.Compose.lens``3(Microsoft.FSharp.Core.FSharpFunc{FCQRS.Model.Aether.Compose.Lens,Microsoft.FSharp.Core.FSharpFunc{``1,Microsoft.FSharp.Core.FSharpFunc{``0,``2}}},``0,``1)">
+<summary>
+ Compose a lens with an optic or morphism.
+</summary>
+</member>
+<member name="M:FCQRS.Model.Aether.Compose.ValidatedPrism.composePrismValidated``4(Microsoft.FSharp.Core.FSharpFunc{``0,Microsoft.FSharp.Core.FSharpOption{``1}},Microsoft.FSharp.Core.FSharpFunc{``1,Microsoft.FSharp.Core.FSharpFunc{``0,``0}},Microsoft.FSharp.Core.FSharpFunc{``1,Microsoft.FSharp.Core.FSharpOption{``2}},Microsoft.FSharp.Core.FSharpFunc{``2,Microsoft.FSharp.Core.FSharpFunc{``1,Microsoft.FSharp.Core.FSharpResult{``1,``3}}})">
+<summary>
+ Compose a standard Prism with a ValidatedPrism.
+</summary>
+</member>
+<member name="M:FCQRS.Model.Aether.Compose.ValidatedPrism.composeValidatedPrism``4(Microsoft.FSharp.Core.FSharpFunc{``0,Microsoft.FSharp.Core.FSharpOption{``1}},Microsoft.FSharp.Core.FSharpFunc{``1,Microsoft.FSharp.Core.FSharpFunc{``0,Microsoft.FSharp.Core.FSharpResult{``0,``2}}},Microsoft.FSharp.Core.FSharpFunc{``1,Microsoft.FSharp.Core.FSharpOption{``3}},Microsoft.FSharp.Core.FSharpFunc{``3,Microsoft.FSharp.Core.FSharpFunc{``1,``1}})">
+<summary>
+ Compose a ValidatedPrism with a standard Prism.
+</summary>
+</member>
+<member name="M:FCQRS.Model.Aether.Compose.ValidatedPrism.compose``4(Microsoft.FSharp.Core.FSharpFunc{``0,Microsoft.FSharp.Core.FSharpOption{``1}},Microsoft.FSharp.Core.FSharpFunc{``1,Microsoft.FSharp.Core.FSharpFunc{``0,Microsoft.FSharp.Core.FSharpResult{``0,``2}}},Microsoft.FSharp.Core.FSharpFunc{``1,Microsoft.FSharp.Core.FSharpOption{``3}},Microsoft.FSharp.Core.FSharpFunc{``3,Microsoft.FSharp.Core.FSharpFunc{``1,Microsoft.FSharp.Core.FSharpResult{``1,``2}}})">
+<summary>
+ Compose two ValidatedPrism instances.
+</summary>
+</member>
+<member name="M:FCQRS.Model.Aether.Compose.ValidatedLens.composeMapErrors``5(Microsoft.FSharp.Core.FSharpFunc{``0,``1},Microsoft.FSharp.Core.FSharpFunc{``1,Microsoft.FSharp.Core.FSharpFunc{``0,Microsoft.FSharp.Core.FSharpResult{``0,``2}}},Microsoft.FSharp.Core.FSharpFunc{``1,``3},Microsoft.FSharp.Core.FSharpFunc{``3,Microsoft.FSharp.Core.FSharpFunc{``1,Microsoft.FSharp.Core.FSharpResult{``1,``4}}},Microsoft.FSharp.Core.FSharpFunc{``2,System.String},Microsoft.FSharp.Core.FSharpFunc{``4,System.String})">
+<summary>
+ Compose two ValidatedLens instances while mapping errors.
+</summary>
+</member>
+<member name="M:FCQRS.Model.Aether.Compose.AsyncValidatedLens.mapError``4(Microsoft.FSharp.Core.FSharpFunc{``0,``1},Microsoft.FSharp.Core.FSharpFunc{``2,``3},Microsoft.FSharp.Core.FSharpFunc{``3,Microsoft.FSharp.Core.FSharpFunc{``2,Microsoft.FSharp.Control.FSharpAsync{Microsoft.FSharp.Core.FSharpResult{``2,``0}}}})">
+<summary>
+ Map the error of an AsyncValidatedLens using the provided function.
+</summary>
+</member>
+<member name="M:FCQRS.Model.Aether.Compose.AsyncValidatedLens.composeLensAsyncValidated``4(Microsoft.FSharp.Core.FSharpFunc{``0,``1},Microsoft.FSharp.Core.FSharpFunc{``1,Microsoft.FSharp.Core.FSharpFunc{``0,``0}},Microsoft.FSharp.Core.FSharpFunc{``1,``2},Microsoft.FSharp.Core.FSharpFunc{``2,Microsoft.FSharp.Core.FSharpFunc{``1,Microsoft.FSharp.Control.FSharpAsync{Microsoft.FSharp.Core.FSharpResult{``1,``3}}}})">
+<summary>
+ Compose a standard Lens with an AsyncValidatedLens.
+</summary>
+</member>
+<member name="M:FCQRS.Model.Aether.Compose.AsyncValidatedLens.composeAsyncValidatedLens``4(Microsoft.FSharp.Core.FSharpFunc{``0,``1},Microsoft.FSharp.Core.FSharpFunc{``1,Microsoft.FSharp.Core.FSharpFunc{``0,Microsoft.FSharp.Control.FSharpAsync{Microsoft.FSharp.Core.FSharpResult{``0,``2}}}},Microsoft.FSharp.Core.FSharpFunc{``1,``3},Microsoft.FSharp.Core.FSharpFunc{``3,Microsoft.FSharp.Core.FSharpFunc{``1,``1}})">
+<summary>
+ Compose an AsyncValidatedLens with a standard Lens.
+</summary>
+</member>
+<member name="M:FCQRS.Model.Aether.Compose.AsyncValidatedLens.compose``4(Microsoft.FSharp.Core.FSharpFunc{``0,``1},Microsoft.FSharp.Core.FSharpFunc{``1,Microsoft.FSharp.Core.FSharpFunc{``0,Microsoft.FSharp.Control.FSharpAsync{Microsoft.FSharp.Core.FSharpResult{``0,``2}}}},Microsoft.FSharp.Core.FSharpFunc{``1,``3},Microsoft.FSharp.Core.FSharpFunc{``3,Microsoft.FSharp.Core.FSharpFunc{``1,Microsoft.FSharp.Control.FSharpAsync{Microsoft.FSharp.Core.FSharpResult{``1,``2}}}})">
+<summary>
+ Compose two AsyncValidatedLens instances.
+</summary>
+</member>
+<member name="M:FCQRS.Model.Validation.Validator`1.ToAsync``2(FCQRS.Model.Validation.FieldInfo{``0,``1,`0})">
+<summary>
+ Convert a synchronize validate pipe to asynchronize
+</summary>
+</member>
+<member name="M:FCQRS.Model.Validation.Validator`1.To``3(Microsoft.FSharp.Core.FSharpFunc{``0,``1})">
+<summary>
+ Convert the input value by fn
+ if fn throws error then it will collect error
+</summary>
+</member>
+<member name="M:FCQRS.Model.Validation.Validator`1.TestOnlySomeAsync``1(System.String,Microsoft.FSharp.Core.FSharpOption{``0},Microsoft.FSharp.Collections.FSharpList{Microsoft.FSharp.Core.FSharpFunc{Microsoft.FSharp.Control.FSharpAsync{FCQRS.Model.Validation.FieldInfo{``0,``0,`0}},Microsoft.FSharp.Control.FSharpAsync{FCQRS.Model.Validation.FieldInfo{``0,``0,`0}}}})">
+<summary>
+ Test rules only if value is Some,
+ it won&apos;t collect error if value is None
+</summary>
+</member>
+<member name="M:FCQRS.Model.Validation.Validator`1.TestOnlySome``1(System.String,Microsoft.FSharp.Core.FSharpOption{``0},Microsoft.FSharp.Collections.FSharpList{Microsoft.FSharp.Core.FSharpFunc{FCQRS.Model.Validation.FieldInfo{``0,``0,`0},FCQRS.Model.Validation.FieldInfo{``0,``0,`0}}})">
+<summary>
+ Test rules only if value is Some,
+ it won&apos;t collect error if value is None
+</summary>
+</member>
+<member name="M:FCQRS.Model.Validation.Validator`1.TestOnlyOkAsync``2(System.String,Microsoft.FSharp.Core.FSharpResult{``0,``1},Microsoft.FSharp.Collections.FSharpList{Microsoft.FSharp.Core.FSharpFunc{Microsoft.FSharp.Control.FSharpAsync{FCQRS.Model.Validation.FieldInfo{``0,``0,`0}},Microsoft.FSharp.Control.FSharpAsync{FCQRS.Model.Validation.FieldInfo{``0,``0,`0}}}})">
+<summary>
+ Test rules only if value is Ok,
+ it won&apos;t collect error if value is Error
+</summary>
+</member>
+<member name="M:FCQRS.Model.Validation.Validator`1.TestOnlyOk``2(System.String,Microsoft.FSharp.Core.FSharpResult{``0,``1},Microsoft.FSharp.Collections.FSharpList{Microsoft.FSharp.Core.FSharpFunc{FCQRS.Model.Validation.FieldInfo{``0,``0,`0},FCQRS.Model.Validation.FieldInfo{``0,``0,`0}}})">
+<summary>
+ Test rules only if value is Ok,
+ it won&apos;t collect error if value is Error
+</summary>
+</member>
+<member name="M:FCQRS.Model.Validation.Validator`1.NotBlank``1(`0)">
+<summary>
+ Validate with `String.IsNullOrWhiteSpace`
+</summary>
+</member>
+<member name="M:FCQRS.Model.Validation.Validator`1.MinLen``3(System.Int32,`0,FCQRS.Model.Validation.FieldInfo{``0,``1,`0})">
+<summary>
+ Min length, if err is a string, it can contains `{len}` to reuse first param
+</summary>
+</member>
+<member name="M:FCQRS.Model.Validation.Validator`1.MaxLen``3(System.Int32,`0,FCQRS.Model.Validation.FieldInfo{``0,``1,`0})">
+<summary>
+ Max length, if err is a string, it can contains `{len}` to reuse first param
+</summary>
+</member>
+<member name="M:FCQRS.Model.Validation.Validator`1.Map``3(Microsoft.FSharp.Core.FSharpFunc{``0,``1})">
+<summary>
+ Map a function or constructor to the value, aka lift
+ fn shouldn&apos;t throw error, if it would, please using `t.To fn error`
+</summary>
+</member>
+<member name="M:FCQRS.Model.Validation.Validator`1.Lte``2(``0,`0)">
+<summary>
+ Less and equal then a value, if err is a string, it can contains `{max}` to reuse first param
+</summary>
+</member>
+<member name="M:FCQRS.Model.Validation.Validator`1.Lt``2(``0,`0)">
+<summary>
+ Less then a value, if err is a string, it can contains `{max}` to reuse first param
+</summary>
+</member>
+<member name="M:FCQRS.Model.Validation.Validator`1.IsValidOpt``3(Microsoft.FSharp.Core.FSharpFunc{``1,FCQRS.Model.Validation.ValidateResult{``2}},`0,FCQRS.Model.Validation.FieldInfo{``0,``1,`0})">
+<summary>
+ Validate with a custom tester, return ValidateResult DU to modify input value
+</summary>
+</member>
+<member name="M:FCQRS.Model.Validation.Validator`1.IsValid``2(Microsoft.FSharp.Core.FSharpFunc{``1,System.Boolean})">
+<summary>
+ Validate with a custom tester, return bool
+</summary>
+</member>
+<member name="M:FCQRS.Model.Validation.Validator`1.IsSome``2(`0)">
+<summary>
+ Test an option value is some and unwrap it
+ it will collect error
+</summary>
+</member>
+<member name="M:FCQRS.Model.Validation.Validator`1.IsOk``3(`0)">
+<summary>
+ Test a Result value is Ok and unwrap it
+ it will collect error
+</summary>
+</member>
+<member name="M:FCQRS.Model.Validation.Validator`1.Gte``2(``0,`0)">
+<summary>
+ Greater and equal then a value, if err is a string, it can contains `{min}` to reuse first param
+</summary>
+</member>
+<member name="M:FCQRS.Model.Validation.Validator`1.Gt``2(``0,`0)">
+<summary>
+ Greater then a value, if err is a string, it can contains `{min}` to reuse first param
+</summary>
+</member>
+<member name="M:FCQRS.Model.Validation.Validator`1.DefaultOfNone``2(``0,FCQRS.Model.Validation.FieldInfo{``1,Microsoft.FSharp.Core.FSharpOption{``0},`0})">
+<summary>
+ Defaults of None value, it won&apos;t collect error
+</summary>
+</member>
+<member name="M:FCQRS.Model.Validation.Validator`1.DefaultOfError``3(``0,FCQRS.Model.Validation.FieldInfo{``1,Microsoft.FSharp.Core.FSharpResult{``0,``2},`0})">
+<summary>
+ Defaults of Error value, it won&apos;t collect error
+</summary>
+</member>
+<member name="M:FCQRS.Model.Validation.singleAsync``2(Microsoft.FSharp.Core.FSharpFunc{FCQRS.Model.Validation.Validator{``0},Microsoft.FSharp.Control.FSharpAsync{``1}})">
+<summary>
+ Validate single value asynchronize
+</summary>
+</member>
+<member name="M:FCQRS.Model.Validation.single``2(Microsoft.FSharp.Core.FSharpFunc{FCQRS.Model.Validation.Validator{``0},``1})">
+<summary>
+ Validate single value
+</summary>
+</member>
+<member name="M:FCQRS.Model.Validation.fast``2(Microsoft.FSharp.Core.FSharpFunc{FCQRS.Model.Validation.Validator{``0},``1})">
+<summary>
+ Exit after first error occurred and return a custom type
+</summary>
+</member>
+<member name="M:FCQRS.Model.Validation.all``2(Microsoft.FSharp.Core.FSharpFunc{FCQRS.Model.Validation.Validator{``0},``1})">
+<summary>
+ validate all fields and return a custom type,
+</summary>
+</member>
+<member name="M:FCQRS.Model.Validation.isValidOptAsync``4">
+<summary>
+ IsValidOptAsync helper from Validator method for custom rule functions, you can also extend Validator class directly.
+</summary>
+</member>
+<member name="M:FCQRS.Model.Validation.isValidAsync``3">
+<summary>
+ IsValidAsync helper from Validator method for custom rule functions, you can also extend Validator class directly.
+</summary>
+</member>
+<member name="M:FCQRS.Model.Validation.isValidOpt``4">
+<summary>
+ IsValidOpt helper from Validator method for custom rule functions, you can also extend Validator class directly.
+</summary>
+</member>
+<member name="M:FCQRS.Model.Validation.isValid``3">
+<summary>
+ IsValid helper from Validator method for custom rule functions, you can also extend Validator class directly.
+</summary>
+</member>
+<member name="T:FCQRS.Model.Data.MessageId">
+<summary>
+ Message Id , generally not much use case.
+</summary>
+</member>
+<member name="T:FCQRS.Model.Data.CID">
+<summary>
+ CorrelationID for commands and Sagas
+</summary>
+</member>
+<member name="T:FCQRS.Model.Data.LongString">
+<summary>
+ Represents any string at least 1 chars
+</summary>
+</member>
+<member name="T:FCQRS.Model.Data.ShortString">
+<summary>
+ Validated string between 1,50 chars inclusive
+</summary>
+</member>
+<member name="T:FCQRS.Model.Data.Version">
+<summary>
+ Aggregate Version
+</summary>
+</member>
+<member name="T:FCQRS.Model.Data.Predicate">
+<summary>
+ Used to for queries
+</summary>
+</member>
+<member name="M:FCQRS.Model.Data.ValueLens.Value``2(Microsoft.FSharp.Core.FSharpFunc{Microsoft.FSharp.Core.Unit,System.Tuple{Microsoft.FSharp.Core.FSharpFunc{``0,``1},Microsoft.FSharp.Core.FSharpFunc{``1,Microsoft.FSharp.Core.FSharpFunc{``0,``0}}}},``0)">
+<summary>
+ Gets the inner value
+</summary>
+</member>
+<member name="M:FCQRS.Model.Data.ValueLens.Value``3(Microsoft.FSharp.Core.FSharpFunc{Microsoft.FSharp.Core.Unit,System.Tuple{Microsoft.FSharp.Core.FSharpFunc{``0,``1},Microsoft.FSharp.Core.FSharpFunc{``1,Microsoft.FSharp.Core.FSharpFunc{``0,Microsoft.FSharp.Core.FSharpResult{``0,``2}}}}},``0)">
+<summary>
+ Gets the inner value
+</summary>
+</member>
+<member name="M:FCQRS.Model.Data.ValueLens.TryCreate``3(Microsoft.FSharp.Core.FSharpFunc{Microsoft.FSharp.Core.Unit,System.Tuple{Microsoft.FSharp.Core.FSharpFunc{``0,``1},Microsoft.FSharp.Core.FSharpFunc{``1,Microsoft.FSharp.Core.FSharpFunc{``0,Microsoft.FSharp.Core.FSharpResult{``0,``2}}}}},``1)">
+<summary>
+ Creates a Result type depending the outcome of validation.
+</summary>
+</member>
+<member name="M:FCQRS.Model.Data.ValueLens.ToString``2(Microsoft.FSharp.Core.FSharpFunc{Microsoft.FSharp.Core.Unit,System.Tuple{Microsoft.FSharp.Core.FSharpFunc{``0,``1},Microsoft.FSharp.Core.FSharpFunc{``1,Microsoft.FSharp.Core.FSharpFunc{``0,``0}}}},``0)">
+<summary>
+ Converts inner value ToString
+</summary>
+</member>
+<member name="M:FCQRS.Model.Data.ValueLens.Isvalid``5(Microsoft.FSharp.Core.FSharpFunc{Microsoft.FSharp.Core.Unit,System.Tuple{Microsoft.FSharp.Core.FSharpFunc{``0,``1},Microsoft.FSharp.Core.FSharpFunc{``1,Microsoft.FSharp.Core.FSharpFunc{``0,Microsoft.FSharp.Core.FSharpResult{``0,``4}}}}},Microsoft.FSharp.Core.FSharpFunc{Microsoft.FSharp.Core.Unit,System.Tuple{Microsoft.FSharp.Core.FSharpFunc{``1,``2},Microsoft.FSharp.Core.FSharpFunc{``2,Microsoft.FSharp.Core.FSharpFunc{``1,Microsoft.FSharp.Core.FSharpResult{``1,``3}}}}},``0)">
+<summary>
+ Checks if the validation rules still hold. Typical use case is after deserialization when you cannot trust the data.
+</summary>
+</member>
+<member name="M:FCQRS.Model.Data.ValueLens.IsValidValue``3(Microsoft.FSharp.Core.FSharpFunc{Microsoft.FSharp.Core.Unit,System.Tuple{Microsoft.FSharp.Core.FSharpFunc{``0,``1},Microsoft.FSharp.Core.FSharpFunc{``1,Microsoft.FSharp.Core.FSharpFunc{``0,Microsoft.FSharp.Core.FSharpResult{``0,``2}}}}},``0)">
+<summary>
+ Reapplies validation rules, typical use case is after deserialization when you cannot trust the data.
+</summary>
+</member>
+<member name="M:FCQRS.Model.Data.ValueLens.CreateAsResult``4(Microsoft.FSharp.Core.FSharpFunc{Microsoft.FSharp.Core.Unit,System.Tuple{Microsoft.FSharp.Core.FSharpFunc{``1,``2},Microsoft.FSharp.Core.FSharpFunc{``2,Microsoft.FSharp.Core.FSharpFunc{``1,``1}}}},Microsoft.FSharp.Core.FSharpFunc{Microsoft.FSharp.Core.Unit,System.Tuple{Microsoft.FSharp.Core.FSharpFunc{``2,``0},Microsoft.FSharp.Core.FSharpFunc{``0,Microsoft.FSharp.Core.FSharpFunc{``2,Microsoft.FSharp.Core.FSharpResult{``2,``3}}}}},``0)">
+<summary>
+ Skips first level of validation.
+</summary>
+</member>
+<member name="M:FCQRS.Model.Data.ValueLens.Create``2(Microsoft.FSharp.Core.FSharpFunc{Microsoft.FSharp.Core.Unit,System.Tuple{Microsoft.FSharp.Core.FSharpFunc{``0,``1},Microsoft.FSharp.Core.FSharpFunc{``1,Microsoft.FSharp.Core.FSharpFunc{``0,``0}}}},``1)">
+<summary>
+ Creates non validated parent type directly.
+</summary>
+</member>
+<member name="T:FCQRS.Model.Data.ValueLensType`2">
+<summary>
+ Helper types for ValueLens for static resolution
+</summary>
+</member>
+<member name="T:FCQRS.Model.Data.ValueLensResultType`3">
+<summary>
+ Helper types for ValueLens for static resolution
+</summary>
+</member>
+<member name="P:FCQRS.Model.Data.IMessageWithCID.CID">
+<summary>
+ Gets the Correlation ID associated with the message.
+</summary>
+</member>
+<member name="T:FCQRS.Model.Data.IMessageWithCID">
+<summary>
+ Interface for messages that carry a Correlation ID (CID).
+</summary>
+</member>
+</members>
+</doc>

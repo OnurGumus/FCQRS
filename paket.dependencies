@@ -19,7 +19,5 @@ nuget FSharp.SystemTextJson
 nuget FsToolkit.ErrorHandling
 nuget FCQRS.Serialization
 nuget Fable.Package.SDK
-nuget FCQRS.Model
-nuget FCQRS
 nuget Hocon.Extensions.Configuration
 nuget Microsoft.Extensions.Logging.Console

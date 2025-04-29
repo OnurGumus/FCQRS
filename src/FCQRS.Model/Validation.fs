@@ -35,7 +35,7 @@ type ValidateResult<'T> =
 
     member x.IsInvalid_ = x.IsValid_ |> not
 
-type FieldInfo<'T, 'T0, 'E when 'E: not null> =
+type FieldInfo<'T, 'T0, 'E> =
     { key: string
       original: 'T
       result: ValidateResult<'T0>
@@ -47,7 +47,7 @@ type FieldInfo<'T, 'T0, 'E when 'E: not null> =
           result = result
           validator = x.validator }
 
-and Validator<'E when 'E: not null>(all) =
+and Validator<'E >(all) =
     let mutable errors: Map<string, 'E list> = Map.empty
     let mutable hasError = false
     member __.HasError = hasError
@@ -325,19 +325,19 @@ and Validator<'E when 'E: not null>(all) =
 
 #endif
 
-let private instance<'E when 'E: not null> = Validator<'E>(true)
+let private instance<'E> = Validator<'E>(true)
 
 /// IsValid helper from Validator method for custom rule functions, you can also extend Validator class directly.
-let isValid<'T, 'T0, 'E when 'E: not null> = instance<'E>.IsValid<'T, 'T0>
+let isValid<'T, 'T0, 'E> = instance<'E>.IsValid<'T, 'T0>
 
 /// IsValidOpt helper from Validator method for custom rule functions, you can also extend Validator class directly.
-let isValidOpt<'T, 'T0, 'T1, 'E when 'E: not null> = instance<'E>.IsValidOpt<'T, 'T0, 'T1>
+let isValidOpt<'T, 'T0, 'T1, 'E> = instance<'E>.IsValidOpt<'T, 'T0, 'T1>
 
 /// IsValidAsync helper from Validator method for custom rule functions, you can also extend Validator class directly.
-let isValidAsync<'T, 'T0, 'E when 'E: not null> = instance<'E>.IsValidAsync<'T, 'T0>
+let isValidAsync<'T, 'T0, 'E> = instance<'E>.IsValidAsync<'T, 'T0>
 
 /// IsValidOptAsync helper from Validator method for custom rule functions, you can also extend Validator class directly.
-let isValidOptAsync<'T, 'T0, 'T1, 'E when 'E: not null> = instance<'E>.IsValidOptAsync<'T, 'T0, 'T1>
+let isValidOptAsync<'T, 'T0, 'T1, 'E > = instance<'E>.IsValidOptAsync<'T, 'T0, 'T1>
 
 let validateSync all (tester: Validator<'E> -> 'T) =
     let validator = Validator(all)

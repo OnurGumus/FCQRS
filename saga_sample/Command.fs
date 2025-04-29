@@ -9,8 +9,8 @@ let register cid userName password =
 
     let command = User.Register(userName, password)
 
-    let condition (e: User.Event) =
-        e.IsAlreadyRegistered || e.IsVerificationRequested
+    let condition (e: User.Event) = true
+       // e.IsAlreadyRegistered || e.IsVerificationRequested
 
     let subscribe = userSubs cid actorId command condition
 
@@ -31,7 +31,7 @@ let login cid userName password =
 
     let command = User.Login password
 
-    let condition (e: User.Event) = e.IsLoginFailed || e.IsLoginSucceeded
+    let condition (e: User.Event) =  true // e.IsLoginFailed || e.IsLoginSucceeded
 
     let subscribe = userSubs cid actorId command condition
 
@@ -51,7 +51,7 @@ let verify cid userName code =
 
     let command = User.Verify code
 
-    let condition (e: User.Event) = e.IsVerified || e.IsLoginFailed
+    let condition (e: User.Event) = true // e.IsVerified || e.IsLoginFailed
 
     let subscribe = userSubs cid actorId command condition
 

@@ -151,7 +151,7 @@ module internal Internal =
         let logger = loggerFactory.CreateLogger name
 
         let snapshotVersionCount =
-            let s: string | null = config["config:akka:persistence:snapshot-version-count"]
+            let s: string  = config["config:akka:persistence:snapshot-version-count"]
 
             match s |> System.Int32.TryParse with
             | true, v -> v

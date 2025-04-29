@@ -32,7 +32,7 @@ type ValueLens =
 
     /// Converts inner value ToString
 
-    static member inline ToString<'Wrapped, 'Inner when 'Inner: not null and ValueLensType<'Wrapped, 'Inner>>(this: 'Wrapped) =
+    static member inline ToString<'Wrapped, 'Inner when ValueLensType<'Wrapped, 'Inner>>(this: 'Wrapped) =
         (ValueLens.Value this).ToString()
 
     /// Reapplies validation rules, typical use case is after deserialization when you cannot trust the data.

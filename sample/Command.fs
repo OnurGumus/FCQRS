@@ -12,8 +12,8 @@ let register cid userName password =
     let command = User.Register(userName, password)
 
     // Condition to wait until what we are interested in happens.
-    let condition (e: User.Event) =
-        e.IsAlreadyRegistered || e.IsRegisterSucceeded
+    let condition (e: User.Event) = match e with | User.Event.AlreadyRegistered | User.Event.RegisterSucceeded _ -> true | _ -> false
+        // e.IsAlreadyRegistered || e.IsRegisterSucceeded
 
     // Send the command to the actor.
     let subscribe = userSubs cid actorId command condition
@@ -36,7 +36,7 @@ let login cid userName password =
 
     let command = User.Login password
 
-    let condition (e: User.Event) = e.IsLoginFailed || e.IsLoginSucceeded
+    let condition (e: User.Event) = match e with  User.LoginFailed  | User.LoginSucceeded -> true  | _ -> true
 
     let subscribe = userSubs cid actorId command condition
 

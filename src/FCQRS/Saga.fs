@@ -168,7 +168,7 @@ let private actorProp
     let logger = loggerFactory.CreateLogger name
 
     let snapshotVersionCount =
-        let s: string | null = config["config:akka:persistence:snapshot-version-count"]
+        let s: string  = config["config:akka:persistence:snapshot-version-count"]
 
         match s |> System.Int32.TryParse with
         | true, v -> v
@@ -226,7 +226,7 @@ let private actorProp
 
             match cmd.DelayInMs with
             | Some delay ->
-                mailbox.Schedule (System.TimeSpan.FromMilliseconds delay) (targetActor :?> IActorRef<_>) finalCommand
+                mailbox.Schedule (System.TimeSpan.FromMilliseconds (delay |> float)) (targetActor :?> IActorRef<_>) finalCommand
                 |> ignore
             | None -> targetActor <! finalCommand
 

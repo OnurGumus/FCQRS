@@ -1,0 +1,410 @@
+<?xml version="1.0" encoding="utf-8"?>
+<doc>
+<assembly><name>FCQRS</name></assembly>
+<members>
+<member name="T:FCQRS.Common.PrefixConversion">
+<summary>
+ Default shard name used if no specific sharding strategy is provided.
+ Represents a potential transformation to apply to an entity ID prefix, used in saga routing.
+ Allows sagas to be co-located or routed differently based on the originator&apos;s ID structure.
+</summary>
+</member>
+<member name="P:FCQRS.Common.IActor.TimeProvider">
+<summary>
+ Gets the time provider.
+</summary>
+</member>
+<member name="P:FCQRS.Common.IActor.System">
+<summary>
+ Gets the hosting ActorSystem.
+</summary>
+</member>
+<member name="P:FCQRS.Common.IActor.Mediator">
+<summary>
+ Gets the reference to the distributed pub/sub mediator actor.
+</summary>
+</member>
+<member name="P:FCQRS.Common.IActor.Materializer">
+<summary>
+ Gets the Akka Streams materializer.
+</summary>
+</member>
+<member name="P:FCQRS.Common.IActor.LoggerFactory">
+<summary>
+ Gets the logger factory.
+</summary>
+</member>
+<member name="M:FCQRS.Common.IActor.SubscribeForCommand``2(FCQRS.Common.CommandHandler.Command{``0,``1})">
+<summary>
+ Subscribes to the result of a command sent to another actor.
+</summary>
+</member>
+<member name="M:FCQRS.Common.IActor.Stop">
+<summary>
+ Stops the actor system gracefully.
+</summary>
+</member>
+<member name="M:FCQRS.Common.IActor.InitializeSagaStarter(Microsoft.FSharp.Core.FSharpFunc{System.Object,Microsoft.FSharp.Collections.FSharpList{System.Tuple{Microsoft.FSharp.Core.FSharpFunc{System.String,Akkling.Cluster.Sharding.IEntityRef{System.Object}},FCQRS.Common.PrefixConversion,System.Object}}})">
+<summary>
+ Initializes the Saga Starter actor, configuring which events trigger which sagas.
+ &lt;param name=&quot;eventHandler&quot;&gt;A function mapping a received event object to a list of saga definitions to start: `obj -&gt; list&lt;(Factory * Prefix * StartingEvent)&gt;`.&lt;/param&gt;
+</summary>
+</member>
+<member name="M:FCQRS.Common.IActor.InitializeSaga``4(``0,FCQRS.Common.SagaState{``1,``2},Microsoft.FSharp.Core.FSharpFunc{System.Object,Microsoft.FSharp.Core.FSharpFunc{FCQRS.Common.SagaState{``1,``2},FCQRS.Common.EventAction{``2}}},Microsoft.FSharp.Core.FSharpFunc{FCQRS.Common.SagaState{``1,``2},Microsoft.FSharp.Core.FSharpFunc{Microsoft.FSharp.Core.FSharpOption{FCQRS.Common.SagaStarter.SagaStartingEvent{FCQRS.Common.Event{``3}}},Microsoft.FSharp.Core.FSharpFunc{System.Boolean,System.Tuple{FCQRS.Common.Effect,Microsoft.FSharp.Core.FSharpOption{``2},Microsoft.FSharp.Collections.FSharpList{FCQRS.Common.ExecuteCommand}}}}},Microsoft.FSharp.Core.FSharpFunc{FCQRS.Common.SagaState{``1,``2},FCQRS.Common.SagaState{``1,``2}},System.String)">
+<summary>
+ Initializes a sharded, persistent saga actor.
+ &lt;param name=&quot;cfg&quot;&gt;Environment configuration (IConfiguration &amp; ILoggerFactory).&lt;/param&gt;
+ &lt;param name=&quot;initialState&quot;&gt;The initial state (`SagaState`) for new saga instances.&lt;/param&gt;
+ &lt;param name=&quot;handleEvent&quot;&gt;The event handler function: `Event -&gt; SagaState -&gt; EventAction`.&lt;/param&gt;
+ &lt;param name=&quot;applySideEffects&quot;&gt;Function determining side effects based on state transitions: `SagaState -&gt; Option&lt;StartingEvent&gt; -&gt; bool -&gt; Effect * Option&lt;NewState&gt; * ExecuteCommand list`.&lt;/param&gt;
+ &lt;param name=&quot;applyStateChange&quot;&gt;Function to apply internal state changes: `SagaState -&gt; SagaState`.&lt;/param&gt;
+ &lt;param name=&quot;name&quot;&gt;The shard type name for this saga.&lt;/param&gt;
+ &lt;returns&gt;An entity factory (`EntityFac&lt;obj&gt;`) for creating instances of this saga.&lt;/returns&gt;
+</summary>
+</member>
+<member name="M:FCQRS.Common.IActor.InitializeActor``4(``0,``1,System.String,Microsoft.FSharp.Core.FSharpFunc{FCQRS.Common.Command{``2},Microsoft.FSharp.Core.FSharpFunc{``1,FCQRS.Common.EventAction{``3}}},Microsoft.FSharp.Core.FSharpFunc{FCQRS.Common.Event{``3},Microsoft.FSharp.Core.FSharpFunc{``1,``1}})">
+<summary>
+ Initializes a sharded, persistent aggregate actor.
+ &lt;param name=&quot;cfg&quot;&gt;Environment configuration (IConfiguration &amp; ILoggerFactory).&lt;/param&gt;
+ &lt;param name=&quot;initialState&quot;&gt;The initial state for new aggregate instances.&lt;/param&gt;
+ &lt;param name=&quot;name&quot;&gt;The shard type name for this aggregate.&lt;/param&gt;
+ &lt;param name=&quot;handleCommand&quot;&gt;The command handler function: `Command -&gt; State -&gt; EventAction`.&lt;/param&gt;
+ &lt;param name=&quot;apply&quot;&gt;The event handler function: `Event -&gt; State -&gt; State`.&lt;/param&gt;
+ &lt;returns&gt;An entity factory (`EntityFac&lt;obj&gt;`) for creating instances of this actor.&lt;/returns&gt;
+</summary>
+</member>
+<member name="M:FCQRS.Common.IActor.CreateCommandSubscription``2(Microsoft.FSharp.Core.FSharpFunc{System.String,Akkling.Cluster.Sharding.IEntityRef{System.Object}},FCQRS.Model.Data.CID,FCQRS.Model.Data.ActorId,``0,Microsoft.FSharp.Core.FSharpFunc{``1,System.Boolean})">
+<summary>
+ Creates a command subscription to wait for a specific event from a target actor.
+ Sends the command and asynchronously returns the first matching event received.
+ &lt;param name=&quot;factory&quot;&gt;Entity factory function for the target actor type.&lt;/param&gt;
+ &lt;param name=&quot;cid&quot;&gt;Correlation ID for tracking.&lt;/param&gt;
+ &lt;param name=&quot;id&quot;&gt;Entity ID of the target actor.&lt;/param&gt;
+ &lt;param name=&quot;command&quot;&gt;The command payload to send.&lt;/param&gt;
+ &lt;param name=&quot;filter&quot;&gt;A predicate function to select the desired event.&lt;/param&gt;
+ &lt;returns&gt;An async computation yielding the target event.&lt;/returns&gt;
+</summary>
+</member>
+<member name="T:FCQRS.Common.IActor">
+<summary>
+ Defines the core functionalities and context provided by the FCQRS environment to actors.
+ This interface provides access to essential Akka.NET services and FCQRS initialization methods.
+</summary>
+</member>
+<member name="P:FCQRS.Common.SagaState`2.State">
+<summary>
+ The current state machine state of the saga.
+</summary>
+</member>
+<member name="P:FCQRS.Common.SagaState`2.Data">
+<summary>
+ The custom data associated with this saga instance.
+</summary>
+</member>
+<member name="T:FCQRS.Common.SagaState`2">
+<summary>
+ Represents the state of a saga instance.
+ &lt;typeparam name=&quot;&apos;SagaData&quot;&gt;The type of the custom data held by the saga.&lt;/typeparam&gt;
+ &lt;typeparam name=&quot;&apos;State&quot;&gt;The type representing the saga&apos;s current state machine state (e.g., an enum or DU).&lt;/typeparam&gt;
+</summary>
+</member>
+<member name="T:FCQRS.Common.Effect.NoEffect">
+<summary>
+ No specific side effect is required.
+</summary>
+</member>
+<member name="T:FCQRS.Common.Effect.StopActor">
+<summary>
+ Instructs the saga actor to stop itself gracefully.
+</summary>
+</member>
+<member name="T:FCQRS.Common.Effect.ResumeFirstEvent">
+<summary>
+ Instructs the saga to re-process the first event that started it (used for retries or specific flows).
+</summary>
+</member>
+<member name="T:FCQRS.Common.Effect">
+<summary>
+ Represents side effects that can be triggered by a saga after processing an event or timeout.
+</summary>
+</member>
+<member name="P:FCQRS.Common.ExecuteCommand.DelayInMs">
+<summary>
+ An optional delay in milliseconds before sending the command.
+</summary>
+</member>
+<member name="P:FCQRS.Common.ExecuteCommand.Command">
+<summary>
+ The command message to send (boxed).
+</summary>
+</member>
+<member name="P:FCQRS.Common.ExecuteCommand.TargetActor">
+<summary>
+ The target actor for the command.
+</summary>
+</member>
+<member name="T:FCQRS.Common.ExecuteCommand">
+<summary>
+ Represents a command to be executed, often scheduled or triggered by a saga.
+</summary>
+</member>
+<member name="T:FCQRS.Common.TargetActor.Self">
+<summary>
+ Specifies the target as the current saga actor itself.
+</summary>
+</member>
+<member name="T:FCQRS.Common.TargetActor.Sender">
+<summary>
+ Specifies the target as the original sender of the message that triggered the current saga step.
+</summary>
+</member>
+<member name="T:FCQRS.Common.TargetActor.ActorRef">
+<summary>
+ Specifies the target using its direct IActorRef (usually boxed as obj).
+</summary>
+</member>
+<member name="T:FCQRS.Common.TargetActor.FactoryAndName">
+<summary>
+ Specifies the target using a factory function and name.
+</summary>
+</member>
+<member name="T:FCQRS.Common.TargetActor">
+<summary>
+ Represents the target of a command execution triggered by a saga.
+</summary>
+</member>
+<member name="P:FCQRS.Common.FactoryAndName.Name">
+<summary>
+ The name identifier for the target actor.
+</summary>
+</member>
+<member name="P:FCQRS.Common.FactoryAndName.Factory">
+<summary>
+ The factory function (or entity ref creator) used to potentially create the actor.
+</summary>
+</member>
+<member name="T:FCQRS.Common.FactoryAndName">
+<summary>
+ Represents the information needed to locate or create a target actor, typically used within sagas.
+</summary>
+</member>
+<member name="T:FCQRS.Common.TargetName.Originator">
+<summary>
+ Identify the target as the originator actor of the current saga process.
+</summary>
+</member>
+<member name="T:FCQRS.Common.TargetName.Name">
+<summary>
+ Identify the target by its string name (entity ID).
+</summary>
+</member>
+<member name="T:FCQRS.Common.TargetName">
+<summary>
+ Represents the name identifying a target actor for a command, typically used within sagas.
+</summary>
+</member>
+<member name="T:FCQRS.Common.EventAction`1.StateChangedEvent">
+<summary>
+ Indicate that the state of a saga has changed (used internally by sagas for persistence).
+</summary>
+</member>
+<member name="T:FCQRS.Common.EventAction`1.UnhandledEvent">
+<summary>
+ Indicate that the command or event could not be handled in the current state.
+</summary>
+</member>
+<member name="T:FCQRS.Common.EventAction`1.IgnoreEvent">
+<summary>
+ Ignore the event or command completely. No persistence, publishing, or state update occurs.
+</summary>
+</member>
+<member name="T:FCQRS.Common.EventAction`1.PublishEvent">
+<summary>
+ Publish the event immediately to the mediator without persisting it. The actor&apos;s state is not updated.
+</summary>
+</member>
+<member name="T:FCQRS.Common.EventAction`1.DeferEvent">
+<summary>
+ Defer the event. It will be stashed and processed later, potentially after other events.
+</summary>
+</member>
+<member name="T:FCQRS.Common.EventAction`1.PersistEvent">
+<summary>
+ Persist the event to the journal. The actor&apos;s state will be updated using the event handler *after* persistence succeeds.
+</summary>
+</member>
+<member name="T:FCQRS.Common.EventAction`1">
+<summary>
+ Defines the possible actions an aggregate or saga actor can take after processing a command or event.
+ &lt;typeparam name=&quot;&apos;T&quot;&gt;The type of the event payload associated with the action (e.g., for PersistEvent).&lt;/typeparam&gt;
+</summary>
+</member>
+<member name="P:FCQRS.Common.Event`1.Version">
+<summary>
+ The version number of the aggregate after this event was applied.
+</summary>
+</member>
+<member name="P:FCQRS.Common.Event`1.CorrelationId">
+<summary>
+ The correlation ID linking the event back to the originating command.
+</summary>
+</member>
+<member name="P:FCQRS.Common.Event`1.Sender">
+<summary>
+ An optional identifier for the actor that generated the event.
+</summary>
+</member>
+<member name="P:FCQRS.Common.Event`1.Id">
+<summary>
+ An optional unique identifier for the message.
+</summary>
+</member>
+<member name="P:FCQRS.Common.Event`1.CreationDate">
+<summary>
+ The timestamp when the event was created.
+</summary>
+</member>
+<member name="P:FCQRS.Common.Event`1.EventDetails">
+<summary>
+ The specific details or payload of the event.
+</summary>
+</member>
+<member name="T:FCQRS.Common.Event`1">
+<summary>
+ Represents an event generated by an aggregate actor as a result of processing a command.
+ &lt;typeparam name=&quot;&apos;EventDetails&quot;&gt;The specific type of the event payload.&lt;/typeparam&gt;
+</summary>
+</member>
+<member name="P:FCQRS.Common.Command`1.CorrelationId">
+<summary>
+ The correlation ID used to track the command through the system.
+</summary>
+</member>
+<member name="P:FCQRS.Common.Command`1.Sender">
+<summary>
+ An optional identifier for the actor that sent the command.
+</summary>
+</member>
+<member name="P:FCQRS.Common.Command`1.Id">
+<summary>
+ An optional unique identifier for the message.
+</summary>
+</member>
+<member name="P:FCQRS.Common.Command`1.CreationDate">
+<summary>
+ The timestamp when the command was created.
+</summary>
+</member>
+<member name="P:FCQRS.Common.Command`1.CommandDetails">
+<summary>
+ The specific details or payload of the command.
+</summary>
+</member>
+<member name="T:FCQRS.Common.Command`1">
+<summary>
+ Represents a command to be processed by an aggregate actor.
+ &lt;typeparam name=&quot;&apos;CommandDetails&quot;&gt;The specific type of the command payload.&lt;/typeparam&gt;
+</summary>
+</member>
+<member name="T:FCQRS.Common.ISerializable">
+<summary>
+ Marker interface for types that can be serialized by Akka.NET.
+</summary>
+</member>
+<member name="T:FCQRS.Common.CommandHandler.Command`2">
+<summary>
+ Represents the message sent to the internal subscription mechanism.
+ &lt;typeparam name=&quot;&apos;Command&quot;&gt;The type of the command payload.&lt;/typeparam&gt;
+ &lt;typeparam name=&quot;&apos;Event&quot;&gt;The type of the expected event payload.&lt;/typeparam&gt;
+</summary>
+</member>
+<member name="T:FCQRS.Common.CommandHandler">
+<summary>
+ (Internal) Contains the implementation for command subscriptions.
+</summary>
+</member>
+<member name="P:FCQRS.Common.SagaStarter.SagaStartingEvent`1.Event">
+<summary>
+ The actual event payload that triggers the saga.
+</summary>
+</member>
+<member name="T:FCQRS.Common.SagaStarter.SagaStartingEvent`1">
+<summary>
+ Wraps an event that is intended to start a saga.
+ This is typically the message sent to a saga actor upon its creation.
+ &lt;typeparam name=&quot;&apos;T&quot;&gt;The type of the starting event payload.&lt;/typeparam&gt;
+</summary>
+</member>
+<member name="T:FCQRS.Common.SagaStarter">
+<summary>
+ Contains types and functions related to the Saga Starter actor (internal implementation detail).
+</summary>
+</member>
+<member name="T:FCQRS.Common">
+ <summary>
+  Contains common types like Events and Commands
+ </summary>
+
+ <namespacedoc>
+   <summary>Functionality for Write Side.</summary>
+ </namespacedoc>
+</member>
+<member name="M:FCQRS.DynamicConfig.ConfigExtension.GetSectionAsDynamic(Microsoft.Extensions.Configuration.IConfiguration,System.String)">
+ <summary>
+ An extension method that returns given string as an dynamic Expando object
+ </summary>
+ <exception cref="System.ArgumentNullException">Thrown configuration or section is null</exception>
+</member>
+<member name="M:FCQRS.DynamicConfig.ConfigExtension.GetRootAsDynamic(Microsoft.Extensions.Configuration.IConfiguration)">
+ <summary>
+ An extension method that returns given string as an dynamic Expando object
+ </summary>
+ <returns>An expando object represents given section</returns>
+ <exception cref="System.ArgumentNullException">Thrown configuration is null</exception>
+</member>
+<member name="M:FCQRS.Query.ISubscribe`1.Subscribe(Microsoft.FSharp.Core.FSharpFunc{`0,System.Boolean},System.Int32,Microsoft.FSharp.Core.FSharpOption{Microsoft.FSharp.Core.FSharpFunc{`0,Microsoft.FSharp.Core.Unit}},Microsoft.FSharp.Core.FSharpOption{System.Threading.CancellationToken})">
+ <summary>
+ Subscribes to events using a filter. Only events for which the predicate returns true
+ are processed, and the callback is invoked for each matching event up to a specified count.
+ </summary>
+ <param name="filter">
+ Predicate function to determine if an event should be processed, e.g. 
+ <c>fun event -> event.CorrelationId = targetId</c>.
+ </param>
+ <param name="take">Maximum number of events to process.</param>
+ <param name="callback">
+ Optional callback function to handle the event (defaults to ignoring the event if not provided).
+ </param>
+ <param name="cancellationToken">An optional cancellation token to cancel the subscription.</param>
+ <example>
+ <code lang="fsharp">
+ // Typical usage: subscribe for a filtered event by matching on CorrelationId,
+ // process only one event, and omit the callback and cancellation token.
+ async {
+     let targetId = some-correlation-id
+     // Here, take is set to 1 and no callback or cancellation token is provided.
+     let! subscription = query.Subscribe((fun event -> event.CorrelationId = targetId), 1)
+     // Use the asynchronous subscription as needed.
+ } |> Async.Start
+ </code>
+ </example>
+</member>
+<member name="M:FCQRS.Query.ISubscribe`1.Subscribe(Microsoft.FSharp.Core.FSharpFunc{`0,Microsoft.FSharp.Core.Unit},Microsoft.FSharp.Core.FSharpOption{System.Threading.CancellationToken})">
+ <summary>
+ Subscribes to all events and invokes the specified callback for each event.
+ </summary>
+ <param name="callback">Function invoked for each event, e.g. printing or processing the event.</param>
+ <param name="cancellationToken">An optional cancellation token to cancel the subscription.</param>
+ <example>
+ <code lang="fsharp">
+ // Example usage: subscribe to all events and write them to the console.
+ let subscription = 
+     query.Subscribe((fun event -> printfn "Received event: %A" event))
+ 
+ // Later, to cancel the subscription:
+ subscription.Dispose()
+ </code>
+ </example>
+</member>
+</members>
+</doc>

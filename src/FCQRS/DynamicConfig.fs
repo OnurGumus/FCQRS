@@ -7,7 +7,7 @@ open System.Collections.Generic
 
 [<AutoOpen>]
 module Internal = 
-    let rec internal replaceWithArray (parent: ExpandoObject | null) (key: string | null) (input: ExpandoObject option) =
+    let rec internal replaceWithArray (parent: ExpandoObject) (key: string ) (input: ExpandoObject option) =
         match input with
         | None -> ()
         | Some input ->
@@ -20,7 +20,7 @@ module Internal =
                 for kvp in dict do
                     arr.[kvp.Key |> Int32.Parse] <- kvp.Value
 
-                let parentDict = parent :> IDictionary<string|null, _>
+                let parentDict = parent :> IDictionary<string, _>
                 parentDict.Remove key |> ignore
                 parentDict.Add(key, arr)
             else

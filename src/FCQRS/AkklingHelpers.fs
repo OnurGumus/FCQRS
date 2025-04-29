@@ -11,7 +11,7 @@ module Internal =
     type  Extractor<'Envelope, 'Message> = 'Envelope -> string * string * 'Message
     type  ShardResolver = string -> string
 
-    type TypedMessageExtractor<'Envelope, 'Message> when 'Envelope : not null
+    type TypedMessageExtractor<'Envelope, 'Message> 
         (extractor: Extractor<_, 'Message>, shardResolver: ShardResolver) =
         interface IMessageExtractor with
             member _.ShardId message =

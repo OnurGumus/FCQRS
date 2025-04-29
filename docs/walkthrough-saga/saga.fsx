@@ -9,7 +9,7 @@ index: 3
 (*** hide ***)
 #r  "nuget: FCQRS, *"
 #r  "nuget: Hocon.Extensions.Configuration, *"
-#r  "../../saga_sample/bin/Debug/net9.0/saga_sample.dll"
+#r  "../../saga_sample/bin/Debug/net8.0/saga_sample.dll"
 open System.IO
 open Microsoft.Extensions.Configuration
 open Hocon.Extensions.Configuration

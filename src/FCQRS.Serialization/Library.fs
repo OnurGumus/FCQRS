@@ -1,4 +1,4 @@
-﻿namespace FCQRS.Serialization
+﻿namespace FCQRS
 
 /// <summary>
 /// Provides JSON serialization and deserialization functionality for FCQRS.
@@ -38,7 +38,7 @@ module public Serialization =
     /// <exception cref="System.InvalidOperationException">Thrown when the deserialized value is null.</exception>
     let public decode<'T> (json: JsonElement) =
         match JsonSerializer.Deserialize<'T>(json, jsonOptions) with
-        | null -> invalidOp "null values not supported on deserialization"
+      //  | null -> invalidOp "null values not supported on deserialization"
         | value -> value
 
     /// <summary>
@@ -57,5 +57,5 @@ module public Serialization =
     /// <exception cref="System.InvalidOperationException">Thrown when the deserialized value is null.</exception>
     let public decodeFromBytes<'T> (json: byte array) =
         match JsonSerializer.Deserialize<'T>(json, jsonOptions) with
-        | null -> invalidOp "null values not supported on deserialization"
+     //   | null -> invalidOp "null values not supported on deserialization"
         | value -> value
