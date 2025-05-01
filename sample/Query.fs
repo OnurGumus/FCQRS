@@ -7,7 +7,7 @@ open FCQRS.Common
 open FCQRS.Model.Data
 // All persisted events will come with monotonically increasing offset value.
 let handleEventWrapper env (offsetValue: int64) (event:obj)=
-    let log = (env :> ILoggerFactory).CreateLogger "Event"
+    let log = (env :> ILoggerFactoryWrapper).LoggerFactory.CreateLogger "Event"
     log.LogInformation("Event: {0}", event.ToString())
 
     let dataEvent =

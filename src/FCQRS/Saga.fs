@@ -163,8 +163,8 @@ let private actorProp
         |> Result.value
 
     let log = mailbox.UntypedContext.GetLogger()
-    let loggerFactory = env :> ILoggerFactory
-    let config = env :> IConfiguration
+    let loggerFactory = (env :> ILoggerFactoryWrapper).LoggerFactory
+    let config = (env :> IConfigurationWrapper).Configuration
     let logger = loggerFactory.CreateLogger name
 
     let snapshotVersionCount =
