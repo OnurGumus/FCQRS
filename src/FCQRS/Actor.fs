@@ -146,8 +146,8 @@ module internal Internal =
         (mediator: IActorRef<Publish>)
         (mailbox: Eventsourced<obj>)
         =
-        let loggerFactory = env :> ILoggerFactory
-        let config = env :> IConfiguration
+        let loggerFactory = (env :> ILoggerFactoryWrapper).LoggerFactory
+        let config = (env :> IConfigurationWrapper).Configuration
         let logger = loggerFactory.CreateLogger name
 
         let snapshotVersionCount =

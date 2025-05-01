@@ -24,6 +24,11 @@ open Microsoft.Extensions.Configuration
 /// Marker interface for types that can be serialized by Akka.NET.
 type ISerializable = interface end
 
+type ILoggerFactoryWrapper =
+    abstract LoggerFactory: ILoggerFactory
+
+type IConfigurationWrapper =
+    abstract Configuration: IConfiguration
 
 
 /// Represents a command to be processed by an aggregate actor.
@@ -206,7 +211,7 @@ type IActor =
     /// <param name="handleCommand">The command handler function: `Command -> State -> EventAction`.</param>
     /// <param name="apply">The event handler function: `Event -> State -> State`.</param>
     /// <returns>An entity factory (`EntityFac<obj>`) for creating instances of this actor.</returns>
-    abstract InitializeActor: #IConfiguration & #ILoggerFactory -> 'a -> string -> (Command<'c >-> 'a -> EventAction<'b>) -> (Event<'b> -> 'a -> 'a) -> EntityFac<obj>
+    abstract InitializeActor: #IConfigurationWrapper & #ILoggerFactoryWrapper -> 'a -> string -> (Command<'c >-> 'a -> EventAction<'b>) -> (Event<'b> -> 'a -> 'a) -> EntityFac<obj>
     /// Initializes a sharded, persistent saga actor.
     /// <param name="cfg">Environment configuration (IConfiguration & ILoggerFactory).</param>
     /// <param name="initialState">The initial state (`SagaState`) for new saga instances.</param>
@@ -215,7 +220,7 @@ type IActor =
     /// <param name="applyStateChange">Function to apply internal state changes: `SagaState -> SagaState`.</param>
     /// <param name="name">The shard type name for this saga.</param>
     /// <returns>An entity factory (`EntityFac<obj>`) for creating instances of this saga.</returns>
-    abstract InitializeSaga: #IConfiguration & #ILoggerFactory-> SagaState<'SagaState,'State>  -> (obj-> SagaState<'SagaState,'State>-> EventAction<'State>) ->
+    abstract InitializeSaga: #IConfigurationWrapper & #ILoggerFactoryWrapper-> SagaState<'SagaState,'State>  -> (obj-> SagaState<'SagaState,'State>-> EventAction<'State>) ->
         (SagaState<'SagaState,'State> -> option<SagaStartingEvent<Event<'c>>> -> bool -> Effect * option<'State> * ExecuteCommand list) ->
         (SagaState<'SagaState,'State> -> SagaState<'SagaState,'State>) -> string ->EntityFac<obj>
     /// Initializes the Saga Starter actor, configuring which events trigger which sagas.
