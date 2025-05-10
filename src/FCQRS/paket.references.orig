@@ -11,6 +11,11 @@ Microsoft.Extensions.Configuration
 FsToolkit.ErrorHandling
 FSharp.SystemTextJson
 Akka.Persistence.Query.Sql
+<<<<<<< HEAD
 FCQRS8.Model
 FCQRS8.Serialization
+=======
+FCQRS.Serialization
+FCQRS.Model
 Akka.TestKit
+>>>>>>> f7f0d31 (Support for observable Scheduler)

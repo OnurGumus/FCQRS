@@ -1,3 +1,4 @@
 FSharp.Core
 Hocon.Extensions.Configuration
 Microsoft.Extensions.Logging.Console
+Akka.TestKit

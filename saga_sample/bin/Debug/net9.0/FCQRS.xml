@@ -362,6 +362,122 @@
  <returns>An expando object represents given section</returns>
  <exception cref="System.ArgumentNullException">Thrown configuration is null</exception>
 </member>
+<member name="M:FCQRS.Scheduler.ObservingScheduler.remove_OnEnqueued(Microsoft.FSharp.Control.FSharpHandler{System.Tuple{Microsoft.FSharp.Core.FSharpOption{System.String},System.TimeSpan,Microsoft.FSharp.Core.FSharpFunc{Microsoft.FSharp.Core.Unit,Microsoft.FSharp.Core.Unit}}})">
+<summary>
+ Fired whenever a ScheduledItem is enqueued
+</summary>
+</member>
+<member name="M:FCQRS.Scheduler.ObservingScheduler.remove_OnCancelled(Microsoft.FSharp.Control.FSharpHandler{System.Tuple{Microsoft.FSharp.Core.FSharpOption{System.String},System.TimeSpan,Microsoft.FSharp.Core.FSharpFunc{Microsoft.FSharp.Core.Unit,Microsoft.FSharp.Core.Unit}}})">
+<summary>
+ Fired whenever a ScheduledItem is cancelled
+</summary>
+</member>
+<member name="P:FCQRS.Scheduler.ObservingScheduler.OnEnqueued">
+<summary>
+ Fired whenever a ScheduledItem is enqueued
+</summary>
+</member>
+<member name="P:FCQRS.Scheduler.ObservingScheduler.OnCancelled">
+<summary>
+ Fired whenever a ScheduledItem is cancelled
+</summary>
+</member>
+<member name="M:FCQRS.Scheduler.ObservingScheduler.add_OnEnqueued(Microsoft.FSharp.Control.FSharpHandler{System.Tuple{Microsoft.FSharp.Core.FSharpOption{System.String},System.TimeSpan,Microsoft.FSharp.Core.FSharpFunc{Microsoft.FSharp.Core.Unit,Microsoft.FSharp.Core.Unit}}})">
+<summary>
+ Fired whenever a ScheduledItem is enqueued
+</summary>
+</member>
+<member name="M:FCQRS.Scheduler.ObservingScheduler.add_OnCancelled(Microsoft.FSharp.Control.FSharpHandler{System.Tuple{Microsoft.FSharp.Core.FSharpOption{System.String},System.TimeSpan,Microsoft.FSharp.Core.FSharpFunc{Microsoft.FSharp.Core.Unit,Microsoft.FSharp.Core.Unit}}})">
+<summary>
+ Fired whenever a ScheduledItem is cancelled
+</summary>
+</member>
+<member name="M:FCQRS.Scheduler.ObservingScheduler.ScheduleTellRepeatedly(System.TimeSpan,System.TimeSpan,Akka.Actor.ICanTell,System.Object,Akka.Actor.IActorRef)">
+<summary>
+ Fallback ScheduleTellRepeatedly without name
+</summary>
+</member>
+<member name="M:FCQRS.Scheduler.ObservingScheduler.ScheduleTellRepeatedly(Microsoft.FSharp.Core.FSharpOption{System.String},System.TimeSpan,System.TimeSpan,Akka.Actor.ICanTell,System.Object,Akka.Actor.IActorRef)">
+<summary>
+ Schedule repeated Tell with optional name
+</summary>
+</member>
+<member name="M:FCQRS.Scheduler.ObservingScheduler.ScheduleTellOnce(System.TimeSpan,Akka.Actor.ICanTell,System.Object,Akka.Actor.IActorRef)">
+<summary>
+ Fallback ScheduleTellOnce without name
+</summary>
+</member>
+<member name="M:FCQRS.Scheduler.ObservingScheduler.ScheduleTellOnce(Microsoft.FSharp.Core.FSharpOption{System.String},System.TimeSpan,Akka.Actor.ICanTell,System.Object,Akka.Actor.IActorRef)">
+<summary>
+ Schedule a one-time Tell with optional name
+</summary>
+</member>
+<member name="M:FCQRS.Scheduler.ObservingScheduler.ScheduleRepeatedly(System.TimeSpan,System.TimeSpan,Microsoft.FSharp.Core.FSharpFunc{Microsoft.FSharp.Core.Unit,Microsoft.FSharp.Core.Unit})">
+<summary>
+ Fallback ScheduleRepeatedly without name
+</summary>
+</member>
+<member name="M:FCQRS.Scheduler.ObservingScheduler.ScheduleRepeatedly(Microsoft.FSharp.Core.FSharpOption{System.String},System.TimeSpan,System.TimeSpan,Microsoft.FSharp.Core.FSharpFunc{Microsoft.FSharp.Core.Unit,Microsoft.FSharp.Core.Unit})">
+<summary>
+ Schedule a repeated action with optional name
+</summary>
+</member>
+<member name="M:FCQRS.Scheduler.ObservingScheduler.ScheduleOnce(System.TimeSpan,Microsoft.FSharp.Core.FSharpFunc{Microsoft.FSharp.Core.Unit,Microsoft.FSharp.Core.Unit})">
+<summary>
+ Fallback ScheduleOnce without name
+</summary>
+</member>
+<member name="M:FCQRS.Scheduler.ObservingScheduler.ScheduleOnce(Microsoft.FSharp.Core.FSharpOption{System.String},System.TimeSpan,Microsoft.FSharp.Core.FSharpFunc{Microsoft.FSharp.Core.Unit,Microsoft.FSharp.Core.Unit})">
+<summary>
+ Schedule a one-time action with optional name
+</summary>
+</member>
+<member name="M:FCQRS.Scheduler.ObservingScheduler.Cancel(Akka.Actor.ICancelable,Microsoft.FSharp.Core.FSharpOption{System.String})">
+<summary>
+ Cancel via wrapper with name
+</summary>
+</member>
+<member name="M:FCQRS.Scheduler.ObservingScheduler.Advance(System.TimeSpan)">
+<summary>
+ Drive the virtual clock forward
+</summary>
+</member>
+<member name="T:FCQRS.Scheduler.ObservingScheduler">
+<summary>
+ Scheduler wrapper that exposes enqueue/cancel events with optional names
+</summary>
+</member>
+<member name="T:FCQRS.Scheduler.NamedCancelable">
+<summary>
+ Proxy that carries a name through cancellation - uses a CancellationTokenSource to handle cancellation
+</summary>
+</member>
+<member name="M:FCQRS.SchedulerController.stop">
+ <summary>
+ (Optional) Stops the scheduler controller agent.
+ </summary>
+</member>
+<member name="M:FCQRS.SchedulerController.registerAutoAdvanceOnAppearance(System.String)">
+ <summary>
+ Registers a task for automatic advancement upon its appearance.
+ </summary>
+</member>
+<member name="M:FCQRS.SchedulerController.signalAndAdvanceForCapturedTask">
+ <summary>
+ Signals the controller to advance for a previously captured task and resume normal advancement.
+ </summary>
+</member>
+<member name="M:FCQRS.SchedulerController.watchForAndPauseOnNext(System.String)">
+ <summary>
+ Instructs the controller to watch for the next occurrence of a specific task name.
+ </summary>
+</member>
+<member name="M:FCQRS.SchedulerController.start(Akka.Actor.IScheduler)">
+ <summary>
+ Initializes and starts the SchedulerController agent.
+ This should be called once during application startup.
+ </summary>
+</member>
 <member name="M:FCQRS.Query.ISubscribe`1.Subscribe(Microsoft.FSharp.Core.FSharpFunc{`0,System.Boolean},System.Int32,Microsoft.FSharp.Core.FSharpOption{Microsoft.FSharp.Core.FSharpFunc{`0,Microsoft.FSharp.Core.Unit}},Microsoft.FSharp.Core.FSharpOption{System.Threading.CancellationToken})">
  <summary>
  Subscribes to events using a filter. Only events for which the predicate returns true

@@ -21,6 +21,9 @@ nuget FCQRS.Serialization
 nuget Fable.Package.SDK
 nuget Hocon.Extensions.Configuration
 nuget Microsoft.Extensions.Logging.Console
-nuget Akka.TestKit
+<<<<<<< HEAD
 nuget FCQRS8.Model
 nuget FCQRS8.Serialization
+=======
+nuget Akka.TestKit
+>>>>>>> f7f0d31 (Support for observable Scheduler)

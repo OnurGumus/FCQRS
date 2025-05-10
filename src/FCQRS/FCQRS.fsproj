@@ -17,6 +17,8 @@
   <ItemGroup>
     <Compile Include="Common.fs" />
     <Compile Include="DynamicConfig.fs" />
+    <Compile Include="Scheduler.fs" />
+    <Compile Include="SchedulerController.fs" />
     <Compile Include="AkklingHelpers.fs" />
     <Compile Include="AkkaTimeProvider.fs" />
     <Compile Include="Saga.fs" />

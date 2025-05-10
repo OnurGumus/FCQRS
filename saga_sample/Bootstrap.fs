@@ -4,6 +4,8 @@ open Microsoft.Extensions.Logging
 open Hocon.Extensions.Configuration
 open System.IO
 open FCQRS.Common
+open System
+open FCQRS.Scheduler
 
 let configBuilder =
     ConfigurationBuilder()
@@ -15,6 +17,10 @@ let loggerFactory =
     LoggerFactory.Create(fun builder -> builder.AddConsole() |> ignore) 
 
 let actorApi = FCQRS.Actor.api config loggerFactory
+
+// Initialize the scheduler controller with the target task name
+// Replace "YOUR_SPECIFIC_TASK_NAME_HERE" with your actual task name
+FCQRS.SchedulerController.start actorApi.System.Scheduler
 
 let env = new Environments.AppEnv(config, loggerFactory)
 
@@ -39,3 +45,4 @@ let userSubs cid =
 
 let sub handleEventWrapper offsetCount =
     FCQRS.Query.init actorApi offsetCount (handleEventWrapper env)
+
