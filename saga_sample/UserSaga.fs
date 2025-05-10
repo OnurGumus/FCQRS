@@ -71,7 +71,7 @@ let applySideEffects
         None,
         [ { TargetActor = ActorRef(actorRef ())
             Command = mail
-            DelayInMs = None } ]
+            DelayInMs = Some (10000, "testuser") } ]
 
     | Completed -> StopActor, None, []
 

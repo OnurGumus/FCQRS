@@ -225,9 +225,29 @@ let private actorProp
                 | Self -> mailbox.Self, cmd
 
             match cmd.DelayInMs with
-            | Some delay ->
-                mailbox.Schedule (System.TimeSpan.FromMilliseconds delay) (targetActor :?> IActorRef<_>) finalCommand
-                |> ignore
+            | Some (delayValue, name) ->
+                let currentScheduler = mailbox.System.Scheduler 
+                let messageToSchedule = finalCommand
+                let scheduleAtDelay = System.TimeSpan.FromMilliseconds delayValue
+                
+                let untypedSender = mailbox.Self.Underlying :?> Akka.Actor.IActorRef
+                let untypedReceiver = targetActor.Underlying 
+
+                match currentScheduler with
+                | :? FCQRS.Scheduler.ObservingScheduler as obs ->
+                    let taskNameForScheduler = name
+                    
+                    log.Debug("SAGA_DEBUG: Using FCQRS.ObservingScheduler. Calling ScheduleTellOnceWithName with task name: {taskName}", taskNameForScheduler)
+                    // IMPORTANT: Assumes FCQRS.ObservingScheduler.ObservingScheduler now has a method like:
+                    // member this.ScheduleTellOnceWithName(delay, receiver, message, sender, taskName) : ICancelable
+                    obs.ScheduleTellOnce(Some taskNameForScheduler, scheduleAtDelay, untypedReceiver, messageToSchedule, untypedSender)
+                    |> ignore
+
+                | sch -> // Fallback for any other IScheduler type
+                    log.Debug("SAGA_DEBUG: Using standard IScheduler. Calling standard ScheduleTellOnce.")
+                    sch.ScheduleTellOnce(scheduleAtDelay, untypedReceiver, messageToSchedule, untypedSender)
+                    |> ignore
+
             | None -> targetActor <! finalCommand
 
         match effect with

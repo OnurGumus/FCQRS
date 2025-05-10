@@ -30,6 +30,7 @@ let applyEvent event state =
     | _ -> state
 
 let handleCommand (cmd: Command<_>) state =
+    printfn "handleCommand: %A" cmd
     match cmd.CommandDetails, state with
     | Register(userName, password), { Username = None } -> 
         VerificationRequested(userName, password, Random.Shared.Next(1_000_000).ToString()) |> PersistEvent

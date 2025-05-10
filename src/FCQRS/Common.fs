@@ -156,7 +156,7 @@ type ExecuteCommand =
       /// The command message to send (boxed).
       Command : obj
       /// An optional delay in milliseconds before sending the command.
-      DelayInMs : int64 option }
+      DelayInMs : (int64 * string) option }
 
 /// Represents side effects that can be triggered by a saga after processing an event or timeout.
 type Effect =

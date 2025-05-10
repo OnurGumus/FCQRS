@@ -1,6 +1,10 @@
 config {
      connection-string = "Data Source=demo.db;"
      akka {
+          scheduler {
+         implementation = "FCQRS.Scheduler+ObservingScheduler, FCQRS"
+        // implementation = "Akka.TestKit.TestScheduler, Akka.TestKit"
+          }
           persistence {
                journal {
                     plugin = "akka.persistence.journal.sql"
