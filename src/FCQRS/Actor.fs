@@ -228,7 +228,10 @@ module internal Internal =
         <| propsPersist (actorProp env handleCommand apply initialState name toEvent (typed actorApi.Mediator))
         <| false
 
-let api (config: IConfiguration) (loggerFactory: ILoggerFactory) =
+let api env =
+    let config = (env :> IConfigurationWrapper).Configuration
+    let loggerFactory = (env :> ILoggerFactoryWrapper).LoggerFactory
+
     let akkaConfig: ExpandoObject =
         unbox<_> (config.GetSectionAsDynamic("config:akka"))
 
