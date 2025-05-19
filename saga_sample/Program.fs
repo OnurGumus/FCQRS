@@ -27,7 +27,8 @@ FCQRS.SchedulerController.registerAutoAdvanceOnAppearance "testuser"
 //Bootstrap.advanceTime 10000 |> ignore
 // Wait for the result
 let result = registerTask.Result
-let sTask = s |> Async.StartAsTask
+s.Task.Wait()
+s.Dispose()
 //Bootstrap.advanceTime 100 |> ignore
 printfn "%A" result
 
