@@ -209,7 +209,7 @@ module internal Internal =
         let commonCommand: Command<_> =
             { 
                 CommandDetails = command
-                Id = Some(Guid.NewGuid().ToString() |> ValueLens.CreateAsResult |> Result.value)
+                Id = Some(Guid.CreateVersion7().ToString() |> ValueLens.CreateAsResult |> Result.value)
                 CreationDate = actorApi.System.Scheduler.Now.UtcDateTime
                 CorrelationId = cid
                 Sender = None }
