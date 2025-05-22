@@ -484,7 +484,7 @@
  are processed, and the callback is invoked for each matching event up to a specified count.
  </summary>
  <param name="filter">
- Predicate function to determine if an event should be processed, e.g. 
+ Predicate function to determine if an event should be processed, e.g.
  <c>fun event -> event.CorrelationId = targetId</c>.
  </param>
  <param name="take">Maximum number of events to process.</param>
@@ -514,9 +514,9 @@
  <example>
  <code lang="fsharp">
  // Example usage: subscribe to all events and write them to the console.
- let subscription = 
+ let subscription =
      query.Subscribe((fun event -> printfn "Received event: %A" event))
- 
+
  // Later, to cancel the subscription:
  subscription.Dispose()
  </code>
