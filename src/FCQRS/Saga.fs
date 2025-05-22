@@ -191,7 +191,7 @@ let private actorProp
                     if x = typeof<obj> then
                         cmd.Command.GetType()
                     else
-                        x |> Unchecked.nonNull
+                        x
 
                 let command = createCommand mailbox cmd.Command cid
 

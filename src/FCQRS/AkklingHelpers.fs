@@ -20,7 +20,7 @@ module Internal =
                     let shardId, _, _ = extractor env
                     shardId
                 | :? ShardRegion.StartEntity as e -> shardResolver (e.EntityId)
-                | _ -> invalidOp <| (message .ToString() |> Unchecked.nonNull)
+                | _ -> invalidOp <| (message .ToString() )
 
             member _.EntityId message =
                 match message with

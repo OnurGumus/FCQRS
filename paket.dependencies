@@ -3,7 +3,7 @@ source https://api.nuget.org/v3/index.json
 storage: none
 framework:auto-detect
 
-nuget FSharp.Core
+nuget FSharp.Core  < 9
 nuget FSharp.Interop.Dynamic
 nuget Microsoft.Extensions.Configuration
 nuget Akkling.Streams
@@ -22,5 +22,4 @@ nuget Fable.Package.SDK
 nuget Hocon.Extensions.Configuration
 nuget Microsoft.Extensions.Logging.Console
 nuget Akka.TestKit
-nuget FCQRS8.Model
 nuget FCQRS8.Serialization

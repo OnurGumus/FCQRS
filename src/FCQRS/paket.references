@@ -11,6 +11,4 @@ Microsoft.Extensions.Configuration
 FsToolkit.ErrorHandling
 FSharp.SystemTextJson
 Akka.Persistence.Query.Sql
-FCQRS8.Model
-FCQRS8.Serialization
 Akka.TestKit

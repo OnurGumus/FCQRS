@@ -74,7 +74,7 @@ module Internal =
             member _.Dispose() =
                 isDisposed <- true
                 if timerHandle <> null then
-                    (timerHandle |> Unchecked.nonNull).Cancel()
+                    (timerHandle).Cancel()
                 // Stop the actor
                 callbackActorRef.Tell(PoisonPill.Instance)
 
@@ -92,7 +92,7 @@ module Internal =
                 if isDisposed then false
                 else
                     if timerHandle <> null then
-                        (timerHandle |> Unchecked.nonNull).Cancel()
+                        (timerHandle).Cancel()
                     timerHandle <- 
                         if periodMs = Timeout.Infinite || periodMs = 0 then
                             // Schedule a one-time execution

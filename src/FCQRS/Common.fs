@@ -284,13 +284,13 @@ module SagaStarter =
 
         // Internal helpers for Saga Starter communication
         let internal toCheckSagas (event, originator, cid) =
-            (event |> box |> Unchecked.nonNull, originator, cid) |> CheckSagas |> Command
+            (event |> box , originator, cid) |> CheckSagas |> Command
 
         let internal toSendMessage mediator (originator: IActorRef<_>) event =
             let cid = toCidWithExisting originator.Path.Name (event.CorrelationId |> ValueLens.Value |> ValueLens.Value)
             let message = Send(SagaStarterPath, (event, untyped originator, cid) |> toCheckSagas, true)
             mediator <? message |> Async.RunSynchronously |> ignore // Fire-and-forget ask
-            event |> box |> Unchecked.nonNull
+            event |> box 
 
         let internal publishEvent (logger:ILogger) (mailbox: Actor<_>) (mediator) event (cid) =
             let sender = mailbox.Sender()
@@ -413,7 +413,7 @@ module CommandHandler =
                         let rec set (state: State<'Command, 'Event> option) =
                             actor {
                                 let! msg = mailbox.Receive()
-                                match box msg |> Unchecked.nonNull with
+                                match box msg with
                                 // On SubscribeAck, send the actual command to the target entity
                                 | SubscriptionAcknowledged _ ->
                                     let cmd = state.Value.CommandDetails.Cmd |> box
@@ -458,7 +458,7 @@ module CommandHandler =
                     // Spawn the temporary actor and send it the initial Execute command
                     async {
                         let! res = spawnAnonymous system (props (actorProp mediator)) <? box command
-                        return box res |> nonNull :?> Event<'Event> // Return the awaited event
+                        return box res  :?> Event<'Event> // Return the awaited event
                     }
             
 

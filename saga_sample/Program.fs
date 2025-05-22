@@ -32,7 +32,7 @@ s.Dispose()
 //Bootstrap.advanceTime 100 |> ignore
 printfn "%A" result
 
-let code = System.Console.ReadLine() |> nonNull
+let code = System.Console.ReadLine() 
 
 // Verification
 let verifyTask = verify (cid()) userName code |> Async.StartAsTask

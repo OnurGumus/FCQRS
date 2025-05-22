@@ -12,7 +12,7 @@
           "Akka.Analyzers": "0.3.2",
           "Akka.TestKit": "1.5.42",
           "FCQRS": "1.0.0",
-          "FSharp.Core": "9.0.300",
+          "FSharp.Core": "8.0.403",
           "FluentAssertions": "8.2.0",
           "Hocon": "2.0.4",
           "Hocon.Extensions.Configuration": "2.0.4",
@@ -281,7 +281,7 @@
         "dependencies": {
           "Akka": "1.5.42",
           "Akka.Serialization.Hyperion": "1.5.42",
-          "FSharp.Core": "9.0.300"
+          "FSharp.Core": "8.0.403"
         },
         "runtime": {
           "lib/net8.0/Akkling.dll": {
@@ -296,7 +296,7 @@
           "Akkling": "0.17.0",
           "Akkling.DistributedData": "0.17.0",
           "Akkling.Persistence": "0.17.0",
-          "FSharp.Core": "9.0.300"
+          "FSharp.Core": "8.0.403"
         },
         "runtime": {
           "lib/net8.0/Akkling.Cluster.Sharding.dll": {
@@ -309,7 +309,7 @@
         "dependencies": {
           "Akka.DistributedData": "1.5.42",
           "Akkling": "0.17.0",
-          "FSharp.Core": "9.0.300"
+          "FSharp.Core": "8.0.403"
         },
         "runtime": {
           "lib/net8.0/Akkling.DistributedData.dll": {
@@ -323,7 +323,7 @@
           "Akka.Persistence": "1.5.42",
           "Akkling": "0.17.0",
           "Akkling.Streams": "0.17.0",
-          "FSharp.Core": "9.0.300"
+          "FSharp.Core": "8.0.403"
         },
         "runtime": {
           "lib/net8.0/Akkling.Persistence.dll": {
@@ -336,7 +336,7 @@
         "dependencies": {
           "Akka.Streams": "1.5.42",
           "Akkling": "0.17.0",
-          "FSharp.Core": "9.0.300"
+          "FSharp.Core": "8.0.403"
         },
         "runtime": {
           "lib/net8.0/Akkling.Streams.dll": {
@@ -422,29 +422,6 @@
         }
       },
       "Fable.Package.SDK/1.3.1": {},
-      "FCQRS8.Model/2.3.0": {
-        "dependencies": {
-          "FSharp.Core": "9.0.300",
-          "Fable.Package.SDK": "1.3.1"
-        },
-        "runtime": {
-          "lib/net8.0/FCQRS.Model.dll": {
-            "assemblyVersion": "1.0.0.0",
-            "fileVersion": "1.0.0.0"
-          }
-        }
-      },
-      "FCQRS8.Serialization/2.3.0": {
-        "dependencies": {
-          "FSharp.SystemTextJson": "1.3.13"
-        },
-        "runtime": {
-          "lib/net8.0/FCQRS.Serialization.dll": {
-            "assemblyVersion": "1.0.0.0",
-            "fileVersion": "1.0.0.0"
-          }
-        }
-      },
       "FluentAssertions/8.2.0": {
         "runtime": {
           "lib/net6.0/FluentAssertions.dll": {
@@ -453,11 +430,11 @@
           }
         }
       },
-      "FSharp.Core/9.0.300": {
+      "FSharp.Core/8.0.403": {
         "runtime": {
           "lib/netstandard2.1/FSharp.Core.dll": {
-            "assemblyVersion": "9.0.0.0",
-            "fileVersion": "9.3.25.18101"
+            "assemblyVersion": "8.0.0.0",
+            "fileVersion": "8.4.324.50901"
           }
         },
         "resources": {
@@ -505,7 +482,7 @@
       "FSharp.Interop.Dynamic/5.0.1.268": {
         "dependencies": {
           "Dynamitey": "3.0.3",
-          "FSharp.Core": "9.0.300",
+          "FSharp.Core": "8.0.403",
           "Microsoft.CSharp": "4.7.0"
         },
         "runtime": {
@@ -517,7 +494,7 @@
       },
       "FSharp.SystemTextJson/1.3.13": {
         "dependencies": {
-          "FSharp.Core": "9.0.300",
+          "FSharp.Core": "8.0.403",
           "System.Text.Json": "9.0.5"
         },
         "runtime": {
@@ -529,7 +506,7 @@
       },
       "FsToolkit.ErrorHandling/4.18.0": {
         "dependencies": {
-          "FSharp.Core": "9.0.300"
+          "FSharp.Core": "8.0.403"
         },
         "runtime": {
           "lib/netstandard2.1/FsToolkit.ErrorHandling.dll": {
@@ -1982,12 +1959,11 @@
           "DotNetty.Handlers": "0.7.6",
           "DotNetty.Transport": "0.7.6",
           "Dynamitey": "3.0.3",
-          "FCQRS8.Model": "2.3.0",
-          "FCQRS8.Serialization": "2.3.0",
-          "FSharp.Core": "9.0.300",
+          "FCQRS.Model": "1.0.0",
+          "FCQRS.Serialization": "1.0.0",
+          "FSharp.Core": "8.0.403",
           "FSharp.Interop.Dynamic": "5.0.1.268",
           "FSharp.SystemTextJson": "1.3.13",
-          "Fable.Package.SDK": "1.3.1",
           "FluentAssertions": "8.2.0",
           "FsToolkit.ErrorHandling": "4.18.0",
           "Google.Protobuf": "3.31.0",
@@ -2066,6 +2042,33 @@
         },
         "runtime": {
           "FCQRS.dll": {
+            "assemblyVersion": "1.0.0",
+            "fileVersion": "1.0.0.0"
+          }
+        }
+      },
+      "FCQRS.Model/1.0.0": {
+        "dependencies": {
+          "FSharp.Core": "8.0.403",
+          "Fable.Package.SDK": "1.3.1"
+        },
+        "runtime": {
+          "FCQRS.Model.dll": {
+            "assemblyVersion": "1.0.0",
+            "fileVersion": "1.0.0.0"
+          }
+        }
+      },
+      "FCQRS.Serialization/1.0.0": {
+        "dependencies": {
+          "FSharp.Core": "8.0.403",
+          "FSharp.SystemTextJson": "1.3.13",
+          "System.IO.Pipelines": "9.0.5",
+          "System.Text.Encodings.Web": "9.0.5",
+          "System.Text.Json": "9.0.5"
+        },
+        "runtime": {
+          "FCQRS.Serialization.dll": {
             "assemblyVersion": "1.0.0",
             "fileVersion": "1.0.0.0"
           }
@@ -2289,20 +2292,6 @@
       "path": "fable.package.sdk/1.3.1",
       "hashPath": "fable.package.sdk.1.3.1.nupkg.sha512"
     },
-    "FCQRS8.Model/2.3.0": {
-      "type": "package",
-      "serviceable": true,
-      "sha512": "sha512-PAKy1MjQ7f/0UWBbYOtGmNzGCwuWwXYY+6RJQQv/nU25XAiNfJUZPOdib4PrWzXtZqFgRLs42xQ7POpxHLo+sQ==",
-      "path": "fcqrs8.model/2.3.0",
-      "hashPath": "fcqrs8.model.2.3.0.nupkg.sha512"
-    },
-    "FCQRS8.Serialization/2.3.0": {
-      "type": "package",
-      "serviceable": true,
-      "sha512": "sha512-T0w/a0AHVlIhzoxoswLlcxV9yVOnW4G06t5XdewcquXpNpo8KMs7s77kJInZVeAASVBdWo0VVTzBm3wI6sjNvg==",
-      "path": "fcqrs8.serialization/2.3.0",
-      "hashPath": "fcqrs8.serialization.2.3.0.nupkg.sha512"
-    },
     "FluentAssertions/8.2.0": {
       "type": "package",
       "serviceable": true,
@@ -2310,12 +2299,12 @@
       "path": "fluentassertions/8.2.0",
       "hashPath": "fluentassertions.8.2.0.nupkg.sha512"
     },
-    "FSharp.Core/9.0.300": {
+    "FSharp.Core/8.0.403": {
       "type": "package",
       "serviceable": true,
-      "sha512": "sha512-TVt2J7RCE1KCS2IaONF+p8/KIZ1eHNbW+7qmKF6hGoD4tXl+o07ja1mPtFjMqRa5uHMFaTrGTPn/m945WnDLiQ==",
-      "path": "fsharp.core/9.0.300",
-      "hashPath": "fsharp.core.9.0.300.nupkg.sha512"
+      "sha512": "sha512-t1Pvv2++3zMQKKNuiQc1Lz4TCdaBajgG4mLhOE8AoFzborHQ/JbjIaJr6Mrq8m2z15KLu4r6Qz7E3oeACpljTg==",
+      "path": "fsharp.core/8.0.403",
+      "hashPath": "fsharp.core.8.0.403.nupkg.sha512"
     },
     "FSharp.Interop.Dynamic/5.0.1.268": {
       "type": "package",
@@ -3256,6 +3245,16 @@
       "hashPath": "system.xml.xdocument.4.3.0.nupkg.sha512"
     },
     "FCQRS/1.0.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    },
+    "FCQRS.Model/1.0.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    },
+    "FCQRS.Serialization/1.0.0": {
       "type": "project",
       "serviceable": false,
       "sha512": ""

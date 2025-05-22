@@ -39,7 +39,9 @@ type ValueLens =
     static member inline IsValidValue<'Wrapped, 'Inner, 'Error when ValueLensResultType<'Wrapped, 'Inner, 'Error>>
         (this: 'Wrapped)
         =
-        (Optic.set 'Wrapped.Value_ (ValueLens.Value this) this).IsOk
+        match (Optic.set 'Wrapped.Value_ (ValueLens.Value this) this) with
+        | Ok _ -> true
+        | Error _ -> false
 
     /// Checks if the validation rules still hold. Typical use case is after deserialization when you cannot trust the data.
     static member inline Isvalid this =
