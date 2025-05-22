@@ -17,9 +17,8 @@ nuget Akka.Cluster.Sharding
 nuget Akkling.Cluster.Sharding
 nuget FSharp.SystemTextJson
 nuget FsToolkit.ErrorHandling
-nuget FCQRS.Serialization
 nuget Fable.Package.SDK
 nuget Hocon.Extensions.Configuration
 nuget Microsoft.Extensions.Logging.Console
 nuget Akka.TestKit
-nuget FCQRS8.Serialization
+nuget FCQRS8.Model

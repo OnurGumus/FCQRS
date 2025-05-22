@@ -12,3 +12,4 @@ FsToolkit.ErrorHandling
 FSharp.SystemTextJson
 Akka.Persistence.Query.Sql
 Akka.TestKit
+FCQRS8.Model
