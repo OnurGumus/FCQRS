@@ -15,14 +15,14 @@ let config = configBuilder.Build()
 
 let loggerFactory =
     LoggerFactory.Create(fun builder -> builder.AddConsole() |> ignore) 
+let env = new Environments.AppEnv(config, loggerFactory)
 
-let actorApi = FCQRS.Actor.api config loggerFactory
+let actorApi = FCQRS.Actor.api env
 
 // Initialize the scheduler controller with the target task name
 // Replace "YOUR_SPECIFIC_TASK_NAME_HERE" with your actual task name
 FCQRS.SchedulerController.start actorApi.System.Scheduler
 
-let env = new Environments.AppEnv(config, loggerFactory)
 
 let userSagaShard = UserSaga.factory env actorApi
 let sagaCheck (o: obj) =

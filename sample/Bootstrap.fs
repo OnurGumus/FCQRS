@@ -22,7 +22,7 @@ let loggerF =
 let env = new Environments.AppEnv(config,loggerF)
 
 // Bootstrap command side.
-let actorApi = FCQRS.Actor.api config loggerF
+let actorApi = FCQRS.Actor.api env
 
 // We don't use sagas (yet) so we just return an empty list.
 let sagaCheck  _ = []
