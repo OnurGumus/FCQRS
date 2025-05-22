@@ -18,13 +18,13 @@ let cid1 = cid()
 // We create a subscription BEFORE sending the command.
 // This is to ensure that we don't miss the event.
 // We are interested in the first event that has the same CID as the one we are sending.
-let s = sub.Subscribe((fun e -> e.CID = cid1), 1)
+use s = sub.Subscribe((fun e -> e.CID = cid1), 1)
 
 // Send the command to register a new user.
 let! result = register cid1 userName password
 
 // Wait for the event to happen.
-(s |> Async.RunSynchronously).Dispose()
+s.Task.Wait()
 printfn "%A" result
 
 // Try registering the same user again.
