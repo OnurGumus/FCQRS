@@ -27,13 +27,3 @@ type IQuery<'TDataEventType> =
         ?skip: int *
         ?cacheKey: string ->
             list<'t> Async
-
-    abstract Subscribe<'TDataEventType> :
-        callback: (DataEvent<'TDataEventType> -> unit) * CancellationToken -> IDisposable
-
-    abstract Subscribe:
-        filter: (DataEvent<'TDataEventType> -> bool) *
-        numberOfEvents: int *
-        callback: (DataEvent<'TDataEventType> -> unit) *
-        CancellationToken ->
-            Async<IDisposable>
