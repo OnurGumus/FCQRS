@@ -27,8 +27,5 @@
     <Compile Include="Query.fs" />
     <Content Include="paket.references" />
   </ItemGroup>
-  <ItemGroup>
-    <ProjectReference Include="..\FCQRS.Serialization\FCQRS.Serialization.fsproj" />
-  </ItemGroup>
   <Import Project="..\..\.paket\Paket.Restore.targets" />
 </Project>

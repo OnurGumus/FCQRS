@@ -10,10 +10,8 @@ nuget Akkling.Streams
 nuget Microsoft.Data.SQLite
 nuget SQLProvider
 nuget SQLitePCLRaw.core
-nuget Akkling.Persistence
-nuget Akka.Persistence.Query.Sql
-nuget Akka.Persistence.Sql
-nuget Akka.Cluster.Sharding
+nuget Akkling.Persistence 
+nuget Akka.Cluster.Sharding >= 1.5.42
 nuget Akkling.Cluster.Sharding
 nuget FSharp.SystemTextJson
 nuget FsToolkit.ErrorHandling
@@ -22,3 +20,7 @@ nuget Hocon.Extensions.Configuration
 nuget Microsoft.Extensions.Logging.Console
 nuget Akka.TestKit
 nuget FCQRS8.Model
+nuget FCQRS8.Serialization
+nuget Akka.Persistence >= 1.5.42
+nuget Akka.Persistence.Query
+nuget Akka.Persistence.Sql

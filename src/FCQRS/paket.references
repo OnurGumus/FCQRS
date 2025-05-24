@@ -3,13 +3,14 @@ Akka.Cluster.Sharding
 Akkling.Persistence
 Akkling.Cluster.Sharding
 Akka.Cluster.Tools
-Akka.Persistence.Sql
 Akkling.Streams
 Microsoft.Data.SQLite
 FSharp.Interop.Dynamic
 Microsoft.Extensions.Configuration
 FsToolkit.ErrorHandling
 FSharp.SystemTextJson
-Akka.Persistence.Query.Sql
 Akka.TestKit
 FCQRS8.Model
+FCQRS8.Serialization
+Akka.Persistence.Query
+Akka.Persistence.Sql
