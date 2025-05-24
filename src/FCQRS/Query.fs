@@ -1,7 +1,6 @@
 module FCQRS.Query
 
 open Akka.Persistence.Query
-open Akka.Persistence.Query.Sql
 open Akkling.Streams
 open Akka.Streams
 open Akka.Streams.Dsl
@@ -71,10 +70,11 @@ type ISubscribe<'TDataEvent> =
 
 [<AutoOpen>]
 module Internal =
+    open Akka.Persistence.Sql.Query
     let readJournal system =
         PersistenceQuery
             .Get(system)
-            .ReadJournalFor<Akka.Persistence.Sql.Query.SqlReadJournal>
+            .ReadJournalFor<SqlReadJournal>
             SqlReadJournal.Identifier
 
     let subscribeToStream source mat (sink: Sink<'TDataEvent, _>) =

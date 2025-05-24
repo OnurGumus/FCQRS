@@ -11,10 +11,9 @@ nuget Microsoft.Data.SQLite
 nuget SQLProvider
 nuget SQLitePCLRaw.core
 nuget Akkling.Persistence
-nuget Akka.Persistence.Query.Sql
-nuget Akka.Persistence.Sql
-nuget Akka.Cluster.Sharding
-nuget Akkling.Cluster.Sharding
+nuget Akka.Persistence.Sql >= 1.5.42
+nuget Akka.Cluster.Sharding >= 1.5.42
+nuget Akkling.Cluster.Sharding 
 nuget FSharp.SystemTextJson
 nuget FsToolkit.ErrorHandling
 nuget FCQRS.Serialization
