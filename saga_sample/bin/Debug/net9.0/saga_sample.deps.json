@@ -13,7 +13,7 @@
           "Akka.TestKit": "1.5.42",
           "FCQRS": "1.0.0",
           "FSharp.Core": "9.0.300",
-          "FluentAssertions": "8.2.0",
+          "FluentAssertions": "8.3.0",
           "Hocon": "2.0.4",
           "Hocon.Extensions.Configuration": "2.0.4",
           "Microsoft.Bcl.AsyncInterfaces": "9.0.5",
@@ -143,7 +143,7 @@
       "Akka.DistributedData.LightningDB/1.5.42": {
         "dependencies": {
           "Akka.DistributedData": "1.5.42",
-          "LightningDB": "0.18.0"
+          "LightningDB": "0.18.1"
         },
         "runtime": {
           "lib/net6.0/Akka.DistributedData.LightningDB.dll": {
@@ -155,7 +155,7 @@
       "Akka.Persistence/1.5.42": {
         "dependencies": {
           "Akka": "1.5.42",
-          "Google.Protobuf": "3.31.0"
+          "Google.Protobuf": "3.31.1"
         },
         "runtime": {
           "lib/net6.0/Akka.Persistence.dll": {
@@ -197,7 +197,7 @@
         "dependencies": {
           "Akka": "1.5.42",
           "DotNetty.Handlers": "0.7.6",
-          "Google.Protobuf": "3.31.0"
+          "Google.Protobuf": "3.31.1"
         },
         "runtime": {
           "lib/net6.0/Akka.Remote.dll": {
@@ -221,7 +221,7 @@
       "Akka.Streams/1.5.42": {
         "dependencies": {
           "Akka": "1.5.42",
-          "Google.Protobuf": "3.31.0",
+          "Google.Protobuf": "3.31.1",
           "Reactive.Streams": "1.0.4"
         },
         "runtime": {
@@ -234,7 +234,7 @@
       "Akka.TestKit/1.5.42": {
         "dependencies": {
           "Akka": "1.5.42",
-          "FluentAssertions": "8.2.0",
+          "FluentAssertions": "8.3.0",
           "Microsoft.Bcl.AsyncInterfaces": "9.0.5",
           "Nito.AsyncEx.Context": "5.1.2",
           "Nito.AsyncEx.Coordination": "5.1.2",
@@ -415,11 +415,11 @@
           }
         }
       },
-      "FluentAssertions/8.2.0": {
+      "FluentAssertions/8.3.0": {
         "runtime": {
           "lib/net6.0/FluentAssertions.dll": {
-            "assemblyVersion": "8.2.0.0",
-            "fileVersion": "8.2.0.0"
+            "assemblyVersion": "8.3.0.0",
+            "fileVersion": "8.3.0.0"
           }
         }
       },
@@ -508,11 +508,11 @@
           }
         }
       },
-      "Google.Protobuf/3.31.0": {
+      "Google.Protobuf/3.31.1": {
         "runtime": {
           "lib/net5.0/Google.Protobuf.dll": {
-            "assemblyVersion": "3.31.0.0",
-            "fileVersion": "3.31.0.0"
+            "assemblyVersion": "3.31.1.0",
+            "fileVersion": "3.31.1.0"
           }
         }
       },
@@ -573,14 +573,14 @@
           }
         }
       },
-      "LightningDB/0.18.0": {
+      "LightningDB/0.18.1": {
         "dependencies": {
           "System.Memory": "4.6.3"
         },
         "runtime": {
           "lib/net9.0/LightningDB.dll": {
-            "assemblyVersion": "0.18.0.0",
-            "fileVersion": "0.18.0.0"
+            "assemblyVersion": "0.18.1.0",
+            "fileVersion": "0.18.1.0"
           }
         },
         "runtimeTargets": {
@@ -601,6 +601,11 @@
           },
           "runtimes/android-x86/native/liblmdb.so": {
             "rid": "android-x86",
+            "assetType": "native",
+            "fileVersion": "0.0.0.0"
+          },
+          "runtimes/browser-wasm/native/liblmdb.wasm": {
+            "rid": "browser-wasm",
             "assetType": "native",
             "fileVersion": "0.0.0.0"
           },
@@ -1915,12 +1920,12 @@
           "FSharp.Interop.Dynamic": "5.0.1.268",
           "FSharp.SystemTextJson": "1.3.13",
           "Fable.Package.SDK": "1.3.1",
-          "FluentAssertions": "8.2.0",
+          "FluentAssertions": "8.3.0",
           "FsToolkit.ErrorHandling": "4.18.0",
-          "Google.Protobuf": "3.31.0",
+          "Google.Protobuf": "3.31.1",
           "Hyperion": "0.12.2",
           "LanguageExt.Core": "4.4.9",
-          "LightningDB": "0.18.0",
+          "LightningDB": "0.18.1",
           "Microsoft.Bcl.AsyncInterfaces": "9.0.5",
           "Microsoft.Bcl.HashCode": "6.0.0",
           "Microsoft.CSharp": "4.7.0",
@@ -2211,12 +2216,12 @@
       "path": "fcqrs.serialization/2.2.0",
       "hashPath": "fcqrs.serialization.2.2.0.nupkg.sha512"
     },
-    "FluentAssertions/8.2.0": {
+    "FluentAssertions/8.3.0": {
       "type": "package",
       "serviceable": true,
-      "sha512": "sha512-Gh4jkECcrR0i17ofCVqsiVz2+lxC+p5TYFPCrbZFi7eQQWGEZhvCDwvhycBKX1Kmtbd+H2CW/ugW7wdH9Br9NQ==",
-      "path": "fluentassertions/8.2.0",
-      "hashPath": "fluentassertions.8.2.0.nupkg.sha512"
+      "sha512": "sha512-iri1druxHPUAvaFqTUKJG7NOHwnOLmWwfDorgezZWpeBWBJmk2o8niI7jL7zW9TEFGnUpMJi/JLG6FXgr3cM3A==",
+      "path": "fluentassertions/8.3.0",
+      "hashPath": "fluentassertions.8.3.0.nupkg.sha512"
     },
     "FSharp.Core/9.0.300": {
       "type": "package",
@@ -2246,12 +2251,12 @@
       "path": "fstoolkit.errorhandling/4.18.0",
       "hashPath": "fstoolkit.errorhandling.4.18.0.nupkg.sha512"
     },
-    "Google.Protobuf/3.31.0": {
+    "Google.Protobuf/3.31.1": {
       "type": "package",
       "serviceable": true,
-      "sha512": "sha512-OZXSf6igaJBeo+kAzMhYF0R5zp0nRgf4G0Uis/IsGKACc4RGP9bQPLpHLengIFuASl0lY92utMB8rRpTx4TaOg==",
-      "path": "google.protobuf/3.31.0",
-      "hashPath": "google.protobuf.3.31.0.nupkg.sha512"
+      "sha512": "sha512-gSnJbUmGiOTdWddPhqzrEscHq9Ls6sqRDPB9WptckyjTUyx70JOOAaDLkFff8gManZNN3hllQ4aQInnQyq/Z/A==",
+      "path": "google.protobuf/3.31.1",
+      "hashPath": "google.protobuf.3.31.1.nupkg.sha512"
     },
     "Hocon/2.0.4": {
       "type": "package",
@@ -2281,12 +2286,12 @@
       "path": "languageext.core/4.4.9",
       "hashPath": "languageext.core.4.4.9.nupkg.sha512"
     },
-    "LightningDB/0.18.0": {
+    "LightningDB/0.18.1": {
       "type": "package",
       "serviceable": true,
-      "sha512": "sha512-JNA6qcKv6GgE/6puwwJqgA3ROmNNdaGcxybWfBFh+AZhn4vKZLsT3qcT7B8yumelqvhHZOOplkSLGxEAw0tF4g==",
-      "path": "lightningdb/0.18.0",
-      "hashPath": "lightningdb.0.18.0.nupkg.sha512"
+      "sha512": "sha512-QCHrM3UhgJJVaHqciVvUcdFEh3xr9x+j8RTFjOJzEbCh18VPw2aBVvZlO2kQsws8F9eHolKzhY8WtUd48PQ0zQ==",
+      "path": "lightningdb/0.18.1",
+      "hashPath": "lightningdb.0.18.1.nupkg.sha512"
     },
     "linq2db/5.4.1": {
       "type": "package",
