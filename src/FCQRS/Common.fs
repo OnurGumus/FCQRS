@@ -123,6 +123,9 @@ type EventAction<'T> =
     | UnhandledEvent
     /// Indicate that the state of a saga has changed (used internally by sagas for persistence).
     | StateChangedEvent of 'T
+    | Stash of EventAction<'T>
+    | Unstash of EventAction<'T>
+    | UnstashAll of EventAction<'T>
 
 /// Represents the name identifying a target actor for a command, typically used within sagas.
 type TargetName =

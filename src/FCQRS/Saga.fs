@@ -274,6 +274,9 @@ let private actorProp
                         let newState = newState |> toStateChange
                         return! newState
                     | IgnoreEvent -> return! sagaState |> set innerStateDefaults
+                    | Stash _
+                    | Unstash _
+                    | UnstashAll _
                     | UnhandledEvent
                     | PublishEvent _
                     | PersistEvent _

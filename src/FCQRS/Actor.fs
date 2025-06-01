@@ -135,6 +135,31 @@ module internal Internal =
                 return! body bodyInput
         }
 
+    let rec handleEffect effect state  (mailbox: Eventsourced<obj>) toEvent nextVersion bodyInput set = actor {
+         match effect with
+            | PersistEvent event ->
+                let nextVersion: Version =
+                    (state.Version |> ValueLens.Value) + 1L |> ValueLens.TryCreate |> Result.value
+                return! event |> toEvent nextVersion |> bodyInput.SendToSagaStarter |> Persist
+                
+            | DeferEvent event ->
+                return! seq { event |> toEvent state.Version |> bodyInput.SendToSagaStarter } |> Defer
+            | PublishEvent event ->
+                event |> bodyInput.PublishEvent |> ignore
+                return set state
+            | IgnoreEvent -> return set state
+            | StateChangedEvent _
+            | UnhandledEvent -> return Unhandled
+            | Stash effect ->
+                mailbox.Stash()
+                return! handleEffect effect state mailbox toEvent nextVersion bodyInput set
+            | Unstash effect ->
+                mailbox.Unstash()
+                return! handleEffect effect state mailbox toEvent nextVersion bodyInput set
+            | UnstashAll effect ->
+                mailbox.UnstashAll()
+                return! handleEffect effect state mailbox toEvent nextVersion bodyInput set
+        }
 
     let actorProp
         env
@@ -170,21 +195,8 @@ module internal Internal =
                                 msg.Id
                                 msg.CorrelationId
                                 (mailbox.Self.Path.Name |> ValueLens.CreateAsResult |> Result.value |> Some)
-
-                        match handleCommand msg state.State with
-                        | PersistEvent event ->
-                            let nextVersion: Version =
-                                (state.Version |> ValueLens.Value) + 1L |> ValueLens.TryCreate |> Result.value
-
-                            return! event |> toEvent nextVersion |> bodyInput.SendToSagaStarter |> Persist
-                        | DeferEvent event ->
-                            return! seq { event |> toEvent state.Version |> bodyInput.SendToSagaStarter } |> Defer
-                        | PublishEvent event ->
-                            event |> bodyInput.PublishEvent |> ignore
-                            return set state
-                        | IgnoreEvent -> return set state
-                        | StateChangedEvent _
-                        | UnhandledEvent -> return Unhandled
+                        let effect = handleCommand msg state.State
+                        return! handleEffect effect state mailbox toEvent state.Version bodyInput set
                     | _ ->
                         bodyInput.Log.LogWarning("Unhandled message: {msg}", msg)
                         return Unhandled
