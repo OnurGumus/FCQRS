@@ -239,6 +239,23 @@ type IActor =
 /// Allows sagas to be co-located or routed differently based on the originator's ID structure.
 type PrefixConversion = PrefixConversion of ((string -> string) option)
 
+/// Helper module to eliminate boilerplate saga recovery logic
+module SagaRecovery =
+    /// Standard recovery logic for Started state that all sagas should use
+    /// Handles the version checking handshake with the originator aggregate
+    let handleStartedState recovering (startingEvent: option<SagaStartingEvent<_>>) (originatorFactory: string -> IEntityRef<obj>) =
+        match recovering with
+        | true ->
+            let startingEvent = startingEvent.Value.Event
+            let originator = FactoryAndName { Factory =  originatorFactory; Name = Originator }
+            NoEffect,
+            None,
+            [ { TargetActor = originator
+                Command = ContinueOrAbort startingEvent
+                DelayInMs = None } ]
+        | false ->
+            ResumeFirstEvent, None, []
+
 /// Contains types and functions related to the Saga Starter actor (internal implementation detail).
 module SagaStarter =
     open Microsoft.FSharp.Reflection

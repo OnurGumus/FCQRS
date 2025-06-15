@@ -3,6 +3,7 @@ module UserSaga
 open FCQRS
 open Common
 open Common.SagaStarter
+open Common.SagaRecovery
 open Akkling
 open SendMail
 
@@ -46,25 +47,11 @@ let applySideEffects
     (startingEvent: option<SagaStartingEvent<_>>)
     recovering
     =
-    let originator =
-        FactoryAndName
-            { Factory = userFactory
-              Name = Originator }
-
     match sagaState.State with
     | NotStarted -> NoEffect, Some(Started startingEvent.Value), []
 
     | Started _ ->
-        if recovering then
-            let startingEvent = startingEvent.Value.Event
-
-            NoEffect,
-            None,
-            [ { TargetActor = originator
-                Command = ContinueOrAbort startingEvent
-                DelayInMs = None } ]
-        else
-            ResumeFirstEvent, None, []
+        handleStartedState recovering startingEvent userFactory
 
     | SendingMail mail ->
         NoEffect,

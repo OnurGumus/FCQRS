@@ -247,6 +247,132 @@ FCQRS Flow:
 - **Correlation IDs** link commands, events, and sagas together
 - **Command subscription** enables client coordination and eventual consistency handling
 
+## Version Management & System Restart Detection
+
+### Aggregate Versioning
+- **Version tracking**: Each aggregate maintains a `Version` field that increments with every persisted event
+- **Snapshot frequency**: Automatic snapshots every 30 events (configurable via `config:akka:persistence:snapshot-version-count`)
+- **Version increment trigger**: Occurs on `PersistEvent` and `StateChangedEvent` operations
+
+### System Restart Detection Mechanism
+FCQRS implements sophisticated restart detection to prevent sagas from continuing with stale state:
+
+**Key Components:**
+- `ContinueOrAbort<'EventDetails>` - Message type for saga coordination
+- `AbortedEvent` - Event sent when version check fails  
+- Version comparison logic in Actor.fs:70-86
+
+**How It Works:**
+1. **Saga sends ContinueOrAbort**: After processing, saga sends `ContinueOrAbort` command with event to originator
+2. **Version comparison**: Actor compares its current version with event version:
+   ```fsharp
+   let currentVersion = state.Version |> ValueLens.Value
+   let eventVersion = e.Version |> ValueLens.Value
+   if currentVersion = eventVersion then
+       publishEvent e  // Normal flow
+   else
+       // System restart detected - publish AbortedEvent
+   ```
+3. **Restart detection**: If versions don't match, indicates actor restarted and hasn't persisted the event
+4. **Saga abort**: `AbortedEvent` triggers saga termination via `PoisonPill`:
+   ```fsharp
+   | :? (AbortedEvent) ->
+       let poision = Akka.Cluster.Sharding.Passivate <| Actor.PoisonPill.Instance
+       log.LogInformation("Aborting")
+       mailbox.Parent() <! poision
+   ```
+
+**Benefits:**
+- **Prevents inconsistent state** after system restarts
+- **Automatic cleanup** of orphaned sagas
+- **Distributed consistency** across cluster nodes
+- **No manual intervention** required for restart scenarios
+
+**Snapshot Management:**
+- **Configurable frequency**: Default 30 events, configurable per environment
+- **Both actors and sagas**: Snapshot support for recovery optimization
+- **Version-based triggers**: Snapshots taken when `version % snapshotVersionCount = 0L`
+- **Recovery optimization**: Faster actor rehydration from snapshots vs full event replay
+
+## Reliability & Failure Modes
+
+### What FCQRS Prevents
+**System-level failures handled automatically:**
+- **Actor restarts**: Version checking prevents sagas continuing with stale state
+- **Network partitions**: Cluster coordination and actor migration
+- **Memory leaks**: Automatic actor passivation when inactive
+- **Resource exhaustion**: Configurable mailbox sizes and backpressure
+- **Data corruption**: Event sourcing with immutable events
+- **Concurrency bugs**: Actor model eliminates race conditions within actors
+
+### Akka.NET Ordering Guarantees
+**Message delivery guarantees between actor pairs:**
+- **FIFO ordering**: Messages between same actor pair delivered in send order
+- **Sequential processing**: Each actor processes one message at a time
+- **Happens-before relationship**: Temporal ordering preserved per actor pair
+- **At-most-once delivery**: No message duplication (but possible loss)
+
+### Potential Hanging Scenarios
+**Despite strong guarantees, deadlocks can still occur:**
+
+**1. Unhandled Message Types:**
+```fsharp
+// Saga sends command actor doesn't recognize
+// Actor returns Unhandled, saga waits indefinitely
+// No automatic timeout or retry mechanism
+```
+
+**2. Cross-Actor Coordination Failures:**
+```fsharp
+// Multi-step workflow: Saga → Actor A → Actor B → Actor C
+// If Actor B crashes after receiving but before responding
+// Actor C and Saga both wait forever
+```
+
+**3. External Service Boundaries:**
+- HTTP calls, database operations, file I/O don't have Akka guarantees
+- External timeouts not automatically handled by framework
+- Circuit breakers must be manually implemented
+
+**4. Business Logic Deadlocks:**
+```fsharp
+// Circular dependencies between sagas/actors
+// Saga A waits for event from Aggregate X
+// Aggregate X waits for command from Saga B  
+// Saga B waits for event from Saga A
+```
+
+**5. State Machine Dead Ends:**
+- Business logic creates unreachable states
+- Saga reaches state where no valid transitions exist
+- No automatic recovery or rollback mechanism
+
+**6. Resource Exhaustion:**
+- Mailbox overflow from unprocessed messages
+- Too many actors created simultaneously
+- System becomes unresponsive despite individual actor health
+
+### Mitigation Strategies
+**Required for production systems:**
+- **Explicit timeouts**: All async operations need timeout handling
+- **Circuit breakers**: For external service calls
+- **Dead letter monitoring**: Track and alert on undelivered messages
+- **Health checks**: Monitor actor and saga states
+- **Manual intervention procedures**: For complex deadlock scenarios
+- **Saga timeout/cancellation**: Business logic-level timeouts
+- **Compensating actions**: Rollback mechanisms for failed workflows
+
+### Design Principles for Avoiding Hangs
+**Best practices when using FCQRS:**
+- **Timeout every async operation**: Never wait indefinitely
+- **Design for idempotency**: Messages can be retried safely
+- **Implement compensating actions**: Every action should have an undo
+- **Monitor message flows**: Track correlation IDs through entire workflows
+- **Avoid circular dependencies**: Keep saga orchestration patterns simple
+- **Handle all message types**: Ensure actors can process or reject all inputs
+- **Implement health checks**: Regular liveness and readiness probes
+- **Plan for partial failures**: Design workflows that can recover from any step failure
+
 ## Use Cases
 **Excellent for**: Any application where data consistency, audit trails, and reliable side effects matter
 **Especially valuable**: Business applications, financial systems, multi-user environments
