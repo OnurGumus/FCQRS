@@ -73,7 +73,7 @@ let private runSaga<'TEvent, 'SagaData, 'State>
                         return! newState |> set innerSetValue //<@> innerSet (startingEvent, true)
                     with ex ->
                         log.LogError(ex, "Fatal error during saga recovery for {0}. Terminating process to prevent restart loop.", mailbox.Self.Path.ToString())
-                        System.Environment.Exit(-1)
+                        System.Environment.FailFast "Process terminated due to saga error"
                         return! innerSet (startingEvent, subscribed)
 
             | PersistentLifecycleEvent _
@@ -193,7 +193,8 @@ let private actorProp
                 applySideEffects2 sagaState.SagaState startingEvent recovering
             with ex ->
                 log.Error(ex, "Fatal error in saga applySideEffects2 for {0}. Terminating process to prevent restart loop.", name)
-                System.Environment.Exit(-1)
+                System.Environment.FailFast "Process terminated due to saga error"
+
                 failwith "Process terminated due to saga error" // This line will never execute but satisfies the compiler
 
         for cmd in cmds do
@@ -265,7 +266,7 @@ let private actorProp
                 | None -> targetActor <! finalCommand
             with ex ->
                 log.Error(ex, "Fatal error in saga command processing for {0}. Terminating process to prevent restart loop.", name)
-                System.Environment.Exit(-1)
+                System.Environment.FailFast "Process terminated due to saga error"
 
         match effect with
         | NoEffect -> newState
@@ -301,7 +302,7 @@ let private actorProp
                         | DeferEvent _ -> return Unhandled
                     with ex ->
                         log.Error(ex, "Fatal error in saga handleEvent for {0}. Terminating process to prevent restart loop.", name)
-                        System.Environment.Exit(-1)
+                        System.Environment.FailFast "Process terminated due to saga error"
                         return Unhandled // This line will never execute but satisfies the compiler
             }
 
