@@ -67,10 +67,14 @@ let private runSaga<'TEvent, 'SagaData, 'State>
             | Recovering mailbox (:? SagaEvent<'State> as event) ->
                 match event with
                 | StateChanged s ->
-
-                    let newState = applyNewState (wrapper s).SagaState
-                    let newState = { state with SagaState = newState }
-                    return! newState |> set innerSetValue //<@> innerSet (startingEvent, true)
+                    try
+                        let newState = applyNewState (wrapper s).SagaState
+                        let newState = { state with SagaState = newState }
+                        return! newState |> set innerSetValue //<@> innerSet (startingEvent, true)
+                    with ex ->
+                        log.LogError(ex, "Fatal error during saga recovery for {0}. Terminating process to prevent restart loop.", mailbox.Self.Path.ToString())
+                        System.Environment.Exit(-1)
+                        return! innerSet (startingEvent, subscribed)
 
             | PersistentLifecycleEvent _
             | :? Persistence.SaveSnapshotSuccess
@@ -92,38 +96,43 @@ let private runSaga<'TEvent, 'SagaData, 'State>
                 | :? SagaEvent<'State> as e ->
                     match e with
                     | StateChanged originalState ->
-                        let outerState = wrapper originalState
+                        try
+                            let outerState = wrapper originalState
 
-                        let newSagaState = applyNewState outerState.SagaState
+                            let newSagaState = applyNewState outerState.SagaState
 
-                        let parentState =
-                            { outerState with
-                                SagaState = newSagaState }
+                            let parentState =
+                                { outerState with
+                                    SagaState = newSagaState }
 
-                        let newState = applySideEffects parentState None false
-                        let version = parentState.Version + 1L
+                            let newState = applySideEffects parentState None false
+                            let version = parentState.Version + 1L
 
-                        match newState with
-                        | Some newState ->
-                            let newSagaState: ParentSaga<_, _> =
-                                let newInnerState = parentState.SagaState
-                                let newInnerState = { newInnerState with State = newState }
+                            match newState with
+                            | Some newState ->
+                                let newSagaState: ParentSaga<_, _> =
+                                    let newInnerState = parentState.SagaState
+                                    let newInnerState = { newInnerState with State = newState }
 
-                                { parentState with
-                                    SagaState = newInnerState }
+                                    { parentState with
+                                        SagaState = newInnerState }
 
 
-                            if version >= snapshotVersionCount && version % snapshotVersionCount = 0L then
-                                return! parentState |> set innerSetValue <@> SaveSnapshot parentState
-                            else
-                                return!
-                                    newSagaState |> set innerSetValue
-                                    <@> (newState |> StateChanged |> box |> Persist)
-                        | None ->
-                            if version >= snapshotVersionCount && version % snapshotVersionCount = 0L then
-                                return! parentState |> set innerSetValue <@> SaveSnapshot parentState
-                            else
-                                return! parentState |> set innerSetValue
+                                if version >= snapshotVersionCount && version % snapshotVersionCount = 0L then
+                                    return! parentState |> set innerSetValue <@> SaveSnapshot parentState
+                                else
+                                    return!
+                                        newSagaState |> set innerSetValue
+                                        <@> (newState |> StateChanged |> box |> Persist)
+                            | None ->
+                                if version >= snapshotVersionCount && version % snapshotVersionCount = 0L then
+                                    return! parentState |> set innerSetValue <@> SaveSnapshot parentState
+                                else
+                                    return! parentState |> set innerSetValue
+                        with ex ->
+                            log.LogError(ex, "Fatal error during saga persisted event handling for {0}. Terminating process to prevent restart loop.", mailbox.Self.Path.ToString())
+                            System.Environment.Exit(-1)
+                            return! state |> set innerSetValue
 
 
                 | other ->
@@ -180,75 +189,83 @@ let private actorProp
         recovering
         =
         let effect, newState, (cmds: ExecuteCommand list) =
-            applySideEffects2 sagaState.SagaState startingEvent recovering
+            try
+                applySideEffects2 sagaState.SagaState startingEvent recovering
+            with ex ->
+                log.Error(ex, "Fatal error in saga applySideEffects2 for {0}. Terminating process to prevent restart loop.", name)
+                System.Environment.Exit(-1)
+                failwith "Process terminated due to saga error" // This line will never execute but satisfies the compiler
 
         for cmd in cmds do
+            try
+                let createFinalCommand cmd =
+                    let baseType =
+                        let x = cmd.Command.GetType().BaseType
 
-            let createFinalCommand cmd =
-                let baseType =
-                    let x = cmd.Command.GetType().BaseType
+                        if x = typeof<obj> then
+                            cmd.Command.GetType()
+                        else
+                            x |> Unchecked.nonNull
 
-                    if x = typeof<obj> then
-                        cmd.Command.GetType()
-                    else
-                        x |> Unchecked.nonNull
+                    let command = createCommand mailbox cmd.Command cid
 
-                let command = createCommand mailbox cmd.Command cid
+                    let unboxx (msg: Command<obj>) =
+                        let genericType = typedefof<Command<_>>.MakeGenericType [| baseType |]
 
-                let unboxx (msg: Command<obj>) =
-                    let genericType = typedefof<Command<_>>.MakeGenericType [| baseType |]
+                        let actorId: ActorId option =
+                            mailbox.Self.Path.Name |> ValueLens.CreateAsResult |> Result.value |> Some
 
-                    let actorId: ActorId option =
-                        mailbox.Self.Path.Name |> ValueLens.CreateAsResult |> Result.value |> Some
+                        FSharpValue.MakeRecord(
+                            genericType,
+                            [| msg.CommandDetails; msg.CreationDate; msg.Id; actorId; msg.CorrelationId |]
+                        )
 
-                    FSharpValue.MakeRecord(
-                        genericType,
-                        [| msg.CommandDetails; msg.CreationDate; msg.Id; actorId; msg.CorrelationId |]
-                    )
+                    let finalCommand = unboxx command
+                    finalCommand
 
-                let finalCommand = unboxx command
-                finalCommand
+                let (targetActor: ICanTell<_>), finalCommand =
+                    match cmd.TargetActor with
+                    | FactoryAndName { Factory = factory; Name = n } ->
+                        let name =
+                            match n with
+                            | Name n -> n
+                            | Originator -> mailbox.Self.Path.Name |> toOriginatorName
 
-            let (targetActor: ICanTell<_>), finalCommand =
-                match cmd.TargetActor with
-                | FactoryAndName { Factory = factory; Name = n } ->
-                    let name =
-                        match n with
-                        | Name n -> n
-                        | Originator -> mailbox.Self.Path.Name |> toOriginatorName
+                        let factory = factory :?> (string -> IEntityRef<obj>)
+                        factory name, createFinalCommand cmd
 
-                    let factory = factory :?> (string -> IEntityRef<obj>)
-                    factory name, createFinalCommand cmd
+                    | Sender -> mailbox.Sender(), createFinalCommand cmd
+                    | ActorRef actor -> actor :?> ICanTell<_>, cmd.Command
+                    | Self -> mailbox.Self, cmd
 
-                | Sender -> mailbox.Sender(), createFinalCommand cmd
-                | ActorRef actor -> actor :?> ICanTell<_>, cmd.Command
-                | Self -> mailbox.Self, cmd
-
-            match cmd.DelayInMs with
-            | Some (delayValue, name) ->
-                let currentScheduler = mailbox.System.Scheduler 
-                let messageToSchedule = finalCommand
-                let scheduleAtDelay = System.TimeSpan.FromMilliseconds delayValue
-                
-                let untypedSender = mailbox.Self.Underlying :?> Akka.Actor.IActorRef
-                let untypedReceiver = targetActor.Underlying 
-
-                match currentScheduler with
-                | :? FCQRS.Scheduler.ObservingScheduler as obs ->
-                    let taskNameForScheduler = name
+                match cmd.DelayInMs with
+                | Some (delayValue, name) ->
+                    let currentScheduler = mailbox.System.Scheduler 
+                    let messageToSchedule = finalCommand
+                    let scheduleAtDelay = System.TimeSpan.FromMilliseconds delayValue
                     
-                    log.Debug("SAGA_DEBUG: Using FCQRS.ObservingScheduler. Calling ScheduleTellOnceWithName with task name: {taskName}", taskNameForScheduler)
-                    // IMPORTANT: Assumes FCQRS.ObservingScheduler.ObservingScheduler now has a method like:
-                    // member this.ScheduleTellOnceWithName(delay, receiver, message, sender, taskName) : ICancelable
-                    obs.ScheduleTellOnce(Some taskNameForScheduler, scheduleAtDelay, untypedReceiver, messageToSchedule, untypedSender)
-                    |> ignore
+                    let untypedSender = mailbox.Self.Underlying :?> Akka.Actor.IActorRef
+                    let untypedReceiver = targetActor.Underlying 
 
-                | sch -> // Fallback for any other IScheduler type
-                    log.Debug("SAGA_DEBUG: Using standard IScheduler. Calling standard ScheduleTellOnce.")
-                    sch.ScheduleTellOnce(scheduleAtDelay, untypedReceiver, messageToSchedule, untypedSender)
-                    |> ignore
+                    match currentScheduler with
+                    | :? FCQRS.Scheduler.ObservingScheduler as obs ->
+                        let taskNameForScheduler = name
+                        
+                        log.Debug("SAGA_DEBUG: Using FCQRS.ObservingScheduler. Calling ScheduleTellOnceWithName with task name: {taskName}", taskNameForScheduler)
+                        // IMPORTANT: Assumes FCQRS.ObservingScheduler.ObservingScheduler now has a method like:
+                        // member this.ScheduleTellOnceWithName(delay, receiver, message, sender, taskName) : ICancelable
+                        obs.ScheduleTellOnce(Some taskNameForScheduler, scheduleAtDelay, untypedReceiver, messageToSchedule, untypedSender)
+                        |> ignore
 
-            | None -> targetActor <! finalCommand
+                    | sch -> // Fallback for any other IScheduler type
+                        log.Debug("SAGA_DEBUG: Using standard IScheduler. Calling standard ScheduleTellOnce.")
+                        sch.ScheduleTellOnce(scheduleAtDelay, untypedReceiver, messageToSchedule, untypedSender)
+                        |> ignore
+
+                | None -> targetActor <! finalCommand
+            with ex ->
+                log.Error(ex, "Fatal error in saga command processing for {0}. Terminating process to prevent restart loop.", name)
+                System.Environment.Exit(-1)
 
         match effect with
         | NoEffect -> newState
@@ -267,20 +284,25 @@ let private actorProp
             actor {
                 match msg, sagaState with
                 | msg, state ->
-                    let state: EventAction<'State> = handleEvent msg state.SagaState
+                    try
+                        let state: EventAction<'State> = handleEvent msg state.SagaState
 
-                    match state with
-                    | StateChangedEvent newState ->
-                        let newState = newState |> toStateChange
-                        return! newState
-                    | IgnoreEvent -> return! sagaState |> set innerStateDefaults
-                    | Stash _
-                    | Unstash _
-                    | UnstashAll _
-                    | UnhandledEvent
-                    | PublishEvent _
-                    | PersistEvent _
-                    | DeferEvent _ -> return Unhandled
+                        match state with
+                        | StateChangedEvent newState ->
+                            let newState = newState |> toStateChange
+                            return! newState
+                        | IgnoreEvent -> return! sagaState |> set innerStateDefaults
+                        | Stash _
+                        | Unstash _
+                        | UnstashAll _
+                        | UnhandledEvent
+                        | PublishEvent _
+                        | PersistEvent _
+                        | DeferEvent _ -> return Unhandled
+                    with ex ->
+                        log.Error(ex, "Fatal error in saga handleEvent for {0}. Terminating process to prevent restart loop.", name)
+                        System.Environment.Exit(-1)
+                        return Unhandled // This line will never execute but satisfies the compiler
             }
 
         let wrapper =

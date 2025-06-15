@@ -54,6 +54,8 @@ let applySideEffects
         handleStartedState recovering startingEvent userFactory
 
     | SendingMail mail ->
+        printfn "Failing to send mail: %A" mail
+        failwith "SendingMail state should not be reached in applySideEffects"
         NoEffect,
         None,
         [ { TargetActor = ActorRef(actorRef ())

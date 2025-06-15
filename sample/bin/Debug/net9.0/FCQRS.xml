@@ -340,13 +340,7 @@
  Contains types and functions related to the Saga Starter actor (internal implementation detail).
 </summary>
 </member>
-<member name="M:FCQRS.Common.SagaRecovery.handleStartedStateWithOriginator``2(System.Boolean,Microsoft.FSharp.Core.FSharpOption{FCQRS.Common.SagaStarter.SagaStartingEvent{FCQRS.Common.Event{``0}}},Microsoft.FSharp.Core.FSharpFunc{System.String,Akkling.Cluster.Sharding.IEntityRef{System.Object}})">
-<summary>
- Standard recovery logic with specific originator factory
- Use this version when you need to specify the originator factory
-</summary>
-</member>
-<member name="M:FCQRS.Common.SagaRecovery.handleStartedState``2(System.Boolean,Microsoft.FSharp.Core.FSharpOption{FCQRS.Common.SagaStarter.SagaStartingEvent{FCQRS.Common.Event{``0}}})">
+<member name="M:FCQRS.Common.SagaRecovery.handleStartedState``2(System.Boolean,Microsoft.FSharp.Core.FSharpOption{FCQRS.Common.SagaStarter.SagaStartingEvent{FCQRS.Common.Event{``0}}},Microsoft.FSharp.Core.FSharpFunc{System.String,Akkling.Cluster.Sharding.IEntityRef{System.Object}})">
 <summary>
  Standard recovery logic for Started state that all sagas should use
  Handles the version checking handshake with the originator aggregate
