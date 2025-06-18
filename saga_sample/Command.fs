@@ -12,7 +12,7 @@ let register cid userName password =
     let condition (e: User.Event) =
         e.IsAlreadyRegistered || e.IsVerificationRequested
 
-    let subscribe = userSubs cid actorId command condition
+    let subscribe = userSubs cid actorId command condition (Some(Map["Foo", "Bar"]) )
 
     async {
         match! subscribe with
@@ -33,7 +33,7 @@ let login cid userName password =
 
     let condition (e: User.Event) = e.IsLoginFailed || e.IsLoginSucceeded
 
-    let subscribe = userSubs cid actorId command condition
+    let subscribe = userSubs cid actorId command condition None
 
     async {
         match! subscribe with
@@ -53,7 +53,7 @@ let verify cid userName code =
 
     let condition (e: User.Event) = e.IsVerified || e.IsLoginFailed
 
-    let subscribe = userSubs cid actorId command condition
+    let subscribe = userSubs cid actorId command condition None
 
     async {
         match! subscribe with

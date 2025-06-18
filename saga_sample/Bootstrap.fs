@@ -40,8 +40,8 @@ let userShard = User.factory env actorApi
 User.init env actorApi |> ignore
 UserSaga.init env actorApi |> ignore
 
-let userSubs cid =
-    actorApi.CreateCommandSubscription userShard cid
+let userSubs cid actorId command filter metadata =
+    actorApi.CreateCommandSubscription userShard cid actorId command filter metadata
 
 let sub handleEventWrapper offsetCount =
     FCQRS.Query.init actorApi offsetCount (handleEventWrapper env)
