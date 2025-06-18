@@ -1,5 +1,6 @@
 module FCQRS.Saga
 
+open System
 open FCQRS
 open Akkling
 open Akkling.Persistence
@@ -17,12 +18,13 @@ open Microsoft.Extensions.Configuration
 let private toStateChange state =
     state |> StateChanged |> box |> Persist :> Effect<obj>
 
-let private createCommand (mailbox: Eventsourced<_>) (command: 'TCommand) cid =
+let private createCommand (mailbox: Eventsourced<_>) (command: 'TCommand) cid metadata =
     { CommandDetails = command
       CreationDate = mailbox.System.Scheduler.Now.UtcDateTime
       CorrelationId = cid
-      Id = None
-      Sender = mailbox.Self.Path.Name |> ValueLens.CreateAsResult |> Result.value |> Some }
+      Id = Guid.CreateVersion7().ToString() |> ValueLens.CreateAsResult |> Result.value
+      Sender = mailbox.Self.Path.Name |> ValueLens.CreateAsResult |> Result.value |> Some
+      Metadata = metadata }
 
 type private ParentSaga<'SagaData, 'State> = SagaStateWithVersion<'SagaData, 'State>
 
@@ -208,7 +210,8 @@ let private actorProp
                         else
                             x |> Unchecked.nonNull
 
-                    let command = createCommand mailbox cmd.Command cid
+                    let metadata = Map.empty
+                    let command = createCommand mailbox cmd.Command cid metadata
 
                     let unboxx (msg: Command<obj>) =
                         let genericType = typedefof<Command<_>>.MakeGenericType [| baseType |]
@@ -218,7 +221,7 @@ let private actorProp
 
                         FSharpValue.MakeRecord(
                             genericType,
-                            [| msg.CommandDetails; msg.CreationDate; msg.Id; actorId; msg.CorrelationId |]
+                            [| msg.CommandDetails; msg.CreationDate; msg.Id; actorId; msg.CorrelationId; msg.Metadata |]
                         )
 
                     let finalCommand = unboxx command

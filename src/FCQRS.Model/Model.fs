@@ -10,6 +10,18 @@ type IMessageWithCID =
     /// Gets the Correlation ID associated with the message.
     abstract member CID : CID
 
+/// Interface for messages with common properties shared by Commands and Events.
+type IMessage =
+    inherit IMessageWithCID
+    /// Gets the unique identifier for the message.
+    abstract Id : MessageId
+    /// Gets the timestamp when the message was created.
+    abstract CreationDate : DateTime
+    /// Gets the optional identifier for the actor that sent/generated the message.
+    abstract Sender : ActorId option
+    /// Gets the metadata associated with the message.
+    abstract Metadata : Map<string, string>
+
 /// Helper types for ValueLens for static resolution
 type ValueLensResultType<'Wrapped, 'Inner, 'Error
     when 'Wrapped: (static member Value_: (('Wrapped -> 'Inner) * ('Inner -> 'Wrapped -> Result<'Wrapped, 'Error>)))> =

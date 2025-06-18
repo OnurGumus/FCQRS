@@ -239,6 +239,11 @@
  &lt;typeparam name=&quot;&apos;T&quot;&gt;The type of the event payload associated with the action (e.g., for PersistEvent).&lt;/typeparam&gt;
 </summary>
 </member>
+<member name="P:FCQRS.Common.Event`1.Metadata">
+<summary>
+ Metadata associated with the event.
+</summary>
+</member>
 <member name="P:FCQRS.Common.Event`1.Version">
 <summary>
  The version number of the aggregate after this event was applied.
@@ -256,7 +261,7 @@
 </member>
 <member name="P:FCQRS.Common.Event`1.Id">
 <summary>
- An optional unique identifier for the message.
+ A unique identifier for the message.
 </summary>
 </member>
 <member name="P:FCQRS.Common.Event`1.CreationDate">
@@ -275,6 +280,11 @@
  &lt;typeparam name=&quot;&apos;EventDetails&quot;&gt;The specific type of the event payload.&lt;/typeparam&gt;
 </summary>
 </member>
+<member name="P:FCQRS.Common.Command`1.Metadata">
+<summary>
+ Metadata associated with the command.
+</summary>
+</member>
 <member name="P:FCQRS.Common.Command`1.CorrelationId">
 <summary>
  The correlation ID used to track the command through the system.
@@ -287,7 +297,7 @@
 </member>
 <member name="P:FCQRS.Common.Command`1.Id">
 <summary>
- An optional unique identifier for the message.
+ A unique identifier for the message.
 </summary>
 </member>
 <member name="P:FCQRS.Common.Command`1.CreationDate">
@@ -343,6 +353,11 @@
 <member name="T:FCQRS.Common.SagaRecovery.SagaStateWrapper`2">
 <summary>
  Standard wrapper for saga states that includes NotStarted/Started
+</summary>
+</member>
+<member name="M:FCQRS.Common.SagaRecovery.initSaga``4(FCQRS.Common.IActor,``3,``0,Microsoft.FSharp.Core.FSharpFunc{System.Object,Microsoft.FSharp.Core.FSharpFunc{``1,FCQRS.Common.EventAction{``1}}},Microsoft.FSharp.Core.FSharpFunc{``1,Microsoft.FSharp.Core.FSharpFunc{System.Boolean,System.Tuple{FCQRS.Common.Effect,Microsoft.FSharp.Core.FSharpOption{``1},Microsoft.FSharp.Collections.FSharpList{FCQRS.Common.ExecuteCommand}}}},Microsoft.FSharp.Core.FSharpFunc{FCQRS.Common.SagaState{``0,FCQRS.Common.SagaRecovery.SagaStateWrapper{``1,``2}},FCQRS.Common.SagaState{``0,FCQRS.Common.SagaRecovery.SagaStateWrapper{``1,``2}}},Microsoft.FSharp.Core.FSharpFunc{System.String,Akkling.Cluster.Sharding.IEntityRef{System.Object}},System.String)">
+<summary>
+ High-level saga initialization that handles all wrapping automatically
 </summary>
 </member>
 <member name="M:FCQRS.Common.SagaRecovery.wrapHandleEvent``3(Microsoft.FSharp.Core.FSharpFunc{System.Object,Microsoft.FSharp.Core.FSharpFunc{``1,FCQRS.Common.EventAction{``1}}},System.Object,FCQRS.Common.SagaState{``0,FCQRS.Common.SagaRecovery.SagaStateWrapper{``1,``2}})">

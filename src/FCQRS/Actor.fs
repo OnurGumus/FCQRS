@@ -79,10 +79,11 @@ module internal Internal =
                     let abortedEvent = 
                         { EventDetails = AbortedEvent
                           CreationDate = mailbox.System.Scheduler.Now.UtcDateTime
-                          Id = None
+                          Id = Guid.CreateVersion7().ToString() |> ValueLens.CreateAsResult |> Result.value
                           Sender = mailbox.Self.Path.Name |> ValueLens.CreateAsResult |> Result.value |> Some
                           CorrelationId = e.CorrelationId
-                          Version = state.Version }
+                          Version = state.Version
+                          Metadata = e.Metadata }
                     SagaStarter.Internal.publishEvent
                         logger
                         mailbox
@@ -202,6 +203,7 @@ module internal Internal =
                                 msg.Id
                                 msg.CorrelationId
                                 (mailbox.Self.Path.Name |> ValueLens.CreateAsResult |> Result.value |> Some)
+                                msg.Metadata
                         let effect = handleCommand msg state.State
                         return! handleEffect effect state mailbox toEvent state.Version bodyInput set
                     | _ ->
@@ -228,10 +230,11 @@ module internal Internal =
         let commonCommand: Command<_> =
             { 
                 CommandDetails = command
-                Id = Some(Guid.CreateVersion7().ToString() |> ValueLens.CreateAsResult |> Result.value)
+                Id = Guid.CreateVersion7().ToString() |> ValueLens.CreateAsResult |> Result.value
                 CreationDate = actorApi.System.Scheduler.Now.UtcDateTime
                 CorrelationId = cid
-                Sender = None }
+                Sender = None
+                Metadata = Map.empty }
 
         let e =
             { 
@@ -346,7 +349,7 @@ let api env =
         /// </code>
         /// </example>
         member this.InitializeActor env initialState name handleCommand apply =
-            let toEvent mid v sender = toEvent system.Scheduler mid v sender
+            let toEvent mid ci sender metadata version event = toEvent system.Scheduler (Some mid) ci sender version metadata event
             init env initialState name toEvent this handleCommand apply
         
         /// <summary>
