@@ -76,11 +76,18 @@ module internal Internal =
                     publishEvent e
                     return! state |> set
                 else
+                    let abortedEvent = 
+                        { EventDetails = AbortedEvent
+                          CreationDate = mailbox.System.Scheduler.Now.UtcDateTime
+                          Id = None
+                          Sender = mailbox.Self.Path.Name |> ValueLens.CreateAsResult |> Result.value |> Some
+                          CorrelationId = e.CorrelationId
+                          Version = state.Version }
                     SagaStarter.Internal.publishEvent
                         logger
                         mailbox
                         mediator
-                        AbortedEvent
+                        abortedEvent
                         (e.CorrelationId |> ValueLens.Value |> ValueLens.Value)
 
                     return! state |> set

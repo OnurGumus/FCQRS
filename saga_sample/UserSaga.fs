@@ -2,78 +2,61 @@ module UserSaga
 
 open FCQRS
 open Common
-open Common.SagaStarter
 open Common.SagaRecovery
 open Akkling
 open SendMail
 
 
-type State =
-    | NotStarted
-    | Started of SagaStartingEvent<Event<User.Event>>
+// Only user-defined states - framework handles NotStarted/Started
+type UserState =
     | SendingMail of Mail
     | Completed
 
 type SagaData = NA
 
-let initialState =
-    { State = NotStarted
-      Data = (NA: SagaData) }
+// Saga data
+let sagaData = NA
 
-let apply (sagaState: SagaState<SagaData, State>) = sagaState
-
-let handleEvent (event: obj) (state: SagaState<SagaData, State>) = //: EventAction<State>  =
+// Handle only user events - no framework states
+let handleUserEvent (event: obj) (state: UserState) : EventAction<UserState> =
     match event, state with
     | :? string as str, _ when str = "sent" ->
         Completed |> StateChangedEvent
-    | :? (Common.Event<User.Event>) as { EventDetails = userEvent }, state ->
-        match userEvent, state with
-        | User.VerificationRequested(email, _, code), _ ->
-            SendingMail
-                { To = email
-                  Subject = "Your code"
-                  Body = $"Your code is {code} !!" }
-            |> StateChangedEvent
-        | _ -> UnhandledEvent
-
-
+    | :? (Common.Event<User.Event>) as { EventDetails = User.VerificationRequested(email, _, code) }, _ ->
+        SendingMail { To = email; Subject = "Your code"; Body = $"Your code is {code} !!" }
+        |> StateChangedEvent
     | _ -> UnhandledEvent
 
-let applySideEffects
-    (actorRef: unit -> IActorRef<obj>)
-    env
-    userFactory
-    (sagaState: SagaState<SagaData, State>)
-    (startingEvent: option<SagaStartingEvent<_>>)
-    recovering
-    =
-    match sagaState.State with
-    | NotStarted -> NoEffect, Some(Started startingEvent.Value), []
-
-    | Started _ ->
-        handleStartedState recovering startingEvent userFactory
-
+// Handle only user side effects - no startingEvent parameter needed!
+let applySideEffectsUser (mailSenderRef: unit -> IActorRef<obj>) (state: UserState) (recovering: bool) =
+    match state with
     | SendingMail mail ->
         NoEffect,
         None,
-        [ { TargetActor = ActorRef(actorRef ())
-            Command = mail
+        [ { TargetActor = ActorRef(mailSenderRef ());
+            Command = mail;
             DelayInMs = Some (10000, "testuser") } ]
-
     | Completed -> StopActor, None, []
+
+// Apply function for state transformations when events are processed
+let apply (sagaState: SagaState<SagaData, SagaStateWrapper<UserState, User.Event>>) = 
+    // Users can modify sagaState.Data here based on events
+    // For now, just return unchanged
+    sagaState
 
 let init (env: _) (actorApi: IActor) =
     let userFactory = User.factory env actorApi
-
-    let mailSenderRef =
-        fun () -> spawnAnonymous actorApi.System (props behavior) |> retype
-
-    actorApi.InitializeSaga
+    let mailSenderRef = fun () -> spawnAnonymous actorApi.System (props behavior) |> retype
+    
+    // One-line initialization - all wrapping handled by framework!
+    initSaga<SagaData, UserState, User.Event, _>
+        actorApi
         env
-        initialState
-        handleEvent
-        (applySideEffects mailSenderRef env userFactory)
+        sagaData
+        handleUserEvent
+        (applySideEffectsUser mailSenderRef)
         apply
+        userFactory
         "UserSaga"
 
 let factory (env: _) actorApi entityId =

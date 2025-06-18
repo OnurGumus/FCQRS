@@ -52,7 +52,7 @@ let private runSaga<'TEvent, 'SagaData, 'State>
             log.LogInformation("Saga:{@name} SagaMessage: {MSG}", mailbox.Self.Path.ToString(), msg)
 
             match msg with
-            | :? (AbortedEvent) ->
+            | :? Event<AbortedEvent> ->
                 let poision = Akka.Cluster.Sharding.Passivate <| Actor.PoisonPill.Instance
                 log.LogInformation("Aborting")
                 mailbox.Parent() <! poision

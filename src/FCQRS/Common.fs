@@ -255,6 +255,69 @@ module SagaRecovery =
                 DelayInMs = None } ]
         | false ->
             ResumeFirstEvent, None, []
+    
+    /// Standard wrapper for saga states that includes NotStarted/Started
+    type SagaStateWrapper<'UserState, 'TEvent> =
+        | NotStarted
+        | Started of SagaStartingEvent<Event<'TEvent>>
+        | UserDefined of 'UserState
+    
+    /// Creates initial saga state with NotStarted
+    let createInitialState<'SagaData, 'UserState, 'TEvent> (data: 'SagaData) : SagaState<'SagaData, SagaStateWrapper<'UserState, 'TEvent>> =
+        { State = NotStarted; Data = data }
+    
+    /// Wraps user's applySideEffects to handle NotStarted/Started automatically
+    let wrapApplySideEffects<'SagaData, 'UserState, 'TEvent>
+        (userApplySideEffects: 'UserState -> bool -> Effect * 'UserState option * ExecuteCommand list)
+        (originatorFactory: string -> IEntityRef<obj>)
+        (sagaState: SagaState<'SagaData, SagaStateWrapper<'UserState, 'TEvent>>)
+        (startingEvent: option<SagaStartingEvent<Event<'TEvent>>>)
+        (recovering: bool)
+        : Effect * SagaStateWrapper<'UserState, 'TEvent> option * ExecuteCommand list =
+        match sagaState.State with
+        | NotStarted -> NoEffect, Some(Started startingEvent.Value), []
+        | Started _ -> 
+            let e, s, c = handleStartedState recovering startingEvent originatorFactory
+            e, s |> Option.map (fun _ -> sagaState.State), c
+        | UserDefined userState ->
+            let effect, newState, commands = userApplySideEffects userState recovering
+            effect, (newState |> Option.map UserDefined), commands
+    
+    /// Wraps user's handleEvent to skip NotStarted/Started states
+    let wrapHandleEvent<'SagaData, 'UserState, 'TEvent>
+        (userHandleEvent: obj -> 'UserState -> EventAction<'UserState>)
+        (event: obj)
+        (sagaState: SagaState<'SagaData, SagaStateWrapper<'UserState, 'TEvent>>)
+        : EventAction<SagaStateWrapper<'UserState, 'TEvent>> =
+        match sagaState.State with
+        | NotStarted | Started _ -> UnhandledEvent
+        | UserDefined userState ->
+            match userHandleEvent event userState with
+            | StateChangedEvent newState -> StateChangedEvent (UserDefined newState)
+            | _ -> UnhandledEvent
+    
+    /// High-level saga initialization that handles all wrapping automatically
+    let initSaga<'SagaData, 'UserState, 'TEvent, 'Env when 'Env :> IConfigurationWrapper and 'Env :> ILoggerFactoryWrapper>
+        (actorApi: IActor)
+        (env: 'Env)
+        (sagaData: 'SagaData)
+        (userHandleEvent: obj -> 'UserState -> EventAction<'UserState>)
+        (userApplySideEffects: 'UserState -> bool -> Effect * 'UserState option * ExecuteCommand list)
+        (userApply: SagaState<'SagaData, SagaStateWrapper<'UserState, 'TEvent>> -> SagaState<'SagaData, SagaStateWrapper<'UserState, 'TEvent>>)
+        (originatorFactory: string -> IEntityRef<obj>)
+        (sagaName: string)
+        =
+        let initialState = createInitialState<'SagaData, 'UserState, 'TEvent> sagaData
+        let handleEvent = wrapHandleEvent userHandleEvent
+        let applySideEffects = wrapApplySideEffects userApplySideEffects originatorFactory
+        
+        actorApi.InitializeSaga
+            env
+            initialState
+            handleEvent
+            applySideEffects
+            userApply
+            sagaName
 
 /// Contains types and functions related to the Saga Starter actor (internal implementation detail).
 module SagaStarter =
