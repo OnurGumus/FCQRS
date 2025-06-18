@@ -6,3 +6,6 @@ tmp/
 *.db
 /output
 /src/**/bin/
+
+# Claude IDE settings
+.claude/settings.local.json
