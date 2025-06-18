@@ -8,7 +8,7 @@ nuget FSharp.Interop.Dynamic
 nuget Microsoft.Extensions.Configuration
 nuget Akkling.Streams
 nuget Microsoft.Data.SQLite
-nuget SQLProvider 1.5.7
+nuget SQLProvider
 nuget SQLitePCLRaw.core
 nuget Akkling.Persistence
 nuget Akka.Persistence.Sql >= 1.5.42

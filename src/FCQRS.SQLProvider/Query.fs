@@ -3,17 +3,17 @@ open FSharp.Data.Sql.Common
 open System.Linq
 open FCQRS.Model.Data
 let private sortByEval column =
-    <@@ fun (x: SqlEntity) -> x.GetColumn<System.IComparable>(column) @@>
+    <@@ fun (x: SqlEntity) -> (x:IColumnHolder).GetColumn<System.IComparable>(column) @@>
 
 
 let rec private eval t =
         match t with
-        | Equal(s, n) -> <@@ fun (x: SqlEntity) -> x.GetColumn(s) = n @@>
-        | NotEqual(s, n) -> <@@ fun (x: SqlEntity) -> x.GetColumn(s) <> n @@>
-        | Greater(s, n) -> <@@ fun (x: SqlEntity) -> x.GetColumn(s) > n @@>
-        | GreaterOrEqual(s, n) -> <@@ fun (x: SqlEntity) -> x.GetColumn(s) >= n @@>
-        | Smaller(s, n) -> <@@ fun (x: SqlEntity) -> x.GetColumn(s) < n @@>
-        | SmallerOrEqual(s, n) -> <@@ fun (x: SqlEntity) -> x.GetColumn(s) <= n @@>
+        | Equal(s, n) -> <@@ fun (x: SqlEntity) -> (x:IColumnHolder).GetColumn(s) = n @@>
+        | NotEqual(s, n) -> <@@ fun (x: SqlEntity) -> (x:IColumnHolder).GetColumn(s) <> n @@>
+        | Greater(s, n) -> <@@ fun (x: SqlEntity) -> (x:IColumnHolder).GetColumn(s) > n @@>
+        | GreaterOrEqual(s, n) -> <@@ fun (x: SqlEntity) -> (x:IColumnHolder).GetColumn(s) >= n @@>
+        | Smaller(s, n) -> <@@ fun (x: SqlEntity) -> (x:IColumnHolder).GetColumn(s) < n @@>
+        | SmallerOrEqual(s, n) -> <@@ fun (x: SqlEntity) -> (x:IColumnHolder).GetColumn(s) <= n @@>
         | And(t1, t2) -> <@@ fun (x: SqlEntity) -> (%%eval t1) x && (%%eval t2) x @@>
         | Or(t1, t2) -> <@@ fun (x: SqlEntity) -> (%%eval t1) x || (%%eval t2) x @@>
         | Not(t0) -> <@@ fun (x: SqlEntity) -> not ((%%eval t0) x) @@>
