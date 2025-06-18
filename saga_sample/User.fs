@@ -7,13 +7,15 @@ type Event =
     | LoginSucceeded
     | LoginFailed
     | AlreadyRegistered
-    | VerificationRequested of string * string  * string
+    | VerificationRequested of string * string
+    | VerificationCodeSet of string
     | Verified
 
 type Command =
     | Login of string
     | Verify of string
     | Register of string * string
+    | SetVerificationCode of string
 
 type State =
     { Username: string option
@@ -22,18 +24,22 @@ type State =
 
 let applyEvent event state =
     match event.EventDetails with
-    | VerificationRequested(userName, password, code) ->
+    | VerificationRequested(userName, password) ->
         { state with
-            VerificationCode= Some code
             Username = Some userName
             Password = Some password }
+    | VerificationCodeSet(code) ->
+        { state with VerificationCode = Some code }
     | _ -> state
 
 let handleCommand (cmd: Command<_>) state =
     printfn "handleCommand: %A" cmd
     match cmd.CommandDetails, state with
     | Register(userName, password), { Username = None } -> 
-        VerificationRequested(userName, password, Random.Shared.Next(1_000_000).ToString()) |> PersistEvent
+        VerificationRequested(userName, password) |> PersistEvent
+    | SetVerificationCode(code), _ ->
+        printfn "🎯 User received SetVerificationCode: %s" code
+        VerificationCodeSet(code) |> PersistEvent
 
     | Register _, { Username = Some _ } -> AlreadyRegistered |> DeferEvent
     | Verify code, { VerificationCode = Some vcode } when code = vcode -> Verified |> PersistEvent

@@ -4,11 +4,13 @@ open FCQRS
 open Common
 open Common.SagaRecovery
 open Akkling
+open Akkling.Cluster.Sharding
 open SendMail
 
 
 // Only user-defined states - framework handles NotStarted/Started
 type UserState =
+    | GeneratingCode
     | SendingMail of Mail
     | Completed
 
@@ -17,19 +19,30 @@ type SagaData = NA
 // Saga data
 let sagaData = NA
 
-// Handle only user events - no framework states
+// Handle only user events - framework now allows Started state transitions
 let handleUserEvent (event: obj) (state: UserState) : EventAction<UserState> =
     match event, state with
     | :? string as str, _ when str = "sent" ->
         Completed |> StateChangedEvent
-    | :? (Common.Event<User.Event>) as { EventDetails = User.VerificationRequested(email, _, code) }, _ ->
-        SendingMail { To = email; Subject = "Your code"; Body = $"Your code is {code} !!" }
+    | :? (Common.Event<User.Event>) as { EventDetails = User.VerificationRequested(email, _) }, _ ->
+        // Can now transition from Started (with dummy state) to first user state
+        GeneratingCode |> StateChangedEvent
+    | :? (Common.Event<User.Event>) as { EventDetails = User.VerificationCodeSet(code) }, GeneratingCode ->
+        SendingMail { To = "testuser"; Subject = "Your code"; Body = $"Your code is {code} !!" }
         |> StateChangedEvent
     | _ -> UnhandledEvent
 
 // Handle only user side effects - no startingEvent parameter needed!
-let applySideEffectsUser (mailSenderRef: unit -> IActorRef<obj>) (state: UserState) (recovering: bool) =
+let applySideEffectsUser (userFactory: string -> IEntityRef<obj>) (mailSenderRef: unit -> IActorRef<obj>) (state: UserState) (recovering: bool) =
     match state with
+    | GeneratingCode ->
+        let verificationCode = System.Random.Shared.Next(100_000, 999_999).ToString()
+        let command = User.SetVerificationCode(verificationCode)
+        NoEffect,
+        None,
+        [ { TargetActor = FactoryAndName { Factory = userFactory; Name = Originator };
+            Command = command;
+            DelayInMs = None } ]
     | SendingMail mail ->
         NoEffect,
         None,
@@ -54,7 +67,7 @@ let init (env: _) (actorApi: IActor) =
         env
         sagaData
         handleUserEvent
-        (applySideEffectsUser mailSenderRef)
+        (applySideEffectsUser userFactory mailSenderRef)
         apply
         userFactory
         "UserSaga"

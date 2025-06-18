@@ -304,14 +304,21 @@ module SagaRecovery =
             let effect, newState, commands = userApplySideEffects userState recovering
             effect, (newState |> Option.map UserDefined), commands
     
-    /// Wraps user's handleEvent to skip NotStarted/Started states
+    /// Wraps user's handleEvent to skip NotStarted but allow Started states
     let wrapHandleEvent<'SagaData, 'UserState, 'TEvent>
         (userHandleEvent: obj -> 'UserState -> EventAction<'UserState>)
         (event: obj)
         (sagaState: SagaState<'SagaData, SagaStateWrapper<'UserState, 'TEvent>>)
         : EventAction<SagaStateWrapper<'UserState, 'TEvent>> =
         match sagaState.State with
-        | NotStarted | Started _ -> UnhandledEvent
+        | NotStarted -> UnhandledEvent
+        | Started _ -> 
+            // Allow user code to handle events in Started state to transition to user-defined states
+            // For Started->UserDefined transitions, we need a dummy state since user handler expects one
+            // The user should pattern match on the event and ignore the state for these transitions
+            match userHandleEvent event Unchecked.defaultof<'UserState> with
+            | StateChangedEvent newState -> StateChangedEvent (UserDefined newState)
+            | _ -> UnhandledEvent
         | UserDefined userState ->
             match userHandleEvent event userState with
             | StateChangedEvent newState -> StateChangedEvent (UserDefined newState)
