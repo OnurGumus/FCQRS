@@ -20,14 +20,14 @@ type SagaData = NA
 let sagaData = NA
 
 // Handle only user events - framework now allows Started state transitions
-let handleUserEvent (event: obj) (state: UserState) : EventAction<UserState> =
+let handleUserEvent (event: obj) (state: UserState option) : EventAction<UserState> =
     match event, state with
     | :? string as str, _ when str = "sent" ->
         Completed |> StateChangedEvent
-    | :? (Common.Event<User.Event>) as { EventDetails = User.VerificationRequested(email, _) }, _ ->
-        // Can now transition from Started (with dummy state) to first user state
+    | :? (Common.Event<User.Event>) as { EventDetails = User.VerificationRequested(email, _) }, None ->
+        // Transition from Started (no user state) to first user state
         GeneratingCode |> StateChangedEvent
-    | :? (Common.Event<User.Event>) as { EventDetails = User.VerificationCodeSet(code) }, GeneratingCode ->
+    | :? (Common.Event<User.Event>) as { EventDetails = User.VerificationCodeSet(code) }, Some GeneratingCode ->
         SendingMail { To = "testuser"; Subject = "Your code"; Body = $"Your code is {code} !!" }
         |> StateChangedEvent
     | _ -> UnhandledEvent

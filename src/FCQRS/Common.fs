@@ -306,7 +306,7 @@ module SagaRecovery =
     
     /// Wraps user's handleEvent to skip NotStarted but allow Started states
     let wrapHandleEvent<'SagaData, 'UserState, 'TEvent>
-        (userHandleEvent: obj -> 'UserState -> EventAction<'UserState>)
+        (userHandleEvent: obj -> 'UserState option -> EventAction<'UserState>)
         (event: obj)
         (sagaState: SagaState<'SagaData, SagaStateWrapper<'UserState, 'TEvent>>)
         : EventAction<SagaStateWrapper<'UserState, 'TEvent>> =
@@ -314,13 +314,12 @@ module SagaRecovery =
         | NotStarted -> UnhandledEvent
         | Started _ -> 
             // Allow user code to handle events in Started state to transition to user-defined states
-            // For Started->UserDefined transitions, we need a dummy state since user handler expects one
-            // The user should pattern match on the event and ignore the state for these transitions
-            match userHandleEvent event Unchecked.defaultof<'UserState> with
+            // For Started->UserDefined transitions, pass None since no user state exists yet
+            match userHandleEvent event None with
             | StateChangedEvent newState -> StateChangedEvent (UserDefined newState)
             | _ -> UnhandledEvent
         | UserDefined userState ->
-            match userHandleEvent event userState with
+            match userHandleEvent event (Some userState) with
             | StateChangedEvent newState -> StateChangedEvent (UserDefined newState)
             | _ -> UnhandledEvent
     
@@ -329,7 +328,7 @@ module SagaRecovery =
         (actorApi: IActor)
         (env: 'Env)
         (sagaData: 'SagaData)
-        (userHandleEvent: obj -> 'UserState -> EventAction<'UserState>)
+        (userHandleEvent: obj -> 'UserState option -> EventAction<'UserState>)
         (userApplySideEffects: 'UserState -> bool -> Effect * 'UserState option * ExecuteCommand list)
         (userApply: SagaState<'SagaData, SagaStateWrapper<'UserState, 'TEvent>> -> SagaState<'SagaData, SagaStateWrapper<'UserState, 'TEvent>>)
         (originatorFactory: string -> IEntityRef<obj>)
