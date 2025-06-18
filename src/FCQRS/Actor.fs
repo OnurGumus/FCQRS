@@ -224,7 +224,7 @@ module internal Internal =
 
 
 
-    let createCommandSubscription (actorApi: IActor) factory (cid: CID) (id: ActorId) command filter =
+    let createCommandSubscription (actorApi: IActor) factory (cid: CID) (id: ActorId) command filter (metadata: Map<string, string> option) =
         let actor = factory (id |> ValueLens.Value |> ValueLens.Value)
 
         let commonCommand: Command<_> =
@@ -234,7 +234,7 @@ module internal Internal =
                 CreationDate = actorApi.System.Scheduler.Now.UtcDateTime
                 CorrelationId = cid
                 Sender = None
-                Metadata = Map.empty }
+                Metadata = metadata |> Option.defaultValue Map.empty }
 
         let e =
             { 
@@ -323,8 +323,8 @@ let api env =
         /// This approach encapsulates the wiring required to connect a command source with its handler,
         /// including setting up filters, delay mechanisms, and processing pipelines.
         /// </remarks>
-        member this.CreateCommandSubscription factory cid id command filter =
-            createCommandSubscription this factory cid id command filter
+        member this.CreateCommandSubscription factory cid id command filter metadata =
+            createCommandSubscription this factory cid id command filter metadata
         
         /// <summary>
         /// Initializes a persistent actor with the defined configuration, initial state, unique name, command handler, and event applier.

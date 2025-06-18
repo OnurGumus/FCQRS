@@ -210,7 +210,13 @@ let private actorProp
                         else
                             x |> Unchecked.nonNull
 
-                    let metadata = Map.empty
+                    let metadata = 
+                        match startingEvent with
+                        | Some se -> 
+                            match box se.Event with
+                            | :? FCQRS.Model.Data.IMessage as msg -> msg.Metadata
+                            | _ -> Map.empty
+                        | None -> Map.empty
                     let command = createCommand mailbox cmd.Command cid metadata
 
                     let unboxx (msg: Command<obj>) =

@@ -225,8 +225,9 @@ type IActor =
     /// <param name="id">Entity ID of the target actor.</param>
     /// <param name="command">The command payload to send.</param>
     /// <param name="filter">A predicate function to select the desired event.</param>
+    /// <param name="metadata">Optional metadata to include with the command.</param>
     /// <returns>An async computation yielding the target event.</returns>
-    abstract CreateCommandSubscription: (string -> IEntityRef<obj>) -> CID -> ActorId -> 'b -> ('c -> bool) -> Async<Event<'c>>
+    abstract CreateCommandSubscription: (string -> IEntityRef<obj>) -> CID -> ActorId -> 'b -> ('c -> bool) -> Map<string, string> option -> Async<Event<'c>>
     /// Initializes a sharded, persistent aggregate actor.
     /// <param name="cfg">Environment configuration (IConfiguration & ILoggerFactory).</param>
     /// <param name="initialState">The initial state for new aggregate instances.</param>

@@ -38,7 +38,7 @@ User.init env actorApi |> ignore
 
 // helper function to send commands to the actor. cid means corralation id and it is used to track the command.
 // essentially it could be any string typically uuid/guid.
-let userSubs cid =  actorApi.CreateCommandSubscription userShard cid
+let userSubs cid actorId command filter metadata =  actorApi.CreateCommandSubscription userShard cid actorId command filter metadata
 
 // Initializes the query side.But also gets subscription for the query side. 
 // The only use case for subscription is to wait for the query side to catch up with the command side.
