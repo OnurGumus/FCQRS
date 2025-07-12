@@ -50,13 +50,13 @@
  &lt;param name=&quot;eventHandler&quot;&gt;A function mapping a received event object to a list of saga definitions to start: `obj -&gt; list&lt;(Factory * Prefix * StartingEvent)&gt;`.&lt;/param&gt;
 </summary>
 </member>
-<member name="M:FCQRS.Common.IActor.InitializeSaga``4(``0,FCQRS.Common.SagaState{``1,``2},Microsoft.FSharp.Core.FSharpFunc{System.Object,Microsoft.FSharp.Core.FSharpFunc{FCQRS.Common.SagaState{``1,``2},FCQRS.Common.EventAction{``2}}},Microsoft.FSharp.Core.FSharpFunc{FCQRS.Common.SagaState{``1,``2},Microsoft.FSharp.Core.FSharpFunc{Microsoft.FSharp.Core.FSharpOption{FCQRS.Common.SagaStarter.SagaStartingEvent{FCQRS.Common.Event{``3}}},Microsoft.FSharp.Core.FSharpFunc{System.Boolean,System.Tuple{FCQRS.Common.Effect,Microsoft.FSharp.Core.FSharpOption{``2},Microsoft.FSharp.Collections.FSharpList{FCQRS.Common.ExecuteCommand}}}}},Microsoft.FSharp.Core.FSharpFunc{FCQRS.Common.SagaState{``1,``2},FCQRS.Common.SagaState{``1,``2}},System.String)">
+<member name="M:FCQRS.Common.IActor.InitializeSaga``4(``0,FCQRS.Common.SagaState{``1,``2},Microsoft.FSharp.Core.FSharpFunc{System.Object,Microsoft.FSharp.Core.FSharpFunc{FCQRS.Common.SagaState{``1,``2},FCQRS.Common.EventAction{``2}}},Microsoft.FSharp.Core.FSharpFunc{FCQRS.Common.SagaState{``1,``2},Microsoft.FSharp.Core.FSharpFunc{Microsoft.FSharp.Core.FSharpOption{FCQRS.Common.SagaStarter.SagaStartingEvent{FCQRS.Common.Event{``3}}},Microsoft.FSharp.Core.FSharpFunc{System.Boolean,System.Tuple{FCQRS.Common.SagaTransition{``2},Microsoft.FSharp.Collections.FSharpList{FCQRS.Common.ExecuteCommand}}}}},Microsoft.FSharp.Core.FSharpFunc{FCQRS.Common.SagaState{``1,``2},FCQRS.Common.SagaState{``1,``2}},System.String)">
 <summary>
  Initializes a sharded, persistent saga actor.
  &lt;param name=&quot;cfg&quot;&gt;Environment configuration (IConfiguration &amp; ILoggerFactory).&lt;/param&gt;
  &lt;param name=&quot;initialState&quot;&gt;The initial state (`SagaState`) for new saga instances.&lt;/param&gt;
  &lt;param name=&quot;handleEvent&quot;&gt;The event handler function: `Event -&gt; SagaState -&gt; EventAction`.&lt;/param&gt;
- &lt;param name=&quot;applySideEffects&quot;&gt;Function determining side effects based on state transitions: `SagaState -&gt; Option&lt;StartingEvent&gt; -&gt; bool -&gt; Effect * Option&lt;NewState&gt; * ExecuteCommand list`.&lt;/param&gt;
+ &lt;param name=&quot;applySideEffects&quot;&gt;Function determining side effects based on state transitions: `SagaState -&gt; Option&lt;StartingEvent&gt; -&gt; bool -&gt; SagaTransition&lt;NewState&gt; * ExecuteCommand list`.&lt;/param&gt;
  &lt;param name=&quot;applyStateChange&quot;&gt;Function to apply internal state changes: `SagaState -&gt; SagaState`.&lt;/param&gt;
  &lt;param name=&quot;name&quot;&gt;The shard type name for this saga.&lt;/param&gt;
  &lt;returns&gt;An entity factory (`EntityFac&lt;obj&gt;`) for creating instances of this saga.&lt;/returns&gt;
@@ -109,24 +109,24 @@
  &lt;typeparam name=&quot;&apos;State&quot;&gt;The type representing the saga&apos;s current state machine state (e.g., an enum or DU).&lt;/typeparam&gt;
 </summary>
 </member>
-<member name="T:FCQRS.Common.Effect.NoEffect">
+<member name="T:FCQRS.Common.SagaTransition`1.NextState">
 <summary>
- No specific side effect is required.
+ The saga should transition to a new state
 </summary>
 </member>
-<member name="T:FCQRS.Common.Effect.StopActor">
+<member name="T:FCQRS.Common.SagaTransition`1.Stay">
 <summary>
- Instructs the saga actor to stop itself gracefully.
+ The saga should stay in current state without changes
 </summary>
 </member>
-<member name="T:FCQRS.Common.Effect.ResumeFirstEvent">
+<member name="T:FCQRS.Common.SagaTransition`1.StopSaga">
 <summary>
- Instructs the saga to re-process the first event that started it (used for retries or specific flows).
+ The saga should stop and terminate
 </summary>
 </member>
-<member name="T:FCQRS.Common.Effect">
+<member name="T:FCQRS.Common.SagaTransition`1">
 <summary>
- Represents side effects that can be triggered by a saga after processing an event or timeout.
+ Represents the next state transition for a saga after processing an event or timeout.
 </summary>
 </member>
 <member name="P:FCQRS.Common.ExecuteCommand.DelayInMs">
@@ -356,7 +356,7 @@
  Standard wrapper for saga states that includes NotStarted/Started
 </summary>
 </member>
-<member name="M:FCQRS.Common.SagaRecovery.initSaga``4(FCQRS.Common.IActor,``3,``0,Microsoft.FSharp.Core.FSharpFunc{System.Object,Microsoft.FSharp.Core.FSharpFunc{Microsoft.FSharp.Core.FSharpOption{``1},FCQRS.Common.EventAction{``1}}},Microsoft.FSharp.Core.FSharpFunc{``1,Microsoft.FSharp.Core.FSharpFunc{System.Boolean,System.Tuple{FCQRS.Common.Effect,Microsoft.FSharp.Core.FSharpOption{``1},Microsoft.FSharp.Collections.FSharpList{FCQRS.Common.ExecuteCommand}}}},Microsoft.FSharp.Core.FSharpFunc{FCQRS.Common.SagaState{``0,FCQRS.Common.SagaRecovery.SagaStateWrapper{``1,``2}},FCQRS.Common.SagaState{``0,FCQRS.Common.SagaRecovery.SagaStateWrapper{``1,``2}}},Microsoft.FSharp.Core.FSharpFunc{System.String,Akkling.Cluster.Sharding.IEntityRef{System.Object}},System.String)">
+<member name="M:FCQRS.Common.SagaRecovery.initSaga``4(FCQRS.Common.IActor,``3,``0,Microsoft.FSharp.Core.FSharpFunc{System.Object,Microsoft.FSharp.Core.FSharpFunc{Microsoft.FSharp.Core.FSharpOption{``1},FCQRS.Common.EventAction{``1}}},Microsoft.FSharp.Core.FSharpFunc{``1,Microsoft.FSharp.Core.FSharpFunc{System.Boolean,System.Tuple{FCQRS.Common.SagaTransition{``1},Microsoft.FSharp.Collections.FSharpList{FCQRS.Common.ExecuteCommand}}}},Microsoft.FSharp.Core.FSharpFunc{FCQRS.Common.SagaState{``0,FCQRS.Common.SagaRecovery.SagaStateWrapper{``1,``2}},FCQRS.Common.SagaState{``0,FCQRS.Common.SagaRecovery.SagaStateWrapper{``1,``2}}},Microsoft.FSharp.Core.FSharpFunc{System.String,Akkling.Cluster.Sharding.IEntityRef{System.Object}},System.String)">
 <summary>
  High-level saga initialization that handles all wrapping automatically
 </summary>
@@ -366,7 +366,7 @@
  Wraps user&apos;s handleEvent to skip NotStarted but allow Started states
 </summary>
 </member>
-<member name="M:FCQRS.Common.SagaRecovery.wrapApplySideEffects``3(Microsoft.FSharp.Core.FSharpFunc{``1,Microsoft.FSharp.Core.FSharpFunc{System.Boolean,System.Tuple{FCQRS.Common.Effect,Microsoft.FSharp.Core.FSharpOption{``1},Microsoft.FSharp.Collections.FSharpList{FCQRS.Common.ExecuteCommand}}}},Microsoft.FSharp.Core.FSharpFunc{System.String,Akkling.Cluster.Sharding.IEntityRef{System.Object}},FCQRS.Common.SagaState{``0,FCQRS.Common.SagaRecovery.SagaStateWrapper{``1,``2}},Microsoft.FSharp.Core.FSharpOption{FCQRS.Common.SagaStarter.SagaStartingEvent{FCQRS.Common.Event{``2}}},System.Boolean)">
+<member name="M:FCQRS.Common.SagaRecovery.wrapApplySideEffects``3(Microsoft.FSharp.Core.FSharpFunc{``1,Microsoft.FSharp.Core.FSharpFunc{System.Boolean,System.Tuple{FCQRS.Common.SagaTransition{``1},Microsoft.FSharp.Collections.FSharpList{FCQRS.Common.ExecuteCommand}}}},Microsoft.FSharp.Core.FSharpFunc{System.String,Akkling.Cluster.Sharding.IEntityRef{System.Object}},FCQRS.Common.SagaState{``0,FCQRS.Common.SagaRecovery.SagaStateWrapper{``1,``2}},Microsoft.FSharp.Core.FSharpOption{FCQRS.Common.SagaStarter.SagaStartingEvent{FCQRS.Common.Event{``2}}},System.Boolean)">
 <summary>
  Wraps user&apos;s applySideEffects to handle NotStarted/Started automatically
 </summary>

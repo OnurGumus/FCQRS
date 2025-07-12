@@ -181,14 +181,14 @@ type ExecuteCommand =
       /// An optional delay in milliseconds before sending the command.
       DelayInMs : (int64 * string) option }
 
-/// Represents side effects that can be triggered by a saga after processing an event or timeout.
-type Effect =
-    /// Instructs the saga to re-process the first event that started it (used for retries or specific flows).
-    | ResumeFirstEvent
-    /// Instructs the saga actor to stop itself gracefully.
-    | StopActor
-    /// No specific side effect is required.
-    | NoEffect
+/// Represents the next state transition for a saga after processing an event or timeout.
+type SagaTransition<'State> =
+    /// The saga should stop and terminate
+    | StopSaga
+    /// The saga should stay in current state without changes
+    | Stay
+    /// The saga should transition to a new state
+    | NextState of 'State
 
 /// Represents the state of a saga instance.
 /// <typeparam name="'SagaData">The type of the custom data held by the saga.</typeparam>
@@ -240,12 +240,12 @@ type IActor =
     /// <param name="cfg">Environment configuration (IConfiguration & ILoggerFactory).</param>
     /// <param name="initialState">The initial state (`SagaState`) for new saga instances.</param>
     /// <param name="handleEvent">The event handler function: `Event -> SagaState -> EventAction`.</param>
-    /// <param name="applySideEffects">Function determining side effects based on state transitions: `SagaState -> Option<StartingEvent> -> bool -> Effect * Option<NewState> * ExecuteCommand list`.</param>
+    /// <param name="applySideEffects">Function determining side effects based on state transitions: `SagaState -> Option<StartingEvent> -> bool -> SagaTransition<NewState> * ExecuteCommand list`.</param>
     /// <param name="applyStateChange">Function to apply internal state changes: `SagaState -> SagaState`.</param>
     /// <param name="name">The shard type name for this saga.</param>
     /// <returns>An entity factory (`EntityFac<obj>`) for creating instances of this saga.</returns>
     abstract InitializeSaga: #IConfigurationWrapper & #ILoggerFactoryWrapper-> SagaState<'SagaState,'State>  -> (obj-> SagaState<'SagaState,'State>-> EventAction<'State>) ->
-        (SagaState<'SagaState,'State> -> option<SagaStartingEvent<Event<'c>>> -> bool -> Effect * option<'State> * ExecuteCommand list) ->
+        (SagaState<'SagaState,'State> -> option<SagaStartingEvent<Event<'c>>> -> bool -> SagaTransition<'State> * ExecuteCommand list) ->
         (SagaState<'SagaState,'State> -> SagaState<'SagaState,'State>) -> string ->EntityFac<obj>
     /// Initializes the Saga Starter actor, configuring which events trigger which sagas.
     /// <param name="eventHandler">A function mapping a received event object to a list of saga definitions to start: `obj -> list<(Factory * Prefix * StartingEvent)>`.</param>
@@ -269,13 +269,12 @@ module SagaRecovery =
         | true ->
             let startingEvent = startingEvent.Value.Event
             let originator = FactoryAndName { Factory =  originatorFactory; Name = Originator }
-            NoEffect,
-            None,
+            Stay,
             [ { TargetActor = originator
                 Command = ContinueOrAbort startingEvent
                 DelayInMs = None } ]
         | false ->
-            ResumeFirstEvent, None, []
+            Stay, []
     
     /// Standard wrapper for saga states that includes NotStarted/Started
     type SagaStateWrapper<'UserState, 'TEvent> =
@@ -289,20 +288,23 @@ module SagaRecovery =
     
     /// Wraps user's applySideEffects to handle NotStarted/Started automatically
     let wrapApplySideEffects<'SagaData, 'UserState, 'TEvent>
-        (userApplySideEffects: 'UserState -> bool -> Effect * 'UserState option * ExecuteCommand list)
+        (userApplySideEffects: 'UserState -> bool -> SagaTransition<'UserState> * ExecuteCommand list)
         (originatorFactory: string -> IEntityRef<obj>)
         (sagaState: SagaState<'SagaData, SagaStateWrapper<'UserState, 'TEvent>>)
         (startingEvent: option<SagaStartingEvent<Event<'TEvent>>>)
         (recovering: bool)
-        : Effect * SagaStateWrapper<'UserState, 'TEvent> option * ExecuteCommand list =
+        : SagaTransition<SagaStateWrapper<'UserState, 'TEvent>> * ExecuteCommand list =
         match sagaState.State with
-        | NotStarted -> NoEffect, Some(Started startingEvent.Value), []
+        | NotStarted -> NextState(Started startingEvent.Value), []
         | Started _ -> 
-            let e, s, c = handleStartedState recovering startingEvent originatorFactory
-            e, s |> Option.map (fun _ -> sagaState.State), c
+            let transition, commands = handleStartedState recovering startingEvent originatorFactory
+            transition, commands
         | UserDefined userState ->
-            let effect, newState, commands = userApplySideEffects userState recovering
-            effect, (newState |> Option.map UserDefined), commands
+            let transition, commands = userApplySideEffects userState recovering
+            match transition with
+            | StopSaga -> StopSaga, commands
+            | Stay -> Stay, commands
+            | NextState newState -> NextState(UserDefined newState), commands
     
     /// Wraps user's handleEvent to skip NotStarted but allow Started states
     let wrapHandleEvent<'SagaData, 'UserState, 'TEvent>
@@ -329,7 +331,7 @@ module SagaRecovery =
         (env: 'Env)
         (sagaData: 'SagaData)
         (userHandleEvent: obj -> 'UserState option -> EventAction<'UserState>)
-        (userApplySideEffects: 'UserState -> bool -> Effect * 'UserState option * ExecuteCommand list)
+        (userApplySideEffects: 'UserState -> bool -> SagaTransition<'UserState> * ExecuteCommand list)
         (userApply: SagaState<'SagaData, SagaStateWrapper<'UserState, 'TEvent>> -> SagaState<'SagaData, SagaStateWrapper<'UserState, 'TEvent>>)
         (originatorFactory: string -> IEntityRef<obj>)
         (sagaName: string)

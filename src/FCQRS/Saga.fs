@@ -189,8 +189,8 @@ let private actorProp
         (sagaState: ParentSaga<'SagaData, 'State>)
         (startingEvent: option<SagaStartingEvent<'TEvent>>)
         recovering
-        =
-        let effect, newState, (cmds: ExecuteCommand list) =
+        : 'State option =
+        let transition, (cmds: ExecuteCommand list) =
             try
                 applySideEffects2 sagaState.SagaState startingEvent recovering
             with ex ->
@@ -284,16 +284,20 @@ let private actorProp
                 log.Error(ex, "Fatal error in saga command processing for {0}. Terminating process to prevent restart loop.", name)
                 System.Environment.FailFast "Process terminated due to saga error"
 
-        match effect with
-        | NoEffect -> newState
-        | ResumeFirstEvent ->
+        // Handle ResumeFirstEvent behavior internally when needed
+        match transition, recovering with
+        | Stay, false ->
+            // This handles the old ResumeFirstEvent case
             cont mediator
-            newState
-        | StopActor ->
+            None
+        | Stay, _ -> None
+        | NextState newState, _ -> 
+            Some newState
+        | StopSaga, _ ->
             let poision = Cluster.Sharding.Passivate <| Actor.PoisonPill.Instance
             mailbox.Parent() <! poision
             log.Info("{0} Completed", name)
-            newState
+            None
 
     let rec set innerStateDefaults (sagaState: ParentSaga<'SagaData, 'State>) =
 

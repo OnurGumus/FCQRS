@@ -38,18 +38,16 @@ let applySideEffectsUser (userFactory: string -> IEntityRef<obj>) (mailSenderRef
     | GeneratingCode ->
         let verificationCode = System.Random.Shared.Next(100_000, 999_999).ToString()
         let command = User.SetVerificationCode(verificationCode)
-        NoEffect,
-        None,
+        Stay,
         [ { TargetActor = FactoryAndName { Factory = userFactory; Name = Originator };
             Command = command;
             DelayInMs = None } ]
     | SendingMail mail ->
-        NoEffect,
-        None,
+        Stay,
         [ { TargetActor = ActorRef(mailSenderRef ());
             Command = mail;
             DelayInMs = Some (10000, "testuser") } ]
-    | Completed -> StopActor, None, []
+    | Completed -> StopSaga, []
 
 // Apply function for state transformations when events are processed
 let apply (sagaState: SagaState<SagaData, SagaStateWrapper<UserState, User.Event>>) = 

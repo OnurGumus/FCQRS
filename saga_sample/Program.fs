@@ -1,7 +1,7 @@
 ﻿open FCQRS.Model.Data
 open Command
 open System.Threading.Tasks
-
+System.IO.File.Delete "demo.db"
 let sub = Bootstrap.sub Query.handleEventWrapper 0L
 
 let cid (): CID =
