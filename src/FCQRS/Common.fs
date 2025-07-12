@@ -288,7 +288,7 @@ module SagaRecovery =
     
     /// Wraps user's applySideEffects to handle NotStarted/Started automatically
     let wrapApplySideEffects<'SagaData, 'UserState, 'TEvent>
-        (userApplySideEffects: 'UserState -> bool -> SagaTransition<'UserState> * ExecuteCommand list)
+        (userApplySideEffects: SagaState<'SagaData, 'UserState> -> bool -> SagaTransition<'UserState> * ExecuteCommand list)
         (originatorFactory: string -> IEntityRef<obj>)
         (sagaState: SagaState<'SagaData, SagaStateWrapper<'UserState, 'TEvent>>)
         (startingEvent: option<SagaStartingEvent<Event<'TEvent>>>)
@@ -300,7 +300,8 @@ module SagaRecovery =
             let transition, commands = handleStartedState recovering startingEvent originatorFactory
             transition, commands
         | UserDefined userState ->
-            let transition, commands = userApplySideEffects userState recovering
+            let userSagaState = { Data = sagaState.Data; State = userState }
+            let transition, commands = userApplySideEffects userSagaState recovering
             match transition with
             | StopSaga -> StopSaga, commands
             | Stay -> Stay, commands
@@ -308,7 +309,7 @@ module SagaRecovery =
     
     /// Wraps user's handleEvent to skip NotStarted but allow Started states
     let wrapHandleEvent<'SagaData, 'UserState, 'TEvent>
-        (userHandleEvent: obj -> 'UserState option -> EventAction<'UserState>)
+        (userHandleEvent: obj -> SagaState<'SagaData, 'UserState option> -> EventAction<'UserState>)
         (event: obj)
         (sagaState: SagaState<'SagaData, SagaStateWrapper<'UserState, 'TEvent>>)
         : EventAction<SagaStateWrapper<'UserState, 'TEvent>> =
@@ -317,11 +318,13 @@ module SagaRecovery =
         | Started _ -> 
             // Allow user code to handle events in Started state to transition to user-defined states
             // For Started->UserDefined transitions, pass None since no user state exists yet
-            match userHandleEvent event None with
+            let userSagaState = { Data = sagaState.Data; State = None }
+            match userHandleEvent event userSagaState with
             | StateChangedEvent newState -> StateChangedEvent (UserDefined newState)
             | _ -> UnhandledEvent
         | UserDefined userState ->
-            match userHandleEvent event (Some userState) with
+            let userSagaState = { Data = sagaState.Data; State = Some userState }
+            match userHandleEvent event userSagaState with
             | StateChangedEvent newState -> StateChangedEvent (UserDefined newState)
             | _ -> UnhandledEvent
     
@@ -330,8 +333,8 @@ module SagaRecovery =
         (actorApi: IActor)
         (env: 'Env)
         (sagaData: 'SagaData)
-        (userHandleEvent: obj -> 'UserState option -> EventAction<'UserState>)
-        (userApplySideEffects: 'UserState -> bool -> SagaTransition<'UserState> * ExecuteCommand list)
+        (userHandleEvent: obj -> SagaState<'SagaData, 'UserState option> -> EventAction<'UserState>)
+        (userApplySideEffects: SagaState<'SagaData, 'UserState> -> bool -> SagaTransition<'UserState> * ExecuteCommand list)
         (userApply: SagaState<'SagaData, SagaStateWrapper<'UserState, 'TEvent>> -> SagaState<'SagaData, SagaStateWrapper<'UserState, 'TEvent>>)
         (originatorFactory: string -> IEntityRef<obj>)
         (sagaName: string)

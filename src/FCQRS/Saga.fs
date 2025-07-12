@@ -366,3 +366,4 @@ let init
          actorProp env initialState name handleEvent applySideEffects apply actorApi (typed actorApi.Mediator)
      )
      <| true
+

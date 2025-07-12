@@ -14,27 +14,29 @@ type UserState =
     | SendingMail of Mail
     | Completed
 
-type SagaData = NA
+type SagaData = {
+    RetryCount: int
+}
 
 // Saga data
-let sagaData = NA
+let sagaData = { RetryCount = 0 }
 
-// Handle only user events - framework now allows Started state transitions
-let handleUserEvent (event: obj) (state: UserState option) : EventAction<UserState> =
-    match event, state with
+// Handle only user events - framework now allows Started state transitions  
+let handleUserEvent (event: obj) (sagaState: SagaState<SagaData, UserState option>) : EventAction<UserState> =
+    match event, sagaState.State with
     | :? string as str, _ when str = "sent" ->
         Completed |> StateChangedEvent
-    | :? (Common.Event<User.Event>) as { EventDetails = User.VerificationRequested(email, _) }, None ->
-        // Transition from Started (no user state) to first user state
+    | :? (Common.Event<User.Event>) as { EventDetails = User.VerificationRequested(email, userId) }, None ->
+        // Store user info in apply function, transition to GeneratingCode here
         GeneratingCode |> StateChangedEvent
     | :? (Common.Event<User.Event>) as { EventDetails = User.VerificationCodeSet(code) }, Some GeneratingCode ->
-        SendingMail { To = "testuser"; Subject = "Your code"; Body = $"Your code is {code} !!" }
+        SendingMail { To = "user@example.com"; Subject = "Your code"; Body = $"Your code is {code} !!" }
         |> StateChangedEvent
     | _ -> UnhandledEvent
 
 // Handle only user side effects - no startingEvent parameter needed!
-let applySideEffectsUser (userFactory: string -> IEntityRef<obj>) (mailSenderRef: unit -> IActorRef<obj>) (state: UserState) (recovering: bool) =
-    match state with
+let applySideEffectsUser (userFactory: string -> IEntityRef<obj>) (mailSenderRef: unit -> IActorRef<obj>) (sagaState: SagaState<SagaData, UserState>) (recovering: bool) =
+    match sagaState.State with
     | GeneratingCode ->
         let verificationCode = System.Random.Shared.Next(100_000, 999_999).ToString()
         let command = User.SetVerificationCode(verificationCode)
@@ -43,17 +45,26 @@ let applySideEffectsUser (userFactory: string -> IEntityRef<obj>) (mailSenderRef
             Command = command;
             DelayInMs = None } ]
     | SendingMail mail ->
-        Stay,
-        [ { TargetActor = ActorRef(mailSenderRef ());
-            Command = mail;
-            DelayInMs = Some (10000, "testuser") } ]
+        if sagaState.Data.RetryCount > 3 then
+            StopSaga, []
+        else
+            Stay,
+            [ { TargetActor = ActorRef(mailSenderRef ());
+                Command = mail;
+                DelayInMs = Some (10000, "testuser") } ]
     | Completed -> StopSaga, []
 
 // Apply function for state transformations when events are processed
 let apply (sagaState: SagaState<SagaData, SagaStateWrapper<UserState, User.Event>>) = 
-    // Users can modify sagaState.Data here based on events
-    // For now, just return unchanged
-    sagaState
+    // Update cross-cutting data based on current state
+    match sagaState.State with
+    | UserDefined (SendingMail _) ->
+        // Each time we're in SendingMail state, increment retry count
+        { sagaState with Data = { sagaState.Data with RetryCount = sagaState.Data.RetryCount + 1 } }
+    | UserDefined GeneratingCode ->
+        // Reset retry count when starting fresh
+        { sagaState with Data = { sagaState.Data with RetryCount = 0 } }
+    | _ -> sagaState
 
 let init (env: _) (actorApi: IActor) =
     let userFactory = User.factory env actorApi
