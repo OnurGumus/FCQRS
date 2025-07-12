@@ -260,8 +260,8 @@ type IActor =
 /// Allows sagas to be co-located or routed differently based on the originator's ID structure.
 type PrefixConversion = PrefixConversion of ((string -> string) option)
 
-/// Helper module to eliminate boilerplate saga recovery logic
-module SagaRecovery =
+/// Contains types and functions for building and initializing sagas
+module SagaBuilder =
     /// Standard recovery logic for Started state that all sagas should use
     /// Handles the version checking handshake with the originator aggregate
     let handleStartedState recovering (startingEvent: option<SagaStartingEvent<_>>) (originatorFactory: string -> IEntityRef<obj>) =
@@ -329,7 +329,7 @@ module SagaRecovery =
             | _ -> UnhandledEvent
     
     /// High-level saga initialization that handles all wrapping automatically
-    let initSaga<'SagaData, 'UserState, 'TEvent, 'Env when 'Env :> IConfigurationWrapper and 'Env :> ILoggerFactoryWrapper>
+    let init<'SagaData, 'UserState, 'TEvent, 'Env when 'Env :> IConfigurationWrapper and 'Env :> ILoggerFactoryWrapper>
         (actorApi: IActor)
         (env: 'Env)
         (sagaData: 'SagaData)

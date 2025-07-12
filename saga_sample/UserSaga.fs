@@ -2,7 +2,7 @@ module UserSaga
 
 open FCQRS
 open Common
-open Common.SagaRecovery
+open Common.SagaBuilder
 open Akkling
 open Akkling.Cluster.Sharding
 open SendMail
@@ -71,7 +71,7 @@ let init (env: _) (actorApi: IActor) =
     let mailSenderRef = fun () -> spawnAnonymous actorApi.System (props behavior) |> retype
     
     // One-line initialization - all wrapping handled by framework!
-    initSaga<SagaData, UserState, User.Event, _>
+    init<SagaData, UserState, User.Event, _>
         actorApi
         env
         sagaData
