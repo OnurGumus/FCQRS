@@ -20,9 +20,12 @@ module Internal =
                 for kvp in dict do
                     arr.[kvp.Key |> Int32.Parse] <- kvp.Value
 
-                let parentDict = parent :> IDictionary<string|null, _>
-                parentDict.Remove key |> ignore
-                parentDict.Add(key, arr)
+                match parent, key with
+                | null, _ | _, null -> ()
+                | p, k ->
+                    let parentDict = p :> IDictionary<string, _>
+                    parentDict.Remove k |> ignore
+                    parentDict.Add(k, arr)
             else
                 for childKey in keys do
                     let newInput =
