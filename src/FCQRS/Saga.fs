@@ -215,15 +215,11 @@ let private actorProp
                         | Some se -> 
                             match box se.Event with
                             | :? FCQRS.Model.Data.IMessage as msg -> 
-                                printfn "🔍 Saga extracting metadata from startingEvent parameter: %A" msg.Metadata
                                 msg.Metadata
                             | _ -> 
-                                printfn "🔍 Saga starting event is not IMessage"
                                 Map.empty
                         | None -> 
-                            printfn "🔍 Saga startingEvent parameter is None - need to fix initSaga to pass it correctly"
                             Map.empty
-                    printfn "🔍 Saga creating command with metadata: %A" metadata
                     let command = createCommand mailbox cmd.Command cid metadata
 
                     let unboxx (msg: Command<obj>) =
