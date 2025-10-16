@@ -704,8 +704,7 @@ module Curry =
 
 
 
-let inline handler<'T, 'TEnv, 'TEvent, 'TCommand, 'TState when ShardFactory<'T, 'TEvent, 'TCommand, 'TState>>
-    env
+let inline handler<'T, 'TEvent, 'TCommand, 'TState when ShardFactory<'T, 'TEvent, 'TCommand, 'TState>>
     actorApi
     (events: 'TEvent Set)
     cid
