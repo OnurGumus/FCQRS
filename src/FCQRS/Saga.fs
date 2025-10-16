@@ -158,7 +158,6 @@ let private runSaga<'TEvent, 'SagaData, 'State>
     innerSet innerStateDefaults
 
 let private actorProp
-    env
     initialState
     name
     (handleEvent: obj -> SagaState<'SagaData, 'State> -> EventAction<'State>)
@@ -174,8 +173,8 @@ let private actorProp
         |> Result.value
 
     let log = mailbox.UntypedContext.GetLogger()
-    let loggerFactory = (env :> ILoggerFactoryWrapper).LoggerFactory
-    let config = (env :> IConfigurationWrapper).Configuration
+    let loggerFactory = actorApi.LoggerFactory
+    let config = actorApi.Configuration
     let logger = loggerFactory.CreateLogger name
 
     let snapshotVersionCount =
@@ -345,7 +344,6 @@ let private actorProp
     set (None, false) initialState
 
 let init
-    env
     (actorApi: IActor)
     (initialState: SagaState<_, _>)
     (handleEvent: obj -> SagaState<'SagaData, 'State> -> _)
@@ -359,7 +357,7 @@ let init
 
     entityFactoryFor actorApi.System shardResolver name
      <| propsPersist (
-         actorProp env initialState name handleEvent applySideEffects apply actorApi (typed actorApi.Mediator)
+         actorProp initialState name handleEvent applySideEffects apply actorApi (typed actorApi.Mediator)
      )
      <| true
 

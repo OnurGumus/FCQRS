@@ -34,6 +34,11 @@
  Gets the logger factory.
 </summary>
 </member>
+<member name="P:FCQRS.Common.IActor.Configuration">
+<summary>
+ Gets the configuration.
+</summary>
+</member>
 <member name="M:FCQRS.Common.IActor.SubscribeForCommand``2(FCQRS.Common.CommandHandler.Command{``0,``1})">
 <summary>
  Subscribes to the result of a command sent to another actor.
@@ -50,10 +55,9 @@
  &lt;param name=&quot;eventHandler&quot;&gt;A function mapping a received event object to a list of saga definitions to start: `obj -&gt; list&lt;(Factory * Prefix * StartingEvent)&gt;`.&lt;/param&gt;
 </summary>
 </member>
-<member name="M:FCQRS.Common.IActor.InitializeSaga``4(``0,FCQRS.Common.SagaState{``1,``2},Microsoft.FSharp.Core.FSharpFunc{System.Object,Microsoft.FSharp.Core.FSharpFunc{FCQRS.Common.SagaState{``1,``2},FCQRS.Common.EventAction{``2}}},Microsoft.FSharp.Core.FSharpFunc{FCQRS.Common.SagaState{``1,``2},Microsoft.FSharp.Core.FSharpFunc{Microsoft.FSharp.Core.FSharpOption{FCQRS.Common.SagaStarter.SagaStartingEvent{FCQRS.Common.Event{``3}}},Microsoft.FSharp.Core.FSharpFunc{System.Boolean,System.Tuple{FCQRS.Common.SagaTransition{``2},Microsoft.FSharp.Collections.FSharpList{FCQRS.Common.ExecuteCommand}}}}},Microsoft.FSharp.Core.FSharpFunc{FCQRS.Common.SagaState{``1,``2},FCQRS.Common.SagaState{``1,``2}},System.String)">
+<member name="M:FCQRS.Common.IActor.InitializeSaga``3(FCQRS.Common.SagaState{``0,``1},Microsoft.FSharp.Core.FSharpFunc{System.Object,Microsoft.FSharp.Core.FSharpFunc{FCQRS.Common.SagaState{``0,``1},FCQRS.Common.EventAction{``1}}},Microsoft.FSharp.Core.FSharpFunc{FCQRS.Common.SagaState{``0,``1},Microsoft.FSharp.Core.FSharpFunc{Microsoft.FSharp.Core.FSharpOption{FCQRS.Common.SagaStarter.SagaStartingEvent{FCQRS.Common.Event{``2}}},Microsoft.FSharp.Core.FSharpFunc{System.Boolean,System.Tuple{FCQRS.Common.SagaTransition{``1},Microsoft.FSharp.Collections.FSharpList{FCQRS.Common.ExecuteCommand}}}}},Microsoft.FSharp.Core.FSharpFunc{FCQRS.Common.SagaState{``0,``1},FCQRS.Common.SagaState{``0,``1}},System.String)">
 <summary>
  Initializes a sharded, persistent saga actor.
- &lt;param name=&quot;cfg&quot;&gt;Environment configuration (IConfiguration &amp; ILoggerFactory).&lt;/param&gt;
  &lt;param name=&quot;initialState&quot;&gt;The initial state (`SagaState`) for new saga instances.&lt;/param&gt;
  &lt;param name=&quot;handleEvent&quot;&gt;The event handler function: `Event -&gt; SagaState -&gt; EventAction`.&lt;/param&gt;
  &lt;param name=&quot;applySideEffects&quot;&gt;Function determining side effects based on state transitions: `SagaState -&gt; Option&lt;StartingEvent&gt; -&gt; bool -&gt; SagaTransition&lt;NewState&gt; * ExecuteCommand list`.&lt;/param&gt;
@@ -62,7 +66,7 @@
  &lt;returns&gt;An entity factory (`EntityFac&lt;obj&gt;`) for creating instances of this saga.&lt;/returns&gt;
 </summary>
 </member>
-<member name="M:FCQRS.Common.IActor.InitializeActor``4(``0,``1,System.String,Microsoft.FSharp.Core.FSharpFunc{FCQRS.Common.Command{``2},Microsoft.FSharp.Core.FSharpFunc{``1,FCQRS.Common.EventAction{``3}}},Microsoft.FSharp.Core.FSharpFunc{FCQRS.Common.Event{``3},Microsoft.FSharp.Core.FSharpFunc{``1,``1}})">
+<member name="M:FCQRS.Common.IActor.InitializeActor``3(``0,System.String,Microsoft.FSharp.Core.FSharpFunc{FCQRS.Common.Command{``1},Microsoft.FSharp.Core.FSharpFunc{``0,FCQRS.Common.EventAction{``2}}},Microsoft.FSharp.Core.FSharpFunc{FCQRS.Common.Event{``2},Microsoft.FSharp.Core.FSharpFunc{``0,``0}})">
 <summary>
  Initializes a sharded, persistent aggregate actor.
  &lt;param name=&quot;cfg&quot;&gt;Environment configuration (IConfiguration &amp; ILoggerFactory).&lt;/param&gt;
@@ -356,7 +360,7 @@
  Standard wrapper for saga states that includes NotStarted/Started
 </summary>
 </member>
-<member name="M:FCQRS.Common.SagaBuilder.init``4(FCQRS.Common.IActor,``3,``0,Microsoft.FSharp.Core.FSharpFunc{System.Object,Microsoft.FSharp.Core.FSharpFunc{FCQRS.Common.SagaState{``0,Microsoft.FSharp.Core.FSharpOption{``1}},FCQRS.Common.EventAction{``1}}},Microsoft.FSharp.Core.FSharpFunc{FCQRS.Common.SagaState{``0,``1},Microsoft.FSharp.Core.FSharpFunc{System.Boolean,System.Tuple{FCQRS.Common.SagaTransition{``1},Microsoft.FSharp.Collections.FSharpList{FCQRS.Common.ExecuteCommand}}}},Microsoft.FSharp.Core.FSharpFunc{FCQRS.Common.SagaState{``0,FCQRS.Common.SagaBuilder.SagaStateWrapper{``1,``2}},FCQRS.Common.SagaState{``0,FCQRS.Common.SagaBuilder.SagaStateWrapper{``1,``2}}},Microsoft.FSharp.Core.FSharpFunc{System.String,Akkling.Cluster.Sharding.IEntityRef{System.Object}},System.String)">
+<member name="M:FCQRS.Common.SagaBuilder.init``3(FCQRS.Common.IActor,``0,Microsoft.FSharp.Core.FSharpFunc{System.Object,Microsoft.FSharp.Core.FSharpFunc{FCQRS.Common.SagaState{``0,Microsoft.FSharp.Core.FSharpOption{``1}},FCQRS.Common.EventAction{``1}}},Microsoft.FSharp.Core.FSharpFunc{FCQRS.Common.SagaState{``0,``1},Microsoft.FSharp.Core.FSharpFunc{System.Boolean,System.Tuple{FCQRS.Common.SagaTransition{``1},Microsoft.FSharp.Collections.FSharpList{FCQRS.Common.ExecuteCommand}}}},Microsoft.FSharp.Core.FSharpFunc{FCQRS.Common.SagaState{``0,FCQRS.Common.SagaBuilder.SagaStateWrapper{``1,``2}},FCQRS.Common.SagaState{``0,FCQRS.Common.SagaBuilder.SagaStateWrapper{``1,``2}}},Microsoft.FSharp.Core.FSharpFunc{System.String,Akkling.Cluster.Sharding.IEntityRef{System.Object}},System.String)">
 <summary>
  High-level saga initialization that handles all wrapping automatically
 </summary>

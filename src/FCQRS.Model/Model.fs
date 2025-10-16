@@ -18,7 +18,7 @@ type IMessage =
     /// Gets the timestamp when the message was created.
     abstract CreationDate : DateTime
     /// Gets the optional identifier for the actor that sent/generated the message.
-    abstract Sender : ActorId option
+    abstract Sender : AggregateId option
     /// Gets the metadata associated with the message.
     abstract Metadata : Map<string, string>
 
@@ -164,11 +164,11 @@ type CID =
     override this.ToString() = (ValueLens.Value this).ToString()
 
 // Actor Id
-type ActorId =
+type AggregateId =
     private
-    | ActorId of ShortString
+    | AggregateId of ShortString
 
-    static member Value_ = (fun (ActorId v) -> v), (fun v _ -> ActorId v)
+    static member Value_ = (fun (AggregateId v) -> v), (fun v _ -> AggregateId v)
     member this.IsValid = (ValueLens.Value this).IsValid
     override this.ToString() = (ValueLens.Value this).ToString()
 

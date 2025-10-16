@@ -50,9 +50,9 @@ let handleCommand (cmd: Command<_>) state =
     | Login _, _ -> LoginFailed |> DeferEvent
 
 
-let init (env: _) (actorApi: IActor) =
+let init (actorApi: IActor) =
     let initialState = { Username = None; Password = None; VerificationCode = None }
-    actorApi.InitializeActor env initialState "User" handleCommand applyEvent
+    actorApi.InitializeActor  initialState "User" handleCommand applyEvent
 
-let factory (env: #_) actorApi entityId =
-    (init env actorApi).RefFor DEFAULT_SHARD entityId
+let factory  actorApi entityId =
+    (init  actorApi).RefFor DEFAULT_SHARD entityId

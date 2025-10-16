@@ -170,7 +170,8 @@ module internal Internal =
         }
 
     let actorProp
-        env
+        (config: IConfiguration)
+        (loggerFactory: ILoggerFactory)
         handleCommand
         apply
         (initialState: 'State)
@@ -179,8 +180,6 @@ module internal Internal =
         (mediator: IActorRef<Publish>)
         (mailbox: Eventsourced<obj>)
         =
-        let loggerFactory = (env :> ILoggerFactoryWrapper).LoggerFactory
-        let config = (env :> IConfigurationWrapper).Configuration
         let logger = loggerFactory.CreateLogger name
 
         let snapshotVersionCount =
@@ -245,21 +244,18 @@ module internal Internal =
         let ex = Execute e
         ex |> actorApi.SubscribeForCommand
 
-    let init env initialState name toEvent (actorApi: IActor) handleCommand apply =
+    let init config loggerFactory initialState name toEvent (actorApi: IActor) handleCommand apply =
         AkklingHelpers.Internal.entityFactoryFor actorApi.System shardResolver name
-        <| propsPersist (actorProp env handleCommand apply initialState name toEvent (typed actorApi.Mediator))
+        <| propsPersist (actorProp config loggerFactory handleCommand apply initialState name toEvent (typed actorApi.Mediator))
         <| false
 
-let api env =
-    let config = (env :> IConfigurationWrapper).Configuration
-    let loggerFactory = (env :> ILoggerFactoryWrapper).LoggerFactory
-
+let api (config: IConfiguration) (loggerFactory: ILoggerFactory) =
     let akkaConfig: ExpandoObject =
         unbox<_> (config.GetSectionAsDynamic("config:akka"))
 
-    let config = Akka.Configuration.ConfigurationFactory.FromObject akkaConfig
+    let akkaConfiguration = Akka.Configuration.ConfigurationFactory.FromObject akkaConfig
 
-    let system = System.create "cluster-system" config
+    let system = System.create "cluster-system" akkaConfiguration
 
     Cluster.Get(system).SelfAddress |> Cluster.Get(system).Join
 
@@ -298,7 +294,13 @@ let api env =
         /// This factory aids in capturing context-rich log entries across the actor system.
         /// </summary>
         member _.LoggerFactory = loggerFactory
-        
+
+        /// <summary>
+        /// Gets the configuration used by the actor system.
+        /// This configuration provides access to application settings and Akka configuration.
+        /// </summary>
+        member _.Configuration = config
+
         /// <summary>
         /// Subscribes for a command by instantiating a temporary actor that listens for a specific command.
         /// This dynamic subscription mechanism allows decoupled command handling by setting up an independent listener.
@@ -348,9 +350,9 @@ let api env =
         ///         userEventApplier)
         /// </code>
         /// </example>
-        member this.InitializeActor env initialState name handleCommand apply =
+        member this.InitializeActor initialState name handleCommand apply =
             let toEvent mid ci sender metadata version event = toEvent system.Scheduler (Some mid) ci sender version metadata event
-            init env initialState name toEvent this handleCommand apply
+            init config loggerFactory initialState name toEvent this handleCommand apply
         
         /// <summary>
         /// Initializes a saga to manage a long-running business process across multiple actors.
@@ -374,13 +376,12 @@ let api env =
         /// </code>
         /// </example>
         member this.InitializeSaga
-            env
             (initialState: SagaState<'SagaState, 'State>)
             handleEvent
             applySideEffects
             apply
             name : EntityFac<obj> =
-            Saga.init env this initialState handleEvent applySideEffects apply name
+            Saga.init this initialState handleEvent applySideEffects apply name
         
         /// <summary>
         /// Initializes the saga starter actor with specific rules for saga initiation.

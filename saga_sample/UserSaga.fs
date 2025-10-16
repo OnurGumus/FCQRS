@@ -66,14 +66,13 @@ let apply (sagaState: SagaState<SagaData, SagaStateWrapper<UserState, User.Event
         { sagaState with Data = { sagaState.Data with RetryCount = 0 } }
     | _ -> sagaState
 
-let init (env: _) (actorApi: IActor) =
-    let userFactory = User.factory env actorApi
+let init (actorApi: IActor) : Akkling.Cluster.Sharding.EntityFac<obj> =
+    let userFactory = User.factory actorApi
     let mailSenderRef = fun () -> spawnAnonymous actorApi.System (props behavior) |> retype
-    
+
     // One-line initialization - all wrapping handled by framework!
-    init<SagaData, UserState, User.Event, _>
+    SagaBuilder.init
         actorApi
-        env
         sagaData
         handleUserEvent
         (applySideEffectsUser userFactory mailSenderRef)
@@ -81,5 +80,5 @@ let init (env: _) (actorApi: IActor) =
         userFactory
         "UserSaga"
 
-let factory (env: _) actorApi entityId =
-    (init env actorApi).RefFor DEFAULT_SHARD entityId
+let factory actorApi entityId =
+    (init actorApi).RefFor DEFAULT_SHARD entityId

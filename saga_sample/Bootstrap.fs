@@ -14,17 +14,19 @@ let configBuilder =
 let config = configBuilder.Build()
 
 let loggerFactory =
-    LoggerFactory.Create(fun builder -> builder.AddConsole() |> ignore) 
+    LoggerFactory.Create(fun builder -> builder.AddConsole() |> ignore)
+
+// Keep env for Query module and other modules that still use wrapper pattern
 let env = new Environments.AppEnv(config, loggerFactory)
 
-let actorApi = FCQRS.Actor.api env
+let actorApi = FCQRS.Actor.api config loggerFactory
 
 // Initialize the scheduler controller with the target task name
 // Replace "YOUR_SPECIFIC_TASK_NAME_HERE" with your actual task name
 FCQRS.SchedulerController.start actorApi.System.Scheduler
 
 
-let userSagaShard = UserSaga.factory env actorApi
+let userSagaShard = UserSaga.factory actorApi
 let sagaCheck (o: obj) =
     match o with
     | :? (FCQRS.Common.Event<User.Event>) as e ->
@@ -35,10 +37,10 @@ let sagaCheck (o: obj) =
 
 actorApi.InitializeSagaStarter sagaCheck
 
-let userShard = User.factory env actorApi
+let userShard = User.factory actorApi
 
-User.init env actorApi |> ignore
-UserSaga.init env actorApi |> ignore
+User.init actorApi |> ignore
+UserSaga.init actorApi |> ignore
 
 let userSubs cid actorId command filter metadata =
     actorApi.CreateCommandSubscription userShard cid actorId command filter metadata

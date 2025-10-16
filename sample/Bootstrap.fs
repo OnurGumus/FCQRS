@@ -16,13 +16,13 @@ let config = configBuilder.Build()
 
 // Create logger factory
 let loggerF =
-    LoggerFactory.Create(fun builder -> builder.AddConsole() |> ignore) 
+    LoggerFactory.Create(fun builder -> builder.AddConsole() |> ignore)
 
-// Composition root for the application environment. While being a god object is an anti-pattern, it plays nicely with F# partial application. 
-let env = new Environments.AppEnv(config,loggerF)
+// Composition root for the application environment. While being a god object is an anti-pattern, it plays nicely with F# partial application.
+let env = new Environments.AppEnv(config, loggerF)
 
 // Bootstrap command side.
-let actorApi = FCQRS.Actor.api env
+let actorApi = FCQRS.Actor.api config loggerF
 
 // We don't use sagas (yet) so we just return an empty list.
 let sagaCheck  _ = []
@@ -31,10 +31,10 @@ let sagaCheck  _ = []
 actorApi.InitializeSagaStarter sagaCheck
 
 // Create a shard for the User aggregate. A shard is like parent of aggregate actrors.
-let userShard = User.factory env actorApi
+let userShard = User.factory actorApi
 
 // Not necessary but prevents first time hit latency.
-User.init env actorApi |> ignore
+User.init actorApi |> ignore
 
 // helper function to send commands to the actor. cid means corralation id and it is used to track the command.
 // essentially it could be any string typically uuid/guid.
