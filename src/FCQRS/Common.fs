@@ -42,7 +42,7 @@ type Command<'CommandDetails> =
         /// A unique identifier for the message.
         Id: MessageId
         /// An optional identifier for the actor that sent the command.
-        Sender: ActorId option
+        Sender: AggregateId option
         /// The correlation ID used to track the command through the system.
         CorrelationId: CID
         /// Metadata associated with the command.
@@ -71,7 +71,7 @@ type Event<'EventDetails> =
         /// A unique identifier for the message.
         Id: MessageId
         /// An optional identifier for the actor that generated the event.
-        Sender: ActorId option
+        Sender: AggregateId option
         /// The correlation ID linking the event back to the originating command.
         CorrelationId: CID
         /// The version number of the aggregate after this event was applied.
@@ -253,7 +253,7 @@ type IActor =
     abstract CreateCommandSubscription:
         (string -> IEntityRef<obj>) ->
         CID ->
-        ActorId ->
+        AggregateId ->
         'b ->
         ('c -> bool) ->
         Map<string, string> option ->

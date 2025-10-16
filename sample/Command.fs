@@ -7,7 +7,7 @@ open Bootstrap
 let register cid userName password =
 
     // Create an actor id from the username. Using ValueLens technique to create an ActorId. See my video.
-    let actorId: ActorId = userName |> ValueLens.CreateAsResult |> Result.value
+    let actorId: AggregateId = userName |> ValueLens.CreateAsResult |> Result.value
 
     let command = User.Register(userName, password)
 
@@ -32,7 +32,7 @@ let register cid userName password =
 
 let login cid userName password =
 
-    let actorId: ActorId = userName |> ValueLens.CreateAsResult |> Result.value
+    let actorId: AggregateId = userName |> ValueLens.CreateAsResult |> Result.value
 
     let command = User.Login password
 

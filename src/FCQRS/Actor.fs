@@ -223,7 +223,7 @@ module internal Internal =
 
 
 
-    let createCommandSubscription (actorApi: IActor) factory (cid: CID) (id: ActorId) command filter (metadata: Map<string, string> option) =
+    let createCommandSubscription (actorApi: IActor) factory (cid: CID) (id: AggregateId) command filter (metadata: Map<string, string> option) =
         let actor = factory (id |> ValueLens.Value |> ValueLens.Value)
 
         let commonCommand: Command<_> =

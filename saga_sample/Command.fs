@@ -5,7 +5,7 @@ open Bootstrap
 
 let register cid userName password =
 
-    let actorId: ActorId = userName |> ValueLens.CreateAsResult |> Result.value
+    let actorId: AggregateId = userName |> ValueLens.CreateAsResult |> Result.value
 
     let command = User.Register(userName, password)
 
@@ -27,7 +27,7 @@ let register cid userName password =
 
 let login cid userName password =
 
-    let actorId: ActorId = userName |> ValueLens.CreateAsResult |> Result.value
+    let actorId: AggregateId = userName |> ValueLens.CreateAsResult |> Result.value
 
     let command = User.Login password
 
@@ -47,7 +47,7 @@ let login cid userName password =
 
 let verify cid userName code =
 
-    let actorId: ActorId = userName |> ValueLens.CreateAsResult |> Result.value
+    let actorId: AggregateId = userName |> ValueLens.CreateAsResult |> Result.value
 
     let command = User.Verify code
 

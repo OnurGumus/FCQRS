@@ -224,7 +224,7 @@ let private actorProp
                     let unboxx (msg: Command<obj>) =
                         let genericType = typedefof<Command<_>>.MakeGenericType [| baseType |]
 
-                        let actorId: ActorId option =
+                        let actorId: AggregateId option =
                             mailbox.Self.Path.Name |> ValueLens.CreateAsResult |> Result.value |> Some
 
                         FSharpValue.MakeRecord(

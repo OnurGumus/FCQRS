@@ -77,7 +77,7 @@
  &lt;returns&gt;An entity factory (`EntityFac&lt;obj&gt;`) for creating instances of this actor.&lt;/returns&gt;
 </summary>
 </member>
-<member name="M:FCQRS.Common.IActor.CreateCommandSubscription``2(Microsoft.FSharp.Core.FSharpFunc{System.String,Akkling.Cluster.Sharding.IEntityRef{System.Object}},FCQRS.Model.Data.CID,FCQRS.Model.Data.ActorId,``0,Microsoft.FSharp.Core.FSharpFunc{``1,System.Boolean},Microsoft.FSharp.Core.FSharpOption{Microsoft.FSharp.Collections.FSharpMap{System.String,System.String}})">
+<member name="M:FCQRS.Common.IActor.CreateCommandSubscription``2(Microsoft.FSharp.Core.FSharpFunc{System.String,Akkling.Cluster.Sharding.IEntityRef{System.Object}},FCQRS.Model.Data.CID,FCQRS.Model.Data.AggregateId,``0,Microsoft.FSharp.Core.FSharpFunc{``1,System.Boolean},Microsoft.FSharp.Core.FSharpOption{Microsoft.FSharp.Collections.FSharpMap{System.String,System.String}})">
 <summary>
  Creates a command subscription to wait for a specific event from a target actor.
  Sends the command and asynchronously returns the first matching event received.
