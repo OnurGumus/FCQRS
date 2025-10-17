@@ -682,12 +682,20 @@ module CommandHandler =
 
 
 
-type ShardFactory<'T, 'TEvent, 'TCommand, 'TState
+type ShardFactoryWith<'T, 'TEvent, 'TCommand, 'TState
     when 'T: (static member ApplyEvent: Event<'TEvent> * 'TState -> 'TState)
     and 'T: (static member Init: IActor * string -> EntityFac<obj>)
     and 'TEvent: comparison
     and 'T: (static member Factory: IActor -> (string -> IEntityRef<obj>))
     and 'T: (static member HandleCommand: Command<'TCommand> * 'TState -> EventAction<'TEvent>)> = 'T
+
+
+type ShardFactoryWithEnv<'T, 'TEnv, 'TEvent, 'TCommand, 'TState
+    when 'T: (static member ApplyEvent: 'TEnv * Event<'TEvent> * 'TState -> 'TState)
+    and 'T: (static member Init: 'TEnv * IActor * string -> EntityFac<obj>)
+    and 'TEvent: comparison
+    and 'T: (static member Factory: 'TEnv * IActor -> (string -> IEntityRef<obj>))
+    and 'T: (static member HandleCommand: 'TEnv * Command<'TCommand> * 'TState -> EventAction<'TEvent>)> = 'T
 
 
 module Curry =
@@ -702,9 +710,8 @@ module Curry =
     let ofStatic3 (staticMember: 'a * 'b * 'c -> 'd) : 'a -> 'b -> 'c -> 'd = fun x y z -> staticMember (x, y, z)
 
 
-
-
-let inline handler<'T, 'TEvent, 'TCommand, 'TState when ShardFactory<'T, 'TEvent, 'TCommand, 'TState>>
+let inline commandHandler<'T, 'TEvent, 'TCommand, 'TState when ShardFactoryWith<'T, 'TEvent, 'TCommand, 'TState>>
+    env
     actorApi
     (events: 'TEvent Set)
     cid
@@ -713,6 +720,30 @@ let inline handler<'T, 'TEvent, 'TCommand, 'TState when ShardFactory<'T, 'TEvent
 
     =
     let shard = 'T.Factory actorApi
+
+    async {
+        let filter =
+            if events = Set.empty then
+                fun _ -> true
+            else
+                fun x -> events |> Set.contains x
+
+        let! res = actorApi.CreateCommandSubscription shard cid actorId command filter None
+        return res.EventDetails
+    }
+
+
+let inline commandHandleWithEnv<'T, 'TEnv, 'TEvent, 'TCommand, 'TState
+    when ShardFactoryWithEnv<'T, 'TEnv, 'TEvent, 'TCommand, 'TState>>
+    env
+    actorApi
+    (events: 'TEvent Set)
+    cid
+    actorId
+    (command: 'TCommand)
+
+    =
+    let shard = 'T.Factory(env, actorApi)
 
     async {
         let filter =
