@@ -2,7 +2,7 @@
 open Command
 open System.Threading.Tasks
 System.IO.File.Delete "demo.db"
-let sub = Bootstrap.sub Query.handleEventWrapper 0L
+let sub = Bootstrap.sub (Query.handleEventWrapper Bootstrap.loggerFactory) 0L
 
 let cid (): CID =
     System.Guid.NewGuid().ToString() |> ValueLens.CreateAsResult |> Result.value

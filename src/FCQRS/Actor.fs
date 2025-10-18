@@ -5,6 +5,7 @@ open Akka.Cluster
 open Akka.Cluster.Tools.PublishSubscribe
 open Akkling
 open Microsoft.Extensions.Configuration
+open Hocon.Extensions.Configuration
 open DynamicConfig
 open System.Dynamic
 open Akkling.Persistence
@@ -249,11 +250,121 @@ module internal Internal =
         <| propsPersist (actorProp config loggerFactory handleCommand apply initialState name toEvent (typed actorApi.Mediator))
         <| false
 
-let api (config: IConfiguration) (loggerFactory: ILoggerFactory) =
-    let akkaConfig: ExpandoObject =
-        unbox<_> (config.GetSectionAsDynamic("config:akka"))
+/// Custom configuration provider for in-memory HOCON strings
+type HoconStringConfigurationProvider(hoconString: string) =
+    inherit ConfigurationProvider()
 
-    let akkaConfiguration = Akka.Configuration.ConfigurationFactory.FromObject akkaConfig
+    override this.Load() =
+        use memoryStream = new IO.MemoryStream(Text.Encoding.UTF8.GetBytes hoconString)
+        let hoconSource = new HoconConfigurationSource()
+        let hoconProvider = new HoconConfigurationProvider(hoconSource)
+        hoconProvider.Load memoryStream
+
+        // Use reflection to get the Data property from the provider
+        let providerType = hoconProvider.GetType()
+        let dataProperty =
+            match providerType.GetProperty("Data", Reflection.BindingFlags.Instance ||| Reflection.BindingFlags.NonPublic ||| Reflection.BindingFlags.Public) with
+            | null -> failwith "Could not find Data property on HoconConfigurationProvider"
+            | prop -> prop
+        let providerData =
+            match dataProperty.GetValue(hoconProvider) with
+            | null -> failwith "HoconConfigurationProvider Data is null"
+            | data -> data :?> System.Collections.Generic.IDictionary<string, string>
+
+        // Copy data from hoconProvider to this provider
+        for kvp in providerData do
+            this.Data.[kvp.Key] <- kvp.Value
+
+/// Custom configuration source for in-memory HOCON strings
+type HoconStringConfigurationSource(hoconString: string) =
+    interface IConfigurationSource with
+        member _.Build(builder: IConfigurationBuilder) =
+            upcast new HoconStringConfigurationProvider(hoconString)
+
+/// Represents the type of database connection
+type DBType =
+    /// SQLite using Microsoft.Data.Sqlite provider
+    | Sqlite
+    /// Microsoft SQL Server 2012
+    | SqlServer2012
+    /// Microsoft SQL Server 2014
+    | SqlServer2014
+    /// Microsoft SQL Server 2016
+    | SqlServer2016
+    /// Microsoft SQL Server 2017
+    | SqlServer2017
+    /// Microsoft SQL Server 2019
+    | SqlServer2019
+    /// Microsoft SQL Server 2022
+    | SqlServer2022
+    /// PostgreSQL 9.3+
+    | PostgreSQL
+    /// PostgreSQL 15+
+    | PostgreSQL15
+    /// MySQL using MySqlConnector
+    | MySql
+    /// Oracle Database
+    | Oracle
+    /// Firebird
+    | Firebird
+    /// IBM DB2
+    | DB2
+
+/// Represents a database connection configuration
+type Connection =
+    { ConnectionString: Model.Data.ShortString
+      DBType: DBType }
+
+let api (config: IConfiguration) (loggerFactory: ILoggerFactory) (connection: Connection option) =
+    let mergedConfig =
+        match connection with
+        | Some conn ->
+            // Read embedded hocon resource
+            let assembly = Reflection.Assembly.GetExecutingAssembly()
+            let resourceName = "FCQRS.default.hocon"
+            use stream =
+                match assembly.GetManifestResourceStream resourceName with
+                | null -> failwith "Could not find embedded resource: FCQRS.default.hocon"
+                | s -> s
+            use reader = new IO.StreamReader(stream)
+            let hoconTemplate = reader.ReadToEnd()
+
+            // Replace placeholders with Linq2Db provider names
+            let dbTypeString =
+                match conn.DBType with
+                | Sqlite -> "SQLite.MS"
+                | SqlServer2012 -> "SqlServer.2012"
+                | SqlServer2014 -> "SqlServer.2014"
+                | SqlServer2016 -> "SqlServer.2016"
+                | SqlServer2017 -> "SqlServer.2017"
+                | SqlServer2019 -> "SqlServer.2019"
+                | SqlServer2022 -> "SqlServer.2022"
+                | PostgreSQL -> "PostgreSQL.9.3"
+                | PostgreSQL15 -> "PostgreSQL.15"
+                | MySql -> "MySqlConnector"
+                | Oracle -> "Oracle.Managed"
+                | Firebird -> "Firebird"
+                | DB2 -> "DB2"
+
+            let connectionStringValue = conn.ConnectionString |> ValueLens.Value
+
+            let hoconString =
+                hoconTemplate
+                    .Replace("${connection-string}", connectionStringValue)
+                    .Replace("${db-type}", dbTypeString)
+
+            // Create new configuration builder with hocon string merged with existing config
+            let configBuilder = ConfigurationBuilder()
+            configBuilder.AddConfiguration config |> ignore
+            configBuilder.Add(HoconStringConfigurationSource(hoconString)) |> ignore
+            configBuilder.Build() :> IConfiguration
+        | None ->
+            config
+
+    let akkaConfig: ExpandoObject =
+        unbox<_> (mergedConfig.GetSectionAsDynamic("config:akka"))
+
+    let akkaConfiguration = Configuration.ConfigurationFactory.FromObject akkaConfig
 
     let system = System.create "cluster-system" akkaConfiguration
 

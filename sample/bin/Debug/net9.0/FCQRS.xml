@@ -529,6 +529,91 @@
  This should be called once during application startup.
  </summary>
 </member>
+<member name="T:FCQRS.Actor.Connection">
+<summary>
+ Represents a database connection configuration
+</summary>
+</member>
+<member name="T:FCQRS.Actor.DBType.DB2">
+<summary>
+ IBM DB2
+</summary>
+</member>
+<member name="T:FCQRS.Actor.DBType.Firebird">
+<summary>
+ Firebird
+</summary>
+</member>
+<member name="T:FCQRS.Actor.DBType.Oracle">
+<summary>
+ Oracle Database
+</summary>
+</member>
+<member name="T:FCQRS.Actor.DBType.MySql">
+<summary>
+ MySQL using MySqlConnector
+</summary>
+</member>
+<member name="T:FCQRS.Actor.DBType.PostgreSQL15">
+<summary>
+ PostgreSQL 15+
+</summary>
+</member>
+<member name="T:FCQRS.Actor.DBType.PostgreSQL">
+<summary>
+ PostgreSQL 9.3+
+</summary>
+</member>
+<member name="T:FCQRS.Actor.DBType.SqlServer2022">
+<summary>
+ Microsoft SQL Server 2022
+</summary>
+</member>
+<member name="T:FCQRS.Actor.DBType.SqlServer2019">
+<summary>
+ Microsoft SQL Server 2019
+</summary>
+</member>
+<member name="T:FCQRS.Actor.DBType.SqlServer2017">
+<summary>
+ Microsoft SQL Server 2017
+</summary>
+</member>
+<member name="T:FCQRS.Actor.DBType.SqlServer2016">
+<summary>
+ Microsoft SQL Server 2016
+</summary>
+</member>
+<member name="T:FCQRS.Actor.DBType.SqlServer2014">
+<summary>
+ Microsoft SQL Server 2014
+</summary>
+</member>
+<member name="T:FCQRS.Actor.DBType.SqlServer2012">
+<summary>
+ Microsoft SQL Server 2012
+</summary>
+</member>
+<member name="T:FCQRS.Actor.DBType.Sqlite">
+<summary>
+ SQLite using Microsoft.Data.Sqlite provider
+</summary>
+</member>
+<member name="T:FCQRS.Actor.DBType">
+<summary>
+ Represents the type of database connection
+</summary>
+</member>
+<member name="T:FCQRS.Actor.HoconStringConfigurationSource">
+<summary>
+ Custom configuration source for in-memory HOCON strings
+</summary>
+</member>
+<member name="T:FCQRS.Actor.HoconStringConfigurationProvider">
+<summary>
+ Custom configuration provider for in-memory HOCON strings
+</summary>
+</member>
 <member name="M:FCQRS.Query.ISubscribe`1.Subscribe(Microsoft.FSharp.Core.FSharpFunc{`0,System.Boolean},System.Int32,Microsoft.FSharp.Core.FSharpOption{Microsoft.FSharp.Core.FSharpFunc{`0,Microsoft.FSharp.Core.Unit}},Microsoft.FSharp.Core.FSharpOption{System.Threading.CancellationToken})">
  <summary>
  Subscribes to events using a filter. Only events for which the predicate returns true

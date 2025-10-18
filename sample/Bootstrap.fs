@@ -4,10 +4,11 @@ open Microsoft.Extensions.Configuration
 open Microsoft.Extensions.Logging
 open Hocon.Extensions.Configuration
 open System.IO
+open FCQRS.Actor
+open FCQRS.Model.Data
 
 
-// Create configuration. We don't need hocon here. It isn't used in the conventional sense.
-// Any configuration could be used like appsettings.json. But I like hocon because it is super set of json.
+// Create configuration for connection-string (used by query side)
 let configBuilder =
     ConfigurationBuilder()
         .AddHoconFile(Path.Combine(__SOURCE_DIRECTORY__, "config.hocon"))
@@ -18,11 +19,20 @@ let config = configBuilder.Build()
 let loggerF =
     LoggerFactory.Create(fun builder -> builder.AddConsole() |> ignore)
 
-// Composition root for the application environment. While being a god object is an anti-pattern, it plays nicely with F# partial application.
-let env = new Environments.AppEnv(config, loggerF)
+// Create connection for SQLite - this will be merged with the hocon file config
+let connectionString: ShortString =
+    "Data Source=demo.db;" |> ValueLens.TryCreate |> Result.value
 
-// Bootstrap command side.
-let actorApi = FCQRS.Actor.api config loggerF
+let connection =
+    Some {
+        ConnectionString = connectionString
+        DBType = DBType.Sqlite
+    }
+
+// Composition root for the application environment. While being a god object is an anti-pattern, it plays nicely with F# partial application.
+
+// Bootstrap command side with Connection parameter
+let actorApi = FCQRS.Actor.api config loggerF connection
 
 // We don't use sagas (yet) so we just return an empty list.
 let sagaCheck  _ = []
@@ -42,4 +52,4 @@ let userSubs cid actorId command filter metadata =  actorApi.CreateCommandSubscr
 
 // Initializes the query side.But also gets subscription for the query side. 
 // The only use case for subscription is to wait for the query side to catch up with the command side.
-let sub handleEventWrapper offsetCount= FCQRS.Query.init actorApi offsetCount (handleEventWrapper env)
+let sub handleEventWrapper offsetCount= FCQRS.Query.init actorApi offsetCount handleEventWrapper
