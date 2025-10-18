@@ -733,7 +733,7 @@ let inline commandHandler<'T, 'TEvent, 'TCommand, 'TState when ShardFactoryWith<
     }
 
 
-let inline commandHandleWithEnv<'T, 'TEnv, 'TEvent, 'TCommand, 'TState
+let inline commandHandlerWithEnv<'T, 'TEnv, 'TEvent, 'TCommand, 'TState
     when ShardFactoryWithEnv<'T, 'TEnv, 'TEvent, 'TCommand, 'TState>>
     env
     actorApi
