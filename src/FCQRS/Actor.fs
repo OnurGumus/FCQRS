@@ -315,7 +315,7 @@ type Connection =
     { ConnectionString: Model.Data.ShortString
       DBType: DBType }
 
-let api (config: IConfiguration) (loggerFactory: ILoggerFactory) (connection: Connection option) =
+let api (config: IConfiguration) (loggerFactory: ILoggerFactory) (connection: Connection option) (clusterName: Model.Data.ShortString) =
     let mergedConfig =
         match connection with
         | Some conn ->
@@ -366,7 +366,8 @@ let api (config: IConfiguration) (loggerFactory: ILoggerFactory) (connection: Co
 
     let akkaConfiguration = Configuration.ConfigurationFactory.FromObject akkaConfig
 
-    let system = System.create "cluster-system" akkaConfiguration
+    let clusterNameValue = clusterName |> ValueLens.Value
+    let system = System.create clusterNameValue akkaConfiguration
 
     Cluster.Get(system).SelfAddress |> Cluster.Get(system).Join
 

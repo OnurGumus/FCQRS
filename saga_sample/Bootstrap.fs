@@ -29,10 +29,14 @@ let connection =
         DBType = DBType.Sqlite
     }
 
+// Create cluster name
+let clusterName: ShortString =
+    "cluster-system" |> ValueLens.TryCreate |> Result.value
+
 // Keep env for Query module and other modules that still use wrapper pattern
 
 // The api will merge the connection (default.hocon) with the existing config (scheduler)
-let actorApi = FCQRS.Actor.api config loggerFactory connection
+let actorApi = FCQRS.Actor.api config loggerFactory connection clusterName
 
 // Initialize the scheduler controller with the target task name
 // Replace "YOUR_SPECIFIC_TASK_NAME_HERE" with your actual task name

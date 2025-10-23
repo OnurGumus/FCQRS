@@ -29,10 +29,14 @@ let connection =
         DBType = DBType.Sqlite
     }
 
+// Create cluster name
+let clusterName: ShortString =
+    "cluster-system" |> ValueLens.TryCreate |> Result.value
+
 // Composition root for the application environment. While being a god object is an anti-pattern, it plays nicely with F# partial application.
 
 // Bootstrap command side with Connection parameter
-let actorApi = FCQRS.Actor.api config loggerF connection
+let actorApi = FCQRS.Actor.api config loggerF connection clusterName
 
 // We don't use sagas (yet) so we just return an empty list.
 let sagaCheck  _ = []
