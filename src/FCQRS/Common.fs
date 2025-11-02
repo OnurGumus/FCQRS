@@ -711,7 +711,6 @@ module Curry =
 
 
 let inline commandHandler<'T, 'TEvent, 'TCommand, 'TState when ShardFactoryWith<'T, 'TEvent, 'TCommand, 'TState>>
-    env
     actorApi
     (events: 'TEvent Set)
     cid
