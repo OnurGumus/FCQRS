@@ -16,6 +16,7 @@ config {
                     connection-string = "${connection-string}"
                     provider-name = "${db-type}"
                     auto-initialize = true
+                    refresh-interval = 100ms
                }
                snapshot-store {
                     plugin = "akka.persistence.snapshot-store.sql"
