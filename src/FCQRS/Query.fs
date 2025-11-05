@@ -116,8 +116,8 @@ let init<'TDataEvent, 'TPredicate, 't> (actorApi: IActor) offsetCount handler =
     let runnableGraph = subQueue |> Source.toMat subSink Keep.both
 
     let queue, subRunnable = runnableGraph |> Graph.run actorApi.Materializer
-
     source
+   // |> Source.map(fun x -> printf "onur! %A" (DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff"));  x)
     |> Source.recover (fun ex ->
         logger.LogError(ex, "Error in query source")
         None)

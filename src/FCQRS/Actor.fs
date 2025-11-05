@@ -354,9 +354,10 @@ let api (config: IConfiguration) (loggerFactory: ILoggerFactory) (connection: Co
                     .Replace("${db-type}", dbTypeString)
 
             // Create new configuration builder with hocon string merged with existing config
+            // Add embedded HOCON first, then user config to allow overrides
             let configBuilder = ConfigurationBuilder()
-            configBuilder.AddConfiguration config |> ignore
             configBuilder.Add(HoconStringConfigurationSource(hoconString)) |> ignore
+            configBuilder.AddConfiguration config |> ignore
             configBuilder.Build() :> IConfiguration
         | None ->
             config
