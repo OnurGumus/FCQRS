@@ -23,3 +23,5 @@ nuget FCQRS
 nuget Hocon.Extensions.Configuration
 nuget Microsoft.Extensions.Logging.Console
 nuget Akka.TestKit
+nuget Expecto
+nuget TickSpec

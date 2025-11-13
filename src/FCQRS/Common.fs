@@ -693,7 +693,6 @@ type ShardFactoryWith<'T, 'TEvent, 'TCommand, 'TState
 type ShardFactoryWithEnv<'T, 'TEnv, 'TEvent, 'TCommand, 'TState
     when 'T: (static member ApplyEvent: 'TEnv * Event<'TEvent> * 'TState -> 'TState)
     and 'T: (static member Init: 'TEnv * IActor * string -> EntityFac<obj>)
-    and 'TEvent: comparison
     and 'T: (static member Factory: 'TEnv * IActor -> (string -> IEntityRef<obj>))
     and 'T: (static member HandleCommand: 'TEnv * Command<'TCommand> * 'TState -> EventAction<'TEvent>)> = 'T
 
@@ -712,7 +711,7 @@ module Curry =
 
 let inline commandHandler<'T, 'TEvent, 'TCommand, 'TState when ShardFactoryWith<'T, 'TEvent, 'TCommand, 'TState>>
     actorApi
-    (events: 'TEvent Set)
+    (eventFilter: 'TEvent -> bool)
     cid
     actorId
     (command: 'TCommand)
@@ -721,13 +720,7 @@ let inline commandHandler<'T, 'TEvent, 'TCommand, 'TState when ShardFactoryWith<
     let shard = 'T.Factory actorApi
 
     async {
-        let filter =
-            if events = Set.empty then
-                fun _ -> true
-            else
-                fun x -> events |> Set.contains x
-
-        let! res = actorApi.CreateCommandSubscription shard cid actorId command filter None
+        let! res = actorApi.CreateCommandSubscription shard cid actorId command eventFilter None
         return res.EventDetails
     }
 
@@ -736,7 +729,7 @@ let inline commandHandlerWithEnv<'T, 'TEnv, 'TEvent, 'TCommand, 'TState
     when ShardFactoryWithEnv<'T, 'TEnv, 'TEvent, 'TCommand, 'TState>>
     env
     actorApi
-    (events: 'TEvent Set)
+    (eventFilter: 'TEvent -> bool)
     cid
     actorId
     (command: 'TCommand)
@@ -745,12 +738,6 @@ let inline commandHandlerWithEnv<'T, 'TEnv, 'TEvent, 'TCommand, 'TState
     let shard = 'T.Factory(env, actorApi)
 
     async {
-        let filter =
-            if events = Set.empty then
-                fun _ -> true
-            else
-                fun x -> events |> Set.contains x
-
-        let! res = actorApi.CreateCommandSubscription shard cid actorId command filter None
+        let! res = actorApi.CreateCommandSubscription shard cid actorId command eventFilter None
         return res.EventDetails
     }
