@@ -16,10 +16,11 @@ config {
                     connection-string = "${connection-string}"
                     provider-name = "${db-type}"
                     auto-initialize = true
-                    refresh-interval = 1ms
+                    refresh-interval = 100ms
                     max-buffer-size = 50
+                    query-timeout = 30s
                     journal-sequence-retrieval {
-                         query-delay = 1ms
+                         query-delay = 100ms
                     }
                }
                snapshot-store {

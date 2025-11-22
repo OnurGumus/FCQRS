@@ -1,27 +1,28 @@
 source https://api.nuget.org/v3/index.json
 
 storage: none
-framework:auto-detect
+framework: net9.0
 
-nuget FSharp.Core
-nuget FSharp.Interop.Dynamic
-nuget Microsoft.Extensions.Configuration
-nuget Akkling.Streams
-nuget Microsoft.Data.SQLite
+nuget FSharp.Core >= 9.0.303
+nuget FSharp.Interop.Dynamic >= 5.0.1.268
+nuget Microsoft.Extensions.Configuration >= 9.0.10
+nuget Microsoft.Extensions.Logging.Console >= 9.0.10
+nuget Microsoft.Data.SQLite >= 9.0.10
+nuget Akka.Cluster.Sharding >= 1.5.55
+nuget Akka.Cluster.Tools >= 1.5.55
+nuget Akka.Persistence.Sql >= 1.5.55.1
+nuget Akka.TestKit >= 1.5.55
+nuget Akkling.Cluster.Sharding >= 0.17.0
+nuget Akkling.Persistence >= 0.17.0
+nuget Akkling.Streams >= 0.17.0
+nuget FSharp.SystemTextJson >= 1.4.36
+nuget FsToolkit.ErrorHandling >= 5.1.0
+nuget Hocon.Extensions.Configuration >= 2.0.4
+nuget FCQRS.Serialization >= 2.2.0
+nuget FCQRS.Model >= 4.0.0
+nuget FCQRS
 nuget SQLProvider
 nuget SQLitePCLRaw.core
-nuget Akkling.Persistence
-nuget Akka.Persistence.Sql >= 1.5.42
-nuget Akka.Cluster.Sharding >= 1.5.42
-nuget Akkling.Cluster.Sharding 
-nuget FSharp.SystemTextJson
-nuget FsToolkit.ErrorHandling
-nuget FCQRS.Serialization
 nuget Fable.Package.SDK
-nuget FCQRS.Model
-nuget FCQRS
-nuget Hocon.Extensions.Configuration
-nuget Microsoft.Extensions.Logging.Console
-nuget Akka.TestKit
 nuget Expecto
 nuget TickSpec
