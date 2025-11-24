@@ -2,6 +2,7 @@ open FCQRS.Model.Data
 open Command
 open System.Diagnostics
 open Serilog
+open FCQRS.Common
 
 let isAutomated = System.Environment.GetEnvironmentVariable("AUTOMATED_TEST") <> null
 
@@ -9,15 +10,6 @@ let waitForKey() =
     if not isAutomated then
         System.Console.ReadKey() |> ignore
 
-// Helper to create a traceparent CID from current activity context for distributed tracing
-// Format: "00-{traceId}-{spanId}-{flags}" (W3C traceparent)
-let traceparentCid (): CID =
-    match Activity.Current with
-    | null ->
-        System.Guid.NewGuid().ToString() |> ValueLens.CreateAsResult |> Result.value
-    | act ->
-        let traceparent = $"00-{act.TraceId.ToHexString()}-{act.SpanId.ToHexString()}-01"
-        traceparent |> ValueLens.CreateAsResult |> Result.value
 
 async {
     let sw = Stopwatch.StartNew()
@@ -32,9 +24,8 @@ async {
     let password = "password"
 
     // --- Register User (triggers saga with verification) ---
-    let registerSpan = Bootstrap.activitySource.StartActivity("RegisterUser.WithSaga")
-    if registerSpan <> null then
-        registerSpan.SetTag("userName", userName) |> ignore
+    let registerSpan = Bootstrap.activitySource.StartActivity("RegisterUser.WithSaga") |> nonNull
+    registerSpan.SetTag("userName", userName) |> ignore
 
     let cid1 = traceparentCid()
     let cidStr = cid1 |> ValueLens.Value |> ValueLens.Value
@@ -50,7 +41,7 @@ async {
     let! result = register cid1 userName password
     FCQRS.SchedulerController.registerAutoAdvanceOnAppearance userName
 
-    if registerSpan <> null then registerSpan.Dispose()
+    registerSpan.Dispose()
     printfn "%s Command completed" (timestamp())
 
     d.Task.Wait()
@@ -60,9 +51,8 @@ async {
     waitForKey()
 
     // --- Verification ---
-    let verifySpan = Bootstrap.activitySource.StartActivity("VerifyUser")
-    if verifySpan <> null then
-        verifySpan.SetTag("userName", userName) |> ignore
+    let verifySpan = Bootstrap.activitySource.StartActivity("VerifyUser")  |> nonNull
+    verifySpan.SetTag("userName", userName) |> ignore
 
     printfn "Enter verification code:"
     let code =
@@ -73,31 +63,31 @@ async {
             System.Console.ReadLine() |> nonNull
 
     let! resultVerify = verify (traceparentCid()) userName code
-    if verifySpan <> null then verifySpan.Dispose()
+    verifySpan.Dispose()
     printfn "%A" resultVerify
 
     waitForKey()
 
     // --- Register Duplicate (should fail) ---
-    let registerFailSpan = Bootstrap.activitySource.StartActivity("RegisterUser.Duplicate")
+    let registerFailSpan = Bootstrap.activitySource.StartActivity("RegisterUser.Duplicate") |> nonNull
     let! resultFailure = register (traceparentCid()) userName password
-    if registerFailSpan <> null then registerFailSpan.Dispose()
+    registerFailSpan.Dispose()
     printfn "%A" resultFailure
 
     waitForKey()
 
     // --- Login Wrong Password ---
-    let loginFailSpan = Bootstrap.activitySource.StartActivity("LoginUser.WrongPassword")
+    let loginFailSpan = Bootstrap.activitySource.StartActivity("LoginUser.WrongPassword")  |> nonNull
     let! loginResultF = login (traceparentCid()) userName "wrong pass"
-    if loginFailSpan <> null then loginFailSpan.Dispose()
+    loginFailSpan.Dispose()
     printfn "%A" loginResultF
 
     waitForKey()
 
     // --- Login Success ---
-    let loginSuccessSpan = Bootstrap.activitySource.StartActivity("LoginUser.Success")
+    let loginSuccessSpan = Bootstrap.activitySource.StartActivity("LoginUser.Success")  |> nonNull
     let! loginResultS = login (traceparentCid()) userName password
-    if loginSuccessSpan <> null then loginSuccessSpan.Dispose()
+    loginSuccessSpan.Dispose()
     printfn "%A" loginResultS
 
     waitForKey()

@@ -48,6 +48,7 @@ let private runSaga<'TEvent, 'SagaData, 'State>
     (wrapper: 'State -> ParentSaga<'SagaData, 'State>)
     body
     innerStateDefaults
+    (currentSagaActivityRef: (Activity | null) ref)
     =
     let rec innerSet (startingEvent: option<SagaStarter.SagaStartingEvent<_>>, subscribed) =
         let innerSetValue = startingEvent, subscribed
@@ -67,23 +68,34 @@ let private runSaga<'TEvent, 'SagaData, 'State>
                     // Try to get Event property via reflection for generic SagaStartingEvent
                     let t = m.GetType()
                     if t.Name.StartsWith("SagaStartingEvent") then
-                        let eventProp = t.GetProperty("Event")
-                        if eventProp <> null then
+                        match t.GetProperty("Event") with
+                        | null -> None
+                        | eventProp ->
                             match eventProp.GetValue(m) with
                             | :? FCQRS.Model.Data.IMessage as innerMsg ->
                                 Some (innerMsg.CID |> ValueLens.Value |> ValueLens.Value)
                             | _ -> None
-                        else None
                     else None
 
             // Extract CID from the starting event (which has the original trace context)
             let getCidFromStartingEvent () =
                 match startingEvent with
-                | Some se -> tryExtractCid (box se)
+                | Some se ->
+                    match box se with
+                    | null -> None
+                    | boxed -> tryExtractCid boxed
                 | None -> None
 
             // Helper to create and emit a state change activity (only for state transitions)
+            // Activity is kept alive until next state change, so sub-activities become children
             let emitStateChangeActivity (newState: 'State) =
+                // Dispose previous activity if exists
+                match currentSagaActivityRef.Value with
+                | null -> ()
+                | prev ->
+                    prev.Dispose()
+                    currentSagaActivityRef.Value <- null
+
                 match getCidFromStartingEvent () with
                 | Some cid ->
                     let mutable parentContext = Unchecked.defaultof<ActivityContext>
@@ -97,19 +109,26 @@ let private runSaga<'TEvent, 'SagaData, 'State>
                                 let case, fields = FSharpValue.GetUnionFields(obj, t)
                                 // If case is "UserDefined" with one field, unwrap it
                                 if case.Name = "UserDefined" && fields.Length = 1 then
-                                    getUnionCaseName fields.[0]
+                                    match fields.[0] with
+                                    | null -> case.Name
+                                    | field -> getUnionCaseName field
                                 else
                                     case.Name
                             else
                                 sprintf "%A" obj
-                        let boxedState = box newState
-                        let stateStr = getUnionCaseName boxedState
-                        // Short span name: "Saga:Started" - details in tags
-                        use act = activitySource.StartActivity($"Saga:{stateStr}", ActivityKind.Internal, parentContext)
-                        if act <> null then
+                        let stateStr =
+                            match box newState with
+                            | null -> "null"
+                            | boxed -> getUnionCaseName boxed
+                        // Create activity and keep it alive (don't use 'use')
+                        // This allows sub-activities (commands, events) to become children
+                        match activitySource.StartActivity($"Saga:{stateStr}", ActivityKind.Internal, parentContext) with
+                        | null -> ()
+                        | act ->
                             act.SetTag("cid", cid) |> ignore
                             act.SetTag("saga.id", sagaName) |> ignore
                             act.SetTag("saga.state", stateStr) |> ignore
+                            currentSagaActivityRef.Value <- act
                 | None -> ()
 
             match msg with
@@ -236,7 +255,7 @@ let private actorProp
     (mediator: IActorRef<_>)
     (mailbox: Eventsourced<obj>)
     =
-    let cid: CID =
+    let baseCid: CID =
         mailbox.Self.Path.Name |> SagaStarter.Internal.toRawGuid
         |> ValueLens.CreateAsResult
         |> Result.value
@@ -245,6 +264,10 @@ let private actorProp
     let loggerFactory = actorApi.LoggerFactory
     let config = actorApi.Configuration
     let logger = loggerFactory.CreateLogger name
+
+    // Ref cell to hold the current saga state activity (kept alive across iterations)
+    // This is at actorProp level so both runSaga and applySideEffects can access it
+    let currentSagaActivityRef: (Activity | null) ref = ref null
 
     let snapshotVersionCount =
         let s: string | null = config["config:akka:persistence:snapshot-version-count"]
@@ -278,7 +301,7 @@ let private actorProp
                         else
                             x |> Unchecked.nonNull
 
-                    let metadata =
+                    let baseMetadata =
                         match startingEvent with
                         | Some se ->
                             match box se.Event with
@@ -289,7 +312,8 @@ let private actorProp
                         | None ->
                             Map.empty
 
-                    let command = createCommand mailbox cmd.Command cid metadata
+                    // Keep baseCid for pub/sub routing - changing CID breaks saga event reception
+                    let command = createCommand mailbox cmd.Command baseCid baseMetadata
 
                     let unboxx (msg: Command<obj>) =
                         let genericType = typedefof<Command<_>>.MakeGenericType [| baseType |]
@@ -410,6 +434,7 @@ let private actorProp
             wrapper
             body
             innerStateDefaults
+            currentSagaActivityRef
 
     set (None, false) initialState
 

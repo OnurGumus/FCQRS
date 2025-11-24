@@ -41,7 +41,10 @@ let _activityListener =
     listener.SampleUsingParentId <- fun _ -> ActivitySamplingResult.AllDataAndRecorded
     listener.ActivityStopped <- fun activity ->
         // Log completed activities to Serilog with span info
-        if activity <> null then
+        // Note: ActivityStopped can receive null despite delegate signature
+        match box activity with
+        | null -> ()
+        | _ ->
             Log.Information("{ActivityName} {Tags}",
                 activity.OperationName,
                 activity.TagObjects |> Seq.map (fun t -> $"{t.Key}={t.Value}") |> String.concat ", ")

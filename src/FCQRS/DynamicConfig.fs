@@ -1,4 +1,5 @@
-module FCQRS.DynamicConfig 
+module FCQRS.DynamicConfig
+
 open System
 open Microsoft.Extensions.Configuration
 open System.Runtime.CompilerServices
@@ -6,8 +7,12 @@ open System.Dynamic
 open System.Collections.Generic
 
 [<AutoOpen>]
-module Internal = 
-    let rec internal replaceWithArray (parent: ExpandoObject | null) (key: string | null) (input: ExpandoObject option) =
+module Internal =
+    let rec internal replaceWithArray
+        (parent: ExpandoObject | null)
+        (key: string | null)
+        (input: ExpandoObject option)
+        =
         match input with
         | None -> ()
         | Some input ->
@@ -21,7 +26,8 @@ module Internal =
                     arr.[kvp.Key |> Int32.Parse] <- kvp.Value
 
                 match parent, key with
-                | null, _ | _, null -> ()
+                | null, _
+                | _, null -> ()
                 | p, k ->
                     let parentDict = p :> IDictionary<string, _>
                     parentDict.Remove k |> ignore

@@ -36,8 +36,9 @@ let password = "password"
 // --- Register User (separate trace) ---
 // Each command creates its own root span = its own trace
 let registerSpan = Bootstrap.activitySource.StartActivity("RegisterUser")
-if registerSpan <> null then
-    registerSpan.SetTag("userName", userName) |> ignore
+match registerSpan with
+| null -> ()
+| span -> span.SetTag("userName", userName) |> ignore
 
 let cid1 = traceparentCid()
 let cidStr = cid1 |> ValueLens.Value |> ValueLens.Value
@@ -50,7 +51,7 @@ use d = sub.Subscribe((fun e -> e.CID = cid1), 1)
 
 printfn "%s Sending register command (CID=%s)" (timestamp()) cidStr
 let! result = register cid1 userName password
-if registerSpan <> null then registerSpan.Dispose()
+match registerSpan with null -> () | span -> span.Dispose()
 printfn "%s Command completed" (timestamp())
 
 d.Task.Wait()
@@ -60,7 +61,7 @@ printfn "%A" result
 // --- Register Duplicate (separate trace) ---
 let registerFailSpan = Bootstrap.activitySource.StartActivity("RegisterUser.Duplicate")
 let! resultFailure = register (traceparentCid()) userName password
-if registerFailSpan <> null then registerFailSpan.Dispose()
+match registerFailSpan with null -> () | span -> span.Dispose()
 printfn "%A" resultFailure
 
 waitForKey()
@@ -68,13 +69,13 @@ waitForKey()
 // --- Login Wrong Password (separate trace) ---
 let loginFailSpan = Bootstrap.activitySource.StartActivity("LoginUser.WrongPassword")
 let! loginResultF = login (traceparentCid()) userName "wrong pass"
-if loginFailSpan <> null then loginFailSpan.Dispose()
+match loginFailSpan with null -> () | span -> span.Dispose()
 printfn "%A" loginResultF
 
 // --- Login Success (separate trace) ---
 let loginSuccessSpan = Bootstrap.activitySource.StartActivity("LoginUser.Success")
 let! loginResultS = login (traceparentCid()) userName password
-if loginSuccessSpan <> null then loginSuccessSpan.Dispose()
+match loginSuccessSpan with null -> () | span -> span.Dispose()
 printfn "%A" loginResultS
 
 

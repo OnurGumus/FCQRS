@@ -20,15 +20,42 @@ open FCQRS.Model.Data
 open Akka.Streams
 open SagaStarter // Contains internal types, careful exposure
 open Microsoft.Extensions.Configuration
+open System.Diagnostics
 
 /// Marker interface for types that can be serialized by Akka.NET.
 type ISerializable = interface end
+
+/// Helper to extract TraceId from a CID (W3C traceparent format: 00-{traceId}-{spanId}-{flags})
+/// Returns the full CID string if not in traceparent format
+let extractTraceId (cid: CID) =
+    let cidStr = cid |> ValueLens.Value |> ValueLens.Value
+    let parts = cidStr.Split('-')
+    // Traceparent format: "00-{traceId}-{spanId}-{flags}" has 4 parts
+    if parts.Length = 4 && parts.[0] = "00" then
+        parts.[1] // Return just the traceId
+    else
+        cidStr // Return full string for non-traceparent CIDs
+
+/// Compare two CIDs by their TraceId (for correlation in distributed tracing scenarios)
+let sameTrace (cid1: CID) (cid2: CID) =
+    extractTraceId cid1 = extractTraceId cid2
 
 type ILoggerFactoryWrapper =
     abstract LoggerFactory: ILoggerFactory
 
 type IConfigurationWrapper =
     abstract Configuration: IConfiguration
+
+// Helper to create a traceparent CID from current activity context for distributed tracing
+// Format: "00-{traceId}-{spanId}-{flags}" (W3C traceparent)
+let traceparentCid (): CID =
+    match Activity.Current with
+    | null ->
+        Guid.NewGuid().ToString()
+    | act ->
+        let traceparent = $"00-{act.TraceId.ToHexString()}-{act.SpanId.ToHexString()}-01"
+        traceparent 
+    |> ValueLens.CreateAsResult |> Result.value
 
 
 /// Represents a command to be processed by an aggregate actor.
@@ -648,8 +675,8 @@ module CommandHandler =
                                     { CommandDetails = cd
                                       Sender = untyped sender }
                                 |> set
-                        // When receiving an Event, check correlation ID and filter
-                        | :? (Event<'Event>) as e when e.CorrelationId = state.Value.CommandDetails.Cmd.CorrelationId ->
+                        // When receiving an Event, check TraceId (CID may change due to span propagation)
+                        | :? (Event<'Event>) as e when sameTrace e.CorrelationId state.Value.CommandDetails.Cmd.CorrelationId ->
                             if state.Value.CommandDetails.Filter e.EventDetails then
                                 state.Value.Sender.Tell e // Send event back to original asker
                                 return! Stop // Stop the temporary subscription actor

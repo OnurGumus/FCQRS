@@ -109,7 +109,10 @@ module internal Internal =
             | Persisted mailbox (:? Common.Event<'TEvent> as event) ->
                 let versionN = event.Version |> ValueLens.Value
                 let eventCid = event.CorrelationId |> ValueLens.Value |> ValueLens.Value
-                let eventType = ( event.EventDetails |> nonNull).ToString()
+                let eventType =
+                    match box event.EventDetails with
+                    | null -> "null"
+                    | details -> sprintf "%A" details
                 let actorName = mailbox.Self.Path.Name
 
                 // Try to parse CID as W3C traceparent to recover trace context
@@ -120,17 +123,20 @@ module internal Internal =
                     else
                         // CID is not a traceparent - no tracing for this event
                         null
-                if activity <> null then
-                    activity.SetTag("cid", eventCid) |> ignore
-                    activity.SetTag("actor", actorName) |> ignore
-                    activity.SetTag("event.type", eventType) |> ignore
-                    activity.SetTag("version", versionN) |> ignore
+                match activity with
+                | null -> ()
+                | act ->
+                    act.SetTag("cid", eventCid) |> ignore
+                    act.SetTag("actor", actorName) |> ignore
+                    act.SetTag("event.type", eventType) |> ignore
+                    act.SetTag("version", versionN) |> ignore
 
                 let innerState = applyNewState event state.State
                 publishEvent event
 
-                if activity <> null then
-                    activity.Dispose()
+                match activity with
+                | null -> ()
+                | act -> act.Dispose()
 
                 let newState =
                     {   Version = event.Version
@@ -220,7 +226,10 @@ module internal Internal =
                     | :? Persistence.RecoveryCompleted, _ -> return! state |> set
                     | :? (Common.Command<'Command>) as cmd, _ ->
                         let cmdCid = cmd.CorrelationId |> ValueLens.Value |> ValueLens.Value
-                        let cmdType = (box cmd.CommandDetails).ToString()
+                        let cmdType =
+                            match box cmd.CommandDetails with
+                            | null -> "null"
+                            | details -> sprintf "%A" details
                         let actorName = mailbox.Self.Path.Name
 
                         // Try to parse CID as W3C traceparent to recover trace context
@@ -232,12 +241,15 @@ module internal Internal =
                                 // CID is not a traceparent - no tracing for this command
                                 null
 
-                        if activity <> null then
-                            activity.SetTag("cid", cmdCid) |> ignore
-                            activity.SetTag("actor", actorName) |> ignore
-                            activity.SetTag("command.type", cmdType) |> ignore
-                            activity.SetTag("version", state.Version |> ValueLens.Value) |> ignore
+                        match activity with
+                        | null -> ()
+                        | act ->
+                            act.SetTag("cid", cmdCid) |> ignore
+                            act.SetTag("actor", actorName) |> ignore
+                            act.SetTag("command.type", cmdType) |> ignore
+                            act.SetTag("version", state.Version |> ValueLens.Value) |> ignore
 
+                        // Keep original CID for pub/sub routing - trace hierarchy is via TraceId, not CID propagation
                         let toEvent =
                             toEvent
                                 cmd.Id
@@ -246,9 +258,11 @@ module internal Internal =
                                 cmd.Metadata
                         let effect = handleCommand cmd state.State
 
-                        if activity <> null then
-                            activity.SetTag("effect", effect.GetType().Name) |> ignore
-                            activity.Dispose()
+                        match activity with
+                        | null -> ()
+                        | act ->
+                            act.SetTag("effect", effect.GetType().Name) |> ignore
+                            act.Dispose()
 
                         return! handleEffect effect state mailbox toEvent state.Version bodyInput set
                     | _ ->
