@@ -17,9 +17,13 @@ open Microsoft.Extensions.Logging
 open AkkaTimeProvider
 open FCQRS.Model.Data
 open Akkling.Cluster.Sharding
+open System.Diagnostics
+
+// ActivitySource for distributed tracing
+let private activitySource = new ActivitySource("FCQRS")
 
 
- [<AutoOpen>]
+[<AutoOpen>]
 module internal Internal =
 
     type State<'InnerState> =
@@ -27,7 +31,7 @@ module internal Internal =
           State: 'InnerState }
         interface ISerializable
 
-    type BodyInput<'TEvent> =
+    type BodyInput<'TEvent when 'TEvent : not null> =
         { 
         Message: obj
         State: obj
@@ -35,7 +39,7 @@ module internal Internal =
         SendToSagaStarter: Event<'TEvent> -> obj
         Mediator: IActorRef<Publish>
         Log: ILogger }
-    let runActor<'TEvent, 'TState>
+    let runActor<'TEvent , 'TState when 'TEvent : not struct and 'TEvent : not null>
         (snapshotVersionCount: int64)
         (logger: ILogger)
         (mailbox: Eventsourced<obj>)
@@ -57,10 +61,7 @@ module internal Internal =
                 (event.CorrelationId |> ValueLens.Value |> ValueLens.Value)
 
         actor {
-            let log = logger
             let! msg = mailbox.Receive()
-
-            log.LogInformation("Actor:{@name} Message: {MSG}", mailbox.Self.Path.ToString(), msg)
 
             match msg with
             | PersistentLifecycleEvent _
@@ -77,7 +78,7 @@ module internal Internal =
                     publishEvent e
                     return! state |> set
                 else
-                    let abortedEvent = 
+                    let abortedEvent =
                         { EventDetails = AbortedEvent
                           CreationDate = mailbox.System.Scheduler.Now.UtcDateTime
                           Id = Guid.CreateVersion7().ToString() |> ValueLens.CreateAsResult |> Result.value
@@ -107,9 +108,29 @@ module internal Internal =
 
             | Persisted mailbox (:? Common.Event<'TEvent> as event) ->
                 let versionN = event.Version |> ValueLens.Value
+                let eventCid = event.CorrelationId |> ValueLens.Value |> ValueLens.Value
+                let eventType = ( event.EventDetails |> nonNull).ToString()
+                let actorName = mailbox.Self.Path.Name
+
+                // Try to parse CID as W3C traceparent to recover trace context
+                let activity =
+                    let mutable parentContext = Unchecked.defaultof<ActivityContext>
+                    if ActivityContext.TryParse(eventCid, null, &parentContext) then
+                        activitySource.StartActivity($"Event:{eventType}", ActivityKind.Internal, parentContext)
+                    else
+                        // CID is not a traceparent - no tracing for this event
+                        null
+                if activity <> null then
+                    activity.SetTag("cid", eventCid) |> ignore
+                    activity.SetTag("actor", actorName) |> ignore
+                    activity.SetTag("event.type", eventType) |> ignore
+                    activity.SetTag("version", versionN) |> ignore
 
                 let innerState = applyNewState event state.State
                 publishEvent event
+
+                if activity <> null then
+                    activity.Dispose()
 
                 let newState =
                     {   Version = event.Version
@@ -139,7 +160,7 @@ module internal Internal =
                         PublishEvent = publishEvent
                         SendToSagaStarter = starter
                         Mediator = mediator
-                        Log = log }
+                        Log = logger }
 
                 return! body bodyInput
         }
@@ -197,14 +218,38 @@ module internal Internal =
                 actor {
                     match msg, state with
                     | :? Persistence.RecoveryCompleted, _ -> return! state |> set
-                    | :? (Common.Command<'Command>) as msg, _ ->
+                    | :? (Common.Command<'Command>) as cmd, _ ->
+                        let cmdCid = cmd.CorrelationId |> ValueLens.Value |> ValueLens.Value
+                        let cmdType = (box cmd.CommandDetails).ToString()
+                        let actorName = mailbox.Self.Path.Name
+
+                        // Try to parse CID as W3C traceparent to recover trace context
+                        let activity =
+                            let mutable parentContext = Unchecked.defaultof<ActivityContext>
+                            if ActivityContext.TryParse(cmdCid, null, &parentContext) then
+                                activitySource.StartActivity($"Command:{cmdType}", ActivityKind.Internal, parentContext)
+                            else
+                                // CID is not a traceparent - no tracing for this command
+                                null
+
+                        if activity <> null then
+                            activity.SetTag("cid", cmdCid) |> ignore
+                            activity.SetTag("actor", actorName) |> ignore
+                            activity.SetTag("command.type", cmdType) |> ignore
+                            activity.SetTag("version", state.Version |> ValueLens.Value) |> ignore
+
                         let toEvent =
                             toEvent
-                                msg.Id
-                                msg.CorrelationId
+                                cmd.Id
+                                cmd.CorrelationId
                                 (mailbox.Self.Path.Name |> ValueLens.CreateAsResult |> Result.value |> Some)
-                                msg.Metadata
-                        let effect = handleCommand msg state.State
+                                cmd.Metadata
+                        let effect = handleCommand cmd state.State
+
+                        if activity <> null then
+                            activity.SetTag("effect", effect.GetType().Name) |> ignore
+                            activity.Dispose()
+
                         return! handleEffect effect state mailbox toEvent state.Version bodyInput set
                     | _ ->
                         bodyInput.Log.LogWarning("Unhandled message: {msg}", msg)
@@ -228,7 +273,7 @@ module internal Internal =
         let actor = factory (id |> ValueLens.Value |> ValueLens.Value)
 
         let commonCommand: Command<_> =
-            { 
+            {
                 CommandDetails = command
                 Id = Guid.CreateVersion7().ToString() |> ValueLens.CreateAsResult |> Result.value
                 CreationDate = actorApi.System.Scheduler.Now.UtcDateTime

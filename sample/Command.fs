@@ -4,6 +4,9 @@ open FCQRS.Model.Data
 open Bootstrap
 
 // function handles the registration of a new user.
+// Note: When cid is a W3C traceparent string (e.g., "00-traceid-spanid-01"),
+// distributed tracing is automatically enabled. Use Activity.Current.Context.ToString()
+// to generate a traceparent CID from an existing activity.
 let register cid userName password =
 
     // Create an actor id from the username. Using ValueLens technique to create an ActorId. See my video.
@@ -19,7 +22,7 @@ let register cid userName password =
     let subscribe = userSubs cid actorId command condition None
 
     async {
-        // Wait for the event to happen andd decide the outcome.
+        // Wait for the event to happen and decide the outcome.
         match! subscribe with
         | { EventDetails = User.RegisterSucceeded _
             Version = v } -> return Ok v

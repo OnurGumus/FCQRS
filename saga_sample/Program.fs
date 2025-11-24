@@ -1,67 +1,107 @@
-﻿open FCQRS.Model.Data
+open FCQRS.Model.Data
 open Command
-open System.Threading.Tasks
-System.IO.File.Delete "demo.db"
-let sub = Bootstrap.sub (Query.handleEventWrapper Bootstrap.loggerFactory) 0L
+open System.Diagnostics
+open Serilog
 
-let cid (): CID =
-    System.Guid.NewGuid().ToString() |> ValueLens.CreateAsResult |> Result.value
+let isAutomated = System.Environment.GetEnvironmentVariable("AUTOMATED_TEST") <> null
 
-let userName = "testuser"
+let waitForKey() =
+    if not isAutomated then
+        System.Console.ReadKey() |> ignore
 
-let password = "password"
+// Helper to create a traceparent CID from current activity context for distributed tracing
+// Format: "00-{traceId}-{spanId}-{flags}" (W3C traceparent)
+let traceparentCid (): CID =
+    match Activity.Current with
+    | null ->
+        System.Guid.NewGuid().ToString() |> ValueLens.CreateAsResult |> Result.value
+    | act ->
+        let traceparent = $"00-{act.TraceId.ToHexString()}-{act.SpanId.ToHexString()}-01"
+        traceparent |> ValueLens.CreateAsResult |> Result.value
 
-let cid1 = cid()
+async {
+    let sw = Stopwatch.StartNew()
+    let timestamp() = sprintf "[%d ms]" sw.ElapsedMilliseconds
 
-let s = sub.Subscribe((fun e -> e.CID = cid1), 1)
-System.Console.ReadKey() |> ignore
+    System.IO.File.Delete "demo.db"
 
-// Start the operation asynchronously
-FCQRS.SchedulerController.watchForAndPauseOnNext "testuser"
-let registerTask = register cid1 userName password |> Async.StartAsTask
-//System.Threading.Thread.Sleep(1000)
-FCQRS.SchedulerController.registerAutoAdvanceOnAppearance "testuser"
+    printfn "%s Query started" (timestamp())
+    let sub = Bootstrap.sub (Query.handleEventWrapper Bootstrap.loggerF) 0L
 
-// Advance time while the task is running
-//Bootstrap.advanceTime 100 |> ignore
-//Bootstrap.advanceTime 10000 |> ignore
-// Wait for the result
-let result = registerTask.Result
-s.Task.Wait()
-s.Dispose()
-//Bootstrap.advanceTime 100 |> ignore
-printfn "%A" result
+    let userName = "testuser"
+    let password = "password"
 
-let code = System.Console.ReadLine() |> nonNull
+    // --- Register User (triggers saga with verification) ---
+    let registerSpan = Bootstrap.activitySource.StartActivity("RegisterUser.WithSaga")
+    if registerSpan <> null then
+        registerSpan.SetTag("userName", userName) |> ignore
 
-// Verification
-let verifyTask = verify (cid()) userName code |> Async.StartAsTask
-//Bootstrap.advanceTime 100 |> ignore
-let resultVerify = verifyTask.Result
-printfn "%A" resultVerify
+    let cid1 = traceparentCid()
+    let cidStr = cid1 |> ValueLens.Value |> ValueLens.Value
 
-System.Console.ReadKey() |> ignore
+    Log.Information("Executing RegisterUser command for {UserName} - triggers verification saga", userName)
 
-// Register failure case
-let failureTask = register (cid()) userName password |> Async.StartAsTask
-//Bootstrap.advanceTime 100 |> ignore
-let resultFailure = failureTask.Result
-printfn "%A" resultFailure
+    use d = sub.Subscribe((fun e -> e.CID = cid1), 1)
 
-System.Console.ReadKey() |> ignore
+    printfn "%s Sending register command (CID=%s)" (timestamp()) cidStr
 
-// Login failure
-let loginFailTask = login (cid()) userName "wrong pass" |> Async.StartAsTask
-//Bootstrap.advanceTime 100 |> ignore
-let loginResultF = loginFailTask.Result
-printfn "%A" loginResultF
+    // Watch for scheduler task and auto-advance when it appears
+    FCQRS.SchedulerController.watchForAndPauseOnNext userName
+    let! result = register cid1 userName password
+    FCQRS.SchedulerController.registerAutoAdvanceOnAppearance userName
 
-System.Console.ReadKey() |> ignore
+    if registerSpan <> null then registerSpan.Dispose()
+    printfn "%s Command completed" (timestamp())
 
-// Login success
-let loginSuccessTask = login (cid()) userName password |> Async.StartAsTask
-//Bootstrap.advanceTime 100 |> ignore
-let loginResultS = loginSuccessTask.Result
-printfn "%A" loginResultS
+    d.Task.Wait()
+    printfn "%s Event received in projection (LATENCY MEASUREMENT)" (timestamp())
+    printfn "%A" result
 
-System.Console.ReadKey() |> ignore
+    waitForKey()
+
+    // --- Verification ---
+    let verifySpan = Bootstrap.activitySource.StartActivity("VerifyUser")
+    if verifySpan <> null then
+        verifySpan.SetTag("userName", userName) |> ignore
+
+    printfn "Enter verification code:"
+    let code =
+        if isAutomated then
+            // In automated mode, just use a dummy code - the saga will handle it
+            "auto-code"
+        else
+            System.Console.ReadLine() |> nonNull
+
+    let! resultVerify = verify (traceparentCid()) userName code
+    if verifySpan <> null then verifySpan.Dispose()
+    printfn "%A" resultVerify
+
+    waitForKey()
+
+    // --- Register Duplicate (should fail) ---
+    let registerFailSpan = Bootstrap.activitySource.StartActivity("RegisterUser.Duplicate")
+    let! resultFailure = register (traceparentCid()) userName password
+    if registerFailSpan <> null then registerFailSpan.Dispose()
+    printfn "%A" resultFailure
+
+    waitForKey()
+
+    // --- Login Wrong Password ---
+    let loginFailSpan = Bootstrap.activitySource.StartActivity("LoginUser.WrongPassword")
+    let! loginResultF = login (traceparentCid()) userName "wrong pass"
+    if loginFailSpan <> null then loginFailSpan.Dispose()
+    printfn "%A" loginResultF
+
+    waitForKey()
+
+    // --- Login Success ---
+    let loginSuccessSpan = Bootstrap.activitySource.StartActivity("LoginUser.Success")
+    let! loginResultS = login (traceparentCid()) userName password
+    if loginSuccessSpan <> null then loginSuccessSpan.Dispose()
+    printfn "%A" loginResultS
+
+    waitForKey()
+
+    // Flush Serilog before exit
+    Log.CloseAndFlush()
+} |> Async.RunSynchronously

@@ -1,3 +1,9 @@
 FSharp.Core
 Hocon.Extensions.Configuration
-Microsoft.Extensions.Logging.Console
+Serilog
+Serilog.Sinks.Seq
+Serilog.Sinks.Console
+Serilog.Extensions.Logging
+SerilogTracing
+SerilogTracing.Sinks.Seq
+linq2db

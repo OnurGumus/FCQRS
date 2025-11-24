@@ -26,3 +26,10 @@ nuget SQLitePCLRaw.core
 nuget Fable.Package.SDK
 nuget Expecto
 nuget TickSpec
+nuget Serilog >= 4.2.0
+nuget Serilog.Sinks.Seq >= 9.0.0
+nuget Serilog.Sinks.Console >= 6.0.0
+nuget Serilog.Extensions.Logging >= 8.0.0 < 10.0.0
+nuget SerilogTracing
+nuget SerilogTracing.Sinks.Seq
+nuget linq2db 5.4.1

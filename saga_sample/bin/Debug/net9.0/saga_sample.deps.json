@@ -8,18 +8,12 @@
     ".NETCoreApp,Version=v9.0": {
       "saga_sample/1.0.0": {
         "dependencies": {
-          "Akka": "1.5.55",
-          "Akka.Analyzers": "0.3.3",
-          "Akka.TestKit": "1.5.55",
           "FCQRS": "1.0.0",
           "FSharp.Core": "9.0.303",
-          "FluentAssertions": "8.8.0",
           "Hocon": "2.0.4",
           "Hocon.Extensions.Configuration": "2.0.4",
-          "Microsoft.Bcl.AsyncInterfaces": "9.0.10",
           "Microsoft.Extensions.Configuration": "9.0.10",
           "Microsoft.Extensions.Configuration.Abstractions": "9.0.10",
-          "Microsoft.Extensions.Configuration.Binder": "9.0.10",
           "Microsoft.Extensions.Configuration.FileExtensions": "9.0.10",
           "Microsoft.Extensions.DependencyInjection": "9.0.10",
           "Microsoft.Extensions.DependencyInjection.Abstractions": "9.0.10",
@@ -28,24 +22,18 @@
           "Microsoft.Extensions.FileSystemGlobbing": "9.0.10",
           "Microsoft.Extensions.Logging": "9.0.10",
           "Microsoft.Extensions.Logging.Abstractions": "9.0.10",
-          "Microsoft.Extensions.Logging.Configuration": "9.0.10",
-          "Microsoft.Extensions.Logging.Console": "9.0.10",
-          "Microsoft.Extensions.ObjectPool": "9.0.10",
           "Microsoft.Extensions.Options": "9.0.10",
-          "Microsoft.Extensions.Options.ConfigurationExtensions": "9.0.10",
           "Microsoft.Extensions.Primitives": "9.0.10",
           "Microsoft.NETCore.Platforms": "7.0.4",
-          "Newtonsoft.Json": "13.0.4",
-          "Nito.AsyncEx.Context": "5.1.2",
-          "Nito.AsyncEx.Coordination": "5.1.2",
-          "Nito.AsyncEx.Tasks": "5.1.2",
-          "Nito.Collections.Deque": "1.2.1",
-          "Nito.Disposables": "2.5.0",
-          "System.Collections.Immutable": "9.0.10",
-          "System.Configuration.ConfigurationManager": "9.0.10",
-          "System.Diagnostics.EventLog": "9.0.10",
-          "System.Linq.Async": "6.0.3",
-          "System.Security.Cryptography.ProtectedData": "9.0.10"
+          "Serilog": "4.3.0",
+          "Serilog.Expressions": "5.0.0",
+          "Serilog.Extensions.Logging": "9.0.2",
+          "Serilog.Sinks.Console": "6.1.1",
+          "Serilog.Sinks.File": "7.0.0",
+          "Serilog.Sinks.Seq": "9.0.0",
+          "SerilogTracing": "2.3.1",
+          "SerilogTracing.Sinks.Seq": "1.0.1-dev-00264",
+          "linq2db": "5.4.1"
         },
         "runtime": {
           "saga_sample.dll": {}
@@ -184,7 +172,7 @@
           "Microsoft.Bcl.HashCode": "6.0.0",
           "System.Linq.Async": "6.0.3",
           "System.Reactive.Linq": "6.1.0",
-          "linq2db": "5.4.1.9"
+          "linq2db": "5.4.1"
         },
         "runtime": {
           "lib/net6.0/Akka.Persistence.Sql.dll": {
@@ -671,11 +659,11 @@
           }
         }
       },
-      "linq2db/5.4.1.9": {
+      "linq2db/5.4.1": {
         "runtime": {
-          "lib/net8.0/linq2db.dll": {
-            "assemblyVersion": "5.0.0.0",
-            "fileVersion": "5.0.0.0"
+          "lib/net6.0/linq2db.dll": {
+            "assemblyVersion": "5.4.1.0",
+            "fileVersion": "5.4.1.0"
           }
         }
       },
@@ -732,17 +720,6 @@
         },
         "runtime": {
           "lib/net9.0/Microsoft.Extensions.Configuration.Abstractions.dll": {
-            "assemblyVersion": "9.0.0.0",
-            "fileVersion": "9.0.1025.47515"
-          }
-        }
-      },
-      "Microsoft.Extensions.Configuration.Binder/9.0.10": {
-        "dependencies": {
-          "Microsoft.Extensions.Configuration.Abstractions": "9.0.10"
-        },
-        "runtime": {
-          "lib/net9.0/Microsoft.Extensions.Configuration.Binder.dll": {
             "assemblyVersion": "9.0.0.0",
             "fileVersion": "9.0.1025.47515"
           }
@@ -838,39 +815,6 @@
           }
         }
       },
-      "Microsoft.Extensions.Logging.Configuration/9.0.10": {
-        "dependencies": {
-          "Microsoft.Extensions.Configuration": "9.0.10",
-          "Microsoft.Extensions.Configuration.Abstractions": "9.0.10",
-          "Microsoft.Extensions.Configuration.Binder": "9.0.10",
-          "Microsoft.Extensions.DependencyInjection.Abstractions": "9.0.10",
-          "Microsoft.Extensions.Logging": "9.0.10",
-          "Microsoft.Extensions.Logging.Abstractions": "9.0.10",
-          "Microsoft.Extensions.Options": "9.0.10",
-          "Microsoft.Extensions.Options.ConfigurationExtensions": "9.0.10"
-        },
-        "runtime": {
-          "lib/net9.0/Microsoft.Extensions.Logging.Configuration.dll": {
-            "assemblyVersion": "9.0.0.0",
-            "fileVersion": "9.0.1025.47515"
-          }
-        }
-      },
-      "Microsoft.Extensions.Logging.Console/9.0.10": {
-        "dependencies": {
-          "Microsoft.Extensions.DependencyInjection.Abstractions": "9.0.10",
-          "Microsoft.Extensions.Logging": "9.0.10",
-          "Microsoft.Extensions.Logging.Abstractions": "9.0.10",
-          "Microsoft.Extensions.Logging.Configuration": "9.0.10",
-          "Microsoft.Extensions.Options": "9.0.10"
-        },
-        "runtime": {
-          "lib/net9.0/Microsoft.Extensions.Logging.Console.dll": {
-            "assemblyVersion": "9.0.0.0",
-            "fileVersion": "9.0.1025.47515"
-          }
-        }
-      },
       "Microsoft.Extensions.ObjectPool/9.0.10": {
         "runtime": {
           "lib/net9.0/Microsoft.Extensions.ObjectPool.dll": {
@@ -886,21 +830,6 @@
         },
         "runtime": {
           "lib/net9.0/Microsoft.Extensions.Options.dll": {
-            "assemblyVersion": "9.0.0.0",
-            "fileVersion": "9.0.1025.47515"
-          }
-        }
-      },
-      "Microsoft.Extensions.Options.ConfigurationExtensions/9.0.10": {
-        "dependencies": {
-          "Microsoft.Extensions.Configuration.Abstractions": "9.0.10",
-          "Microsoft.Extensions.Configuration.Binder": "9.0.10",
-          "Microsoft.Extensions.DependencyInjection.Abstractions": "9.0.10",
-          "Microsoft.Extensions.Options": "9.0.10",
-          "Microsoft.Extensions.Primitives": "9.0.10"
-        },
-        "runtime": {
-          "lib/net9.0/Microsoft.Extensions.Options.ConfigurationExtensions.dll": {
             "assemblyVersion": "9.0.0.0",
             "fileVersion": "9.0.1025.47515"
           }
@@ -1088,6 +1017,95 @@
       "runtime.ubuntu.14.04-x64.runtime.native.System.Security.Cryptography.OpenSsl/4.3.0": {},
       "runtime.ubuntu.16.04-x64.runtime.native.System.Security.Cryptography.OpenSsl/4.3.0": {},
       "runtime.ubuntu.16.10-x64.runtime.native.System.Security.Cryptography.OpenSsl/4.3.0": {},
+      "Serilog/4.3.0": {
+        "runtime": {
+          "lib/net9.0/Serilog.dll": {
+            "assemblyVersion": "4.3.0.0",
+            "fileVersion": "4.3.0.0"
+          }
+        }
+      },
+      "Serilog.Expressions/5.0.0": {
+        "dependencies": {
+          "Serilog": "4.3.0"
+        },
+        "runtime": {
+          "lib/net8.0/Serilog.Expressions.dll": {
+            "assemblyVersion": "5.0.0.0",
+            "fileVersion": "5.0.0.0"
+          }
+        }
+      },
+      "Serilog.Extensions.Logging/9.0.2": {
+        "dependencies": {
+          "Microsoft.Extensions.Logging": "9.0.10",
+          "Serilog": "4.3.0"
+        },
+        "runtime": {
+          "lib/net9.0/Serilog.Extensions.Logging.dll": {
+            "assemblyVersion": "9.0.2.0",
+            "fileVersion": "9.0.2.0"
+          }
+        }
+      },
+      "Serilog.Sinks.Console/6.1.1": {
+        "dependencies": {
+          "Serilog": "4.3.0"
+        },
+        "runtime": {
+          "lib/net8.0/Serilog.Sinks.Console.dll": {
+            "assemblyVersion": "6.1.1.0",
+            "fileVersion": "6.1.1.0"
+          }
+        }
+      },
+      "Serilog.Sinks.File/7.0.0": {
+        "dependencies": {
+          "Serilog": "4.3.0"
+        },
+        "runtime": {
+          "lib/net9.0/Serilog.Sinks.File.dll": {
+            "assemblyVersion": "7.0.0.0",
+            "fileVersion": "7.0.0.0"
+          }
+        }
+      },
+      "Serilog.Sinks.Seq/9.0.0": {
+        "dependencies": {
+          "Serilog": "4.3.0",
+          "Serilog.Sinks.File": "7.0.0"
+        },
+        "runtime": {
+          "lib/net6.0/Serilog.Sinks.Seq.dll": {
+            "assemblyVersion": "9.0.0.0",
+            "fileVersion": "9.0.0.0"
+          }
+        }
+      },
+      "SerilogTracing/2.3.1": {
+        "dependencies": {
+          "Serilog": "4.3.0"
+        },
+        "runtime": {
+          "lib/net8.0/SerilogTracing.dll": {
+            "assemblyVersion": "2.3.1.0",
+            "fileVersion": "2.3.1.0"
+          }
+        }
+      },
+      "SerilogTracing.Sinks.Seq/1.0.1-dev-00264": {
+        "dependencies": {
+          "Serilog.Expressions": "5.0.0",
+          "Serilog.Sinks.Seq": "9.0.0",
+          "SerilogTracing": "2.3.1"
+        },
+        "runtime": {
+          "lib/net6.0/SerilogTracing.Sinks.Seq.dll": {
+            "assemblyVersion": "1.0.1.0",
+            "fileVersion": "1.0.1.0"
+          }
+        }
+      },
       "SourceGear.sqlite3/3.50.4.5": {
         "runtimeTargets": {
           "runtimes/android-arm/native/libe_sqlite3.so": {
@@ -2043,7 +2061,7 @@
           "System.Threading.Tasks": "4.3.0",
           "System.Threading.Tasks.Extensions": "4.6.3",
           "System.ValueTuple": "4.6.1",
-          "linq2db": "5.4.1.9"
+          "linq2db": "5.4.1"
         },
         "runtime": {
           "FCQRS.dll": {
@@ -2347,12 +2365,12 @@
       "path": "lightningdb/0.19.1",
       "hashPath": "lightningdb.0.19.1.nupkg.sha512"
     },
-    "linq2db/5.4.1.9": {
+    "linq2db/5.4.1": {
       "type": "package",
       "serviceable": true,
-      "sha512": "sha512-Djc7yNoVT7byauCbFddUi87FXGfUdk1TtXC2lYQOPt86674IpGMPas7JQkU1AJKnTqpuZeaYdgRqEn7hASpZPQ==",
-      "path": "linq2db/5.4.1.9",
-      "hashPath": "linq2db.5.4.1.9.nupkg.sha512"
+      "sha512": "sha512-qyH32MbFK6T55KsEcQYTbPFfkOa1Mo65lY/Zo8SFVMy0pwkQBCTnA/RUxyG5+l3D/mgfPz85PH3upDrtklSMrw==",
+      "path": "linq2db/5.4.1",
+      "hashPath": "linq2db.5.4.1.nupkg.sha512"
     },
     "Microsoft.Bcl.AsyncInterfaces/9.0.10": {
       "type": "package",
@@ -2402,13 +2420,6 @@
       "sha512": "sha512-ad3JxmFj0uxuFa1CT6oxTCC1lQ0xeRuOvzBRFT/I/ofIXVOnNsH/v2GZkAJWhlpZqKUvSexQZzp3EEAB2CdtJg==",
       "path": "microsoft.extensions.configuration.abstractions/9.0.10",
       "hashPath": "microsoft.extensions.configuration.abstractions.9.0.10.nupkg.sha512"
-    },
-    "Microsoft.Extensions.Configuration.Binder/9.0.10": {
-      "type": "package",
-      "serviceable": true,
-      "sha512": "sha512-D6Kng+9I+w1SQPxJybc6wzw9nnnyUQPutycjtI0svv1RHaWOpUk9PPlwIRfhhoQZ3yihejkEI2wNv/7VnVtkGA==",
-      "path": "microsoft.extensions.configuration.binder/9.0.10",
-      "hashPath": "microsoft.extensions.configuration.binder.9.0.10.nupkg.sha512"
     },
     "Microsoft.Extensions.Configuration.FileExtensions/9.0.10": {
       "type": "package",
@@ -2466,20 +2477,6 @@
       "path": "microsoft.extensions.logging.abstractions/9.0.10",
       "hashPath": "microsoft.extensions.logging.abstractions.9.0.10.nupkg.sha512"
     },
-    "Microsoft.Extensions.Logging.Configuration/9.0.10": {
-      "type": "package",
-      "serviceable": true,
-      "sha512": "sha512-qwTRpxrmLOXZrbgQHRZ9wS2AtVa/61DFIYk8k1rBCCgA5qW0MBxxQC4BjkaI0wSoHHOv/IUXBeFNK+Y59qe/Ug==",
-      "path": "microsoft.extensions.logging.configuration/9.0.10",
-      "hashPath": "microsoft.extensions.logging.configuration.9.0.10.nupkg.sha512"
-    },
-    "Microsoft.Extensions.Logging.Console/9.0.10": {
-      "type": "package",
-      "serviceable": true,
-      "sha512": "sha512-ponA8k4E4S0LlQ8J4ce4Yp1NND8rxww0lbADK9yL3omRpnnawiENb7W/CTgZUIZVJxKcmIwhm1IbUCRk6RLocQ==",
-      "path": "microsoft.extensions.logging.console/9.0.10",
-      "hashPath": "microsoft.extensions.logging.console.9.0.10.nupkg.sha512"
-    },
     "Microsoft.Extensions.ObjectPool/9.0.10": {
       "type": "package",
       "serviceable": true,
@@ -2493,13 +2490,6 @@
       "sha512": "sha512-zMNABt8eBv0B0XrWjFy9nZNgddavaOeq3ZdaD5IlHhRH65MrU7HM+Hd8GjWE3e2VDGFPZFfSAc6XVXC17f9fOA==",
       "path": "microsoft.extensions.options/9.0.10",
       "hashPath": "microsoft.extensions.options.9.0.10.nupkg.sha512"
-    },
-    "Microsoft.Extensions.Options.ConfigurationExtensions/9.0.10": {
-      "type": "package",
-      "serviceable": true,
-      "sha512": "sha512-wLsf2TyVFFxWQPv0PRJj365it1ngIt8utlHJWSZ9OJ2k+NDa/PtBIRsGlF/NkoLwm1m+1vOePNl2MiKfk6lYfQ==",
-      "path": "microsoft.extensions.options.configurationextensions/9.0.10",
-      "hashPath": "microsoft.extensions.options.configurationextensions.9.0.10.nupkg.sha512"
     },
     "Microsoft.Extensions.Primitives/9.0.10": {
       "type": "package",
@@ -2696,6 +2686,62 @@
       "sha512": "sha512-VB5cn/7OzUfzdnC8tqAIMQciVLiq2epm2NrAm1E9OjNRyG4lVhfR61SMcLizejzQP8R8Uf/0l5qOIbUEi+RdEg==",
       "path": "runtime.ubuntu.16.10-x64.runtime.native.system.security.cryptography.openssl/4.3.0",
       "hashPath": "runtime.ubuntu.16.10-x64.runtime.native.system.security.cryptography.openssl.4.3.0.nupkg.sha512"
+    },
+    "Serilog/4.3.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-+cDryFR0GRhsGOnZSKwaDzRRl4MupvJ42FhCE4zhQRVanX0Jpg6WuCBk59OVhVDPmab1bB+nRykAnykYELA9qQ==",
+      "path": "serilog/4.3.0",
+      "hashPath": "serilog.4.3.0.nupkg.sha512"
+    },
+    "Serilog.Expressions/5.0.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-QhZjXtUcA2QfQRA60m+DfyIfidKsQV7HBstbYEDqzJKMbJH/KnKthkkjciRuYrmFE+scWv1JibC5LlXrdtOUmw==",
+      "path": "serilog.expressions/5.0.0",
+      "hashPath": "serilog.expressions.5.0.0.nupkg.sha512"
+    },
+    "Serilog.Extensions.Logging/9.0.2": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-p8kk2McN6LxuQfLyCoOkL7+nJIhVKnV1WFUxAaGTQTQk0wySbgmCHe98j+xSQvIbYHtzKXROOE2G2R0TLwBfig==",
+      "path": "serilog.extensions.logging/9.0.2",
+      "hashPath": "serilog.extensions.logging.9.0.2.nupkg.sha512"
+    },
+    "Serilog.Sinks.Console/6.1.1": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-8jbqgjUyZlfCuSTaJk6lOca465OndqOz3KZP6Cryt/IqZYybyBu7GP0fE/AXBzrrQB3EBmQntBFAvMVz1COvAA==",
+      "path": "serilog.sinks.console/6.1.1",
+      "hashPath": "serilog.sinks.console.6.1.1.nupkg.sha512"
+    },
+    "Serilog.Sinks.File/7.0.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-fKL7mXv7qaiNBUC71ssvn/dU0k9t0o45+qm2XgKAlSt19xF+ijjxyA3R6HmCgfKEKwfcfkwWjayuQtRueZFkYw==",
+      "path": "serilog.sinks.file/7.0.0",
+      "hashPath": "serilog.sinks.file.7.0.0.nupkg.sha512"
+    },
+    "Serilog.Sinks.Seq/9.0.0": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-aNU8A0K322q7+voPNmp1/qNPH+9QK8xvM1p72sMmCG0wGlshFzmtDW9QnVSoSYCj0MgQKcMOlgooovtBhRlNHw==",
+      "path": "serilog.sinks.seq/9.0.0",
+      "hashPath": "serilog.sinks.seq.9.0.0.nupkg.sha512"
+    },
+    "SerilogTracing/2.3.1": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-tkl/Rm3kzdOAQ2uwMARw2vE7QftYij9Tjbplg1SuaB+h+YfkX0RQDAxKwnMEVBZbsbnst4JGfk3J66V1EDovPA==",
+      "path": "serilogtracing/2.3.1",
+      "hashPath": "serilogtracing.2.3.1.nupkg.sha512"
+    },
+    "SerilogTracing.Sinks.Seq/1.0.1-dev-00264": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-uav/zIi1HDbS1G6nXGFJJj02snS7mkRmPNotevsbK8ZKszuM5OHCsub75ZIuUAFZg6k4iOeRrx5+LVyJlU8+Ug==",
+      "path": "serilogtracing.sinks.seq/1.0.1-dev-00264",
+      "hashPath": "serilogtracing.sinks.seq.1.0.1-dev-00264.nupkg.sha512"
     },
     "SourceGear.sqlite3/3.50.4.5": {
       "type": "package",

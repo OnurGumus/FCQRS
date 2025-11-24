@@ -1,6 +1,13 @@
 ﻿open FCQRS.Model.Data
 open Command
 open System.Diagnostics
+open Serilog
+
+let isAutomated = System.Environment.GetEnvironmentVariable("AUTOMATED_TEST") <> null
+
+let waitForKey() =
+    if not isAutomated then
+        System.Console.ReadKey() |> ignore
 
 async{
 let sw = Stopwatch.StartNew()
@@ -10,47 +17,70 @@ let timestamp() = sprintf "[%d ms]" sw.ElapsedMilliseconds
 printfn "%s Query started" (timestamp())
 let sub = Bootstrap.sub (Query.handleEventWrapper Bootstrap.loggerF) 0L
 
-// Helper function to create a new CID.
-let cid (): CID =
-    System.Guid.NewGuid().ToString() |> ValueLens.CreateAsResult |> Result.value
+// Helper to create a traceparent CID from current activity context for distributed tracing
+// Format: "00-{traceId}-{spanId}-{flags}" (W3C traceparent)
+// Each command gets its own trace - the span becomes the trace root
+let traceparentCid (): CID =
+    match Activity.Current with
+    | null ->
+        // No current activity - create plain GUID (no tracing)
+        System.Guid.NewGuid().ToString() |> ValueLens.CreateAsResult |> Result.value
+    | act ->
+        let traceparent = $"00-{act.TraceId.ToHexString()}-{act.SpanId.ToHexString()}-01"
+        traceparent |> ValueLens.CreateAsResult |> Result.value
 
 // user name and password for testing.
 let userName = "testuser"
-
 let password = "password"
 
-let cid1 = cid()
+// --- Register User (separate trace) ---
+// Each command creates its own root span = its own trace
+let registerSpan = Bootstrap.activitySource.StartActivity("RegisterUser")
+if registerSpan <> null then
+    registerSpan.SetTag("userName", userName) |> ignore
 
-// We create a subscription BEFORE sending the command.
-// This is to ensure that we don't miss the event.
-// We are interested in the first event that has the same CID as the one we are sending.
+let cid1 = traceparentCid()
+let cidStr = cid1 |> ValueLens.Value |> ValueLens.Value
+
+// This log will be part of the RegisterUser trace (while span is active)
+Log.Information("Executing RegisterUser command for {UserName}", userName)
+
+// Subscribe to wait for query side to catch up
 use d = sub.Subscribe((fun e -> e.CID = cid1), 1)
 
-// Send the command to register a new user.
-printfn "%s Sending register command" (timestamp())
+printfn "%s Sending register command (CID=%s)" (timestamp()) cidStr
 let! result = register cid1 userName password
+if registerSpan <> null then registerSpan.Dispose()
 printfn "%s Command completed" (timestamp())
 
-// Wait for the event to happen.
 d.Task.Wait()
 printfn "%s Event received in projection (LATENCY MEASUREMENT)" (timestamp())
 printfn "%A" result
 
-// Try registering the same user again.
-let! resultFailure = register (cid()) userName password
+// --- Register Duplicate (separate trace) ---
+let registerFailSpan = Bootstrap.activitySource.StartActivity("RegisterUser.Duplicate")
+let! resultFailure = register (traceparentCid()) userName password
+if registerFailSpan <> null then registerFailSpan.Dispose()
 printfn "%A" resultFailure
 
-System.Console.ReadKey() |> ignore
+waitForKey()
 
-// Login the user with incorrect password.
-let! loginResultF = login (cid()) userName "wrong pass"
+// --- Login Wrong Password (separate trace) ---
+let loginFailSpan = Bootstrap.activitySource.StartActivity("LoginUser.WrongPassword")
+let! loginResultF = login (traceparentCid()) userName "wrong pass"
+if loginFailSpan <> null then loginFailSpan.Dispose()
 printfn "%A" loginResultF
 
-// Login the user with correct password.
-let! loginResultS = login (cid()) userName password 
+// --- Login Success (separate trace) ---
+let loginSuccessSpan = Bootstrap.activitySource.StartActivity("LoginUser.Success")
+let! loginResultS = login (traceparentCid()) userName password
+if loginSuccessSpan <> null then loginSuccessSpan.Dispose()
 printfn "%A" loginResultS
 
 
 // Best to wait for hit key to exit.
-System.Console.ReadKey() |> ignore
+waitForKey()
+
+// Flush Serilog before exit to ensure all logs are sent to Seq
+Log.CloseAndFlush()
 } |> Async.RunSynchronously

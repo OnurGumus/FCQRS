@@ -3,6 +3,9 @@ module Command
 open FCQRS.Model.Data
 open Bootstrap
 
+// Note: When cid is a W3C traceparent string (e.g., "00-traceid-spanid-01"),
+// distributed tracing is automatically enabled.
+
 let register cid userName password =
 
     let actorId: AggregateId = userName |> ValueLens.CreateAsResult |> Result.value
@@ -12,7 +15,7 @@ let register cid userName password =
     let condition (e: User.Event) =
         e.IsAlreadyRegistered || e.IsVerificationRequested
 
-    let subscribe = userSubs cid actorId command condition (Some(Map["Foo", "Bar"]) )
+    let subscribe = userSubs cid actorId command condition (Some(Map["Foo", "Bar"]))
 
     async {
         match! subscribe with

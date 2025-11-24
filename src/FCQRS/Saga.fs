@@ -14,6 +14,9 @@ open Microsoft.FSharp.Reflection
 open FCQRS.Model.Data
 open AkklingHelpers
 open Microsoft.Extensions.Configuration
+open System.Diagnostics
+
+let private activitySource = new ActivitySource("FCQRS.Saga")
 
 let private toStateChange state =
     state |> StateChanged |> box |> Persist :> Effect<obj>
@@ -51,7 +54,63 @@ let private runSaga<'TEvent, 'SagaData, 'State>
 
         actor {
             let! msg = mailbox.Receive()
-            log.LogInformation("Saga:{@name} SagaMessage: {MSG}", mailbox.Self.Path.ToString(), msg)
+
+            // Try to parse CID as W3C traceparent to recover trace context for OTEL
+            // Handle both IMessage and SagaStartingEvent (which wraps an IMessage)
+            let tryExtractCid (m: obj) =
+                match m with
+                | :? FCQRS.Model.Data.IMessage as im ->
+                    Some (im.CID |> ValueLens.Value |> ValueLens.Value)
+                | :? SagaStarter.SagaStartingEvent<FCQRS.Model.Data.IMessage> as se ->
+                    Some (se.Event.CID |> ValueLens.Value |> ValueLens.Value)
+                | _ ->
+                    // Try to get Event property via reflection for generic SagaStartingEvent
+                    let t = m.GetType()
+                    if t.Name.StartsWith("SagaStartingEvent") then
+                        let eventProp = t.GetProperty("Event")
+                        if eventProp <> null then
+                            match eventProp.GetValue(m) with
+                            | :? FCQRS.Model.Data.IMessage as innerMsg ->
+                                Some (innerMsg.CID |> ValueLens.Value |> ValueLens.Value)
+                            | _ -> None
+                        else None
+                    else None
+
+            // Extract CID from the starting event (which has the original trace context)
+            let getCidFromStartingEvent () =
+                match startingEvent with
+                | Some se -> tryExtractCid (box se)
+                | None -> None
+
+            // Helper to create and emit a state change activity (only for state transitions)
+            let emitStateChangeActivity (newState: 'State) =
+                match getCidFromStartingEvent () with
+                | Some cid ->
+                    let mutable parentContext = Unchecked.defaultof<ActivityContext>
+                    if ActivityContext.TryParse(cid, null, &parentContext) then
+                        let sagaName = mailbox.Self.Path.Name
+                        // Recursively extract innermost union case name
+                        // This unwraps SagaStateWrapper.UserDefined to get actual user state
+                        let rec getUnionCaseName (obj: obj) =
+                            let t = obj.GetType()
+                            if FSharpType.IsUnion(t) then
+                                let case, fields = FSharpValue.GetUnionFields(obj, t)
+                                // If case is "UserDefined" with one field, unwrap it
+                                if case.Name = "UserDefined" && fields.Length = 1 then
+                                    getUnionCaseName fields.[0]
+                                else
+                                    case.Name
+                            else
+                                sprintf "%A" obj
+                        let boxedState = box newState
+                        let stateStr = getUnionCaseName boxedState
+                        // Short span name: "Saga:Started" - details in tags
+                        use act = activitySource.StartActivity($"Saga:{stateStr}", ActivityKind.Internal, parentContext)
+                        if act <> null then
+                            act.SetTag("cid", cid) |> ignore
+                            act.SetTag("saga.id", sagaName) |> ignore
+                            act.SetTag("saga.state", stateStr) |> ignore
+                | None -> ()
 
             match msg with
             | :? Event<AbortedEvent> ->
@@ -72,7 +131,7 @@ let private runSaga<'TEvent, 'SagaData, 'State>
                     try
                         let newState = applyNewState (wrapper s).SagaState
                         let newState = { state with SagaState = newState }
-                        return! newState |> set innerSetValue //<@> innerSet (startingEvent, true)
+                        return! newState |> set innerSetValue
                     with ex ->
                         log.LogError(ex, "Fatal error during saga recovery for {0}. Terminating process to prevent restart loop.", mailbox.Self.Path.ToString())
                         System.Environment.FailFast "Process terminated due to saga error"
@@ -80,25 +139,32 @@ let private runSaga<'TEvent, 'SagaData, 'State>
 
             | PersistentLifecycleEvent _
             | :? Persistence.SaveSnapshotSuccess
-            | LifecycleEvent _ -> return! innerSet (startingEvent, true)
-            | SnapshotOffer(snapState: obj) -> return! snapState |> unbox<_> |> set innerSetValue
-            | SubscriptionAcknowledged mailbox _ -> 
+            | LifecycleEvent _ ->
+                return! innerSet (startingEvent, true)
+            | SnapshotOffer(snapState: obj) ->
+                return! snapState |> unbox<_> |> set innerSetValue
+            | SubscriptionAcknowledged mailbox _ ->
                 // notify saga starter about the subscription completed
                 let newState = applySideEffects state startingEvent true
 
                 match newState with
                 | Some newState ->
+                    // Activity will be emitted when state is persisted (in Persisted branch)
                     return! newState |> StateChanged |> box |> Persist <@> innerSet (startingEvent, true)
-                | None -> return! state |> set innerSetValue <@> innerSet (startingEvent, true)
+                | None ->
+                    return! state |> set innerSetValue <@> innerSet (startingEvent, true)
 
             | Deferred mailbox obj
             | Persisted mailbox obj ->
                 match obj with
-                | :? SagaStartingEventWrapper<'TEvent> as SagaStartingEventWrapper e -> return innerSet (Some e, true)
+                | :? SagaStartingEventWrapper<'TEvent> as SagaStartingEventWrapper e ->
+                    return innerSet (Some e, true)
                 | :? SagaEvent<'State> as e ->
                     match e with
                     | StateChanged originalState ->
                         try
+                            // Emit activity for the persisted state change
+                            emitStateChangeActivity originalState
                             let outerState = wrapper originalState
 
                             let newSagaState = applyNewState outerState.SagaState
@@ -119,6 +185,8 @@ let private runSaga<'TEvent, 'SagaData, 'State>
                                     { parentState with
                                         SagaState = newInnerState }
 
+                                // Note: Activity already emitted for originalState above
+                                // The newState will trigger another Persisted event which will emit its activity
 
                                 if version >= snapshotVersionCount && version % snapshotVersionCount = 0L then
                                     return! parentState |> set innerSetValue <@> SaveSnapshot parentState
@@ -152,7 +220,8 @@ let private runSaga<'TEvent, 'SagaData, 'State>
                 cont mediator
                 return! innerSet (startingEvent, subscribed)
 
-            | _ -> return! body msg
+            | _ ->
+                return! body msg
         }
 
     innerSet innerStateDefaults
@@ -209,16 +278,17 @@ let private actorProp
                         else
                             x |> Unchecked.nonNull
 
-                    let metadata = 
+                    let metadata =
                         match startingEvent with
-                        | Some se -> 
+                        | Some se ->
                             match box se.Event with
-                            | :? FCQRS.Model.Data.IMessage as msg -> 
+                            | :? FCQRS.Model.Data.IMessage as msg ->
                                 msg.Metadata
-                            | _ -> 
+                            | _ ->
                                 Map.empty
-                        | None -> 
+                        | None ->
                             Map.empty
+
                     let command = createCommand mailbox cmd.Command cid metadata
 
                     let unboxx (msg: Command<obj>) =
