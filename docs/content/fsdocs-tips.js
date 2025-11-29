@@ -58,11 +58,12 @@ function formatTooltipContent(el) {
     html = html.replace(/(?<![-"'])\b(type|interface|member|override|module)\b(?![-"'])/g, '<span class="fsdocs-keyword">$1</span>');
 
     // Replace typeparam tags with just the type name in type color
-    // &lt;typeparam name="'EventDetails"&gt; becomes <EventDetails> in aqua
-    html = html.replace(/&lt;typeparam\s+name="'?(\w+)"?&gt;/g, '<span class="fsdocs-type">&lt;$1&gt;</span>');
+    // &amp;lt;typeparam name="'EventDetails"&amp;gt; becomes <EventDetails> in aqua
+    // Double-encoded: &amp;lt; and &amp;gt;
+    html = html.replace(/&amp;lt;typeparam\s+name=["']?'?(\w+)["']?&amp;gt;/g, '<span class="fsdocs-type">&lt;$1&gt;</span>');
 
     // Also handle closing typeparam tags - just remove them
-    html = html.replace(/&lt;\/typeparam&gt;/g, '');
+    html = html.replace(/&amp;lt;\/typeparam&amp;gt;/g, '');
 
     // Color summary content green and hide the summary tags
     html = html.replace(/&lt;summary&gt;([\s\S]*?)&lt;\/summary&gt;/g, '<span class="fsdocs-summary">$1</span>');
