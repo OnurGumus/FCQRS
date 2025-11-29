@@ -36,8 +36,11 @@ function formatTooltipContent(el) {
     // Add line break before pipe '|' for discriminated unions (with leading spaces)
     html = html.replace(/(\s{2,})(\|)/g, '<br>$1$2');
 
-    // Add line break before words ending with ':' (member names, with leading spaces)
-    html = html.replace(/(\s{2,})(\w+:)/g, '<br>$1$2');
+    // Add line break before words ending with ':' (member names, with leading spaces and 4 nbsp indent)
+    html = html.replace(/(\s{2,})(\w+:)/g, '<br>&nbsp;&nbsp;&nbsp;&nbsp;$2');
+
+    // Add line break before '}' closing braces
+    html = html.replace(/(\s*)(\})/g, '<br>$1$2');
 
     el.innerHTML = html;
 }
