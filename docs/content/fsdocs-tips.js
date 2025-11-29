@@ -75,7 +75,11 @@ function formatTooltipContent(el) {
     html = html.replace(/(\*\s*)(['A-Za-z_][\w]*)/g, '$1<span class="fsdocs-type">$2</span>');
 
     // Color all words starting with apostrophe as type (generic type params like 'T, 'TEvent)
-    html = html.replace(/(?<![<\w])('[A-Za-z_][\w]*)/g, '<span class="fsdocs-type">$1</span>');
+    // Avoid matching inside already-processed spans or HTML tags
+    html = html.replace(/(?<![<>\w"])('[A-Za-z_][\w]*)/g, '<span class="fsdocs-type">$1</span>');
+
+    // Color words ending with < (generic types like List<, Option<, IEnumerable<)
+    html = html.replace(/([A-Za-z_][\w]*)(&lt;)/g, '<span class="fsdocs-type">$1</span>$2');
 
     // Replace typeparam tags with just the type name in type color
     // &amp;lt;typeparam name="'EventDetails"&amp;gt; becomes <EventDetails> in aqua
