@@ -53,9 +53,23 @@ function formatTooltipContent(el) {
     // Match: "| CaseName of TypeExpression" and color everything after "of"
     html = html.replace(/(<br>\s*\|[^<]*?\bof\s+)((?:['A-Za-z_][\w]*(?:&lt;[^&]*&gt;)?\s*)+)/g, '$1<span class="fsdocs-type">$2</span>');
 
+    // Color 'of' keyword in discriminated union cases (lines starting with |)
+    html = html.replace(/(<br>\s*\|[^<]*?)\bof\b/g, '$1<span class="fsdocs-keyword">of</span>');
+
     // Color F# keywords (case sensitive) - type, interface, member, override, module
     // Use negative lookbehind to avoid matching inside class names like "fsdocs-type"
     html = html.replace(/(?<![-"'])\b(type|interface|member|override|module)\b(?![-"'])/g, '<span class="fsdocs-keyword">$1</span>');
+
+    // Color first word after 'type', 'interface', and 'module' keywords as type
+    html = html.replace(/(<span class="fsdocs-keyword">(?:type|interface|module)<\/span>\s+)(['A-Za-z_][\w]*)/g, '$1<span class="fsdocs-type">$2</span>');
+
+    // Color words before and after '->' (function arrow, encoded as -&gt;)
+    html = html.replace(/(['A-Za-z_][\w]*)(\s*-&gt;)/g, '<span class="fsdocs-type">$1</span>$2');
+    html = html.replace(/(-&gt;\s*)(['A-Za-z_][\w]*)/g, '$1<span class="fsdocs-type">$2</span>');
+
+    // Color words before and after '*' (tuple)
+    html = html.replace(/(['A-Za-z_][\w]*)(\s*\*)/g, '<span class="fsdocs-type">$1</span>$2');
+    html = html.replace(/(\*\s*)(['A-Za-z_][\w]*)/g, '$1<span class="fsdocs-type">$2</span>');
 
     // Replace typeparam tags with just the type name in type color
     // &amp;lt;typeparam name="'EventDetails"&amp;gt; becomes <EventDetails> in aqua
