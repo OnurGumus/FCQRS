@@ -49,16 +49,19 @@ function formatTooltipContent(el) {
     // Match sequences of type-like words until we hit -> or <br> or other delimiters
     html = html.replace(/(:\s*)((?:['A-Za-z_][\w]*(?:&lt;[^&]*&gt;)?\s*)+)(?=-&gt;|<br>|$|\))/g, '$1<span class="fsdocs-type">$2</span>');
 
-    // Color types after 'of' in discriminated union cases (lines starting with |)
+    // Color types after 'of' in discriminated union cases (lines starting with | or = |)
     // Match: "| CaseName of TypeExpression" and color everything after "of"
-    html = html.replace(/(<br>\s*\|[^<]*?\bof\s+)((?:['A-Za-z_][\w]*(?:&lt;[^&]*&gt;)?\s*)+)/g, '$1<span class="fsdocs-type">$2</span>');
+    html = html.replace(/((?:<br>\s*|=\s*)\|[^<]*?\bof\s+)((?:['A-Za-z_][\w]*(?:&lt;[^&]*&gt;)?\s*)+)/g, '$1<span class="fsdocs-type">$2</span>');
 
-    // Color 'of' keyword in discriminated union cases (lines starting with |)
-    html = html.replace(/(<br>\s*\|[^<]*?)\bof\b/g, '$1<span class="fsdocs-keyword">of</span>');
+    // Color 'of' keyword in discriminated union cases (lines starting with | or = |)
+    html = html.replace(/((?:<br>\s*|=\s*)\|[^<]*?)\bof\b/g, '$1<span class="fsdocs-keyword">of</span>');
 
-    // Color F# keywords (case sensitive) - type, interface, member, override, module
+    // Color F# keywords (case sensitive) - type, interface, member, override, module, abstract, val
     // Use negative lookbehind to avoid matching inside class names like "fsdocs-type"
-    html = html.replace(/(?<![-"'])\b(type|interface|member|override|module)\b(?![-"'])/g, '<span class="fsdocs-keyword">$1</span>');
+    html = html.replace(/(?<![-"'])\b(type|interface|member|override|module|abstract|val)\b(?![-"'])/g, '<span class="fsdocs-keyword">$1</span>');
+
+    // Color multi-word keywords
+    html = html.replace(/\bunion case\b/g, '<span class="fsdocs-keyword">union case</span>');
 
     // Color first word after 'type', 'interface', and 'module' keywords as type
     html = html.replace(/(<span class="fsdocs-keyword">(?:type|interface|module)<\/span>\s+)(['A-Za-z_][\w]*)/g, '$1<span class="fsdocs-type">$2</span>');
@@ -70,6 +73,9 @@ function formatTooltipContent(el) {
     // Color words before and after '*' (tuple)
     html = html.replace(/(['A-Za-z_][\w]*)(\s*\*)/g, '<span class="fsdocs-type">$1</span>$2');
     html = html.replace(/(\*\s*)(['A-Za-z_][\w]*)/g, '$1<span class="fsdocs-type">$2</span>');
+
+    // Color all words starting with apostrophe as type (generic type params like 'T, 'TEvent)
+    html = html.replace(/(?<![<\w])('[A-Za-z_][\w]*)/g, '<span class="fsdocs-type">$1</span>');
 
     // Replace typeparam tags with just the type name in type color
     // &amp;lt;typeparam name="'EventDetails"&amp;gt; becomes <EventDetails> in aqua
