@@ -30,6 +30,9 @@ function formatTooltipContent(el) {
     // Add line break before 'static' (with leading spaces)
     html = html.replace(/(\s{2,})(static\s)/g, '<br>$1$2');
 
+    // Add line break before 'interface' (with leading spaces)
+    html = html.replace(/(\s{2,})(interface\s)/g, '<br>$1$2');
+
     // Add line break before 'new' for constructors (with leading spaces)
     html = html.replace(/(\s{2,})(new\s*:)/g, '<br>$1$2');
 
@@ -45,6 +48,10 @@ function formatTooltipContent(el) {
     // Color type names after ':' (multiple words like 'string option', generics, and 'T style params)
     // Match sequences of type-like words until we hit -> or <br> or other delimiters
     html = html.replace(/(:\s*)((?:['A-Za-z_][\w]*(?:&lt;[^&]*&gt;)?\s*)+)(?=-&gt;|<br>|$|\))/g, '$1<span class="fsdocs-type">$2</span>');
+
+    // Color types after 'of' in discriminated union cases (lines starting with |)
+    // Match: "| CaseName of TypeExpression" and color everything after "of"
+    html = html.replace(/(<br>\s*\|[^<]*?\bof\s+)((?:['A-Za-z_][\w]*(?:&lt;[^&]*&gt;)?\s*)+)/g, '$1<span class="fsdocs-type">$2</span>');
 
     // Color F# keywords (case sensitive) - type, interface, member, override, module
     // Use negative lookbehind to avoid matching inside class names like "fsdocs-type"
