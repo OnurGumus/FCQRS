@@ -42,9 +42,9 @@ function formatTooltipContent(el) {
     // Add line break before '}' closing braces
     html = html.replace(/(\s*)(\})/g, '<br>$1$2');
 
-    // Color type names after ':' (words, can include generics with &lt; &gt;)
-    // Match: ": TypeName" or ": Type&lt;T&gt;" patterns
-    html = html.replace(/(:\s*)([A-Za-z_][\w]*(?:&lt;[^&]*&gt;)?)/g, '$1<span class="fsdocs-type">$2</span>');
+    // Color type names after ':' (multiple words like 'string option', generics, and 'T style params)
+    // Match sequences of type-like words until we hit -> or <br> or other delimiters
+    html = html.replace(/(:\s*)((?:['A-Za-z_][\w]*(?:&lt;[^&]*&gt;)?\s*)+)(?=-&gt;|<br>|$|\))/g, '$1<span class="fsdocs-type">$2</span>');
 
     el.innerHTML = html;
 }
