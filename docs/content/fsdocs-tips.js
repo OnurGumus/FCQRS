@@ -47,7 +47,8 @@ function formatTooltipContent(el) {
     html = html.replace(/(:\s*)((?:['A-Za-z_][\w]*(?:&lt;[^&]*&gt;)?\s*)+)(?=-&gt;|<br>|$|\))/g, '$1<span class="fsdocs-type">$2</span>');
 
     // Color F# keywords (case sensitive) - type, interface, member, override, module
-    html = html.replace(/\b(type|interface|member|override|module)\b/g, '<span class="fsdocs-keyword">$1</span>');
+    // Use negative lookbehind to avoid matching inside class names like "fsdocs-type"
+    html = html.replace(/(?<![-"'])\b(type|interface|member|override|module)\b(?![-"'])/g, '<span class="fsdocs-keyword">$1</span>');
 
     el.innerHTML = html;
 }
