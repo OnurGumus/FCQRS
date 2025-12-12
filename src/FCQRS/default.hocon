@@ -21,6 +21,7 @@ config {
                     query-timeout = 30s
                     journal-sequence-retrieval {
                          query-delay = 100ms
+                         ask-timeout = 3s
                     }
                }
                snapshot-store {
