@@ -371,25 +371,25 @@
           }
         }
       },
-      "FCQRS.Model/4.0.0": {
+      "FCQRS.Model/5.0.1": {
         "dependencies": {
           "FSharp.Core": "10.0.101"
         },
         "runtime": {
           "lib/net9.0/FCQRS.Model.dll": {
-            "assemblyVersion": "1.0.0.0",
-            "fileVersion": "1.0.0.0"
+            "assemblyVersion": "5.0.0.0",
+            "fileVersion": "5.0.0.0"
           }
         }
       },
-      "FCQRS.Serialization/2.2.0": {
+      "FCQRS.Serialization/5.0.1": {
         "dependencies": {
           "FSharp.SystemTextJson": "1.4.36"
         },
         "runtime": {
           "lib/net9.0/FCQRS.Serialization.dll": {
-            "assemblyVersion": "1.0.0.0",
-            "fileVersion": "1.0.0.0"
+            "assemblyVersion": "5.0.0.0",
+            "fileVersion": "5.0.0.0"
           }
         }
       },
@@ -1332,8 +1332,8 @@
           "DotNetty.Handlers": "0.7.6",
           "DotNetty.Transport": "0.7.6",
           "Dynamitey": "3.0.3",
-          "FCQRS.Model": "4.0.0",
-          "FCQRS.Serialization": "2.2.0",
+          "FCQRS.Model": "5.0.1",
+          "FCQRS.Serialization": "5.0.1",
           "FSharp.Core": "10.0.101",
           "FSharp.Interop.Dynamic": "5.0.1.268",
           "FSharp.SystemTextJson": "1.4.36",
@@ -1584,19 +1584,19 @@
       "path": "dynamitey/3.0.3",
       "hashPath": "dynamitey.3.0.3.nupkg.sha512"
     },
-    "FCQRS.Model/4.0.0": {
+    "FCQRS.Model/5.0.1": {
       "type": "package",
       "serviceable": true,
-      "sha512": "sha512-tbFziCFx+QuHEWVlbxPW9JEmwKuJ33si9/pMMxMfXtPsEy/RZx217ddfWNgqhCckN4WZfhjseY27fQ+quFS4GA==",
-      "path": "fcqrs.model/4.0.0",
-      "hashPath": "fcqrs.model.4.0.0.nupkg.sha512"
+      "sha512": "sha512-XEhcnCpQf5fe4kBpqoyLlrkY6wn8qnC7IFsh9jMv5blXGOYEbGiSUUKo6zqpUoEzQQkOucm/rFeygl2NvIF6mg==",
+      "path": "fcqrs.model/5.0.1",
+      "hashPath": "fcqrs.model.5.0.1.nupkg.sha512"
     },
-    "FCQRS.Serialization/2.2.0": {
+    "FCQRS.Serialization/5.0.1": {
       "type": "package",
       "serviceable": true,
-      "sha512": "sha512-jcjQ4XZCLeqO/WmJb/oWUNC0BCn4MOY8McVPvPW6YxodWFL13ej+6xHoFjIIbXl6uIErJDmWurRgCDjzIuuzrQ==",
-      "path": "fcqrs.serialization/2.2.0",
-      "hashPath": "fcqrs.serialization.2.2.0.nupkg.sha512"
+      "sha512": "sha512-+4vkyKzshZmkxBqKxWjmATUNjKNC5VeKCFw4UWJkM4sDjtRMJDITlBgqAg854Ji9AQtOHDw4yqCtilW07cJZgA==",
+      "path": "fcqrs.serialization/5.0.1",
+      "hashPath": "fcqrs.serialization.5.0.1.nupkg.sha512"
     },
     "FluentAssertions/8.8.0": {
       "type": "package",

@@ -13,9 +13,9 @@ type STJSerializer(system: ExtendedActorSystem) =
     override __.Identifier = 1713
 
     override __.ToBinary o =
-        JsonSerializer.SerializeToUtf8Bytes(o, jsonOptions)
+        JsonSerializer.SerializeToUtf8Bytes(o, o.GetType(), Serialization.jsonOptions)
 
     override _.Manifest(o: obj) : string = o.GetType().AssemblyQualifiedName |> Unchecked.nonNull
 
     override _.FromBinary(bytes: byte[], manifest: string) : obj =
-        JsonSerializer.Deserialize(bytes, Type.GetType manifest |> Unchecked.nonNull, jsonOptions) |> Unchecked.nonNull
+        JsonSerializer.Deserialize(bytes, Type.GetType manifest |> Unchecked.nonNull, Serialization.jsonOptions) |> Unchecked.nonNull
