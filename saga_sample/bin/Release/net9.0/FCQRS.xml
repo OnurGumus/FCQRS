@@ -326,6 +326,17 @@
  Marker interface for types that can be serialized by Akka.NET.
 </summary>
 </member>
+<member name="M:FCQRS.Common.sameTrace(FCQRS.Model.Data.CID,FCQRS.Model.Data.CID)">
+<summary>
+ Compare two CIDs by their TraceId (for correlation in distributed tracing scenarios)
+</summary>
+</member>
+<member name="M:FCQRS.Common.extractTraceId(FCQRS.Model.Data.CID)">
+<summary>
+ Helper to extract TraceId from a CID (W3C traceparent format: 00-{traceId}-{spanId}-{flags})
+ Returns the full CID string if not in traceparent format
+</summary>
+</member>
 <member name="T:FCQRS.Common.CommandHandler.Command`2">
 <summary>
  Represents the message sent to the internal subscription mechanism.
