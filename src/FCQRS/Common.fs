@@ -724,6 +724,7 @@ type ShardFactoryWithEnv<'T, 'TEnv, 'TEvent, 'TCommand, 'TState
     and 'T: (static member Factory: 'TEnv * IActor -> (string -> IEntityRef<obj>))
     and 'T: (static member HandleCommand: 'TEnv * Command<'TCommand> * 'TState -> EventAction<'TEvent>)> = 'T
 
+type Handler<'Cmd, 'Event> = ('Event -> bool) -> CID -> AggregateId -> 'Cmd -> Async<'Event>
 
 module Curry =
     let curry f x y = f (x, y)

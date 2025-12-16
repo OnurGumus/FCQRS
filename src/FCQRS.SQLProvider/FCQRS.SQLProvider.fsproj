@@ -15,6 +15,7 @@
     <PublishRepositoryUrl>true</PublishRepositoryUrl>
     <RepositoryUrl>https://github.com/onurgumus/FCQRS</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
+    <NoWarn>$(NoWarn);NU1510</NoWarn>
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="Query.fs" />
