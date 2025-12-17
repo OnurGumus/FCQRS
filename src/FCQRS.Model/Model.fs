@@ -113,6 +113,7 @@ type ModelError =
     | InvalidUrl
     | InvalidGuid
     | MustBeNonNegative
+    | OtherError of string
 /// Aggregate Version
 type Version =
     private
