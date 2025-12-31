@@ -18,4 +18,16 @@ type STJSerializer(system: ExtendedActorSystem) =
     override _.Manifest(o: obj) : string = o.GetType().AssemblyQualifiedName |> Unchecked.nonNull
 
     override _.FromBinary(bytes: byte[], manifest: string) : obj =
-        JsonSerializer.Deserialize(bytes, Type.GetType manifest |> Unchecked.nonNull, Serialization.jsonOptions) |> Unchecked.nonNull
+        try
+            let typ = Type.GetType manifest
+            if isNull typ then
+                failwithf "Failed to resolve type from manifest: %s" manifest
+            JsonSerializer.Deserialize(bytes, Unchecked.nonNull typ, Serialization.jsonOptions) |> Unchecked.nonNull
+        with ex ->
+            let preview =
+                if bytes.Length <= 200 then System.Text.Encoding.UTF8.GetString(bytes)
+                else System.Text.Encoding.UTF8.GetString(bytes, 0, 200) + "..."
+            let msg =  sprintf "Deserialization error for manifest '%s': %s\nPayload preview: %s" manifest ex.Message preview
+            system.Log.Log(Akka.Event.LogLevel.ErrorLevel, ex, msg)
+            eprintfn "%s" msg
+            reraise()
