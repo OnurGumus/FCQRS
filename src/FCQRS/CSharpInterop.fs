@@ -382,6 +382,49 @@ type SagaBuilderCSharp =
             actorApi, sagaData, handleEvent, applySideEffects,
             Func<_, _, _>(fun data _ -> data), originatorFactory, sagaName)
 
+    /// Initialize a saga with simplified signatures - no FSharpOption, typed events
+    /// handleEvent: (event, data, currentState) -> EventAction
+    /// applySideEffects: (data, state, recovering) -> SagaSideEffectResult
+    static member InitSimple<'TEvent, 'TSagaData, 'TSagaState when 'TSagaState : not null and 'TEvent : not null>(
+        actorApi: IActor,
+        sagaData: 'TSagaData,
+        handleEvent: Func<Event<'TEvent>, 'TSagaData, 'TSagaState, EventAction<'TSagaState>>,
+        applySideEffects: Func<'TSagaData, 'TSagaState, bool, SagaSideEffectResult<'TSagaState>>,
+        apply: Func<'TSagaData, 'TSagaState, 'TSagaData>,
+        originatorFactory: Func<string, IEntityRef<obj>>,
+        sagaName: string) : EntityFac<obj> =
+
+        // Wrap simplified handleEvent - unwrap FSharpOption and cast event
+        let wrappedHandleEvent (evt: obj) (sagaState: SagaState<'TSagaData, 'TSagaState option>) =
+            match evt with
+            | :? Event<'TEvent> as typedEvent ->
+                let currentState = sagaState.State |> Option.defaultValue Unchecked.defaultof<'TSagaState>
+                handleEvent.Invoke(typedEvent, sagaState.Data, currentState)
+            | _ -> EventAction.UnhandledEvent
+
+        // Wrap simplified applySideEffects
+        let wrappedApplySideEffects (sagaState: SagaState<'TSagaData, 'TSagaState>) (recovering: bool) =
+            applySideEffects.Invoke(sagaState.Data, sagaState.State, recovering)
+
+        SagaBuilderCSharp.Init<'TEvent, 'TSagaData, 'TSagaState>(
+            actorApi, sagaData,
+            Func<_, _, _>(wrappedHandleEvent),
+            Func<_, _, _>(wrappedApplySideEffects),
+            apply, originatorFactory, sagaName)
+
+    /// Initialize a saga with simplified signatures and no apply
+    static member InitSimple<'TEvent, 'TSagaData, 'TSagaState when 'TSagaState : not null and 'TEvent : not null>(
+        actorApi: IActor,
+        sagaData: 'TSagaData,
+        handleEvent: Func<Event<'TEvent>, 'TSagaData, 'TSagaState, EventAction<'TSagaState>>,
+        applySideEffects: Func<'TSagaData, 'TSagaState, bool, SagaSideEffectResult<'TSagaState>>,
+        originatorFactory: Func<string, IEntityRef<obj>>,
+        sagaName: string) : EntityFac<obj> =
+
+        SagaBuilderCSharp.InitSimple<'TEvent, 'TSagaData, 'TSagaState>(
+            actorApi, sagaData, handleEvent, applySideEffects,
+            Func<_, _, _>(fun data _ -> data), originatorFactory, sagaName)
+
     /// Get the factory for a saga
     static member Factory(
         actorApi: IActor,
