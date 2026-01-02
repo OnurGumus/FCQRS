@@ -669,5 +669,206 @@
  </code>
  </example>
 </member>
+<member name="M:FCQRS.CSharp.ISubscribeExtensions.SubscribeFor``1(FCQRS.Query.ISubscribe{``0},System.Func{``0,System.Boolean},System.Int32)">
+<summary>
+ C#-friendly Subscribe that accepts Func instead of FSharpFunc
+</summary>
+</member>
+<member name="T:FCQRS.CSharp.ISubscribeExtensions">
+<summary>
+ Extension methods for ISubscribe
+</summary>
+</member>
+<member name="M:FCQRS.CSharp.IActorExtensions.SendCommandAsync``2(FCQRS.Common.IActor,System.Func{System.String,Akkling.Cluster.Sharding.IEntityRef{System.Object}},FCQRS.Model.Data.CID,FCQRS.Model.Data.AggregateId,``1,System.Func{``0,System.Boolean})">
+<summary>
+ Send a command and wait for the event (C# friendly)
+</summary>
+</member>
+<member name="M:FCQRS.CSharp.IActorExtensions.InitializeSagaStarterEmpty(FCQRS.Common.IActor)">
+<summary>
+ Initialize saga starter with no sagas (for simple scenarios)
+</summary>
+</member>
+<member name="M:FCQRS.CSharp.IActorExtensions.InitSagaStarterEmpty(FCQRS.Common.IActor)">
+<summary>
+ Static helper for C# where extension may not resolve
+</summary>
+</member>
+<member name="M:FCQRS.CSharp.IActorExtensions.InitSagaStarter(FCQRS.Common.IActor,System.Func{System.Object,System.Collections.Generic.IList{FCQRS.CSharp.SagaDefinition}})">
+<summary>
+ C#-friendly InitializeSagaStarter that accepts Func returning IList of SagaDefinition
+</summary>
+</member>
+<member name="M:FCQRS.CSharp.IActorExtensions.InitActor``3(FCQRS.Common.IActor,``0,System.String,System.Func{FCQRS.Common.Command{``1},``0,FCQRS.Common.EventAction{``2}},System.Func{FCQRS.Common.Event{``2},``0,``0})">
+<summary>
+ C#-friendly InitializeActor that accepts Func delegates instead of F# functions
+</summary>
+</member>
+<member name="M:FCQRS.CSharp.IActorExtensions.CreateCommand``2(FCQRS.Common.IActor,System.Func{System.String,Akkling.Cluster.Sharding.IEntityRef{System.Object}},FCQRS.Model.Data.CID,FCQRS.Model.Data.AggregateId,``1,System.Func{``0,System.Boolean})">
+<summary>
+ C#-friendly CreateCommandSubscription that returns FSharpAsync (for use with Handler delegate)
+</summary>
+</member>
+<member name="T:FCQRS.CSharp.IActorExtensions">
+<summary>
+ Extension methods for IActor
+</summary>
+</member>
+<member name="M:FCQRS.CSharp.QueryApi.InitWithList(FCQRS.Common.IActor,System.Int32,System.Func{System.Int64,System.Object,System.Collections.Generic.IList{FCQRS.Model.Data.IMessageWithCID}})">
+<summary>
+ Initialize the query subscription (C# IList version - converts to F# list internally)
+</summary>
+</member>
+<member name="M:FCQRS.CSharp.QueryApi.Init(FCQRS.Common.IActor,System.Int32,System.Func{System.Int64,System.Object,Microsoft.FSharp.Collections.FSharpList{FCQRS.Model.Data.IMessageWithCID}})">
+<summary>
+ Initialize the query subscription (F# list version)
+</summary>
+</member>
+<member name="T:FCQRS.CSharp.QueryApi">
+<summary>
+ C#-friendly Query API
+</summary>
+</member>
+<member name="M:FCQRS.CSharp.ActorApi.Create(Microsoft.Extensions.Configuration.IConfiguration,Microsoft.Extensions.Logging.ILoggerFactory,System.String,System.String)">
+<summary>
+ Create the actor system with SQLite connection
+</summary>
+</member>
+<member name="T:FCQRS.CSharp.ActorApi">
+<summary>
+ C#-friendly Actor API
+</summary>
+</member>
+<member name="P:FCQRS.CSharp.SagaDefinition.StartingEvent">
+<summary>
+ The event to send to start the saga
+</summary>
+</member>
+<member name="P:FCQRS.CSharp.SagaDefinition.PrefixConversion">
+<summary>
+ How to derive saga entity ID from source entity ID
+</summary>
+</member>
+<member name="P:FCQRS.CSharp.SagaDefinition.Factory">
+<summary>
+ Factory function to create entity reference from entity ID
+</summary>
+</member>
+<member name="T:FCQRS.CSharp.SagaDefinition">
+<summary>
+ C#-friendly record for defining saga starters
+</summary>
+</member>
+<member name="M:FCQRS.CSharp.EventActions.Persist``1(``0)">
+<summary>
+ Create a PersistEvent action (event will be persisted and published)
+</summary>
+</member>
+<member name="M:FCQRS.CSharp.EventActions.Ignore``1">
+<summary>
+ Create an IgnoreEvent action (command is ignored, no event produced)
+</summary>
+</member>
+<member name="M:FCQRS.CSharp.EventActions.Defer``1(``0)">
+<summary>
+ Create a DeferEvent action (event is returned but not persisted - for errors/rejections)
+</summary>
+</member>
+<member name="T:FCQRS.CSharp.EventActions">
+<summary>
+ C#-friendly factory methods for EventAction
+</summary>
+</member>
+<member name="M:FCQRS.CSharp.StringTypes.TryCreateShortString(System.String,FCQRS.Model.Data.ShortString@)">
+<summary>
+ Try to create a ShortString, returns (success, value, errorMessage)
+</summary>
+</member>
+<member name="M:FCQRS.CSharp.StringTypes.TryCreateLongString(System.String,FCQRS.Model.Data.LongString@)">
+<summary>
+ Try to create a LongString, returns (success, value, errorMessage)
+</summary>
+</member>
+<member name="T:FCQRS.CSharp.StringTypes">
+<summary>
+ C#-friendly string type creation with simple error handling
+</summary>
+</member>
+<member name="M:FCQRS.CSharp.Results.Ok``2(``0)">
+<summary>
+ Create a successful result
+</summary>
+</member>
+<member name="M:FCQRS.CSharp.Results.Error``2(``1)">
+<summary>
+ Create an error result
+</summary>
+</member>
+<member name="T:FCQRS.CSharp.Results">
+<summary>
+ C#-friendly factory methods for FSharpResult
+</summary>
+</member>
+<member name="M:FCQRS.CSharp.Helpers.TryCreateShortString(System.String)">
+<summary>
+ Try to create a ShortString (returns Result instead of throwing)
+</summary>
+</member>
+<member name="M:FCQRS.CSharp.Helpers.TryCreateLongString(System.String)">
+<summary>
+ Try to create a LongString (returns Result instead of throwing)
+</summary>
+</member>
+<member name="M:FCQRS.CSharp.Helpers.NewCID">
+<summary>
+ Create a new CID from a GUID v7
+</summary>
+</member>
+<member name="M:FCQRS.CSharp.Helpers.CreateShortString(System.String)">
+<summary>
+ Create a ShortString from a string (throws on failure)
+</summary>
+</member>
+<member name="M:FCQRS.CSharp.Helpers.CreateLongString(System.String)">
+<summary>
+ Create a LongString from a string (throws on failure)
+</summary>
+</member>
+<member name="M:FCQRS.CSharp.Helpers.CreateCID(System.String)">
+<summary>
+ Create a CID from a string (throws on failure)
+</summary>
+</member>
+<member name="M:FCQRS.CSharp.Helpers.CreateAggregateId(System.String)">
+<summary>
+ Create an AggregateId from a string (throws on failure)
+</summary>
+</member>
+<member name="T:FCQRS.CSharp.Helpers">
+<summary>
+ Helper methods for creating FCQRS types from C#
+</summary>
+</member>
+<member name="M:FCQRS.CSharp.AsyncExtensions.ToTask``1(Microsoft.FSharp.Control.FSharpAsync{``0})">
+<summary>
+ Static helper to convert Async to Task (for C# where extension may not resolve)
+</summary>
+</member>
+<member name="M:FCQRS.CSharp.AsyncExtensions.AsTask``1(Microsoft.FSharp.Control.FSharpAsync{``0})">
+<summary>
+ Convert Async to Task
+</summary>
+</member>
+<member name="T:FCQRS.CSharp.AsyncExtensions">
+<summary>
+ Extension methods for Async to make it easier to use from C#
+</summary>
+</member>
+<member name="T:FCQRS.CSharp">
+<summary>
+ C# interoperability helpers for FCQRS
+ Provides simpler APIs for consuming FCQRS from C#
+</summary>
+</member>
 </members>
 </doc>

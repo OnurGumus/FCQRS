@@ -10,17 +10,21 @@ module public Serialization =
     open System.Text.Json.Serialization
 
     /// <summary>
-    /// Default JSON serializer options configured for F# types.
+    /// Default JSON serializer options configured for F# types and C# polymorphic types.
     /// </summary>
     let public jsonOptions =
-        JsonFSharpOptions
-            .Default()
-            .WithSkippableOptionFields()
-            .WithUnionInternalTag()
-            .WithUnionNamedFields()
-            //.WithUnionFieldNamesFromTypes()
-            .WithUnionUnwrapSingleCaseUnions(false)
-            .ToJsonSerializerOptions()
+        let opts =
+            JsonFSharpOptions
+                .Default()
+                .WithSkippableOptionFields()
+                .WithUnionInternalTag()
+                .WithUnionNamedFields()
+                //.WithUnionFieldNamesFromTypes()
+                .WithUnionUnwrapSingleCaseUnions(false)
+                .ToJsonSerializerOptions()
+        // Enable C# polymorphic serialization with [JsonDerivedType] attributes
+        opts.RespectNullableAnnotations <- true
+        opts
 
     /// <summary>
     /// Serializes an object to a JSON string.

@@ -127,7 +127,7 @@
       "Akka.DistributedData.LightningDB/1.5.57": {
         "dependencies": {
           "Akka.DistributedData": "1.5.57",
-          "LightningDB": "0.20.0"
+          "LightningDB": "0.21.0"
         },
         "runtime": {
           "lib/net6.0/Akka.DistributedData.LightningDB.dll": {
@@ -368,7 +368,7 @@
           }
         }
       },
-      "FCQRS.Model/5.0.1": {
+      "FCQRS.Model/5.1.0": {
         "dependencies": {
           "FSharp.Core": "10.0.101"
         },
@@ -379,7 +379,7 @@
           }
         }
       },
-      "FCQRS.Serialization/5.0.1": {
+      "FCQRS.Serialization/5.0.2": {
         "dependencies": {
           "FSharp.SystemTextJson": "1.4.36"
         },
@@ -528,11 +528,11 @@
           }
         }
       },
-      "LightningDB/0.20.0": {
+      "LightningDB/0.21.0": {
         "runtime": {
           "lib/net10.0/LightningDB.dll": {
-            "assemblyVersion": "0.20.0.0",
-            "fileVersion": "0.20.0.0"
+            "assemblyVersion": "0.21.0.0",
+            "fileVersion": "0.21.0.0"
           }
         },
         "runtimeTargets": {
@@ -1251,8 +1251,8 @@
           "DotNetty.Handlers": "0.7.6",
           "DotNetty.Transport": "0.7.6",
           "Dynamitey": "3.0.3",
-          "FCQRS.Model": "5.0.1",
-          "FCQRS.Serialization": "5.0.1",
+          "FCQRS.Model": "5.1.0",
+          "FCQRS.Serialization": "5.0.2",
           "FSharp.Core": "10.0.101",
           "FSharp.Interop.Dynamic": "5.0.1.268",
           "FSharp.SystemTextJson": "1.4.36",
@@ -1263,7 +1263,7 @@
           "Hocon.Extensions.Configuration": "2.0.4",
           "Hyperion": "0.12.2",
           "LanguageExt.Core": "4.4.9",
-          "LightningDB": "0.20.0",
+          "LightningDB": "0.21.0",
           "Microsoft.Bcl.AsyncInterfaces": "10.0.1",
           "Microsoft.Bcl.HashCode": "6.0.0",
           "Microsoft.Data.Sqlite.Core": "10.0.1",
@@ -1497,19 +1497,19 @@
       "path": "dynamitey/3.0.3",
       "hashPath": "dynamitey.3.0.3.nupkg.sha512"
     },
-    "FCQRS.Model/5.0.1": {
+    "FCQRS.Model/5.1.0": {
       "type": "package",
       "serviceable": true,
-      "sha512": "sha512-XEhcnCpQf5fe4kBpqoyLlrkY6wn8qnC7IFsh9jMv5blXGOYEbGiSUUKo6zqpUoEzQQkOucm/rFeygl2NvIF6mg==",
-      "path": "fcqrs.model/5.0.1",
-      "hashPath": "fcqrs.model.5.0.1.nupkg.sha512"
+      "sha512": "sha512-meMXI8Lf9pc7nIwmS1uqaL8xH7Q1Vv0T+8a79ryAlCSwxzsgJhqdvGkPOFhrCQ7Grwrm0YxE4bLNqyFSJ1ltzw==",
+      "path": "fcqrs.model/5.1.0",
+      "hashPath": "fcqrs.model.5.1.0.nupkg.sha512"
     },
-    "FCQRS.Serialization/5.0.1": {
+    "FCQRS.Serialization/5.0.2": {
       "type": "package",
       "serviceable": true,
-      "sha512": "sha512-+4vkyKzshZmkxBqKxWjmATUNjKNC5VeKCFw4UWJkM4sDjtRMJDITlBgqAg854Ji9AQtOHDw4yqCtilW07cJZgA==",
-      "path": "fcqrs.serialization/5.0.1",
-      "hashPath": "fcqrs.serialization.5.0.1.nupkg.sha512"
+      "sha512": "sha512-IAJKgu0grvEVWddSohafcCOpQtnrj1JQIdKSpEkK5TtD0wbGN+Ipa7cIUHFECkhZb7+r+RS5KwEjDJHzsME4lQ==",
+      "path": "fcqrs.serialization/5.0.2",
+      "hashPath": "fcqrs.serialization.5.0.2.nupkg.sha512"
     },
     "FluentAssertions/8.8.0": {
       "type": "package",
@@ -1581,12 +1581,12 @@
       "path": "languageext.core/4.4.9",
       "hashPath": "languageext.core.4.4.9.nupkg.sha512"
     },
-    "LightningDB/0.20.0": {
+    "LightningDB/0.21.0": {
       "type": "package",
       "serviceable": true,
-      "sha512": "sha512-tr5MSeQ0VyMVYL9S63fwVBpRG5it6C4XHmXikRMC6rySGmeLXDRovWztq8bfLXge352Jrsv5agd0yKOEUQkzNQ==",
-      "path": "lightningdb/0.20.0",
-      "hashPath": "lightningdb.0.20.0.nupkg.sha512"
+      "sha512": "sha512-rlOwvt5CUvQyl84l778EvWi3yB58eyiag7eJfYwQLQUCCahOLjCWCiYCHhshaOIoJQDCp5UpmaKutGbK+nxbZA==",
+      "path": "lightningdb/0.21.0",
+      "hashPath": "lightningdb.0.21.0.nupkg.sha512"
     },
     "linq2db/5.4.1": {
       "type": "package",

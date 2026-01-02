@@ -94,16 +94,23 @@ type EventActions =
     static member Ignore<'TEvent when 'TEvent : not struct and 'TEvent: not null>() : EventAction<'TEvent> =
         EventAction.IgnoreEvent
 
-/// C#-friendly record for defining saga starters
-[<Struct>]
-type SagaDefinition = {
+/// C#-friendly class for defining saga starters (uses class for C# object initializer syntax)
+[<AllowNullLiteral>]
+type SagaDefinition() =
     /// Factory function to create entity reference from entity ID
-    Factory: Func<string, Akkling.Cluster.Sharding.IEntityRef<obj>>
+    member val Factory: Func<string, Akkling.Cluster.Sharding.IEntityRef<obj>> = null with get, set
     /// How to derive saga entity ID from source entity ID
-    PrefixConversion: PrefixConversion
+    member val PrefixConversion: PrefixConversion = PrefixConversion None with get, set
     /// The event to send to start the saga
-    StartingEvent: obj
-}
+    member val StartingEvent: obj = null with get, set
+
+/// C#-friendly factory for PrefixConversion
+type PrefixConversions =
+    /// Identity conversion - uses originator prefix with saga suffix
+    /// This creates saga IDs like: originatorId~Saga~correlationId
+    static member Identity = PrefixConversion (Some id)
+    /// Custom conversion function
+    static member Custom(f: Func<string, string>) = PrefixConversion (Some f.Invoke)
 
 /// C#-friendly Actor API
 type ActorApi =
@@ -205,3 +212,179 @@ type ISubscribeExtensions =
         filter: Func<'T, bool>,
         take: int) : Query.IAwaitableDisposable =
         subs.Subscribe((fun e -> filter.Invoke(e)), take)
+
+// =============================================================================
+// SAGA C# INTEROP
+// =============================================================================
+
+open Akkling.Cluster.Sharding
+open Common.SagaBuilder
+
+/// C#-friendly result type for saga side effects (uses class for C# object initializer syntax)
+[<AllowNullLiteral>]
+type SagaSideEffectResult<'TState>() =
+    member val Transition: SagaTransition<'TState> = SagaTransition.Stay with get, set
+    member val Commands: System.Collections.Generic.IList<ExecuteCommand> = System.Collections.Generic.List<ExecuteCommand>() with get, set
+
+    /// Convert commands to F# list for internal use
+    member this.CommandsList = this.Commands |> List.ofSeq
+
+/// C#-friendly helpers for SagaState
+type SagaStates =
+    /// Create a new SagaState with updated Data
+    static member WithData<'TSagaData, 'TState>(sagaState: SagaState<'TSagaData, 'TState>, newData: 'TSagaData) : SagaState<'TSagaData, 'TState> =
+        { sagaState with Data = newData }
+
+    /// Create a new SagaState with updated State
+    static member WithState<'TSagaData, 'TState>(sagaState: SagaState<'TSagaData, 'TState>, newState: 'TState) : SagaState<'TSagaData, 'TState> =
+        { sagaState with State = newState }
+
+/// C#-friendly factory methods for SagaTransition
+type SagaTransitions =
+    /// Stay in the current state (no transition)
+    static member Stay<'TState>() : SagaTransition<'TState> =
+        SagaTransition.Stay
+
+    /// Transition to a new state
+    static member NextState<'TState>(newState: 'TState) : SagaTransition<'TState> =
+        SagaTransition.NextState newState
+
+    /// Stop the saga (completes the saga lifecycle)
+    static member StopSaga<'TState>() : SagaTransition<'TState> =
+        SagaTransition.StopSaga
+
+/// C#-friendly factory methods for saga EventAction
+type SagaEventActions =
+    /// Create a state change event
+    static member StateChanged<'TState when 'TState : not null>(newState: 'TState) : EventAction<'TState> =
+        EventAction.StateChangedEvent newState
+
+    /// Event was not handled
+    static member Unhandled<'TState when 'TState : not null>() : EventAction<'TState> =
+        EventAction.UnhandledEvent
+
+    /// Ignore the event
+    static member Ignore<'TState when 'TState : not null>() : EventAction<'TState> =
+        EventAction.IgnoreEvent
+
+/// C#-friendly saga command targeting
+type SagaCommands =
+    /// Create a command to send to the originator aggregate
+    static member ToOriginator(
+        factory: Func<string, IEntityRef<obj>>,
+        command: obj) : ExecuteCommand =
+        { TargetActor = FactoryAndName { Factory = factory.Invoke; Name = Originator }
+          Command = command
+          DelayInMs = None }
+
+    /// Create a command to send to a named aggregate
+    static member ToAggregate(
+        factory: Func<string, IEntityRef<obj>>,
+        aggregateId: string,
+        command: obj) : ExecuteCommand =
+        { TargetActor = FactoryAndName { Factory = factory.Invoke; Name = Name aggregateId }
+          Command = command
+          DelayInMs = None }
+
+    /// Create a command to send to an actor ref
+    static member ToActor(
+        actorRef: Akkling.ActorRefs.IActorRef<obj>,
+        command: obj) : ExecuteCommand =
+        { TargetActor = ActorRef actorRef
+          Command = command
+          DelayInMs = None }
+
+    /// Create a delayed command
+    static member ToOriginatorDelayed(
+        factory: Func<string, IEntityRef<obj>>,
+        command: obj,
+        delayMs: int64,
+        taskName: string) : ExecuteCommand =
+        { TargetActor = FactoryAndName { Factory = factory.Invoke; Name = Originator }
+          Command = command
+          DelayInMs = Some (delayMs, taskName) }
+
+/// C#-friendly saga builder
+type SagaBuilderCSharp =
+    /// Initialize a saga with C# delegates
+    /// 'TEvent - The triggering event type (from the originator aggregate)
+    /// 'TSagaData - Cross-cutting saga data
+    /// 'TSagaState - User-defined saga states
+    static member Init<'TEvent, 'TSagaData, 'TSagaState when 'TSagaState : not null and 'TEvent : not null>(
+        actorApi: IActor,
+        sagaData: 'TSagaData,
+        handleEvent: Func<obj, SagaState<'TSagaData, 'TSagaState option>, EventAction<'TSagaState>>,
+        applySideEffects: Func<SagaState<'TSagaData, 'TSagaState>, bool, SagaSideEffectResult<'TSagaState>>,
+        apply: Func<SagaState<'TSagaData, SagaStateWrapper<'TSagaState, 'TEvent>>, SagaState<'TSagaData, SagaStateWrapper<'TSagaState, 'TEvent>>>,
+        originatorFactory: Func<string, IEntityRef<obj>>,
+        sagaName: string) : EntityFac<obj> =
+
+        // Convert C# handleEvent to F#
+        let fsharpHandleEvent (evt: obj) (state: SagaState<'TSagaData, 'TSagaState option>) : EventAction<'TSagaState> =
+            printfn ">>> F# fsharpHandleEvent: evt=%s state.State=%A" (evt.GetType().FullName) state.State
+            let result = handleEvent.Invoke(evt, state)
+            printfn ">>> F# fsharpHandleEvent result: %A" result
+            result
+
+        // Convert C# applySideEffects to F#
+        let fsharpApplySideEffects (state: SagaState<'TSagaData, 'TSagaState>) (recovering: bool) : SagaTransition<'TSagaState> * ExecuteCommand list =
+            let result = applySideEffects.Invoke(state, recovering)
+            (result.Transition, result.CommandsList)
+
+        // Convert C# apply to F#
+        let fsharpApply (state: SagaState<'TSagaData, SagaStateWrapper<'TSagaState, 'TEvent>>) =
+            apply.Invoke(state)
+
+        // Convert C# factory to F#
+        let fsharpFactory = fun (s: string) -> originatorFactory.Invoke(s)
+
+        SagaBuilder.init
+            actorApi
+            sagaData
+            fsharpHandleEvent
+            fsharpApplySideEffects
+            fsharpApply
+            fsharpFactory
+            sagaName
+
+    /// Initialize a saga with simplified apply - just takes data and unwrapped state, returns new data
+    static member Init<'TEvent, 'TSagaData, 'TSagaState when 'TSagaState : not null and 'TEvent : not null>(
+        actorApi: IActor,
+        sagaData: 'TSagaData,
+        handleEvent: Func<obj, SagaState<'TSagaData, 'TSagaState option>, EventAction<'TSagaState>>,
+        applySideEffects: Func<SagaState<'TSagaData, 'TSagaState>, bool, SagaSideEffectResult<'TSagaState>>,
+        apply: Func<'TSagaData, 'TSagaState, 'TSagaData>,
+        originatorFactory: Func<string, IEntityRef<obj>>,
+        sagaName: string) : EntityFac<obj> =
+
+        // Wrap the simplified apply into the full signature
+        let fullApply (sagaState: SagaState<'TSagaData, SagaStateWrapper<'TSagaState, 'TEvent>>) =
+            match sagaState.State with
+            | SagaStateWrapper.UserDefined userState ->
+                let newData = apply.Invoke(sagaState.Data, userState)
+                { sagaState with Data = newData }
+            | _ -> sagaState
+
+        SagaBuilderCSharp.Init<'TEvent, 'TSagaData, 'TSagaState>(
+            actorApi, sagaData, handleEvent, applySideEffects,
+            Func<_, _>(fullApply), originatorFactory, sagaName)
+
+    /// Initialize a saga without apply (no data updates based on state)
+    static member Init<'TEvent, 'TSagaData, 'TSagaState when 'TSagaState : not null and 'TEvent : not null>(
+        actorApi: IActor,
+        sagaData: 'TSagaData,
+        handleEvent: Func<obj, SagaState<'TSagaData, 'TSagaState option>, EventAction<'TSagaState>>,
+        applySideEffects: Func<SagaState<'TSagaData, 'TSagaState>, bool, SagaSideEffectResult<'TSagaState>>,
+        originatorFactory: Func<string, IEntityRef<obj>>,
+        sagaName: string) : EntityFac<obj> =
+
+        SagaBuilderCSharp.Init<'TEvent, 'TSagaData, 'TSagaState>(
+            actorApi, sagaData, handleEvent, applySideEffects,
+            Func<_, _, _>(fun data _ -> data), originatorFactory, sagaName)
+
+    /// Get the factory for a saga
+    static member Factory(
+        actorApi: IActor,
+        sagaEntityFac: EntityFac<obj>,
+        entityId: string) : IEntityRef<obj> =
+        sagaEntityFac.RefFor DEFAULT_SHARD entityId
