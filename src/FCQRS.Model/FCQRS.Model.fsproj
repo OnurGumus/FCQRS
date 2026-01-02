@@ -19,6 +19,7 @@
     <Compile Include="Validation.fs" />
     <Compile Include="Model.fs" />
     <Compile Include="Query.fs" />
+    <Compile Include="CSharpHelpers.fs" />
   </ItemGroup>
   <Import Project="..\..\.paket\Paket.Restore.targets" />
 </Project>

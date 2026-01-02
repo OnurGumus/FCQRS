@@ -27,6 +27,7 @@
     <Compile Include="Actor.fs" />
     <Compile Include="Serialization.fs" />
     <Compile Include="Query.fs" />
+    <Compile Include="CSharpInterop.fs" />
     <Content Include="paket.references" />
   </ItemGroup>
   <ItemGroup>
