@@ -669,6 +669,136 @@
  </code>
  </example>
 </member>
+<member name="M:FCQRS.CSharp.SagaBuilderCSharp.InitSimple``3(FCQRS.Common.IActor,``1,System.Func{FCQRS.Common.Event{``0},``1,``2,FCQRS.Common.EventAction{``2}},System.Func{``1,``2,System.Boolean,FCQRS.CSharp.SagaSideEffectResult{``2}},System.Func{System.String,Akkling.Cluster.Sharding.IEntityRef{System.Object}},System.String)">
+<summary>
+ Initialize a saga with simplified signatures and no apply
+</summary>
+</member>
+<member name="M:FCQRS.CSharp.SagaBuilderCSharp.InitSimple``3(FCQRS.Common.IActor,``1,System.Func{FCQRS.Common.Event{``0},``1,``2,FCQRS.Common.EventAction{``2}},System.Func{``1,``2,System.Boolean,FCQRS.CSharp.SagaSideEffectResult{``2}},System.Func{``1,``2,``1},System.Func{System.String,Akkling.Cluster.Sharding.IEntityRef{System.Object}},System.String)">
+<summary>
+ Initialize a saga with simplified signatures - no FSharpOption, typed events
+ handleEvent: (event, data, currentState) -&gt; EventAction
+ applySideEffects: (data, state, recovering) -&gt; SagaSideEffectResult
+</summary>
+</member>
+<member name="M:FCQRS.CSharp.SagaBuilderCSharp.Init``3(FCQRS.Common.IActor,``1,System.Func{System.Object,FCQRS.Common.SagaState{``1,Microsoft.FSharp.Core.FSharpOption{``2}},FCQRS.Common.EventAction{``2}},System.Func{FCQRS.Common.SagaState{``1,``2},System.Boolean,FCQRS.CSharp.SagaSideEffectResult{``2}},System.Func{System.String,Akkling.Cluster.Sharding.IEntityRef{System.Object}},System.String)">
+<summary>
+ Initialize a saga without apply (no data updates based on state)
+</summary>
+</member>
+<member name="M:FCQRS.CSharp.SagaBuilderCSharp.Init``3(FCQRS.Common.IActor,``1,System.Func{System.Object,FCQRS.Common.SagaState{``1,Microsoft.FSharp.Core.FSharpOption{``2}},FCQRS.Common.EventAction{``2}},System.Func{FCQRS.Common.SagaState{``1,``2},System.Boolean,FCQRS.CSharp.SagaSideEffectResult{``2}},System.Func{``1,``2,``1},System.Func{System.String,Akkling.Cluster.Sharding.IEntityRef{System.Object}},System.String)">
+<summary>
+ Initialize a saga with simplified apply - just takes data and unwrapped state, returns new data
+</summary>
+</member>
+<member name="M:FCQRS.CSharp.SagaBuilderCSharp.Init``3(FCQRS.Common.IActor,``1,System.Func{System.Object,FCQRS.Common.SagaState{``1,Microsoft.FSharp.Core.FSharpOption{``2}},FCQRS.Common.EventAction{``2}},System.Func{FCQRS.Common.SagaState{``1,``2},System.Boolean,FCQRS.CSharp.SagaSideEffectResult{``2}},System.Func{FCQRS.Common.SagaState{``1,FCQRS.Common.SagaBuilder.SagaStateWrapper{``2,``0}},FCQRS.Common.SagaState{``1,FCQRS.Common.SagaBuilder.SagaStateWrapper{``2,``0}}},System.Func{System.String,Akkling.Cluster.Sharding.IEntityRef{System.Object}},System.String)">
+<summary>
+ Initialize a saga with C# delegates
+ &apos;TEvent - The triggering event type (from the originator aggregate)
+ &apos;TSagaData - Cross-cutting saga data
+ &apos;TSagaState - User-defined saga states
+</summary>
+</member>
+<member name="M:FCQRS.CSharp.SagaBuilderCSharp.Factory(FCQRS.Common.IActor,Akkling.Cluster.Sharding.EntityFac{System.Object},System.String)">
+<summary>
+ Get the factory for a saga
+</summary>
+</member>
+<member name="T:FCQRS.CSharp.SagaBuilderCSharp">
+<summary>
+ C#-friendly saga builder
+</summary>
+</member>
+<member name="M:FCQRS.CSharp.SagaCommands.ToOriginatorDelayed(System.Func{System.String,Akkling.Cluster.Sharding.IEntityRef{System.Object}},System.Object,System.Int64,System.String)">
+<summary>
+ Create a delayed command
+</summary>
+</member>
+<member name="M:FCQRS.CSharp.SagaCommands.ToOriginator(System.Func{System.String,Akkling.Cluster.Sharding.IEntityRef{System.Object}},System.Object)">
+<summary>
+ Create a command to send to the originator aggregate
+</summary>
+</member>
+<member name="M:FCQRS.CSharp.SagaCommands.ToAggregate(System.Func{System.String,Akkling.Cluster.Sharding.IEntityRef{System.Object}},System.String,System.Object)">
+<summary>
+ Create a command to send to a named aggregate
+</summary>
+</member>
+<member name="M:FCQRS.CSharp.SagaCommands.ToActor(Akkling.ActorRefs.IActorRef{System.Object},System.Object)">
+<summary>
+ Create a command to send to an actor ref
+</summary>
+</member>
+<member name="T:FCQRS.CSharp.SagaCommands">
+<summary>
+ C#-friendly saga command targeting
+</summary>
+</member>
+<member name="M:FCQRS.CSharp.SagaEventActions.Unhandled``1">
+<summary>
+ Event was not handled
+</summary>
+</member>
+<member name="M:FCQRS.CSharp.SagaEventActions.StateChanged``1(``0)">
+<summary>
+ Create a state change event
+</summary>
+</member>
+<member name="M:FCQRS.CSharp.SagaEventActions.Ignore``1">
+<summary>
+ Ignore the event
+</summary>
+</member>
+<member name="T:FCQRS.CSharp.SagaEventActions">
+<summary>
+ C#-friendly factory methods for saga EventAction
+</summary>
+</member>
+<member name="M:FCQRS.CSharp.SagaTransitions.StopSaga``1">
+<summary>
+ Stop the saga (completes the saga lifecycle)
+</summary>
+</member>
+<member name="M:FCQRS.CSharp.SagaTransitions.Stay``1">
+<summary>
+ Stay in the current state (no transition)
+</summary>
+</member>
+<member name="M:FCQRS.CSharp.SagaTransitions.NextState``1(``0)">
+<summary>
+ Transition to a new state
+</summary>
+</member>
+<member name="T:FCQRS.CSharp.SagaTransitions">
+<summary>
+ C#-friendly factory methods for SagaTransition
+</summary>
+</member>
+<member name="M:FCQRS.CSharp.SagaStates.WithState``2(FCQRS.Common.SagaState{``0,``1},``1)">
+<summary>
+ Create a new SagaState with updated State
+</summary>
+</member>
+<member name="M:FCQRS.CSharp.SagaStates.WithData``2(FCQRS.Common.SagaState{``0,``1},``0)">
+<summary>
+ Create a new SagaState with updated Data
+</summary>
+</member>
+<member name="T:FCQRS.CSharp.SagaStates">
+<summary>
+ C#-friendly helpers for SagaState
+</summary>
+</member>
+<member name="P:FCQRS.CSharp.SagaSideEffectResult`1.CommandsList">
+<summary>
+ Convert commands to F# list for internal use
+</summary>
+</member>
+<member name="T:FCQRS.CSharp.SagaSideEffectResult`1">
+<summary>
+ C#-friendly result type for saga side effects (uses class for C# object initializer syntax)
+</summary>
+</member>
 <member name="M:FCQRS.CSharp.ISubscribeExtensions.SubscribeFor``1(FCQRS.Query.ISubscribe{``0},System.Func{``0,System.Boolean},System.Int32)">
 <summary>
  C#-friendly Subscribe that accepts Func instead of FSharpFunc
@@ -739,6 +869,52 @@
  C#-friendly Actor API
 </summary>
 </member>
+<member name="P:FCQRS.CSharp.PrefixConversions.Identity">
+<summary>
+ Identity conversion - uses originator prefix with saga suffix
+ This creates saga IDs like: originatorId~Saga~correlationId
+</summary>
+</member>
+<member name="M:FCQRS.CSharp.PrefixConversions.Custom(System.Func{System.String,System.String})">
+<summary>
+ Custom conversion function
+</summary>
+</member>
+<member name="T:FCQRS.CSharp.PrefixConversions">
+<summary>
+ C#-friendly factory for PrefixConversion
+</summary>
+</member>
+<member name="F:FCQRS.CSharp.SagaDefinition.StartingEvent@">
+<summary>
+ The event to send to start the saga
+</summary>
+</member>
+<member name="F:FCQRS.CSharp.SagaDefinition.PrefixConversion@">
+<summary>
+ How to derive saga entity ID from source entity ID
+</summary>
+</member>
+<member name="F:FCQRS.CSharp.SagaDefinition.Factory@">
+<summary>
+ Factory function to create entity reference from entity ID
+</summary>
+</member>
+<member name="P:FCQRS.CSharp.SagaDefinition.StartingEvent(System.Object)">
+<summary>
+ The event to send to start the saga
+</summary>
+</member>
+<member name="P:FCQRS.CSharp.SagaDefinition.PrefixConversion(FCQRS.Common.PrefixConversion)">
+<summary>
+ How to derive saga entity ID from source entity ID
+</summary>
+</member>
+<member name="P:FCQRS.CSharp.SagaDefinition.Factory(System.Func{System.String,Akkling.Cluster.Sharding.IEntityRef{System.Object}})">
+<summary>
+ Factory function to create entity reference from entity ID
+</summary>
+</member>
 <member name="P:FCQRS.CSharp.SagaDefinition.StartingEvent">
 <summary>
  The event to send to start the saga
@@ -756,7 +932,7 @@
 </member>
 <member name="T:FCQRS.CSharp.SagaDefinition">
 <summary>
- C#-friendly record for defining saga starters
+ C#-friendly class for defining saga starters (uses class for C# object initializer syntax)
 </summary>
 </member>
 <member name="M:FCQRS.CSharp.EventActions.Persist``1(``0)">

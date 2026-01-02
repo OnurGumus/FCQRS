@@ -379,7 +379,7 @@
           }
         }
       },
-      "FCQRS.Serialization/5.0.2": {
+      "FCQRS.Serialization/5.2.0": {
         "dependencies": {
           "FSharp.SystemTextJson": "1.4.36"
         },
@@ -1252,7 +1252,7 @@
           "DotNetty.Transport": "0.7.6",
           "Dynamitey": "3.0.3",
           "FCQRS.Model": "5.1.0",
-          "FCQRS.Serialization": "5.0.2",
+          "FCQRS.Serialization": "5.2.0",
           "FSharp.Core": "10.0.101",
           "FSharp.Interop.Dynamic": "5.0.1.268",
           "FSharp.SystemTextJson": "1.4.36",
@@ -1504,12 +1504,12 @@
       "path": "fcqrs.model/5.1.0",
       "hashPath": "fcqrs.model.5.1.0.nupkg.sha512"
     },
-    "FCQRS.Serialization/5.0.2": {
+    "FCQRS.Serialization/5.2.0": {
       "type": "package",
       "serviceable": true,
-      "sha512": "sha512-IAJKgu0grvEVWddSohafcCOpQtnrj1JQIdKSpEkK5TtD0wbGN+Ipa7cIUHFECkhZb7+r+RS5KwEjDJHzsME4lQ==",
-      "path": "fcqrs.serialization/5.0.2",
-      "hashPath": "fcqrs.serialization.5.0.2.nupkg.sha512"
+      "sha512": "sha512-1B+PnXXFE1Bs+aMkKdkSV5gcPEwfiSCup/LaXB9fD0oAsMhk8jmsjsypBYuhBrS8uqDvKEQ7S3gfjqPh/00O8w==",
+      "path": "fcqrs.serialization/5.2.0",
+      "hashPath": "fcqrs.serialization.5.2.0.nupkg.sha512"
     },
     "FluentAssertions/8.8.0": {
       "type": "package",

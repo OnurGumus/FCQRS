@@ -669,6 +669,28 @@
  </code>
  </example>
 </member>
+<member name="M:FCQRS.CSharp.SagaBuilderCSharp.InitSimple``3(FCQRS.Common.IActor,``1,System.Func{FCQRS.Common.Event{``0},``1,``2,FCQRS.Common.EventAction{``2}},System.Func{``1,``2,System.Boolean,FCQRS.CSharp.SagaSideEffectResult{``2}},System.Func{System.String,Akkling.Cluster.Sharding.IEntityRef{System.Object}},System.String)">
+<summary>
+ Initialize a saga with simplified signatures and no apply
+</summary>
+</member>
+<member name="M:FCQRS.CSharp.SagaBuilderCSharp.InitSimple``3(FCQRS.Common.IActor,``1,System.Func{FCQRS.Common.Event{``0},``1,``2,FCQRS.Common.EventAction{``2}},System.Func{``1,``2,System.Boolean,FCQRS.CSharp.SagaSideEffectResult{``2}},System.Func{``1,``2,``1},System.Func{System.String,Akkling.Cluster.Sharding.IEntityRef{System.Object}},System.String)">
+<summary>
+ Initialize a saga with simplified signatures - no FSharpOption, typed events
+ handleEvent: (event, data, currentState) -&gt; EventAction
+ applySideEffects: (data, state, recovering) -&gt; SagaSideEffectResult
+</summary>
+</member>
+<member name="M:FCQRS.CSharp.SagaBuilderCSharp.Init``3(FCQRS.Common.IActor,``1,System.Func{System.Object,FCQRS.Common.SagaState{``1,Microsoft.FSharp.Core.FSharpOption{``2}},FCQRS.Common.EventAction{``2}},System.Func{FCQRS.Common.SagaState{``1,``2},System.Boolean,FCQRS.CSharp.SagaSideEffectResult{``2}},System.Func{System.String,Akkling.Cluster.Sharding.IEntityRef{System.Object}},System.String)">
+<summary>
+ Initialize a saga without apply (no data updates based on state)
+</summary>
+</member>
+<member name="M:FCQRS.CSharp.SagaBuilderCSharp.Init``3(FCQRS.Common.IActor,``1,System.Func{System.Object,FCQRS.Common.SagaState{``1,Microsoft.FSharp.Core.FSharpOption{``2}},FCQRS.Common.EventAction{``2}},System.Func{FCQRS.Common.SagaState{``1,``2},System.Boolean,FCQRS.CSharp.SagaSideEffectResult{``2}},System.Func{``1,``2,``1},System.Func{System.String,Akkling.Cluster.Sharding.IEntityRef{System.Object}},System.String)">
+<summary>
+ Initialize a saga with simplified apply - just takes data and unwrapped state, returns new data
+</summary>
+</member>
 <member name="M:FCQRS.CSharp.SagaBuilderCSharp.Init``3(FCQRS.Common.IActor,``1,System.Func{System.Object,FCQRS.Common.SagaState{``1,Microsoft.FSharp.Core.FSharpOption{``2}},FCQRS.Common.EventAction{``2}},System.Func{FCQRS.Common.SagaState{``1,``2},System.Boolean,FCQRS.CSharp.SagaSideEffectResult{``2}},System.Func{FCQRS.Common.SagaState{``1,FCQRS.Common.SagaBuilder.SagaStateWrapper{``2,``0}},FCQRS.Common.SagaState{``1,FCQRS.Common.SagaBuilder.SagaStateWrapper{``2,``0}}},System.Func{System.String,Akkling.Cluster.Sharding.IEntityRef{System.Object}},System.String)">
 <summary>
  Initialize a saga with C# delegates
@@ -849,7 +871,8 @@
 </member>
 <member name="P:FCQRS.CSharp.PrefixConversions.Identity">
 <summary>
- Identity conversion (no transformation)
+ Identity conversion - uses originator prefix with saga suffix
+ This creates saga IDs like: originatorId~Saga~correlationId
 </summary>
 </member>
 <member name="M:FCQRS.CSharp.PrefixConversions.Custom(System.Func{System.String,System.String})">
