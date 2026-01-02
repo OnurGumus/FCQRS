@@ -98,11 +98,11 @@ type EventActions =
 [<AllowNullLiteral>]
 type SagaDefinition() =
     /// Factory function to create entity reference from entity ID
-    member val Factory: Func<string, Akkling.Cluster.Sharding.IEntityRef<obj>> = null with get, set
+    member val Factory: Func<string, Akkling.Cluster.Sharding.IEntityRef<obj>> | null = null with get, set
     /// How to derive saga entity ID from source entity ID
     member val PrefixConversion: PrefixConversion = PrefixConversion None with get, set
     /// The event to send to start the saga
-    member val StartingEvent: obj = null with get, set
+    member val StartingEvent: obj | null = null with get, set
 
 /// C#-friendly factory for PrefixConversion
 type PrefixConversions =
@@ -161,7 +161,7 @@ type IActorExtensions =
         eventHandler: Func<obj, System.Collections.Generic.IList<SagaDefinition>>) : unit =
         let handler evt =
             eventHandler.Invoke(evt)
-            |> Seq.map (fun def -> (def.Factory.Invoke, def.PrefixConversion, def.StartingEvent))
+            |> Seq.map (fun def -> ((nonNull def.Factory).Invoke, def.PrefixConversion, nonNull def.StartingEvent))
             |> List.ofSeq
         actor.InitializeSagaStarter(handler)
 
