@@ -9,7 +9,7 @@ open FCQRS.Model.Data
 open FCQRS.Common
 
 /// C# delegate for command handlers - returns Task<Event<TEvent>>
-type Handler<'TCmd, 'TEvent> = delegate of filter: Func<'TEvent, bool> * cid: CID * aggregateId: AggregateId * command: 'TCmd -> Task<Event<'TEvent>>
+type Handler<'TCmd, 'TEvent when 'TEvent: not null> = delegate of filter: Func<'TEvent, bool> * cid: CID * aggregateId: AggregateId * command: 'TCmd -> Task<Event<'TEvent>>
 
 /// Extension methods for Async to make it easier to use from C#
 [<Extension>]
