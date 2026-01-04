@@ -31,11 +31,11 @@ let private createCommand (mailbox: Eventsourced<_>) (command: 'TCommand) cid me
 
 type private ParentSaga<'SagaData, 'State> = SagaStateWithVersion<'SagaData, 'State>
 
-type private SagaStartingEventWrapper<'TEvent> =
-    | SagaStartingEventWrapper of SagaStartingEvent<'TEvent>
+type private SagaStartingEventWrapper<'TEvent when 'TEvent : not null> =
+    | SagaStartingEventWrapper of SagaStartingEvent<Event<'TEvent>>
     interface ISerializable
 
-let private runSaga<'TEvent, 'SagaData, 'State>
+let private runSaga<'TEvent, 'SagaData, 'State when 'TEvent : not null and 'State : not null>
     snapshotVersionCount
     (mailbox: Eventsourced<obj>)
     (log: ILogger)
@@ -43,15 +43,15 @@ let private runSaga<'TEvent, 'SagaData, 'State>
     (set: _ -> ParentSaga<'SagaData, 'State> -> _)
     (state: ParentSaga<'SagaData, 'State>)
     (applySideEffects:
-        ParentSaga<'SagaData, 'State> -> option<SagaStarter.SagaStartingEvent<'TEvent>> -> bool -> 'State option)
+        ParentSaga<'SagaData, 'State> -> option<SagaStarter.SagaStartingEvent<Event<'TEvent>>> -> bool -> 'State option)
     (applyNewState: SagaState<'SagaData, 'State> -> SagaState<'SagaData, 'State>)
     (wrapper: 'State -> ParentSaga<'SagaData, 'State>)
     body
     innerStateDefaults
     (currentSagaActivityRef: (Activity | null) ref)
     =
-    let rec innerSet (startingEvent: option<SagaStarter.SagaStartingEvent<_>>, subscribed) =
-        let innerSetValue = startingEvent, subscribed
+    let rec innerSet (startingEvent: option<SagaStarter.SagaStartingEvent<Event<'TEvent>>>, subscribed, subscriptionAcked) =
+        let innerSetValue = startingEvent, subscribed, subscriptionAcked
 
         actor {
             let! msg = mailbox.Receive()
@@ -136,14 +136,14 @@ let private runSaga<'TEvent, 'SagaData, 'State>
                 let poision = Akka.Cluster.Sharding.Passivate <| Actor.PoisonPill.Instance
                 log.LogInformation("Aborting")
                 mailbox.Parent() <! poision
-                return! innerSet (startingEvent, subscribed)
+                return! innerSet (startingEvent, subscribed, subscriptionAcked)
 
             | :? Persistence.RecoveryCompleted ->
                 subscriber mediator mailbox
-                log.LogInformation "Saga RecoveryCompleted"
-                return! innerSet (startingEvent, subscribed)
+                log.LogInformation("Saga RecoveryCompleted")
+                return! innerSet (startingEvent, subscribed, subscriptionAcked)
             | Recovering mailbox (:? SagaStartingEventWrapper<'TEvent> as SagaStartingEventWrapper event) ->
-                return! innerSet (Some event, true)
+                return! innerSet (Some event, true, subscriptionAcked)
             | Recovering mailbox (:? SagaEvent<'State> as event) ->
                 match event with
                 | StateChanged s ->
@@ -154,30 +154,49 @@ let private runSaga<'TEvent, 'SagaData, 'State>
                     with ex ->
                         log.LogError(ex, "Fatal error during saga recovery for {0}. Terminating process to prevent restart loop.", mailbox.Self.Path.ToString())
                         System.Environment.FailFast "Process terminated due to saga error"
-                        return! innerSet (startingEvent, subscribed)
+                        return! innerSet (startingEvent, subscribed, subscriptionAcked)
 
             | PersistentLifecycleEvent _
             | :? Persistence.SaveSnapshotSuccess
             | LifecycleEvent _ ->
-                return! innerSet (startingEvent, true)
+                return! innerSet (startingEvent, true, subscriptionAcked)
             | SnapshotOffer(snapState: obj) ->
                 return! snapState |> unbox<_> |> set innerSetValue
             | SubscriptionAcknowledged mailbox _ ->
                 // notify saga starter about the subscription completed
-                let newState = applySideEffects state startingEvent true
+                let nextInner = startingEvent, true, true
 
-                match newState with
-                | Some newState ->
-                    // Activity will be emitted when state is persisted (in Persisted branch)
-                    return! newState |> StateChanged |> box |> Persist <@> innerSet (startingEvent, true)
+                match startingEvent with
+                | Some _ ->
+                    let newState = applySideEffects state startingEvent true
+
+                    match newState with
+                    | Some newState ->
+                        // Activity will be emitted when state is persisted (in Persisted branch)
+                        return! newState |> StateChanged |> box |> Persist <@> innerSet nextInner
+                    | None ->
+                        return! state |> set innerSetValue <@> innerSet nextInner
                 | None ->
-                    return! state |> set innerSetValue <@> innerSet (startingEvent, true)
+                    // Wait for starting event before applying side effects.
+                    return! state |> set innerSetValue <@> innerSet nextInner
 
             | Deferred mailbox obj
             | Persisted mailbox obj ->
                 match obj with
                 | :? SagaStartingEventWrapper<'TEvent> as SagaStartingEventWrapper e ->
-                    return innerSet (Some e, true)
+                    let nextInner = Some e, true, subscriptionAcked
+
+                    if startingEvent.IsNone then
+                        let newState = applySideEffects state (Some e) subscriptionAcked
+
+                        match newState with
+                        | Some newState ->
+                            // Activity will be emitted when state is persisted (in Persisted branch)
+                            return! newState |> StateChanged |> box |> Persist <@> innerSet nextInner
+                        | None ->
+                            return! state |> set innerSetValue <@> innerSet nextInner
+                    else
+                        return! innerSet nextInner
                 | :? SagaEvent<'State> as e ->
                     match e with
                     | StateChanged originalState ->
@@ -233,11 +252,13 @@ let private runSaga<'TEvent, 'SagaData, 'State>
 
                     return! state |> set innerSetValue
 
-            | :? (SagaStarter.SagaStartingEvent<'TEvent>) as e when startingEvent.IsNone ->
+            | :? (SagaStarter.SagaStartingEvent<Event<'TEvent>>) as e when startingEvent.IsNone ->
                 return! SagaStartingEventWrapper e |> box |> Persist
-            | :? (SagaStarter.SagaStartingEvent<'TEvent>) when subscribed ->
+            | :? (SagaStarter.SagaStartingEvent<Event<'TEvent>>) when subscribed ->
                 cont mediator
-                return! innerSet (startingEvent, subscribed)
+                return! innerSet (startingEvent, subscribed, subscriptionAcked)
+            | msg when msg.GetType().Name.StartsWith("SagaStartingEvent") ->
+                return! innerSet (startingEvent, subscribed, subscriptionAcked)
 
             | _ ->
                 return! body msg
@@ -245,11 +266,15 @@ let private runSaga<'TEvent, 'SagaData, 'State>
 
     innerSet innerStateDefaults
 
-let private actorProp
+let private actorProp<'SagaData, 'State, 'TEvent when 'TEvent : not null and 'State : not null>
     initialState
     name
     (handleEvent: obj -> SagaState<'SagaData, 'State> -> EventAction<'State>)
-    (applySideEffects2: SagaState<'SagaData, 'State> -> _ -> _)
+    (applySideEffects2:
+        SagaState<'SagaData, 'State>
+            -> option<SagaStartingEvent<Event<'TEvent>>>
+            -> bool
+            -> SagaTransition<'State> * ExecuteCommand list)
     (apply: SagaState<'SagaData, 'State> -> SagaState<'SagaData, 'State>)
     (actorApi: IActor)
     (mediator: IActorRef<_>)
@@ -268,7 +293,6 @@ let private actorProp
     // Ref cell to hold the current saga state activity (kept alive across iterations)
     // This is at actorProp level so both runSaga and applySideEffects can access it
     let currentSagaActivityRef: (Activity | null) ref = ref null
-
     let snapshotVersionCount =
         let s: string | null = config["config:akka:persistence:snapshot-version-count"]
 
@@ -278,7 +302,7 @@ let private actorProp
 
     let applySideEffects
         (sagaState: ParentSaga<'SagaData, 'State>)
-        (startingEvent: option<SagaStartingEvent<'TEvent>>)
+        (startingEvent: option<SagaStartingEvent<Event<'TEvent>>>)
         recovering
         : 'State option =
         let transition, (cmds: ExecuteCommand list) =
@@ -357,18 +381,17 @@ let private actorProp
                     | :? FCQRS.Scheduler.ObservingScheduler as obs ->
                         let taskNameForScheduler = name
                         
-                        log.Debug("SAGA_DEBUG: Using FCQRS.ObservingScheduler. Calling ScheduleTellOnceWithName with task name: {taskName}", taskNameForScheduler)
                         // IMPORTANT: Assumes FCQRS.ObservingScheduler.ObservingScheduler now has a method like:
                         // member this.ScheduleTellOnceWithName(delay, receiver, message, sender, taskName) : ICancelable
                         obs.ScheduleTellOnce(Some taskNameForScheduler, scheduleAtDelay, untypedReceiver, messageToSchedule, untypedSender)
                         |> ignore
 
                     | sch -> // Fallback for any other IScheduler type
-                        log.Debug("SAGA_DEBUG: Using standard IScheduler. Calling standard ScheduleTellOnce.")
                         sch.ScheduleTellOnce(scheduleAtDelay, untypedReceiver, messageToSchedule, untypedSender)
                         |> ignore
 
-                | None -> targetActor <! finalCommand
+                | None ->
+                    targetActor <! finalCommand
             with ex ->
                 log.Error(ex, "Fatal error in saga command processing for {0}. Terminating process to prevent restart loop.", name)
                 System.Environment.FailFast "Process terminated due to saga error"
@@ -436,13 +459,17 @@ let private actorProp
             innerStateDefaults
             currentSagaActivityRef
 
-    set (None, false) initialState
+    set (None, false, false) initialState
 
-let init
+let init<'SagaData, 'State, 'TEvent when 'TEvent : not null and 'State : not null>
     (actorApi: IActor)
     (initialState: SagaState<_, _>)
-    (handleEvent: obj -> SagaState<'SagaData, 'State> -> _)
-    (applySideEffects: SagaState<'SagaData, 'State> -> _ -> _)
+    (handleEvent: obj -> SagaState<'SagaData, 'State> -> EventAction<'State>)
+    (applySideEffects:
+        SagaState<'SagaData, 'State>
+            -> option<SagaStartingEvent<Event<'TEvent>>>
+            -> bool
+            -> SagaTransition<'State> * ExecuteCommand list)
     (apply: SagaState<'SagaData, 'State> -> SagaState<'SagaData, 'State>)
     name
     =
@@ -455,4 +482,3 @@ let init
          actorProp initialState name handleEvent applySideEffects apply actorApi (typed actorApi.Mediator)
      )
      <| true
-

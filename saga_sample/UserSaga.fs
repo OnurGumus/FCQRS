@@ -55,13 +55,14 @@ let applySideEffectsUser (userFactory: string -> IEntityRef<obj>) (mailSenderRef
     | Completed -> StopSaga, []
 
 // Apply function for state transformations when events are processed
-let apply (sagaState: SagaState<SagaData, SagaStateWrapper<UserState, User.Event>>) = 
+// Uses simplified signature - no need to handle UserDefined wrapper
+let apply (sagaState: SagaState<SagaData, UserState>) =
     // Update cross-cutting data based on current state
     match sagaState.State with
-    | UserDefined (SendingMail _) ->
+    | SendingMail _ ->
         // Each time we're in SendingMail state, increment retry count
         { sagaState with Data = { sagaState.Data with RetryCount = sagaState.Data.RetryCount + 1 } }
-    | UserDefined GeneratingCode ->
+    | GeneratingCode ->
         // Reset retry count when starting fresh
         { sagaState with Data = { sagaState.Data with RetryCount = 0 } }
     | _ -> sagaState
@@ -71,7 +72,7 @@ let init (actorApi: IActor) : Akkling.Cluster.Sharding.EntityFac<obj> =
     let mailSenderRef = fun () -> spawnAnonymous actorApi.System (props behavior) |> retype
 
     // One-line initialization - all wrapping handled by framework!
-    SagaBuilder.init
+    SagaBuilder.initSimple<SagaData, UserState, User.Event>
         actorApi
         sagaData
         handleUserEvent

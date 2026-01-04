@@ -371,7 +371,24 @@ module SagaBuilder =
         (recovering: bool)
         : SagaTransition<SagaStateWrapper<'UserState, 'TEvent>> * ExecuteCommand list =
         match sagaState.State with
-        | NotStarted -> NextState(Started startingEvent.Value), []
+        | NotStarted ->
+            match startingEvent with
+            | Some startingEvent ->
+                let commands =
+                    if recovering then
+                        let originator =
+                            FactoryAndName
+                                { Factory = originatorFactory
+                                  Name = Originator }
+
+                        [ { TargetActor = originator
+                            Command = ContinueOrAbort startingEvent.Event
+                            DelayInMs = None } ]
+                    else
+                        []
+
+                NextState(Started startingEvent), commands
+            | None -> Stay, []
         | Started _ ->
             let transition, commands =
                 handleStartedState recovering startingEvent originatorFactory
@@ -414,6 +431,19 @@ module SagaBuilder =
             | StateChangedEvent newState -> StateChangedEvent(UserDefined newState)
             | _ -> UnhandledEvent
 
+    /// Wraps user's apply function to handle NotStarted/Started automatically
+    let wrapApply<'SagaData, 'UserState, 'TEvent when 'TEvent : not null>
+        (userApply: SagaState<'SagaData, 'UserState> -> SagaState<'SagaData, 'UserState>)
+        (sagaState: SagaState<'SagaData, SagaStateWrapper<'UserState, 'TEvent>>)
+        : SagaState<'SagaData, SagaStateWrapper<'UserState, 'TEvent>> =
+        match sagaState.State with
+        | NotStarted
+        | Started _ -> sagaState
+        | UserDefined userState ->
+            let userSagaState = { Data = sagaState.Data; State = userState }
+            let result = userApply userSagaState
+            { Data = result.Data; State = UserDefined result.State }
+
     /// High-level saga initialization that handles all wrapping automatically
     let init<'SagaData, 'UserState, 'TEvent when 'UserState : not null and 'TEvent : not null>
         (actorApi: IActor)
@@ -429,9 +459,36 @@ module SagaBuilder =
         =
         let initialState = createInitialState<'SagaData, 'UserState, 'TEvent> sagaData
         let handleEvent = wrapHandleEvent userHandleEvent
-        let applySideEffects = wrapApplySideEffects userApplySideEffects originatorFactory
+        let applySideEffects:
+            SagaState<'SagaData, SagaStateWrapper<'UserState, 'TEvent>>
+                -> option<SagaStartingEvent<Event<'TEvent>>>
+                -> bool
+                -> SagaTransition<SagaStateWrapper<'UserState, 'TEvent>> * ExecuteCommand list
+            =
+            wrapApplySideEffects userApplySideEffects originatorFactory
 
         actorApi.InitializeSaga initialState handleEvent applySideEffects userApply sagaName
+
+    /// Simplified saga initialization with unwrapped apply function
+    let initSimple<'SagaData, 'UserState, 'TEvent when 'UserState : not null and 'TEvent : not null>
+        (actorApi: IActor)
+        (sagaData: 'SagaData)
+        (userHandleEvent: obj -> SagaState<'SagaData, 'UserState option> -> EventAction<'UserState>)
+        (userApplySideEffects:
+            SagaState<'SagaData, 'UserState> -> bool -> SagaTransition<'UserState> * ExecuteCommand list)
+        (userApply: SagaState<'SagaData, 'UserState> -> SagaState<'SagaData, 'UserState>)
+        (originatorFactory: string -> IEntityRef<obj>)
+        (sagaName: string)
+        =
+        let wrappedApply = wrapApply userApply
+        init<'SagaData, 'UserState, 'TEvent>
+            actorApi
+            sagaData
+            userHandleEvent
+            userApplySideEffects
+            wrappedApply
+            originatorFactory
+            sagaName
 
 /// Contains types and functions related to the Saga Starter actor (internal implementation detail).
 module SagaStarter =
@@ -535,6 +592,8 @@ module SagaStarter =
             (sagaCheck: obj -> (((string -> IEntityRef<obj>) * PrefixConversion * obj) list))
             (mailbox: Actor<_>)
             =
+            let log = mailbox.UntypedContext.GetLogger()
+
             let rec set (state: Map<string, (IActorRef * string list list)>) =
                 let startSaga
                     cid

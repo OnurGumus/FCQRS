@@ -371,9 +371,19 @@
  Standard wrapper for saga states that includes NotStarted/Started
 </summary>
 </member>
+<member name="M:FCQRS.Common.SagaBuilder.initSimple``3(FCQRS.Common.IActor,``0,Microsoft.FSharp.Core.FSharpFunc{System.Object,Microsoft.FSharp.Core.FSharpFunc{FCQRS.Common.SagaState{``0,Microsoft.FSharp.Core.FSharpOption{``1}},FCQRS.Common.EventAction{``1}}},Microsoft.FSharp.Core.FSharpFunc{FCQRS.Common.SagaState{``0,``1},Microsoft.FSharp.Core.FSharpFunc{System.Boolean,System.Tuple{FCQRS.Common.SagaTransition{``1},Microsoft.FSharp.Collections.FSharpList{FCQRS.Common.ExecuteCommand}}}},Microsoft.FSharp.Core.FSharpFunc{FCQRS.Common.SagaState{``0,``1},FCQRS.Common.SagaState{``0,``1}},Microsoft.FSharp.Core.FSharpFunc{System.String,Akkling.Cluster.Sharding.IEntityRef{System.Object}},System.String)">
+<summary>
+ Simplified saga initialization with unwrapped apply function
+</summary>
+</member>
 <member name="M:FCQRS.Common.SagaBuilder.init``3(FCQRS.Common.IActor,``0,Microsoft.FSharp.Core.FSharpFunc{System.Object,Microsoft.FSharp.Core.FSharpFunc{FCQRS.Common.SagaState{``0,Microsoft.FSharp.Core.FSharpOption{``1}},FCQRS.Common.EventAction{``1}}},Microsoft.FSharp.Core.FSharpFunc{FCQRS.Common.SagaState{``0,``1},Microsoft.FSharp.Core.FSharpFunc{System.Boolean,System.Tuple{FCQRS.Common.SagaTransition{``1},Microsoft.FSharp.Collections.FSharpList{FCQRS.Common.ExecuteCommand}}}},Microsoft.FSharp.Core.FSharpFunc{FCQRS.Common.SagaState{``0,FCQRS.Common.SagaBuilder.SagaStateWrapper{``1,``2}},FCQRS.Common.SagaState{``0,FCQRS.Common.SagaBuilder.SagaStateWrapper{``1,``2}}},Microsoft.FSharp.Core.FSharpFunc{System.String,Akkling.Cluster.Sharding.IEntityRef{System.Object}},System.String)">
 <summary>
  High-level saga initialization that handles all wrapping automatically
+</summary>
+</member>
+<member name="M:FCQRS.Common.SagaBuilder.wrapApply``3(Microsoft.FSharp.Core.FSharpFunc{FCQRS.Common.SagaState{``0,``1},FCQRS.Common.SagaState{``0,``1}},FCQRS.Common.SagaState{``0,FCQRS.Common.SagaBuilder.SagaStateWrapper{``1,``2}})">
+<summary>
+ Wraps user&apos;s apply function to handle NotStarted/Started automatically
 </summary>
 </member>
 <member name="M:FCQRS.Common.SagaBuilder.wrapHandleEvent``3(Microsoft.FSharp.Core.FSharpFunc{System.Object,Microsoft.FSharp.Core.FSharpFunc{FCQRS.Common.SagaState{``0,Microsoft.FSharp.Core.FSharpOption{``1}},FCQRS.Common.EventAction{``1}}},System.Object,FCQRS.Common.SagaState{``0,FCQRS.Common.SagaBuilder.SagaStateWrapper{``1,``2}})">
@@ -1038,6 +1048,11 @@
 <member name="T:FCQRS.CSharp.AsyncExtensions">
 <summary>
  Extension methods for Async to make it easier to use from C#
+</summary>
+</member>
+<member name="T:FCQRS.CSharp.Handler`2">
+<summary>
+ C# delegate for command handlers - returns Task&lt;Event&lt;TEvent&gt;&gt;
 </summary>
 </member>
 <member name="T:FCQRS.CSharp">
