@@ -1521,7 +1521,7 @@
     "FSharp.Core/10.0.101": {
       "type": "package",
       "serviceable": true,
-      "sha512": "sha512-CB35FuLQ7P70zkY9Mz304kwQxw+EPS7TsZpBafphIa2Ay4g9PlI9pThLKvGJm3iV887SF0/4mafwieSRdJQA6Q==",
+      "sha512": "sha512-mrS3J7cLtvXM3u3CmiaFq8oyBdlevzZY1VAAAbFk1gUDQtDEjUOybN5XpQglx5wAgJ0wLdDl6OSSfS7ZDFNcpA==",
       "path": "fsharp.core/10.0.101",
       "hashPath": "fsharp.core.10.0.101.nupkg.sha512"
     },

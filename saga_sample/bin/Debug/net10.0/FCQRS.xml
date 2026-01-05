@@ -635,6 +635,25 @@
  Custom configuration provider for in-memory HOCON strings
 </summary>
 </member>
+<member name="M:FCQRS.Query.ISubscribe`1.Subscribe(FCQRS.Model.Data.CID,Microsoft.FSharp.Core.FSharpFunc{`0,System.Boolean},System.Int32,Microsoft.FSharp.Core.FSharpOption{Microsoft.FSharp.Core.FSharpFunc{`0,Microsoft.FSharp.Core.Unit}},Microsoft.FSharp.Core.FSharpOption{System.Threading.CancellationToken})">
+ <summary>
+ Subscribes to events matching a specific correlation ID and an additional filter.
+ </summary>
+ <param name="cid">The correlation ID to match.</param>
+ <param name="filter">Additional predicate to filter events after CID matching.</param>
+ <param name="take">Maximum number of events to process.</param>
+ <param name="callback">Optional callback function to handle the event.</param>
+ <param name="cancellationToken">An optional cancellation token to cancel the subscription.</param>
+</member>
+<member name="M:FCQRS.Query.ISubscribe`1.Subscribe(FCQRS.Model.Data.CID,System.Int32,Microsoft.FSharp.Core.FSharpOption{Microsoft.FSharp.Core.FSharpFunc{`0,Microsoft.FSharp.Core.Unit}},Microsoft.FSharp.Core.FSharpOption{System.Threading.CancellationToken})">
+ <summary>
+ Subscribes to events matching a specific correlation ID.
+ </summary>
+ <param name="cid">The correlation ID to match.</param>
+ <param name="take">Maximum number of events to process.</param>
+ <param name="callback">Optional callback function to handle the event.</param>
+ <param name="cancellationToken">An optional cancellation token to cancel the subscription.</param>
+</member>
 <member name="M:FCQRS.Query.ISubscribe`1.Subscribe(Microsoft.FSharp.Core.FSharpFunc{`0,System.Boolean},System.Int32,Microsoft.FSharp.Core.FSharpOption{Microsoft.FSharp.Core.FSharpFunc{`0,Microsoft.FSharp.Core.Unit}},Microsoft.FSharp.Core.FSharpOption{System.Threading.CancellationToken})">
  <summary>
  Subscribes to events using a filter. Only events for which the predicate returns true

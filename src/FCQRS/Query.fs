@@ -17,8 +17,10 @@ type IAwaitableDisposable =
     inherit IDisposable
     inherit IAwaitable
 
+open FCQRS.Model.Data
+
 [<Interface>]
-type ISubscribe<'TDataEvent> =
+type ISubscribe<'TDataEvent when 'TDataEvent :> IMessageWithCID> =
     /// <summary>
     /// Subscribes to all events and invokes the specified callback for each event.
     /// </summary>
@@ -68,6 +70,36 @@ type ISubscribe<'TDataEvent> =
         ?cancellationToken: CancellationToken ->
             IAwaitableDisposable
 
+    /// <summary>
+    /// Subscribes to events matching a specific correlation ID.
+    /// </summary>
+    /// <param name="cid">The correlation ID to match.</param>
+    /// <param name="take">Maximum number of events to process.</param>
+    /// <param name="callback">Optional callback function to handle the event.</param>
+    /// <param name="cancellationToken">An optional cancellation token to cancel the subscription.</param>
+    abstract Subscribe:
+        cid: CID *
+        take: int *
+        ?callback: ('TDataEvent -> unit) *
+        ?cancellationToken: CancellationToken ->
+            IAwaitableDisposable
+
+    /// <summary>
+    /// Subscribes to events matching a specific correlation ID and an additional filter.
+    /// </summary>
+    /// <param name="cid">The correlation ID to match.</param>
+    /// <param name="filter">Additional predicate to filter events after CID matching.</param>
+    /// <param name="take">Maximum number of events to process.</param>
+    /// <param name="callback">Optional callback function to handle the event.</param>
+    /// <param name="cancellationToken">An optional cancellation token to cancel the subscription.</param>
+    abstract Subscribe:
+        cid: CID *
+        filter: ('TDataEvent -> bool) *
+        take: int *
+        ?callback: ('TDataEvent -> unit) *
+        ?cancellationToken: CancellationToken ->
+            IAwaitableDisposable
+
 [<AutoOpen>]
 module Internal =
     open Akka.Persistence.Sql.Query
@@ -106,7 +138,7 @@ module Internal =
             ks :> IKillSwitch, d
 
 
-let init<'TDataEvent, 'TPredicate, 't> (actorApi: IActor) offsetCount handler =
+let init<'TDataEvent, 'TPredicate, 't when 'TDataEvent :> IMessageWithCID> (actorApi: IActor) offsetCount handler =
     let source = (readJournal actorApi.System).AllEvents(Offset.Sequence offsetCount)
     let logger = actorApi.LoggerFactory.CreateLogger "Query"
     logger.LogInformation "Query started"
@@ -155,7 +187,7 @@ let init<'TDataEvent, 'TPredicate, 't> (actorApi: IActor) offsetCount handler =
                     if not token.IsCancellationRequested then
                         ks.Shutdown() }
 
-        override _.Subscribe(filter, take, ?callback, ?cancellationToken) =
+        override _.Subscribe(filter: 'TDataEvent -> bool, take: int, ?callback, ?cancellationToken) =
             let token = defaultArg cancellationToken CancellationToken.None
             let cb = defaultArg callback ignore
             let ks, res = subscribeCmdWithFilter filter take cb
@@ -170,5 +202,11 @@ let init<'TDataEvent, 'TPredicate, 't> (actorApi: IActor) offsetCount handler =
 
                     if not token.IsCancellationRequested then
                         ks.Shutdown() }
+
+        override this.Subscribe(cid: CID, take: int, ?callback, ?cancellationToken) =
+            this.Subscribe((fun e -> e.CID = cid), take, ?callback = callback, ?cancellationToken = cancellationToken)
+
+        override this.Subscribe(cid: CID, filter: 'TDataEvent -> bool, take: int, ?callback, ?cancellationToken) =
+            this.Subscribe((fun e -> e.CID = cid && filter e), take, ?callback = callback, ?cancellationToken = cancellationToken)
 
     }

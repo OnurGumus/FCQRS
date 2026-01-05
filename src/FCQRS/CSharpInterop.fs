@@ -210,7 +210,7 @@ type IActorExtensions =
 type ISubscribeExtensions =
     /// C#-friendly Subscribe that accepts Func instead of FSharpFunc
     [<Extension>]
-    static member SubscribeFor<'T>(
+    static member SubscribeFor<'T when 'T :> FCQRS.Model.Data.IMessageWithCID>(
         subs: Query.ISubscribe<'T>,
         filter: Func<'T, bool>,
         take: int) : Query.IAwaitableDisposable =
