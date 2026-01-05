@@ -216,6 +216,23 @@ type ISubscribeExtensions =
         take: int) : Query.IAwaitableDisposable =
         subs.Subscribe((fun e -> filter.Invoke(e)), take)
 
+    /// C#-friendly Subscribe that matches by CID only
+    [<Extension>]
+    static member SubscribeFor<'T when 'T :> FCQRS.Model.Data.IMessageWithCID>(
+        subs: Query.ISubscribe<'T>,
+        cid: FCQRS.Model.Data.CID,
+        take: int) : Query.IAwaitableDisposable =
+        subs.Subscribe(cid, take)
+
+    /// C#-friendly Subscribe that matches by CID and additional filter
+    [<Extension>]
+    static member SubscribeFor<'T when 'T :> FCQRS.Model.Data.IMessageWithCID>(
+        subs: Query.ISubscribe<'T>,
+        cid: FCQRS.Model.Data.CID,
+        filter: Func<'T, bool>,
+        take: int) : Query.IAwaitableDisposable =
+        subs.Subscribe(cid, (fun e -> filter.Invoke(e)), take)
+
 // =============================================================================
 // SAGA C# INTEROP
 // =============================================================================
