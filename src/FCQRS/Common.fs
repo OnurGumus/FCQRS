@@ -645,7 +645,14 @@ module SagaStarter =
                             let targetList =
                                 subscribers |> List.find (fun a -> a |> List.contains sender.Path.Name)
 
-                            let newList = targetList |> List.filter (fun a -> a <> sender.Path.Name)
+                            // Remove only the first occurrence (not all) to handle duplicate entity IDs
+                            let removeFirst item list =
+                                let rec loop acc = function
+                                    | [] -> List.rev acc
+                                    | x :: xs when x = item -> List.rev acc @ xs
+                                    | x :: xs -> loop (x :: acc) xs
+                                loop [] list
+                            let newList = removeFirst sender.Path.Name targetList
                             let subscibersWithoutTarget = subscribers |> List.filter (fun a -> a <> targetList)
 
                             if newList.IsEmpty then
