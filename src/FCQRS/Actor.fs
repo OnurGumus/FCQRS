@@ -565,4 +565,10 @@ let api (config: IConfiguration) (loggerFactory: ILoggerFactory) (connection: Co
         /// </remarks>
         member _.InitializeSagaStarter (rules: (obj -> list<(string -> IEntityRef<obj>) * PrefixConversion * obj>)) : unit =
             SagaStarter.Internal.init system mediator rules
+
+        member _.InitializeSagaStarter (rules: (obj -> list<(string -> IEntityRef<obj>)>)) : unit =
+            let fullRules evt =
+                rules evt
+                |> List.map (fun factory -> (factory, PrefixConversion(Some id), evt))
+            SagaStarter.Internal.init system mediator fullRules
     }

@@ -49,6 +49,12 @@
  Stops the actor system gracefully.
 </summary>
 </member>
+<member name="M:FCQRS.Common.IActor.InitializeSagaStarter(Microsoft.FSharp.Core.FSharpFunc{System.Object,Microsoft.FSharp.Collections.FSharpList{Microsoft.FSharp.Core.FSharpFunc{System.String,Akkling.Cluster.Sharding.IEntityRef{System.Object}}}})">
+<summary>
+ Simplified saga starter where you just return factories.
+ Uses default PrefixConversion (identity) and passes through the original event.
+</summary>
+</member>
 <member name="M:FCQRS.Common.IActor.InitializeSagaStarter(Microsoft.FSharp.Core.FSharpFunc{System.Object,Microsoft.FSharp.Collections.FSharpList{System.Tuple{Microsoft.FSharp.Core.FSharpFunc{System.String,Akkling.Cluster.Sharding.IEntityRef{System.Object}},FCQRS.Common.PrefixConversion,System.Object}}})">
 <summary>
  Initializes the Saga Starter actor, configuring which events trigger which sagas.
@@ -828,6 +834,16 @@
  C#-friendly result type for saga side effects (uses class for C# object initializer syntax)
 </summary>
 </member>
+<member name="M:FCQRS.CSharp.ISubscribeExtensions.SubscribeFor``1(FCQRS.Query.ISubscribe{``0},FCQRS.Model.Data.CID,System.Func{``0,System.Boolean},System.Int32)">
+<summary>
+ C#-friendly Subscribe that matches by CID and additional filter
+</summary>
+</member>
+<member name="M:FCQRS.CSharp.ISubscribeExtensions.SubscribeFor``1(FCQRS.Query.ISubscribe{``0},FCQRS.Model.Data.CID,System.Int32)">
+<summary>
+ C#-friendly Subscribe that matches by CID only
+</summary>
+</member>
 <member name="M:FCQRS.CSharp.ISubscribeExtensions.SubscribeFor``1(FCQRS.Query.ISubscribe{``0},System.Func{``0,System.Boolean},System.Int32)">
 <summary>
  C#-friendly Subscribe that accepts Func instead of FSharpFunc
@@ -846,6 +862,11 @@
 <member name="M:FCQRS.CSharp.IActorExtensions.InitializeSagaStarterEmpty(FCQRS.Common.IActor)">
 <summary>
  Initialize saga starter with no sagas (for simple scenarios)
+</summary>
+</member>
+<member name="M:FCQRS.CSharp.IActorExtensions.InitSagaStarterSimple(FCQRS.Common.IActor,System.Func{System.Object,System.Collections.Generic.IList{System.Func{System.String,Akkling.Cluster.Sharding.IEntityRef{System.Object}}}})">
+<summary>
+ C#-friendly simplified InitializeSagaStarter where you just return factories
 </summary>
 </member>
 <member name="M:FCQRS.CSharp.IActorExtensions.InitSagaStarterEmpty(FCQRS.Common.IActor)">

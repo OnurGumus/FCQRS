@@ -152,11 +152,11 @@ type IActorExtensions =
     /// Initialize saga starter with no sagas (for simple scenarios)
     [<Extension>]
     static member InitializeSagaStarterEmpty(actor: IActor) : unit =
-        actor.InitializeSagaStarter(fun _ -> [])
+        actor.InitializeSagaStarter(fun _ -> ([] : list<(string -> Akkling.Cluster.Sharding.IEntityRef<obj>) * PrefixConversion * obj>))
 
     /// Static helper for C# where extension may not resolve
     static member InitSagaStarterEmpty(actor: IActor) : unit =
-        actor.InitializeSagaStarter(fun _ -> [])
+        actor.InitializeSagaStarter(fun _ -> ([] : list<(string -> Akkling.Cluster.Sharding.IEntityRef<obj>) * PrefixConversion * obj>))
 
     /// C#-friendly InitializeSagaStarter that accepts Func returning IList of SagaDefinition
     static member InitSagaStarter(
@@ -165,6 +165,16 @@ type IActorExtensions =
         let handler evt =
             eventHandler.Invoke(evt)
             |> Seq.map (fun def -> ((nonNull def.Factory).Invoke, def.PrefixConversion, nonNull def.StartingEvent))
+            |> List.ofSeq
+        actor.InitializeSagaStarter(handler)
+
+    /// C#-friendly simplified InitializeSagaStarter where you just return factories
+    static member InitSagaStarterSimple(
+        actor: IActor,
+        eventHandler: Func<obj, System.Collections.Generic.IList<Func<string, Akkling.Cluster.Sharding.IEntityRef<obj>>>>) : unit =
+        let handler evt =
+            eventHandler.Invoke(evt)
+            |> Seq.map (fun factory -> factory.Invoke)
             |> List.ofSeq
         actor.InitializeSagaStarter(handler)
 

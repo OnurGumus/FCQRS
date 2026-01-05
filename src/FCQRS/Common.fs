@@ -318,6 +318,10 @@ type IActor =
     /// <param name="eventHandler">A function mapping a received event object to a list of saga definitions to start: `obj -> list<(Factory * Prefix * StartingEvent)>`.</param>
     abstract InitializeSagaStarter: (obj -> list<(string -> IEntityRef<obj>) * PrefixConversion * obj>) -> unit
 
+    /// Simplified saga starter where you just return factories.
+    /// Uses default PrefixConversion (identity) and passes through the original event.
+    abstract InitializeSagaStarter: (obj -> list<(string -> IEntityRef<obj>)>) -> unit
+
 // Internal helper to create Event records
 
 /// Default shard name used if no specific sharding strategy is provided.

@@ -74,15 +74,15 @@ let actorApi = FCQRS.Actor.api config loggerF connection clusterName
 FCQRS.SchedulerController.start actorApi.System.Scheduler
 
 let userSagaShard = UserSaga.factory actorApi
-let sagaCheck (o: obj) =
+
+actorApi.InitializeSagaStarter(fun o ->
     match o with
     | :? (FCQRS.Common.Event<User.Event>) as e ->
         match e.EventDetails with
-        | User.VerificationRequested _ -> [ userSagaShard, id |> Some |> PrefixConversion, o ]
+        | User.VerificationRequested _ -> [ userSagaShard ]
         | _ -> []
     | _ -> []
-
-actorApi.InitializeSagaStarter sagaCheck
+)
 
 let userShard = User.factory actorApi
 
