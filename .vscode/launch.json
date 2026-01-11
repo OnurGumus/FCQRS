@@ -7,9 +7,10 @@
         {
             "name": "C#: saga_sampl Debug",
             "type": "coreclr",
+            "justMyCode": false,
             "request": "launch",
             "console": "integratedTerminal",
-            "program": "${workspaceFolder}/saga_sample/bin/Debug/net9.0/saga_sample.dll",
+            "program": "${workspaceFolder}/saga_sample/bin/Debug/net10.0/saga_sample.dll",
         }
 
     ]
