@@ -20,6 +20,7 @@
     <Compile Include="Model.fs" />
     <Compile Include="Query.fs" />
     <Compile Include="CSharpHelpers.fs" />
+    <Compile Include="FreeMonad.fs" />
   </ItemGroup>
   <Import Project="..\..\.paket\Paket.Restore.targets" />
 </Project>

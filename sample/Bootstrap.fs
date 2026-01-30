@@ -80,7 +80,7 @@ let clusterName: ShortString =
 let actorApi = FCQRS.Actor.api config loggerF connection clusterName
 
 // We don't use sagas (yet) so we just return an empty list.
-let sagaCheck  _ = []
+let sagaCheck (_: obj) : (string -> Akkling.Cluster.Sharding.IEntityRef<obj>) list = []
 
 // Still necessary.
 actorApi.InitializeSagaStarter sagaCheck
