@@ -63,18 +63,13 @@ let freeResult = FreeResultBuilder()
 let liftFree (m: Free<'I, 'T>) : Free<'I, Result<'T, 'E>> =
     Free.map Ok m
 
-// ============================================
-// DOMAIN: CONSOLE APPLICATION
-// ============================================
-
 
 module Eff =
   let inline safeUnbox<'T> (o: obj | null) : 'T =
       match o with
       | :? 'T as t -> t
       | Null -> failwithf "Continuation received null, expected %s" typeof<'T>.Name
-      | NonNull o-> failwithf "Continuation received %s, expected %s" (o.GetType().Name) typeof<'T>.Name
-
+      | NonNull o-> failwithf "Continuation received %s, expected %s" (o.GetType().ToString()) (typeof<'T>.ToString())
   let inline op<'I,'X,'A> (i:'I) (k:'X -> Free<'I,'A>) : Free<'I,'A> =
     Impure(i, fun o -> k (safeUnbox<'X> o))
 
