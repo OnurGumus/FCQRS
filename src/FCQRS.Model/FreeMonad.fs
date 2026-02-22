@@ -51,17 +51,27 @@ type FreeResultBuilder() =
             | Error e -> Pure (Error e)
         ) m
     
-    member _.Zero() : Free<'I, Result<unit, 'E>> = 
+    // Bind for plain Result - allows let! on Result values
+    member _.Bind(m: Result<'T, 'E>, f: 'T -> Free<'I, Result<'U, 'E>>)
+        : Free<'I, Result<'U, 'E>> =
+        match m with
+        | Ok value -> f value
+        | Error e -> Pure (Error e)
+
+    member _.Zero() : Free<'I, Result<unit, 'E>> =
         Pure (Ok ())
 
 let freeResult = FreeResultBuilder()
 
 // ============================================
-// HELPER: Lift pure Free into FreeResult context
+// HELPERS: Lift into FreeResult context
 // ============================================
 
 let liftFree (m: Free<'I, 'T>) : Free<'I, Result<'T, 'E>> =
     Free.map Ok m
+
+let liftResult (r: Result<'T, 'E>) : Free<'I, Result<'T, 'E>> =
+    Pure r
 
 
 module Eff =
