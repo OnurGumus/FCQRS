@@ -125,7 +125,7 @@ type Version =
     static member Zero = Version 0L
     override this.ToString() = (ValueLens.Value this).ToString()
 
-/// Validated string between 1,50 chars inclusive
+/// Validated non-blank string up to 255 chars inclusive.
 type ShortString =
     private
     | ShortString of string

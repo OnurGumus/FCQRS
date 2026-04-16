@@ -36,7 +36,7 @@ type private SagaStartingEventWrapper<'TEvent when 'TEvent : not null> =
     interface ISerializable
 
 let private runSaga<'TEvent, 'SagaData, 'State when 'TEvent : not null and 'State : not null>
-    snapshotVersionCount
+    (snapshotVersionCount: int64)
     (mailbox: Eventsourced<obj>)
     (log: ILogger)
     mediator
@@ -49,6 +49,7 @@ let private runSaga<'TEvent, 'SagaData, 'State when 'TEvent : not null and 'Stat
     body
     innerStateDefaults
     (currentSagaActivityRef: (Activity | null) ref)
+    (cleanupOnStop: unit -> unit)
     =
     let rec innerSet (startingEvent: option<SagaStarter.SagaStartingEvent<Event<'TEvent>>>, subscribed, subscriptionAcked) =
         let innerSetValue = startingEvent, subscribed, subscriptionAcked
@@ -133,6 +134,7 @@ let private runSaga<'TEvent, 'SagaData, 'State when 'TEvent : not null and 'Stat
 
             match msg with
             | :? Event<AbortedEvent> ->
+                cleanupOnStop ()
                 let poision = Akka.Cluster.Sharding.Passivate <| Actor.PoisonPill.Instance
                 log.LogInformation("Aborting")
                 mailbox.Parent() <! poision
@@ -293,12 +295,37 @@ let private actorProp<'SagaData, 'State, 'TEvent when 'TEvent : not null and 'St
     // Ref cell to hold the current saga state activity (kept alive across iterations)
     // This is at actorProp level so both runSaga and applySideEffects can access it
     let currentSagaActivityRef: (Activity | null) ref = ref null
-    let snapshotVersionCount =
+    // Cancelables for delayed commands the saga has scheduled, paired with the
+    // wall-clock time at which the underlying schedule is guaranteed to have
+    // fired (delay + buffer). Akka's ICancelable does not flip
+    // IsCancellationRequested when a scheduled task simply fires, so we prune
+    // by expiration to keep this list bounded for long-lived sagas. Cancelled
+    // on termination so a passivated/aborted saga's still-pending delayed
+    // messages don't fire into a resurrected entity in the wrong state.
+    let pendingCancelablesRef: (Akka.Actor.ICancelable * DateTime) list ref = ref []
+    let pendingExpiryBuffer = TimeSpan.FromSeconds(30.0)
+
+    let cleanupOnStop () =
+        // Dispose the in-flight saga-state activity so span context doesn't leak.
+        match currentSagaActivityRef.Value with
+        | null -> ()
+        | act ->
+            act.Dispose()
+            currentSagaActivityRef.Value <- null
+        // Cancel any scheduled delayed commands (fired ones are no-ops).
+        for (c, _) in pendingCancelablesRef.Value do
+            try
+                c.Cancel()
+            with ex ->
+                log.Debug(ex, "Error cancelling pending saga command during cleanup")
+        pendingCancelablesRef.Value <- []
+
+    let snapshotVersionCount: int64 =
         let s: string | null = config["config:akka:persistence:snapshot-version-count"]
 
-        match s |> System.Int32.TryParse with
-        | true, v -> v
-        | _ -> 30
+        match s |> System.Int64.TryParse with
+        | true, v when v > 0L -> v
+        | _ -> 30L
 
     let applySideEffects
         (sagaState: ParentSaga<'SagaData, 'State>)
@@ -370,25 +397,31 @@ let private actorProp<'SagaData, 'State, 'TEvent when 'TEvent : not null and 'St
 
                 match cmd.DelayInMs with
                 | Some (delayValue, name) ->
-                    let currentScheduler = mailbox.System.Scheduler 
+                    let currentScheduler = mailbox.System.Scheduler
                     let messageToSchedule = finalCommand
                     let scheduleAtDelay = System.TimeSpan.FromMilliseconds delayValue
-                    
+
                     let untypedSender = mailbox.Self.Underlying :?> Akka.Actor.IActorRef
-                    let untypedReceiver = targetActor.Underlying 
+                    let untypedReceiver = targetActor.Underlying
 
-                    match currentScheduler with
-                    | :? FCQRS.Scheduler.ObservingScheduler as obs ->
-                        let taskNameForScheduler = name
-                        
-                        // IMPORTANT: Assumes FCQRS.ObservingScheduler.ObservingScheduler now has a method like:
-                        // member this.ScheduleTellOnceWithName(delay, receiver, message, sender, taskName) : ICancelable
-                        obs.ScheduleTellOnce(Some taskNameForScheduler, scheduleAtDelay, untypedReceiver, messageToSchedule, untypedSender)
-                        |> ignore
+                    let cancelable: Akka.Actor.ICancelable =
+                        match currentScheduler with
+                        | :? FCQRS.Scheduler.ObservingScheduler as obs ->
+                            obs.ScheduleTellOnce(Some name, scheduleAtDelay, untypedReceiver, messageToSchedule, untypedSender)
+                        | sch ->
+                            let c = new Akka.Actor.Cancelable(sch)
+                            sch.ScheduleTellOnce(scheduleAtDelay, untypedReceiver, messageToSchedule, untypedSender, c)
+                            c :> Akka.Actor.ICancelable
 
-                    | sch -> // Fallback for any other IScheduler type
-                        sch.ScheduleTellOnce(scheduleAtDelay, untypedReceiver, messageToSchedule, untypedSender)
-                        |> ignore
+                    // Track so we can cancel on saga passivation / abort; also prune
+                    // entries whose scheduled delay+buffer has elapsed so this list
+                    // stays bounded for long-lived sagas.
+                    let now = mailbox.System.Scheduler.Now.UtcDateTime
+                    let expiresAt = now + scheduleAtDelay + pendingExpiryBuffer
+                    let liveEntries =
+                        pendingCancelablesRef.Value
+                        |> List.filter (fun (_, exp) -> exp > now)
+                    pendingCancelablesRef.Value <- (cancelable, expiresAt) :: liveEntries
 
                 | None ->
                     targetActor <! finalCommand
@@ -406,6 +439,7 @@ let private actorProp<'SagaData, 'State, 'TEvent when 'TEvent : not null and 'St
         | NextState newState, _ -> 
             Some newState
         | StopSaga, _ ->
+            cleanupOnStop ()
             let poision = Cluster.Sharding.Passivate <| Actor.PoisonPill.Instance
             mailbox.Parent() <! poision
             log.Info("{0} Completed", name)
@@ -458,6 +492,7 @@ let private actorProp<'SagaData, 'State, 'TEvent when 'TEvent : not null and 'St
             body
             innerStateDefaults
             currentSagaActivityRef
+            cleanupOnStop
 
     set (None, false, false) initialState
 

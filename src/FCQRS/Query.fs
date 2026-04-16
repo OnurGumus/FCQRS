@@ -163,8 +163,6 @@ let init<'TDataEvent, 'TPredicate, 't when 'TDataEvent :> IMessageWithCID> (acto
             Environment.Exit -1)
     |> Async.Start
 
-    System.Threading.Thread.Sleep 1000
-
     subscribeToStream
         source
         actorApi.Materializer

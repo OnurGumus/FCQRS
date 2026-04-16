@@ -86,12 +86,16 @@ module internal Internal =
                           CorrelationId = e.CorrelationId
                           Version = state.Version
                           Metadata = e.Metadata }
-                    SagaStarter.Internal.publishEvent
-                        logger
-                        mailbox
-                        mediator
-                        abortedEvent
-                        (e.CorrelationId |> ValueLens.Value |> ValueLens.Value)
+                    // Only notify the specific saga that asked (via ContinueOrAbort sender);
+                    // do NOT broadcast via mediator — other sagas sharing this CID must
+                    // not be passivated by another saga's abort.
+                    let sender = mailbox.Sender()
+                    if sender.Path.Name |> SagaStarter.Internal.isSaga then
+                        sender <! abortedEvent
+                    else
+                        logger.LogWarning(
+                            "ContinueOrAbort arrived from non-saga sender {sender}; dropping AbortedEvent (contract violation)",
+                            sender.Path.Name)
 
                     return! state |> set
 
@@ -210,12 +214,12 @@ module internal Internal =
         =
         let logger = loggerFactory.CreateLogger name
 
-        let snapshotVersionCount =
+        let snapshotVersionCount: int64 =
             let s: string | null = config["config:akka:persistence:snapshot-version-count"]
 
-            match s |> System.Int32.TryParse with
-            | true, v -> v
-            | _ -> 30
+            match s |> System.Int64.TryParse with
+            | true, v when v > 0L -> v
+            | _ -> 30L
 
         let rec set (state: State<'State>) =
             let body (bodyInput: BodyInput<'Event>) =

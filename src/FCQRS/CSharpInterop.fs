@@ -351,10 +351,7 @@ type SagaBuilderCSharp =
 
         // Convert C# handleEvent to F#
         let fsharpHandleEvent (evt: obj) (state: SagaState<'TSagaData, 'TSagaState option>) : EventAction<'TSagaState> =
-            printfn ">>> F# fsharpHandleEvent: evt=%s state.State=%A" (evt.GetType().FullName) state.State
-            let result = handleEvent.Invoke(evt, state)
-            printfn ">>> F# fsharpHandleEvent result: %A" result
-            result
+            handleEvent.Invoke(evt, state)
 
         // Convert C# applySideEffects to F#
         let fsharpApplySideEffects (state: SagaState<'TSagaData, 'TSagaState>) (recovering: bool) : SagaTransition<'TSagaState> * ExecuteCommand list =

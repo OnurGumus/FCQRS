@@ -533,8 +533,27 @@ module SagaStarter =
         type internal Command =
             | CheckSagas of obj * originator: Actor.IActorRef * cid: string
             | Continue
+            | PruneStale of originName: string * batchId: Guid
 
         type internal Event = SagaCheckDone
+
+        // Default TTL for pending saga-coordination batches. If all sagas in a
+        // batch haven't reported back with Continue within this window the
+        // batch is considered orphaned (saga crashed, node failed, etc.) and
+        // pruned so the SagaStarter's state map stays bounded. Override with
+        // HOCON key `akka.fcqrs.saga-batch-ttl` (e.g. "5m", "30s").
+        let private defaultSagaBatchTtl = TimeSpan.FromMinutes(10.0)
+        [<Literal>]
+        let private sagaBatchTtlKey = "akka.fcqrs.saga-batch-ttl"
+
+        let internal resolveSagaBatchTtl (cfg: Akka.Configuration.Config) =
+            try
+                if cfg.HasPath sagaBatchTtlKey then
+                    let t = cfg.GetTimeSpan(sagaBatchTtlKey, Nullable(defaultSagaBatchTtl))
+                    if t > TimeSpan.Zero then t else defaultSagaBatchTtl
+                else
+                    defaultSagaBatchTtl
+            with _ -> defaultSagaBatchTtl
 
 
 
@@ -597,8 +616,9 @@ module SagaStarter =
             (mailbox: Actor<_>)
             =
             let log = mailbox.UntypedContext.GetLogger()
+            let sagaBatchTtl = resolveSagaBatchTtl mailbox.System.Settings.Config
 
-            let rec set (state: Map<string, (IActorRef * string list list)>) =
+            let rec set (state: Map<string, (IActorRef * (string list * Guid) list)>) =
                 let startSaga
                     cid
                     (originator: IActorRef)
@@ -622,11 +642,20 @@ module SagaStarter =
                               yield saga.EntityId ]
 
                     let name = originator.Path.Name
+                    let batchId = Guid.NewGuid()
+                    let batch = (sagas, batchId)
 
                     let state =
                         match state.TryFind name with
-                        | None -> state.Add(name, (sender, [ sagas ]))
-                        | Some(_, lists) -> state.Remove(name).Add(name, (sender, sagas :: lists))
+                        | None -> state.Add(name, (sender, [ batch ]))
+                        | Some(_, batches) -> state.Remove(name).Add(name, (sender, batch :: batches))
+
+                    // Schedule a prune so a crashed/orphaned saga can't leak this batch forever.
+                    mailbox.System.Scheduler.ScheduleTellOnce(
+                        sagaBatchTtl,
+                        untyped mailbox.Self,
+                        Command(PruneStale(name, batchId)),
+                        ActorRefs.NoSender)
 
                     state
 
@@ -635,41 +664,73 @@ module SagaStarter =
                     | Command Continue ->
                         let sender = untyped <| mailbox.Sender()
                         let originName = sender.Path.Name |> toOriginatorName
-                        let matchFound = state.ContainsKey originName
 
-                        if not matchFound then
-                            return! set state
-                        else
-                            let originator, subscribers = state.[originName]
+                        match state.TryFind originName with
+                        | None -> return! set state
+                        | Some(originator, batches) ->
+                            match batches |> List.tryFind (fun (lst, _) -> lst |> List.contains sender.Path.Name) with
+                            | None ->
+                                log.Warning(
+                                    "Saga {0} sent Continue but is not tracked for originator {1} (possibly pruned or duplicate delivery)",
+                                    sender.Path.Name,
+                                    originName)
+                                return! set state
+                            | Some(targetList, batchId) ->
+                                // Remove only the first occurrence (not all) to handle duplicate entity IDs
+                                let removeFirst item list =
+                                    let rec loop acc =
+                                        function
+                                        | [] -> List.rev acc
+                                        | x :: xs when x = item -> List.rev acc @ xs
+                                        | x :: xs -> loop (x :: acc) xs
+                                    loop [] list
 
-                            let targetList =
-                                subscribers |> List.find (fun a -> a |> List.contains sender.Path.Name)
+                                let newList = removeFirst sender.Path.Name targetList
+                                let otherBatches = batches |> List.filter (fun (_, bid) -> bid <> batchId)
 
-                            // Remove only the first occurrence (not all) to handle duplicate entity IDs
-                            let removeFirst item list =
-                                let rec loop acc = function
-                                    | [] -> List.rev acc
-                                    | x :: xs when x = item -> List.rev acc @ xs
-                                    | x :: xs -> loop (x :: acc) xs
-                                loop [] list
-                            let newList = removeFirst sender.Path.Name targetList
-                            let subscibersWithoutTarget = subscribers |> List.filter (fun a -> a <> targetList)
+                                if newList.IsEmpty then
+                                    originator.Tell(SagaCheckDone, untyped mailbox.Self)
 
-                            if newList.IsEmpty then
-                                originator.Tell(SagaCheckDone, untyped mailbox.Self)
-                                return! set <| state.Remove originName
-                            else
-                                return!
-                                    set
-                                    <| state
-                                        .Remove(originName)
-                                        .Add(originName, (originator, newList :: subscibersWithoutTarget))
+                                    if otherBatches.IsEmpty then
+                                        return! set <| state.Remove originName
+                                    else
+                                        return! set <| state.Remove(originName).Add(originName, (originator, otherBatches))
+                                else
+                                    return!
+                                        set
+                                        <| state
+                                            .Remove(originName)
+                                            .Add(originName, (originator, (newList, batchId) :: otherBatches))
                     | Command(CheckSagas(o, originator, cid)) ->
                         match sagaCheck o with
                         | [] ->
                             mailbox.Sender() <! SagaCheckDone
                             return! set state
                         | list -> return! set <| startSaga cid originator list
+                    | Command(PruneStale(originName, batchId)) ->
+                        match state.TryFind originName with
+                        | None -> return! set state
+                        | Some(_, batches) ->
+                            match batches |> List.tryFind (fun (_, bid) -> bid = batchId) with
+                            | None -> return! set state
+                            | Some(staleSagas, _) ->
+                                // Do NOT send SagaCheckDone here — that would falsely signal
+                                // "all sagas ready" to the originator. Let the Ask's own
+                                // timeout surface the failure to the aggregate.
+                                log.Warning(
+                                    "Pruning stale saga batch for originator {0} after TTL ({1} saga(s) never reported Continue)",
+                                    originName,
+                                    List.length staleSagas)
+                                log.Debug(
+                                    "Stale saga entity IDs for originator {0}: {1}",
+                                    originName,
+                                    System.String.Join(", ", staleSagas))
+                                let remaining = batches |> List.filter (fun (_, bid) -> bid <> batchId)
+                                if remaining.IsEmpty then
+                                    return! set <| state.Remove originName
+                                else
+                                    let originator, _ = state.[originName]
+                                    return! set <| state.Remove(originName).Add(originName, (originator, remaining))
                     | _ -> return! Unhandled
                 }
 
