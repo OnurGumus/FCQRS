@@ -8,7 +8,7 @@
     ".NETCoreApp,Version=v10.0": {
       "saga_sample/1.0.0": {
         "dependencies": {
-          "FCQRS": "5.0.0",
+          "FCQRS": "6.0.0-preview-2",
           "FSharp.Core": "10.0.102",
           "Hocon": "2.0.4",
           "Hocon.Extensions.Configuration": "2.0.4",
@@ -24,13 +24,13 @@
           "Microsoft.Extensions.Logging.Abstractions": "10.0.2",
           "Microsoft.Extensions.Options": "10.0.2",
           "Microsoft.Extensions.Primitives": "10.0.2",
-          "Serilog": "4.3.0",
+          "Serilog": "4.3.1",
           "Serilog.Expressions": "5.0.0",
           "Serilog.Extensions.Logging": "9.0.2",
           "Serilog.Sinks.Console": "6.1.1",
           "Serilog.Sinks.File": "7.0.0",
-          "Serilog.Sinks.Seq": "9.0.0",
-          "SerilogTracing": "2.3.1",
+          "Serilog.Sinks.Seq": "9.1.0",
+          "SerilogTracing": "2.4.0",
           "SerilogTracing.Sinks.Seq": "1.0.1-dev-00264",
           "linq2db": "5.4.1"
         },
@@ -368,25 +368,25 @@
           }
         }
       },
-      "FCQRS.Model/5.1.0": {
+      "FCQRS.Model/6.0.0-preview-1": {
         "dependencies": {
           "FSharp.Core": "10.0.102"
         },
         "runtime": {
           "lib/net10.0/FCQRS.Model.dll": {
-            "assemblyVersion": "5.0.0.0",
-            "fileVersion": "5.0.0.0"
+            "assemblyVersion": "6.0.0.0",
+            "fileVersion": "6.0.0.0"
           }
         }
       },
-      "FCQRS.Serialization/5.2.0": {
+      "FCQRS.Serialization/6.0.0-preview-1": {
         "dependencies": {
           "FSharp.SystemTextJson": "1.4.36"
         },
         "runtime": {
           "lib/net10.0/FCQRS.Serialization.dll": {
-            "assemblyVersion": "5.0.0.0",
-            "fileVersion": "5.0.0.0"
+            "assemblyVersion": "6.0.0.0",
+            "fileVersion": "6.0.0.0"
           }
         }
       },
@@ -865,9 +865,9 @@
           }
         }
       },
-      "Serilog/4.3.0": {
+      "Serilog/4.3.1": {
         "runtime": {
-          "lib/net9.0/Serilog.dll": {
+          "lib/net10.0/Serilog.dll": {
             "assemblyVersion": "4.3.0.0",
             "fileVersion": "4.3.0.0"
           }
@@ -875,7 +875,7 @@
       },
       "Serilog.Expressions/5.0.0": {
         "dependencies": {
-          "Serilog": "4.3.0"
+          "Serilog": "4.3.1"
         },
         "runtime": {
           "lib/net8.0/Serilog.Expressions.dll": {
@@ -887,7 +887,7 @@
       "Serilog.Extensions.Logging/9.0.2": {
         "dependencies": {
           "Microsoft.Extensions.Logging": "10.0.2",
-          "Serilog": "4.3.0"
+          "Serilog": "4.3.1"
         },
         "runtime": {
           "lib/net9.0/Serilog.Extensions.Logging.dll": {
@@ -898,7 +898,7 @@
       },
       "Serilog.Sinks.Console/6.1.1": {
         "dependencies": {
-          "Serilog": "4.3.0"
+          "Serilog": "4.3.1"
         },
         "runtime": {
           "lib/net8.0/Serilog.Sinks.Console.dll": {
@@ -909,7 +909,7 @@
       },
       "Serilog.Sinks.File/7.0.0": {
         "dependencies": {
-          "Serilog": "4.3.0"
+          "Serilog": "4.3.1"
         },
         "runtime": {
           "lib/net9.0/Serilog.Sinks.File.dll": {
@@ -918,34 +918,34 @@
           }
         }
       },
-      "Serilog.Sinks.Seq/9.0.0": {
+      "Serilog.Sinks.Seq/9.1.0": {
         "dependencies": {
-          "Serilog": "4.3.0",
+          "Serilog": "4.3.1",
           "Serilog.Sinks.File": "7.0.0"
         },
         "runtime": {
-          "lib/net6.0/Serilog.Sinks.Seq.dll": {
-            "assemblyVersion": "9.0.0.0",
-            "fileVersion": "9.0.0.0"
+          "lib/net10.0/Serilog.Sinks.Seq.dll": {
+            "assemblyVersion": "9.1.0.0",
+            "fileVersion": "9.1.0.0"
           }
         }
       },
-      "SerilogTracing/2.3.1": {
+      "SerilogTracing/2.4.0": {
         "dependencies": {
-          "Serilog": "4.3.0"
+          "Serilog": "4.3.1"
         },
         "runtime": {
-          "lib/net8.0/SerilogTracing.dll": {
-            "assemblyVersion": "2.3.1.0",
-            "fileVersion": "2.3.1.0"
+          "lib/net10.0/SerilogTracing.dll": {
+            "assemblyVersion": "2.4.0.0",
+            "fileVersion": "2.4.0.0"
           }
         }
       },
       "SerilogTracing.Sinks.Seq/1.0.1-dev-00264": {
         "dependencies": {
           "Serilog.Expressions": "5.0.0",
-          "Serilog.Sinks.Seq": "9.0.0",
-          "SerilogTracing": "2.3.1"
+          "Serilog.Sinks.Seq": "9.1.0",
+          "SerilogTracing": "2.4.0"
         },
         "runtime": {
           "lib/net6.0/SerilogTracing.Sinks.Seq.dll": {
@@ -1223,7 +1223,7 @@
           }
         }
       },
-      "FCQRS/5.0.0": {
+      "FCQRS/6.0.0-preview-2": {
         "dependencies": {
           "Akka": "1.5.59",
           "Akka.Cluster": "1.5.59",
@@ -1251,8 +1251,8 @@
           "DotNetty.Handlers": "0.7.6",
           "DotNetty.Transport": "0.7.6",
           "Dynamitey": "3.0.3",
-          "FCQRS.Model": "5.1.0",
-          "FCQRS.Serialization": "5.2.0",
+          "FCQRS.Model": "6.0.0-preview-1",
+          "FCQRS.Serialization": "6.0.0-preview-1",
           "FSharp.Core": "10.0.102",
           "FSharp.Interop.Dynamic": "5.0.1.268",
           "FSharp.SystemTextJson": "1.4.36",
@@ -1302,8 +1302,8 @@
         },
         "runtime": {
           "FCQRS.dll": {
-            "assemblyVersion": "5.0.0.0",
-            "fileVersion": "5.0.0.0"
+            "assemblyVersion": "6.0.0.0",
+            "fileVersion": "6.0.0.0"
           }
         }
       }
@@ -1497,19 +1497,19 @@
       "path": "dynamitey/3.0.3",
       "hashPath": "dynamitey.3.0.3.nupkg.sha512"
     },
-    "FCQRS.Model/5.1.0": {
+    "FCQRS.Model/6.0.0-preview-1": {
       "type": "package",
       "serviceable": true,
-      "sha512": "sha512-meMXI8Lf9pc7nIwmS1uqaL8xH7Q1Vv0T+8a79ryAlCSwxzsgJhqdvGkPOFhrCQ7Grwrm0YxE4bLNqyFSJ1ltzw==",
-      "path": "fcqrs.model/5.1.0",
-      "hashPath": "fcqrs.model.5.1.0.nupkg.sha512"
+      "sha512": "sha512-TxV7xSgEZCA3dtKEKTQkSB5xQxHQ+BFg8VVU9IPwKo1r2hdLLElnulaES6bL10FiCGiB9OTlvvUKd+IwxHPkAw==",
+      "path": "fcqrs.model/6.0.0-preview-1",
+      "hashPath": "fcqrs.model.6.0.0-preview-1.nupkg.sha512"
     },
-    "FCQRS.Serialization/5.2.0": {
+    "FCQRS.Serialization/6.0.0-preview-1": {
       "type": "package",
       "serviceable": true,
-      "sha512": "sha512-1B+PnXXFE1Bs+aMkKdkSV5gcPEwfiSCup/LaXB9fD0oAsMhk8jmsjsypBYuhBrS8uqDvKEQ7S3gfjqPh/00O8w==",
-      "path": "fcqrs.serialization/5.2.0",
-      "hashPath": "fcqrs.serialization.5.2.0.nupkg.sha512"
+      "sha512": "sha512-j8coHlYXFS52Ux0iRmc9OdkC+9FARgQCFGwEGuKrXhC6AI4lqqNkNExX4BhmbSnpKtV0cgAabi2m8JviTBDu+Q==",
+      "path": "fcqrs.serialization/6.0.0-preview-1",
+      "hashPath": "fcqrs.serialization.6.0.0-preview-1.nupkg.sha512"
     },
     "FluentAssertions/8.8.0": {
       "type": "package",
@@ -1756,12 +1756,12 @@
       "path": "reactive.streams/1.0.4",
       "hashPath": "reactive.streams.1.0.4.nupkg.sha512"
     },
-    "Serilog/4.3.0": {
+    "Serilog/4.3.1": {
       "type": "package",
       "serviceable": true,
-      "sha512": "sha512-+cDryFR0GRhsGOnZSKwaDzRRl4MupvJ42FhCE4zhQRVanX0Jpg6WuCBk59OVhVDPmab1bB+nRykAnykYELA9qQ==",
-      "path": "serilog/4.3.0",
-      "hashPath": "serilog.4.3.0.nupkg.sha512"
+      "sha512": "sha512-savYe7h5yRlkqBVOwP8cIRDOdqKiPmYCU4W87JH38sBmcKD5EBoXvQIw6bNEvZ/pTe1gsiye3VFCzBsoppGkXQ==",
+      "path": "serilog/4.3.1",
+      "hashPath": "serilog.4.3.1.nupkg.sha512"
     },
     "Serilog.Expressions/5.0.0": {
       "type": "package",
@@ -1791,19 +1791,19 @@
       "path": "serilog.sinks.file/7.0.0",
       "hashPath": "serilog.sinks.file.7.0.0.nupkg.sha512"
     },
-    "Serilog.Sinks.Seq/9.0.0": {
+    "Serilog.Sinks.Seq/9.1.0": {
       "type": "package",
       "serviceable": true,
-      "sha512": "sha512-aNU8A0K322q7+voPNmp1/qNPH+9QK8xvM1p72sMmCG0wGlshFzmtDW9QnVSoSYCj0MgQKcMOlgooovtBhRlNHw==",
-      "path": "serilog.sinks.seq/9.0.0",
-      "hashPath": "serilog.sinks.seq.9.0.0.nupkg.sha512"
+      "sha512": "sha512-4Dam+H9AlYigRgvPmbEJmw7jgz2y2He1qmuopAWt/EnZJ2vlrcG5Nmh934LHq4lfKgF6cAau8NIFMCZrq1u2Hw==",
+      "path": "serilog.sinks.seq/9.1.0",
+      "hashPath": "serilog.sinks.seq.9.1.0.nupkg.sha512"
     },
-    "SerilogTracing/2.3.1": {
+    "SerilogTracing/2.4.0": {
       "type": "package",
       "serviceable": true,
-      "sha512": "sha512-tkl/Rm3kzdOAQ2uwMARw2vE7QftYij9Tjbplg1SuaB+h+YfkX0RQDAxKwnMEVBZbsbnst4JGfk3J66V1EDovPA==",
-      "path": "serilogtracing/2.3.1",
-      "hashPath": "serilogtracing.2.3.1.nupkg.sha512"
+      "sha512": "sha512-njmMFYn3afTQ/Y1qa5C7VE/URUk3U+rDs1zG58c/kBHtB/Is03dJG14MqR7gK1/7+drZLKIgi5LE82d++C7ung==",
+      "path": "serilogtracing/2.4.0",
+      "hashPath": "serilogtracing.2.4.0.nupkg.sha512"
     },
     "SerilogTracing.Sinks.Seq/1.0.1-dev-00264": {
       "type": "package",
@@ -1889,7 +1889,7 @@
       "path": "system.security.cryptography.protecteddata/10.0.2",
       "hashPath": "system.security.cryptography.protecteddata.10.0.2.nupkg.sha512"
     },
-    "FCQRS/5.0.0": {
+    "FCQRS/6.0.0-preview-2": {
       "type": "project",
       "serviceable": false,
       "sha512": ""
