@@ -39,7 +39,7 @@ module internal Internal =
         SendToSagaStarter: Event<'TEvent> -> obj
         Mediator: IActorRef<Publish>
         Log: ILogger }
-    let runActor<'TEvent , 'TState when 'TEvent : not struct and 'TEvent : not null>
+    let runActor<'TEvent , 'TState when 'TEvent : not null>
         (snapshotVersionCount: int64)
         (logger: ILogger)
         (mailbox: Eventsourced<obj>)

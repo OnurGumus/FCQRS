@@ -294,7 +294,7 @@ type IActor =
     /// <param name="apply">The event handler function: `Event -> State -> State`.</param>
     /// <returns>An entity factory (`EntityFac<obj>`) for creating instances of this actor.</returns>
     abstract InitializeActor:
-        'a -> string -> (Command<'c> -> 'a -> EventAction<'b>) -> (Event<'b> -> 'a -> 'a) -> EntityFac<obj> when 'b : not struct and 'b: not null
+        'a -> string -> (Command<'c> -> 'a -> EventAction<'b>) -> (Event<'b> -> 'a -> 'a) -> EntityFac<obj> when 'b: not null
 
     /// Initializes a sharded, persistent saga actor.
     /// <param name="initialState">The initial state (`SagaState`) for new saga instances.</param>

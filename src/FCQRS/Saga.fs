@@ -345,12 +345,14 @@ let private actorProp<'SagaData, 'State, 'TEvent when 'TEvent : not null and 'St
             try
                 let createFinalCommand cmd =
                     let baseType =
-                        let x = cmd.Command.GetType().BaseType
-
-                        if x = typeof<obj> then
-                            cmd.Command.GetType()
-                        else
-                            x |> Unchecked.nonNull
+                        let t = cmd.Command.GetType()
+                        // A C# 15 `union` is a struct, so its BaseType is ValueType — the
+                        // union type itself is what the aggregate's Command<_> expects.
+                        // Abstract-record / F# DU cases instead carry BaseType = the DU type.
+                        match t.BaseType with
+                        | null -> t
+                        | b when b = typeof<obj> || b = typeof<System.ValueType> -> t
+                        | b -> b
 
                     let baseMetadata =
                         match startingEvent with

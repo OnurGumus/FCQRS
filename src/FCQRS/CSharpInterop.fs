@@ -86,15 +86,15 @@ type StringTypes =
 /// C#-friendly factory methods for EventAction
 type EventActions =
     /// Create a PersistEvent action (event will be persisted and published)
-    static member Persist<'TEvent when 'TEvent : not struct and 'TEvent: not null>(event: 'TEvent) : EventAction<'TEvent> =
+    static member Persist<'TEvent when 'TEvent: not null>(event: 'TEvent) : EventAction<'TEvent> =
         EventAction.PersistEvent event
 
     /// Create a DeferEvent action (event is returned but not persisted - for errors/rejections)
-    static member Defer<'TEvent when 'TEvent : not struct and 'TEvent: not null>(event: 'TEvent) : EventAction<'TEvent> =
+    static member Defer<'TEvent when 'TEvent: not null>(event: 'TEvent) : EventAction<'TEvent> =
         EventAction.DeferEvent event
 
     /// Create an IgnoreEvent action (command is ignored, no event produced)
-    static member Ignore<'TEvent when 'TEvent : not struct and 'TEvent: not null>() : EventAction<'TEvent> =
+    static member Ignore<'TEvent when 'TEvent: not null>() : EventAction<'TEvent> =
         EventAction.IgnoreEvent
 
 /// C#-friendly class for defining saga starters (uses class for C# object initializer syntax)
@@ -179,7 +179,7 @@ type IActorExtensions =
         actor.InitializeSagaStarter(handler)
 
     /// C#-friendly InitializeActor that accepts Func delegates instead of F# functions
-    static member InitActor<'TState, 'TCommand, 'TEvent when 'TEvent : not struct and 'TEvent: not null>(
+    static member InitActor<'TState, 'TCommand, 'TEvent when 'TEvent: not null>(
         actor: IActor,
         initialState: 'TState,
         entityName: string,
