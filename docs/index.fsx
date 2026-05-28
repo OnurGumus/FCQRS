@@ -30,7 +30,7 @@ FCQRS supports sagas (process managers) that orchestrate long-running business p
 ## Getting Started
 
 ### Installation and Setup
-1. **Prerequisites:** .NET 9 SDK.
+1. **Prerequisites:** .NET 10 SDK.
 2. **Packages:** Add the following nuget packages to your project using your preferred package manager:
    - `FCQRS`
    - `Hocon.Extensions.Configuration` (optional, for HOCON configuration)

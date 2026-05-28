@@ -1,14 +1,18 @@
 ---
-title: Hocon
-category: Walkthrough
+title: HOCON configuration (optional)
+category: Quickstart
 categoryindex: 2
 index: 2
 ---
 
 
-## Hocon file
+## HOCON configuration (optional)
 
-You don't need a hocon file. But hocon is well documented for akka.net. The below sets up connection strings for sqlite. Consult the akka.net docs for customization.
+**You do not need a HOCON file.** As the [quickstart](quickstart.html) shows, passing a `Connection`
+to `FCQRS.Actor.api` is enough — the framework supplies the rest of the Akka.NET configuration from
+built-in defaults. Reach for HOCON only when you want to override those defaults (a different
+database provider, custom Akka settings, clustering). HOCON is well documented for Akka.NET; the
+example below wires SQLite connection strings, and you can layer any Akka.NET settings on top.
 
 
 ```hocon

@@ -31,7 +31,7 @@ type Command<'CommandDetails> =
     { CommandDetails: 'CommandDetails
       CreationDate: DateTime
       Id: MessageId option
-      Sender: ActorId option
+      Sender: AggregateId option
       CorrelationId: CID }
 
 
@@ -52,6 +52,6 @@ type Event<'EventDetails> =
     { EventDetails: 'EventDetails
       CreationDate: DateTime
       Id: MessageId option
-      Sender: ActorId option
+      Sender: AggregateId option
       CorrelationId: CID
       Version: Version }
