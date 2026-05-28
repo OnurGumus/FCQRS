@@ -150,8 +150,10 @@ let private runSaga<'TEvent, 'SagaData, 'State when 'TEvent : not null and 'Stat
                 match event with
                 | StateChanged s ->
                     try
-                        let newState = applyNewState (wrapper s).SagaState
-                        let newState = { state with SagaState = newState }
+                        let newSagaState = applyNewState (wrapper s).SagaState
+                        // Mirror the live path's per-event version bump so the recovered
+                        // in-memory version matches and post-snapshot replay stays consistent.
+                        let newState = { state with SagaState = newSagaState; Version = state.Version + 1L }
                         return! newState |> set innerSetValue
                     with ex ->
                         log.LogError(ex, "Fatal error during saga recovery for {0}. Terminating process to prevent restart loop.", mailbox.Self.Path.ToString())
@@ -209,12 +211,21 @@ let private runSaga<'TEvent, 'SagaData, 'State when 'TEvent : not null and 'Stat
 
                             let newSagaState = applyNewState outerState.SagaState
 
+                            // This Persisted callback means one StateChanged event was just
+                            // journaled, so advance the saga version and STORE it. Previously the
+                            // bumped value was only used in the snapshot check below and never
+                            // persisted, so Version stayed 0 and the snapshot cadence never fired.
+                            let version = outerState.Version + 1L
+
                             let parentState =
                                 { outerState with
-                                    SagaState = newSagaState }
+                                    SagaState = newSagaState
+                                    Version = version }
 
                             let newState = applySideEffects parentState startingEvent false
-                            let version = parentState.Version + 1L
+
+                            let dueForSnapshot =
+                                version >= snapshotVersionCount && version % snapshotVersionCount = 0L
 
                             match newState with
                             | Some newState ->
@@ -225,17 +236,23 @@ let private runSaga<'TEvent, 'SagaData, 'State when 'TEvent : not null and 'Stat
                                     { parentState with
                                         SagaState = newInnerState }
 
-                                // Note: Activity already emitted for originalState above
-                                // The newState will trigger another Persisted event which will emit its activity
+                                // newState triggers another Persisted event (which emits its own
+                                // activity). At a snapshot boundary we additionally snapshot the
+                                // just-confirmed state — without dropping this pending transition,
+                                // which the previous code did.
+                                let persistNext = newState |> StateChanged |> box |> Persist
 
-                                if version >= snapshotVersionCount && version % snapshotVersionCount = 0L then
-                                    return! parentState |> set innerSetValue <@> SaveSnapshot parentState
+                                if dueForSnapshot then
+                                    return!
+                                        newSagaState |> set innerSetValue
+                                        <@> persistNext
+                                        <@> SaveSnapshot parentState
                                 else
                                     return!
                                         newSagaState |> set innerSetValue
-                                        <@> (newState |> StateChanged |> box |> Persist)
+                                        <@> persistNext
                             | None ->
-                                if version >= snapshotVersionCount && version % snapshotVersionCount = 0L then
+                                if dueForSnapshot then
                                     return! parentState |> set innerSetValue <@> SaveSnapshot parentState
                                 else
                                     return! parentState |> set innerSetValue
@@ -395,7 +412,7 @@ let private actorProp<'SagaData, 'State, 'TEvent when 'TEvent : not null and 'St
 
                     | Sender -> mailbox.Sender(), createFinalCommand cmd
                     | ActorRef actor -> actor :?> ICanTell<_>, cmd.Command
-                    | Self -> mailbox.Self, cmd
+                    | Self -> mailbox.Self, cmd.Command
 
                 match cmd.DelayInMs with
                 | Some (delayValue, name) ->

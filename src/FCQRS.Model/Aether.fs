@@ -122,8 +122,11 @@ module Compose =
                     match g1 a with
                     | Some b -> s2 c b |> Result.map (fun b' -> s1 b' a)
                     | None ->
-                        // Return an error indicating the path is invalid.
-                        Error(unbox<'e> "Invalid path")
+                        // Outer prism doesn't match this structure: prism `set` is a
+                        // no-op, so succeed with `a` unchanged (mirrors the plain
+                        // Prism >?> Prism case above). The previous `unbox<'e> "Invalid path"`
+                        // threw InvalidCastException for any non-string error type 'e.
+                        Ok a
 
                 (get, set): ValidatedPrism<'a, 'c, 'e>
 

@@ -102,8 +102,11 @@ type EventActions =
 type SagaDefinition() =
     /// Factory function to create entity reference from entity ID
     member val Factory: Func<string, Akkling.Cluster.Sharding.IEntityRef<obj>> | null = null with get, set
-    /// How to derive saga entity ID from source entity ID
-    member val PrefixConversion: PrefixConversion = PrefixConversion None with get, set
+    /// How to derive saga entity ID from source entity ID.
+    /// Defaults to identity (originatorId~Saga~correlationId). The previous default of
+    /// `PrefixConversion None` produced saga names without the ~Saga~ marker, which breaks
+    /// originator/saga name resolution and the SagaStarter Continue→SagaCheckDone handshake.
+    member val PrefixConversion: PrefixConversion = PrefixConversion (Some id) with get, set
     /// The event to send to start the saga
     member val StartingEvent: obj | null = null with get, set
 

@@ -21,8 +21,12 @@ module ValidateRegexes =
     open System
     open System.Text.RegularExpressions
 
-    let mail = Regex(@"", regexOpts)
-    let url = Regex(@"", regexOpts)
+    // Basic, ECMAScript-compatible patterns. Previously these were empty (@""),
+    // which matches every string, so IsMail/IsUrl validated nothing and could
+    // never surface InvalidEmail/InvalidUrl. These are intentionally simple
+    // (one '@' with a dotted domain; an http(s) URL) — tune per your domain.
+    let mail = Regex(@"^[^@\s]+@[^@\s]+\.[^@\s]+$", regexOpts)
+    let url = Regex(@"^https?://[^\s]+$", regexOpts)
 
 type ValidateResult<'T> =
     | Valid of 'T
