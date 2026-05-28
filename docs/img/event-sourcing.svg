@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 980 560" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="e-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#2563EB"/></marker>
+    <marker id="e-gray" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#64748B"/></marker>
+    <style>
+      .title { font-size:22px; font-weight:700; fill:#0F172A; }
+      .subtitle { font-size:13.5px; fill:#475569; }
+      .sec { font-size:12px; font-weight:700; letter-spacing:0.07em; fill:#94A3B8; }
+      .cell { fill:#EFF6FF; stroke:#2563EB; stroke-width:1.6; }
+      .ev { font-size:12px; font-weight:600; fill:#1D4ED8; }
+      .ver { font-size:11px; font-weight:700; fill:#64748B; }
+      .blbl { font-size:14px; font-weight:700; }
+      .bsub { font-size:11px; }
+      .edge-blue { fill:none; stroke:#2563EB; stroke-width:2.5; }
+      .edge-gray { fill:none; stroke:#64748B; stroke-width:2.2; }
+      .note { font-size:11.5px; fill:#64748B; }
+    </style>
+  </defs>
+
+  <rect width="980" height="560" fill="#FFFFFF"/>
+  <text class="title" x="40" y="40">Event sourcing — state is a fold over the log</text>
+  <text class="subtitle" x="40" y="64">Current state is never stored. It is recomputed by replaying events through applyEvent. Snapshots only let recovery skip ahead.</text>
+
+  <!-- BAND 1: the fold -->
+  <text class="sec" x="40" y="100">THE LOG · APPEND-ONLY · THE SOURCE OF TRUTH</text>
+
+  <g>
+    <rect class="cell" x="60"  y="112" width="124" height="56" rx="8"/><text class="ev" x="122" y="138" text-anchor="middle">Registered</text><text class="ver" x="122" y="156" text-anchor="middle">v1</text>
+    <rect class="cell" x="192" y="112" width="124" height="56" rx="8"/><text class="ev" x="254" y="138" text-anchor="middle">CodeSet</text><text class="ver" x="254" y="156" text-anchor="middle">v2</text>
+    <rect class="cell" x="324" y="112" width="124" height="56" rx="8"/><text class="ev" x="386" y="138" text-anchor="middle">Verified</text><text class="ver" x="386" y="156" text-anchor="middle">v3</text>
+    <rect class="cell" x="456" y="112" width="124" height="56" rx="8"/><text class="ev" x="518" y="138" text-anchor="middle">LoggedIn</text><text class="ver" x="518" y="156" text-anchor="middle">v4</text>
+    <rect class="cell" x="588" y="112" width="124" height="56" rx="8"/><text class="ev" x="650" y="138" text-anchor="middle">…</text><text class="ver" x="650" y="156" text-anchor="middle">v5</text>
+    <rect class="cell" x="720" y="112" width="124" height="56" rx="8"/><text class="ev" x="782" y="138" text-anchor="middle">…</text><text class="ver" x="782" y="156" text-anchor="middle">v6</text>
+  </g>
+  <text class="note" x="852" y="144">newer →</text>
+
+  <path class="edge-blue" d="M452,168 L452,214" marker-end="url(#e-blue)"/>
+  <text class="ev" x="464" y="196">applyEvent, in order</text>
+
+  <rect x="332" y="216" width="248" height="60" rx="12" fill="#F1F5F9" stroke="#334155" stroke-width="2"/>
+  <text class="blbl" x="456" y="242" text-anchor="middle" fill="#0F172A">current state</text>
+  <text class="bsub" x="456" y="261" text-anchor="middle" fill="#475569">derived by folding · never stored</text>
+
+  <!-- divider -->
+  <line x1="40" y1="312" x2="940" y2="312" stroke="#E2E8F0" stroke-width="1.5"/>
+
+  <!-- BAND 2: recovery -->
+  <text class="sec" x="40" y="344">RECOVERY · WHY SNAPSHOTS EXIST</text>
+
+  <rect x="60" y="362" width="214" height="74" rx="12" fill="#F8FAFC" stroke="#64748B" stroke-width="2"/>
+  <text class="blbl" x="167" y="392" text-anchor="middle" fill="#334155">Snapshot @ vN</text>
+  <text class="bsub" x="167" y="412" text-anchor="middle" fill="#64748B">full state, saved every N events</text>
+
+  <path class="edge-gray" d="M274,399 L350,399" marker-end="url(#e-gray)"/>
+  <text class="note" x="282" y="389">restore</text>
+
+  <rect x="352" y="362" width="244" height="74" rx="12" fill="#F1F5F9" stroke="#334155" stroke-width="2"/>
+  <text class="blbl" x="474" y="392" text-anchor="middle" fill="#0F172A">replay events after vN</text>
+  <text class="bsub" x="474" y="412" text-anchor="middle" fill="#475569">v(N+1), v(N+2), …</text>
+
+  <path class="edge-gray" d="M596,399 L672,399" marker-end="url(#e-gray)"/>
+  <rect x="674" y="362" width="206" height="74" rx="12" fill="#F1F5F9" stroke="#334155" stroke-width="2"/>
+  <text class="blbl" x="777" y="399" text-anchor="middle" fill="#0F172A">rebuilt state</text>
+
+  <text class="note" x="60" y="470">Default N = 30, set via config:akka:persistence:snapshot-version-count. With no snapshot, recovery just replays from v1 — same answer, slower.</text>
+  <text class="note" x="60" y="492">Every persisted event bumps the version by 1. FCQRS also compares versions to detect a restart mid-handshake and abort the saga safely (Part 4 &amp; Part 7).</text>
+</svg>

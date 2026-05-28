@@ -1,0 +1,97 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 640" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="q-red" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#E5484D"/></marker>
+    <marker id="q-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#2563EB"/></marker>
+    <marker id="q-gray" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#94A3B8"/></marker>
+    <style>
+      .title { font-size:22px; font-weight:700; fill:#0F172A; }
+      .subtitle { font-size:13.5px; fill:#475569; }
+      .hlbl { font-size:15px; font-weight:700; }
+      .hsub { font-size:11px; }
+      .life { stroke:#CBD5E1; stroke-width:1.5; stroke-dasharray:4 4; }
+      .edge-red { fill:none; stroke:#E5484D; stroke-width:2.5; }
+      .edge-blue { fill:none; stroke:#2563EB; stroke-width:2.5; }
+      .edge-gray { fill:none; stroke:#94A3B8; stroke-width:2.2; stroke-dasharray:6 4; }
+      .elbl { font-size:12.5px; font-weight:600; }
+      .badge { font-size:11px; font-weight:700; fill:#fff; }
+      .leg { font-size:12px; font-weight:600; }
+    </style>
+  </defs>
+
+  <rect width="960" height="640" fill="#FFFFFF"/>
+  <text class="title" x="40" y="40">How a saga starts — the coordination handshake</text>
+  <text class="subtitle" x="40" y="63">Read top to bottom. Steps 2–5 are internal plumbing that guarantees the saga is listening before step 6.</text>
+
+  <!-- legend -->
+  <line class="edge-red" x1="586" y1="92" x2="612" y2="92"/><text class="leg" x="618" y="96" fill="#B4262A">command</text>
+  <line class="edge-blue" x1="700" y1="92" x2="726" y2="92"/><text class="leg" x="732" y="96" fill="#1D4ED8">event</text>
+  <line class="edge-gray" x1="792" y1="92" x2="818" y2="92"/><text class="leg" x="824" y="96" fill="#64748B">internal</text>
+
+  <!-- lifelines -->
+  <line class="life" x1="180" y1="170" x2="180" y2="566"/>
+  <line class="life" x1="420" y1="170" x2="420" y2="566"/>
+  <line class="life" x1="650" y1="170" x2="650" y2="566"/>
+  <line class="life" x1="860" y1="170" x2="860" y2="566"/>
+
+  <!-- headers -->
+  <rect x="105" y="116" width="150" height="54" rx="10" fill="#F1F5F9" stroke="#334155" stroke-width="2"/>
+  <text class="hlbl" x="180" y="142" text-anchor="middle" fill="#0F172A">Aggregate</text>
+  <text class="hsub" x="180" y="159" text-anchor="middle" fill="#64748B">the originator</text>
+  <rect x="345" y="116" width="150" height="54" rx="10" fill="#F8FAFC" stroke="#64748B" stroke-width="2"/>
+  <text class="hlbl" x="420" y="142" text-anchor="middle" fill="#334155">Saga Starter</text>
+  <text class="hsub" x="420" y="159" text-anchor="middle" fill="#64748B">internal coordinator</text>
+  <rect x="575" y="116" width="150" height="54" rx="10" fill="#F3E8FF" stroke="#7C3AED" stroke-width="2"/>
+  <text class="hlbl" x="650" y="142" text-anchor="middle" fill="#581C87">Saga</text>
+  <text class="hsub" x="650" y="159" text-anchor="middle" fill="#6B21A8">process manager</text>
+  <rect x="785" y="116" width="150" height="54" rx="10" fill="#FEF9C3" stroke="#CA8A04" stroke-width="2"/>
+  <text class="hlbl" x="860" y="142" text-anchor="middle" fill="#713F12">Mail sender</text>
+  <text class="hsub" x="860" y="159" text-anchor="middle" fill="#854D0E">outside world</text>
+
+  <!-- aggregate pause/activation bar (blocked during 2..5) -->
+  <rect x="174" y="214" width="12" height="142" fill="#FEE2E2" stroke="#E5484D" stroke-width="1.2"/>
+  <text class="hsub" x="120" y="290" text-anchor="middle" fill="#B4262A" transform="rotate(-90 120 290)">aggregate paused</text>
+
+  <!-- 1 command -->
+  <circle cx="60" cy="200" r="10" fill="#E5484D"/><text class="badge" x="60" y="204" text-anchor="middle">1</text>
+  <text class="elbl" x="76" y="204" fill="#B4262A">command (Register)</text>
+  <path class="edge-red" d="M50,216 L176,216" marker-end="url(#q-red)"/>
+
+  <!-- 2 starting event -->
+  <circle cx="196" cy="248" r="10" fill="#2563EB"/><text class="badge" x="196" y="252" text-anchor="middle">2</text>
+  <text class="elbl" x="212" y="252" fill="#1D4ED8">starting event — Ask (pauses the aggregate)</text>
+  <path class="edge-blue" d="M180,264 L420,264" marker-end="url(#q-blue)"/>
+
+  <!-- 3 start saga -->
+  <circle cx="436" cy="296" r="10" fill="#94A3B8"/><text class="badge" x="436" y="300" text-anchor="middle">3</text>
+  <text class="elbl" x="452" y="300" fill="#64748B">start saga</text>
+  <path class="edge-gray" d="M420,312 L650,312" marker-end="url(#q-gray)"/>
+
+  <!-- 4 subscribed -> continue -->
+  <circle cx="436" cy="344" r="10" fill="#94A3B8"/><text class="badge" x="436" y="348" text-anchor="middle">4</text>
+  <text class="elbl" x="452" y="348" fill="#64748B">subscribed → Continue</text>
+  <path class="edge-gray" d="M650,360 L420,360" marker-end="url(#q-gray)"/>
+
+  <!-- 5 continue -> aggregate -->
+  <circle cx="196" cy="392" r="10" fill="#94A3B8"/><text class="badge" x="196" y="396" text-anchor="middle">5</text>
+  <text class="elbl" x="212" y="396" fill="#64748B">Continue (all sagas ready) → aggregate resumes</text>
+  <path class="edge-gray" d="M420,408 L180,408" marker-end="url(#q-gray)"/>
+
+  <!-- 6 event published -->
+  <circle cx="196" cy="444" r="10" fill="#2563EB"/><text class="badge" x="196" y="448" text-anchor="middle">6</text>
+  <text class="elbl" x="212" y="448" fill="#1D4ED8">event persisted &amp; published → saga finally receives it</text>
+  <path class="edge-blue" d="M180,460 L650,460" marker-end="url(#q-blue)"/>
+
+  <!-- 7 send mail -->
+  <circle cx="666" cy="492" r="10" fill="#E5484D"/><text class="badge" x="666" y="496" text-anchor="middle">7</text>
+  <text class="elbl" x="682" y="496" fill="#B4262A">side effect: send mail</text>
+  <path class="edge-red" d="M650,508 L860,508" marker-end="url(#q-red)"/>
+
+  <!-- 8 sent -->
+  <circle cx="682" cy="538" r="10" fill="#94A3B8"/><text class="badge" x="682" y="542" text-anchor="middle">8</text>
+  <text class="elbl" x="698" y="542" fill="#64748B">sent</text>
+  <path class="edge-gray" d="M860,554 L650,554" marker-end="url(#q-gray)"/>
+
+  <!-- 9 completes -->
+  <circle cx="666" cy="592" r="10" fill="#7C3AED"/><text class="badge" x="666" y="596" text-anchor="middle">9</text>
+  <text class="elbl" x="682" y="596" fill="#6B21A8">saga completes → passivates (stops)</text>
+</svg>

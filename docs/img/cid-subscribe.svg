@@ -1,0 +1,76 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 940 580" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="c-red" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#E5484D"/></marker>
+    <marker id="c-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#2563EB"/></marker>
+    <marker id="c-green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#16A34A"/></marker>
+    <marker id="c-gray" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#94A3B8"/></marker>
+    <style>
+      .title { font-size:22px; font-weight:700; fill:#0F172A; }
+      .subtitle { font-size:13.5px; fill:#475569; }
+      .hlbl { font-size:15px; font-weight:700; }
+      .hsub { font-size:11px; }
+      .life { stroke:#CBD5E1; stroke-width:1.5; stroke-dasharray:4 4; }
+      .edge-red { fill:none; stroke:#E5484D; stroke-width:2.5; }
+      .edge-blue { fill:none; stroke:#2563EB; stroke-width:2.5; }
+      .edge-green { fill:none; stroke:#16A34A; stroke-width:2.5; }
+      .edge-gray { fill:none; stroke:#94A3B8; stroke-width:2.2; }
+      .elbl { font-size:12.5px; font-weight:600; }
+      .badge { font-size:11px; font-weight:700; fill:#fff; }
+    </style>
+  </defs>
+
+  <rect width="940" height="580" fill="#FFFFFF"/>
+  <text class="title" x="40" y="40">Read-your-writes — subscribe to the CID before you send</text>
+  <text class="subtitle" x="40" y="63">The read side is eventually consistent. Subscribing first closes the gap so the client reads only after the read model has caught up.</text>
+
+  <!-- lifelines -->
+  <line class="life" x1="170" y1="156" x2="170" y2="520"/>
+  <line class="life" x1="480" y1="156" x2="480" y2="520"/>
+  <line class="life" x1="790" y1="156" x2="790" y2="520"/>
+
+  <!-- headers -->
+  <rect x="95" y="104" width="150" height="52" rx="10" fill="#FEF9C3" stroke="#CA8A04" stroke-width="2"/>
+  <text class="hlbl" x="170" y="130" text-anchor="middle" fill="#713F12">Client</text>
+  <text class="hsub" x="170" y="147" text-anchor="middle" fill="#854D0E">HTTP handler</text>
+  <rect x="405" y="104" width="150" height="52" rx="10" fill="#F1F5F9" stroke="#334155" stroke-width="2"/>
+  <text class="hlbl" x="480" y="130" text-anchor="middle" fill="#0F172A">Aggregate</text>
+  <text class="hsub" x="480" y="147" text-anchor="middle" fill="#64748B">write side</text>
+  <rect x="715" y="104" width="150" height="52" rx="10" fill="#DCFCE7" stroke="#16A34A" stroke-width="2"/>
+  <text class="hlbl" x="790" y="130" text-anchor="middle" fill="#14532D">Read side</text>
+  <text class="hsub" x="790" y="147" text-anchor="middle" fill="#15803D">projection + model</text>
+
+  <!-- 1 subscribe (self on client) -->
+  <path class="edge-gray" d="M170,196 c 40,-6 40,28 2,22" marker-end="url(#c-gray)"/>
+  <circle cx="170" cy="190" r="10" fill="#94A3B8"/><text class="badge" x="170" y="194" text-anchor="middle">1</text>
+  <text class="elbl" x="220" y="200" fill="#64748B" font-weight="700">subscribe to this CID — before sending!</text>
+
+  <!-- 2 send command -->
+  <circle cx="186" cy="244" r="10" fill="#E5484D"/><text class="badge" x="186" y="248" text-anchor="middle">2</text>
+  <text class="elbl" x="202" y="248" fill="#B4262A">send command (carries CID)</text>
+  <path class="edge-red" d="M170,260 L480,260" marker-end="url(#c-red)"/>
+
+  <!-- 3 persist (self on aggregate) -->
+  <path class="edge-blue" d="M480,296 c 40,-6 40,28 2,22" marker-end="url(#c-blue)"/>
+  <circle cx="480" cy="290" r="10" fill="#2563EB"/><text class="badge" x="480" y="294" text-anchor="middle">3</text>
+  <text class="elbl" x="530" y="300" fill="#1D4ED8">persist event (carries the same CID)</text>
+
+  <!-- 4 publish to read side -->
+  <circle cx="496" cy="344" r="10" fill="#2563EB"/><text class="badge" x="496" y="348" text-anchor="middle">4</text>
+  <text class="elbl" x="512" y="348" fill="#1D4ED8">event published</text>
+  <path class="edge-blue" d="M480,360 L790,360" marker-end="url(#c-blue)"/>
+
+  <!-- 5 fold (self on read side) -->
+  <path class="edge-green" d="M790,396 c -40,-6 -40,28 -2,22" marker-end="url(#c-green)"/>
+  <circle cx="790" cy="390" r="10" fill="#16A34A"/><text class="badge" x="790" y="394" text-anchor="middle">5</text>
+  <text class="elbl" x="740" y="400" fill="#15803D" text-anchor="end">fold into read model</text>
+
+  <!-- 6 notify client -->
+  <circle cx="200" cy="438" r="10" fill="#94A3B8"/><text class="badge" x="200" y="442" text-anchor="middle">6</text>
+  <text class="elbl" x="216" y="442" fill="#64748B">notify — the CID matched, read side is ready</text>
+  <path class="edge-gray" d="M790,454 L170,454" marker-end="url(#c-gray)"/>
+
+  <!-- 7 read -->
+  <circle cx="186" cy="486" r="10" fill="#16A34A"/><text class="badge" x="186" y="490" text-anchor="middle">7</text>
+  <text class="elbl" x="202" y="490" fill="#15803D">read — now guaranteed fresh</text>
+  <path class="edge-green" d="M170,502 L790,502" marker-end="url(#c-green)"/>
+</svg>

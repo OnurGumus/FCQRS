@@ -23,7 +23,7 @@ open Command
 Here we will have one simple function. Every time an event is persisted, it will  be sent to the read side.
 Here you can use whatever you like, be it SQL, Entity Framework, MongoDB, or whatever you like. Make sure you persist the offset value to a table or persistent storage
 in the same transaction. This is to ensure that if the query side crashes, it can start from the last offset value. You can also use a transaction to commit them atomically.
-<img src="../img/projection.png" alt="User Flow" width="800"/> <br>
+<img src="../img/read-path.svg" alt="User Flow" width="800"/> <br>
 *)
 
 open Microsoft.Extensions.Logging

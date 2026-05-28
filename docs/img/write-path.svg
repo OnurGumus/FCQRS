@@ -1,0 +1,70 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 980 500" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="w-red" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#E5484D"/></marker>
+    <marker id="w-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#2563EB"/></marker>
+    <marker id="w-gray" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#94A3B8"/></marker>
+    <style>
+      .title { font-size:22px; font-weight:700; fill:#0F172A; }
+      .subtitle { font-size:13.5px; fill:#475569; }
+      .blbl { font-size:14px; font-weight:700; }
+      .bsub { font-size:11px; }
+      .edge-red { fill:none; stroke:#E5484D; stroke-width:2.5; }
+      .edge-blue { fill:none; stroke:#2563EB; stroke-width:2.5; }
+      .edge-gray { fill:none; stroke:#94A3B8; stroke-width:2.2; }
+      .elbl { font-size:11px; font-weight:700; }
+      .note { font-size:11.5px; fill:#64748B; }
+    </style>
+  </defs>
+
+  <rect width="980" height="500" fill="#FFFFFF"/>
+  <text class="title" x="40" y="40">The write path — what happens to one command</text>
+  <text class="subtitle" x="40" y="64">handleCommand looks at the command and the current state, then returns an action. Only PersistEvent changes state.</text>
+
+  <!-- command in -->
+  <path class="edge-red" d="M44,172 L144,172" marker-end="url(#w-red)"/>
+  <text class="elbl" x="44" y="160" fill="#B4262A" font-size="12">Register</text>
+  <text class="note" x="44" y="192">command in</text>
+
+  <!-- handleCommand -->
+  <rect x="150" y="136" width="172" height="80" rx="12" fill="#F1F5F9" stroke="#334155" stroke-width="2"/>
+  <text class="blbl" x="236" y="172" text-anchor="middle" fill="#0F172A">handleCommand</text>
+  <text class="bsub" x="236" y="192" text-anchor="middle" fill="#475569">(command, state) → action</text>
+
+  <!-- PersistEvent path (top pipeline) -->
+  <path class="edge-blue" d="M322,160 L438,152" marker-end="url(#w-blue)"/>
+  <text class="elbl" x="330" y="142" fill="#1D4ED8">PersistEvent</text>
+
+  <rect x="440" y="122" width="150" height="64" rx="10" fill="#F8FAFC" stroke="#64748B" stroke-width="2"/>
+  <text class="blbl" x="515" y="150" text-anchor="middle" fill="#334155" font-size="13">Event journal</text>
+  <text class="bsub" x="515" y="169" text-anchor="middle" fill="#64748B">append · v → v+1</text>
+
+  <path class="edge-blue" d="M590,154 L624,154" marker-end="url(#w-blue)"/>
+  <rect x="626" y="122" width="152" height="64" rx="10" fill="#F1F5F9" stroke="#334155" stroke-width="2"/>
+  <text class="blbl" x="702" y="150" text-anchor="middle" fill="#0F172A" font-size="13">applyEvent</text>
+  <text class="bsub" x="702" y="169" text-anchor="middle" fill="#475569">(event, state) → state</text>
+
+  <path class="edge-gray" d="M778,154 L812,154" marker-end="url(#w-gray)"/>
+  <rect x="814" y="122" width="148" height="64" rx="10" fill="#F1F5F9" stroke="#334155" stroke-width="2"/>
+  <text class="blbl" x="888" y="150" text-anchor="middle" fill="#0F172A" font-size="13">new state</text>
+  <text class="bsub" x="888" y="169" text-anchor="middle" fill="#475569">version = v+1</text>
+
+  <!-- publish down from journal -->
+  <path class="edge-blue" d="M515,186 L515,248" marker-end="url(#w-blue)"/>
+  <text class="note" x="527" y="220" fill="#1D4ED8">published → read side &amp; sagas</text>
+
+  <!-- DeferEvent path (middle) -->
+  <path class="edge-blue" d="M252,216 C 300,282 360,300 438,304" marker-end="url(#w-blue)" stroke-dasharray="6 4"/>
+  <text class="elbl" x="320" y="272" fill="#1D4ED8">DeferEvent</text>
+  <rect x="440" y="282" width="186" height="56" rx="10" fill="#EFF6FF" stroke="#2563EB" stroke-width="1.6"/>
+  <text class="blbl" x="533" y="306" text-anchor="middle" fill="#1D4ED8" font-size="13">publish only</text>
+  <text class="bsub" x="533" y="324" text-anchor="middle" fill="#1D4ED8">not stored · state unchanged</text>
+  <text class="note" x="644" y="304">emitted but never persisted — used for</text>
+  <text class="note" x="644" y="322">rejections like AlreadyRegistered / LoginFailed</text>
+
+  <!-- IgnoreEvent path (bottom) -->
+  <path class="edge-gray" d="M212,216 C 244,384 332,410 438,414" marker-end="url(#w-gray)"/>
+  <text class="elbl" x="250" y="374" fill="#64748B">IgnoreEvent</text>
+  <rect x="440" y="392" width="186" height="48" rx="10" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1.6"/>
+  <text class="blbl" x="533" y="421" text-anchor="middle" fill="#64748B" font-size="13">do nothing</text>
+  <text class="note" x="644" y="420">no event, no state change</text>
+</svg>

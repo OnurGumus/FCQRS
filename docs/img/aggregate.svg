@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 840 470" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="a-red" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#E5484D"/></marker>
+    <marker id="a-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#2563EB"/></marker>
+    <style>
+      .title { font-size:22px; font-weight:700; fill:#0F172A; }
+      .subtitle { font-size:14px; fill:#475569; }
+      .blbl { font-size:18px; font-weight:700; fill:#0F172A; }
+      .bsub { font-size:12px; fill:#475569; }
+      .edge-red { fill:none; stroke:#E5484D; stroke-width:2.5; }
+      .edge-blue { fill:none; stroke:#2563EB; stroke-width:2.5; }
+      .elbl { font-size:13.5px; font-weight:600; }
+      .tag { font-size:11px; font-weight:700; letter-spacing:0.06em; }
+      .note { font-size:13px; fill:#334155; }
+      .note-b { font-size:13px; font-weight:700; fill:#0F172A; }
+    </style>
+  </defs>
+
+  <rect width="840" height="470" fill="#FFFFFF"/>
+  <text class="title" x="40" y="42">An aggregate is a transaction boundary</text>
+  <text class="subtitle" x="40" y="66">It takes one command at a time, makes a decision, and emits events. It never performs side effects.</text>
+
+  <!-- aggregate body -->
+  <rect x="305" y="120" width="230" height="132" rx="16" fill="#F1F5F9" stroke="#334155" stroke-width="2.5"/>
+  <text class="blbl" x="420" y="170" text-anchor="middle">User</text>
+  <text class="bsub" x="420" y="194" text-anchor="middle">state is folded</text>
+  <text class="bsub" x="420" y="212" text-anchor="middle">from its own events</text>
+  <text class="tag" x="420" y="236" text-anchor="middle" fill="#64748B">AGGREGATE</text>
+
+  <!-- command in -->
+  <path class="edge-red" d="M70,186 L301,186" marker-end="url(#a-red)"/>
+  <rect x="46" y="150" width="20" height="20" rx="5" fill="#E5484D"/>
+  <text class="tag" x="56" y="164" text-anchor="middle" fill="#fff">C</text>
+  <text class="elbl" x="70" y="176" fill="#B4262A">Register(username, password)</text>
+
+  <!-- events out -->
+  <path class="edge-blue" d="M535,170 L748,144" marker-end="url(#a-blue)"/>
+  <text class="elbl" x="544" y="132" fill="#1D4ED8">RegistrationSucceeded</text>
+  <path class="edge-blue" d="M535,206 L748,234" marker-end="url(#a-blue)"/>
+  <text class="elbl" x="556" y="260" fill="#1D4ED8">AlreadyRegistered</text>
+  <text class="tag" x="748" y="116" text-anchor="end" fill="#1D4ED8">EVENTS</text>
+
+  <!-- explanation panel -->
+  <rect x="40" y="300" width="760" height="138" rx="12" fill="#F8FAFC" stroke="#E2E8F0" stroke-width="1.5"/>
+  <text class="note-b" x="64" y="332">Why this shape is safe</text>
+  <text class="note" x="64" y="360">One command in flight at a time, so there are no races inside an entity.</text>
+  <text class="note" x="64" y="384">The decision is pure — no e‑mails, no HTTP, no database writes — so it can be retried and replayed.</text>
+  <text class="note" x="64" y="408">Events are the only output, and replaying them rebuilds the state exactly.</text>
+  <text class="note" x="64" y="426">Every emitted event carries the command's correlation id (CID), so the whole story stays traceable.</text>
+</svg>

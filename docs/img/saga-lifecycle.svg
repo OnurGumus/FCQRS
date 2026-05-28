@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 820 670" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="l-purple" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#7C3AED"/></marker>
+    <marker id="l-red" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#E5484D"/></marker>
+    <style>
+      .title { font-size:22px; font-weight:700; fill:#0F172A; }
+      .subtitle { font-size:13.5px; fill:#475569; }
+      .hdr { font-size:12px; font-weight:700; letter-spacing:0.04em; }
+      .st { fill:#F3E8FF; stroke:#7C3AED; stroke-width:2; }
+      .stf { fill:#FAF5FF; stroke:#C4B5FD; stroke-width:2; }
+      .stlbl { font-size:15px; font-weight:700; fill:#581C87; }
+      .stlblf { font-size:14px; font-weight:700; fill:#7C3AED; }
+      .edge-p { fill:none; stroke:#7C3AED; stroke-width:2.4; }
+      .evt { font-size:12.5px; font-weight:600; fill:#1D4ED8; }
+      .cmd { font-size:12.5px; font-weight:600; fill:#B4262A; }
+      .note { font-size:11.5px; fill:#94A3B8; }
+    </style>
+  </defs>
+
+  <rect width="820" height="670" fill="#FFFFFF"/>
+  <text class="title" x="40" y="40">A saga is a small state machine</text>
+  <text class="subtitle" x="40" y="64">handleEvent turns an incoming event into the next state. applySideEffects, on entering a state, issues commands.</text>
+
+  <!-- column headers -->
+  <text class="hdr" x="288" y="100" text-anchor="end" fill="#1D4ED8">EVENT IN  →  handleEvent</text>
+  <text class="hdr" x="532" y="100" fill="#B4262A">applySideEffects  →  COMMAND OUT</text>
+
+  <!-- states -->
+  <rect class="stf" x="310" y="120" width="200" height="58" rx="12"/>
+  <text class="stlblf" x="410" y="146" text-anchor="middle">NotStarted → Started</text>
+  <text class="note" x="410" y="166" text-anchor="middle">framework-provided</text>
+
+  <rect class="st" x="310" y="232" width="200" height="58" rx="12"/>
+  <text class="stlbl" x="410" y="266" text-anchor="middle">GeneratingCode</text>
+
+  <rect class="st" x="310" y="344" width="200" height="58" rx="12"/>
+  <text class="stlbl" x="410" y="378" text-anchor="middle">SendingNotification</text>
+
+  <rect class="st" x="310" y="456" width="200" height="58" rx="12"/>
+  <text class="stlbl" x="410" y="490" text-anchor="middle">WaitingForApproval</text>
+
+  <rect class="st" x="310" y="568" width="200" height="58" rx="12"/>
+  <text class="stlbl" x="410" y="602" text-anchor="middle">Approved</text>
+
+  <!-- transitions -->
+  <path class="edge-p" d="M410,178 L410,230" marker-end="url(#l-purple)"/>
+  <path class="edge-p" d="M410,290 L410,342" marker-end="url(#l-purple)"/>
+  <path class="edge-p" d="M410,402 L410,454" marker-end="url(#l-purple)"/>
+  <path class="edge-p" d="M410,514 L410,566" marker-end="url(#l-purple)"/>
+
+  <!-- event labels (left of each transition) -->
+  <text class="evt" x="300" y="208" text-anchor="end">on CreatedOrUpdated</text>
+  <text class="evt" x="300" y="320" text-anchor="end">on ApprovalCodeSet</text>
+  <text class="evt" x="300" y="432" text-anchor="end">self-advance (NextState)</text>
+  <text class="evt" x="300" y="544" text-anchor="end">on Approved</text>
+
+  <!-- command labels (right of each state) -->
+  <text class="note" x="524" y="156">awaits its first event</text>
+  <text class="cmd" x="524" y="266">issues → SetApprovalCode</text>
+  <text class="cmd" x="524" y="378" fill="#94A3B8">(no command; just advances)</text>
+  <text class="cmd" x="524" y="490">issues → Approve</text>
+  <text class="cmd" x="524" y="602">StopSaga → passivate</text>
+
+  <!-- stop terminal -->
+  <circle cx="410" cy="652" r="7" fill="#7C3AED"/>
+  <path class="edge-p" d="M410,626 L410,645" marker-end="url(#l-purple)"/>
+</svg>
