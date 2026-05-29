@@ -20,8 +20,9 @@ public union UserCommand(UserCommand.Register, UserCommand.Login)
     public record Login(string Password);
 }
 
-public union UserEvent(UserEvent.Registered, UserEvent.AlreadyRegistered,
-                       UserEvent.LoginSucceeded, UserEvent.LoginFailed)
+public union UserEvent(
+    UserEvent.Registered, UserEvent.AlreadyRegistered,
+    UserEvent.LoginSucceeded, UserEvent.LoginFailed)
 {
     public record Registered(string Username, string Password);
     public record AlreadyRegistered;
@@ -40,14 +41,17 @@ public record UserState(string? Username = null, string? Password = null)
     public static readonly UserState Initial = new();
 }
 
-public EventAction<UserEvent> HandleCommand(Command<UserCommand> cmd, UserState state) =>
+public EventAction<UserEvent> HandleCommand(
+    Command<UserCommand> cmd, UserState state) =>
     (cmd.CommandDetails, state) switch
     {
         (UserCommand.Register r, { Username: null }) =>
-            EventActions.Persist<UserEvent>(new UserEvent.Registered(r.Username, r.Password)),
+            EventActions.Persist<UserEvent>(
+                new UserEvent.Registered(r.Username, r.Password)),
         (UserCommand.Register, _) =>
             EventActions.Defer<UserEvent>(new UserEvent.AlreadyRegistered()),
-        (UserCommand.Login l, { Username: not null, Password: { } pw }) when l.Password == pw =>
+        (UserCommand.Login l, { Username: not null, Password: { } pw })
+            when l.Password == pw =>
             EventActions.Persist<UserEvent>(new UserEvent.LoginSucceeded()),
         _ => EventActions.Defer<UserEvent>(new UserEvent.LoginFailed())
     };
@@ -55,7 +59,8 @@ public EventAction<UserEvent> HandleCommand(Command<UserCommand> cmd, UserState 
 public UserState ApplyEvent(Event<UserEvent> evt, UserState state) =>
     evt.EventDetails switch
     {
-        UserEvent.Registered e => state with { Username = e.Username, Password = e.Password },
+        UserEvent.Registered e =>
+            state with { Username = e.Username, Password = e.Password },
         _ => state
     };
 
@@ -67,18 +72,20 @@ public EntityFac<object> Init(IActor actorApi) =>
 ## Create the system and send a command
 
 ```csharp
-var actorApi = ActorApi.Create(builder.Configuration, loggerFactory, "Data Source=app.db;", "app");
+var actorApi = ActorApi.Create(
+    builder.Configuration, loggerFactory, "Data Source=app.db;", "app");
 var factory = entityId => Init(actorApi).RefFor(DEFAULT_SHARD, entityId);
 
 var cid = Helpers.NewCID();
 var aggregateId = Helpers.CreateAggregateId("alice");
 
-using var awaiter = ISubscribeExtensions.SubscribeFor(subs, cid, 1);   // subscribe BEFORE sending
+// subscribe BEFORE sending
+using var awaiter = ISubscribeExtensions.SubscribeFor(subs, cid, 1);
 await IActorExtensions.SendCommandAsync(
     actorApi, factory, cid, aggregateId,
     new UserCommand.Register("alice", "s3cret"),
     e => e is UserEvent.Registered or UserEvent.AlreadyRegistered);
-await awaiter.Task;                                                    // read side is current
+await awaiter.Task;                  // read side is current
 ```
 
 The read side uses `QueryApi.InitWithList`, and sagas use `SagaBuilderCSharp.InitSimple` with

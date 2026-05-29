@@ -14,9 +14,10 @@ rest of the Akka.NET configuration from built-in defaults.
 open FCQRS.Actor
 open FCQRS.Model.Data
 
+let connStr =
+    "Data Source=app.db;" |> ValueLens.TryCreate |> Result.value
 let connection =
-    Some { ConnectionString = "Data Source=app.db;" |> ValueLens.TryCreate |> Result.value
-           DBType = DBType.Sqlite }
+    Some { ConnectionString = connStr; DBType = DBType.Sqlite }
 
 // an empty IConfiguration is fine
 let config = Microsoft.Extensions.Configuration.ConfigurationBuilder().Build()
@@ -29,9 +30,10 @@ first run. Only the connection string changes alongside it:
 
 ```fsharp
 let connection =
-    Some { ConnectionString = "Host=localhost;Database=app;Username=app;Password=…"
-                              |> ValueLens.TryCreate |> Result.value
-           DBType = DBType.PostgreSQL }
+    let connStr =
+        "Host=localhost;Database=app;Username=app;Password=…"
+        |> ValueLens.TryCreate |> Result.value
+    Some { ConnectionString = connStr; DBType = DBType.PostgreSQL }
 ```
 
 **Change snapshot frequency** with `config:akka:persistence:snapshot-version-count` (default 30).

@@ -56,9 +56,12 @@ hears "no" without that non-event polluting history).
 
 let handleCommand (cmd: Command<Command>) state =
     match cmd.CommandDetails, state with
-    | Register(u, p), { Username = None } -> RegisterSucceeded(u, p) |> PersistEvent
-    | Register _, { Username = Some _ } -> AlreadyRegistered |> DeferEvent
-    | Login p, { Username = Some _; Password = Some stored } when p = stored ->
+    | Register(u, p), { Username = None } ->
+        RegisterSucceeded(u, p) |> PersistEvent
+    | Register _, { Username = Some _ } ->
+        AlreadyRegistered |> DeferEvent
+    | Login attempt, { Username = Some _; Password = Some pw }
+        when attempt = pw ->
         LoginSucceeded |> PersistEvent
     | Login _, _ -> LoginFailed |> DeferEvent
 
@@ -71,7 +74,8 @@ replayed on recovery, so it must be pure and do nothing but fold.
 
 let applyEvent (event: Event<Event>) state =
     match event.EventDetails with
-    | RegisterSucceeded(u, p) -> { state with Username = Some u; Password = Some p }
+    | RegisterSucceeded(u, p) ->
+        { state with Username = Some u; Password = Some p }
     | _ -> state
 
 (**

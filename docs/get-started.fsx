@@ -63,19 +63,23 @@ module User =
         | LoginSucceeded
         | LoginFailed
 
-    /// decide: look at the command and the current state, return what happened
+    /// decide: command + current state -> what happened
     let handleCommand (cmd: Command<Command>) state =
         match cmd.CommandDetails, state with
-        | Register(u, p), { Username = None } -> RegisterSucceeded(u, p) |> PersistEvent
-        | Register _, { Username = Some _ } -> AlreadyRegistered |> DeferEvent
-        | Login p, { Username = Some _; Password = Some stored } when p = stored ->
+        | Register(u, p), { Username = None } ->
+            RegisterSucceeded(u, p) |> PersistEvent
+        | Register _, { Username = Some _ } ->
+            AlreadyRegistered |> DeferEvent
+        | Login attempt, { Username = Some _; Password = Some pw }
+            when attempt = pw ->
             LoginSucceeded |> PersistEvent
         | Login _, _ -> LoginFailed |> DeferEvent
 
     /// fold: apply one event to the state
     let applyEvent (event: Event<Event>) state =
         match event.EventDetails with
-        | RegisterSucceeded(u, p) -> { state with Username = Some u; Password = Some p }
+        | RegisterSucceeded(u, p) ->
+            { state with Username = Some u; Password = Some p }
         | _ -> state
 
     let initialState = { Username = None; Password = None }
@@ -101,14 +105,15 @@ defaults, and an empty `IConfiguration` is fine. A `.hocon` file is *optional* â
 
 let buildActorApi () : IActor =
     let config = ConfigurationBuilder().Build()
-    // No logging providers, to keep this to the FCQRS package alone. Add the
-    // Microsoft.Extensions.Logging.Console package and b.AddConsole() for console logs.
+    // No logging providers, to keep this to the FCQRS package alone. For
+    // console logs add the Microsoft.Extensions.Logging.Console package.
     let loggerFactory = LoggerFactory.Create(fun _ -> ())
 
+    let connStr =
+        "Data Source=getstarted.db;"
+        |> ValueLens.TryCreate |> Result.value
     let connection =
-        Some
-            { ConnectionString = "Data Source=getstarted.db;" |> ValueLens.TryCreate |> Result.value
-              DBType = DBType.Sqlite }
+        Some { ConnectionString = connStr; DBType = DBType.Sqlite }
 
     let clusterName = "getstarted" |> ValueLens.TryCreate |> Result.value
     FCQRS.Actor.api config loggerFactory connection clusterName
@@ -121,7 +126,8 @@ subscribers so a caller can be told when the read side has caught up. (Concept:
 [The read side](concepts/read-models.html).)
 *)
 
-let handleEventWrapper (_loggerFactory: ILoggerFactory) (_offset: int64) (event: obj) =
+let handleEventWrapper
+    (_loggerFactory: ILoggerFactory) (_offset: int64) (event: obj) =
     match event with
     | :? Event<User.Event> as e -> [ e :> IMessageWithCID ]
     | _ -> []
@@ -138,17 +144,24 @@ let run () =
     async {
         let actorApi = buildActorApi ()
 
-        let sagaCheck (_: obj) : (string -> Akkling.Cluster.Sharding.IEntityRef<obj>) list = []
+        let sagaCheck (_: obj)
+            : (string -> Akkling.Cluster.Sharding.IEntityRef<obj>) list = []
         actorApi.InitializeSagaStarter sagaCheck
 
         let userShard = User.factory actorApi
-        let subs = FCQRS.Query.init actorApi 0L (handleEventWrapper actorApi.LoggerFactory)
+        let subs =
+            FCQRS.Query.init actorApi 0L
+                (handleEventWrapper actorApi.LoggerFactory)
 
-        let cid: CID = Guid.NewGuid().ToString() |> ValueLens.CreateAsResult |> Result.value
-        let actorId: AggregateId = "alice" |> ValueLens.CreateAsResult |> Result.value
+        let cid: CID =
+            Guid.NewGuid().ToString()
+            |> ValueLens.CreateAsResult |> Result.value
+        let actorId: AggregateId =
+            "alice" |> ValueLens.CreateAsResult |> Result.value
 
-        // Subscribe to this CID *before* sending, so the confirmation can't be missed.
-        use awaiter = subs.Subscribe((fun (e: IMessageWithCID) -> e.CID = cid), 1)
+        // Subscribe to this CID *before* sending, so it can't be missed.
+        use awaiter =
+            subs.Subscribe((fun (e: IMessageWithCID) -> e.CID = cid), 1)
 
         let! event =
             actorApi.CreateCommandSubscription
@@ -156,7 +169,8 @@ let run () =
                 (User.Register("alice", "s3cret"))
                 (fun (e: User.Event) ->
                     match e with
-                    | User.RegisterSucceeded _ | User.AlreadyRegistered -> true
+                    | User.RegisterSucceeded _
+                    | User.AlreadyRegistered -> true
                     | _ -> false)
                 None
 

@@ -24,7 +24,8 @@ public union UserCommand(UserCommand.Register, UserCommand.Login)
     public record Login(string Password);
 }
 
-public union UserEvent(UserEvent.Registered, UserEvent.LoginSucceeded, UserEvent.LoginFailed)
+public union UserEvent(
+    UserEvent.Registered, UserEvent.LoginSucceeded, UserEvent.LoginFailed)
 {
     public record Registered(string Username, string Password);
     public record LoginSucceeded;

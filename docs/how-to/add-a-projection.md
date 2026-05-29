@@ -14,8 +14,9 @@ record the offset **in the same transaction**, so processing is exactly-once acr
 open FCQRS.Common
 open FCQRS.Model.Data
 
-let handleEventWrapper (loggerFactory: ILoggerFactory) (connString: string)
-                       (offsetValue: int64) (event: obj) =
+let handleEventWrapper
+    (loggerFactory: ILoggerFactory) (connString: string)
+    (offsetValue: int64) (event: obj) =
     use conn = new SqliteConnection(connString)
     conn.Open()
     use tx = conn.BeginTransaction()
@@ -25,13 +26,18 @@ let handleEventWrapper (loggerFactory: ILoggerFactory) (connString: string)
         | :? Event<User.Event> as e ->
             match e.EventDetails with
             | User.RegisterSucceeded(u, _) ->
-                conn.Execute("insert or replace into Users (Name) values (@u)", {| u = u |}, tx) |> ignore
-                [ e :> IMessageWithCID ]          // re-publish so CID subscribers wake
+                conn.Execute(
+                    "insert or replace into Users (Name) values (@u)",
+                    {| u = u |}, tx) |> ignore
+                // re-publish so CID subscribers wake
+                [ e :> IMessageWithCID ]
             | _ -> []
         | _ -> []
 
     // advance the offset in the SAME transaction as the writes
-    conn.Execute("update Offsets set N = @n where Name = 'Users'", {| n = offsetValue |}, tx) |> ignore
+    conn.Execute(
+        "update Offsets set N = @n where Name = 'Users'",
+        {| n = offsetValue |}, tx) |> ignore
     tx.Commit()
     emitted
 ```
@@ -39,8 +45,10 @@ let handleEventWrapper (loggerFactory: ILoggerFactory) (connString: string)
 Start it from your bootstrap, resuming from the stored offset:
 
 ```fsharp
-let lastOffset = readOffset connString          // your query for the saved offset
-let subs = FCQRS.Query.init actorApi lastOffset (handleEventWrapper loggerFactory connString)
+let lastOffset = readOffset connString    // the saved offset
+let subs =
+    FCQRS.Query.init actorApi lastOffset
+        (handleEventWrapper loggerFactory connString)
 ```
 
 Two things matter most. **Return the events you handled** — those are re-published on the subscription

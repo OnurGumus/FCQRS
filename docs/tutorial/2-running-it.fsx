@@ -18,21 +18,33 @@ open FCQRS.Actor
 
 module User =
     type State = { Username: string option; Password: string option }
-    type Command = Register of string * string | Login of string
-    type Event = RegisterSucceeded of string * string | AlreadyRegistered | LoginSucceeded | LoginFailed
+    type Command =
+        | Register of string * string
+        | Login of string
+    type Event =
+        | RegisterSucceeded of string * string
+        | AlreadyRegistered
+        | LoginSucceeded
+        | LoginFailed
     let initialState = { Username = None; Password = None }
     let handleCommand (cmd: Command<Command>) state =
         match cmd.CommandDetails, state with
-        | Register(u, p), { Username = None } -> RegisterSucceeded(u, p) |> PersistEvent
-        | Register _, { Username = Some _ } -> AlreadyRegistered |> DeferEvent
-        | Login p, { Username = Some _; Password = Some s } when p = s -> LoginSucceeded |> PersistEvent
+        | Register(u, p), { Username = None } ->
+            RegisterSucceeded(u, p) |> PersistEvent
+        | Register _, { Username = Some _ } ->
+            AlreadyRegistered |> DeferEvent
+        | Login a, { Username = Some _; Password = Some pw } when a = pw ->
+            LoginSucceeded |> PersistEvent
         | Login _, _ -> LoginFailed |> DeferEvent
     let applyEvent (event: Event<Event>) state =
         match event.EventDetails with
-        | RegisterSucceeded(u, p) -> { state with Username = Some u; Password = Some p }
+        | RegisterSucceeded(u, p) ->
+            { state with Username = Some u; Password = Some p }
         | _ -> state
-    let init (actorApi: IActor) = actorApi.InitializeActor initialState "User" handleCommand applyEvent
-    let factory actorApi entityId = (init actorApi).RefFor DEFAULT_SHARD entityId
+    let init (actorApi: IActor) =
+        actorApi.InitializeActor initialState "User" handleCommand applyEvent
+    let factory actorApi entityId =
+        (init actorApi).RefFor DEFAULT_SHARD entityId
 
 (**
 # 2. Wiring and running it
@@ -49,9 +61,11 @@ You supply a database `Connection`; the framework's built-in defaults handle the
 let buildActorApi () : IActor =
     let config = ConfigurationBuilder().Build()
     let loggerFactory = LoggerFactory.Create(fun _ -> ())
+    let connStr =
+        "Data Source=tutorial.db;"
+        |> ValueLens.TryCreate |> Result.value
     let connection =
-        Some { ConnectionString = "Data Source=tutorial.db;" |> ValueLens.TryCreate |> Result.value
-               DBType = DBType.Sqlite }
+        Some { ConnectionString = connStr; DBType = DBType.Sqlite }
     let clusterName = "tutorial" |> ValueLens.TryCreate |> Result.value
     FCQRS.Actor.api config loggerFactory connection clusterName
 
@@ -63,7 +77,8 @@ is enough to let a caller know when its command has been processed. (Concept:
 [the read side](../concepts/read-models.html).)
 *)
 
-let handleEventWrapper (_lf: ILoggerFactory) (_offset: int64) (event: obj) =
+let handleEventWrapper
+    (_lf: ILoggerFactory) (_offset: int64) (event: obj) =
     match event with
     | :? Event<User.Event> as e -> [ e :> IMessageWithCID ]
     | _ -> []
@@ -79,16 +94,23 @@ can't slip past, and once the wait returns the read side is current. (Concept:
 let run () =
     async {
         let actorApi = buildActorApi ()
-        let sagaCheck (_: obj) : (string -> Akkling.Cluster.Sharding.IEntityRef<obj>) list = []
+        let sagaCheck (_: obj)
+            : (string -> Akkling.Cluster.Sharding.IEntityRef<obj>) list = []
         actorApi.InitializeSagaStarter sagaCheck
 
         let userShard = User.factory actorApi
-        let subs = FCQRS.Query.init actorApi 0L (handleEventWrapper actorApi.LoggerFactory)
+        let subs =
+            FCQRS.Query.init actorApi 0L
+                (handleEventWrapper actorApi.LoggerFactory)
 
-        let cid: CID = Guid.NewGuid().ToString() |> ValueLens.CreateAsResult |> Result.value
-        let actorId: AggregateId = "alice" |> ValueLens.CreateAsResult |> Result.value
+        let cid: CID =
+            Guid.NewGuid().ToString()
+            |> ValueLens.CreateAsResult |> Result.value
+        let actorId: AggregateId =
+            "alice" |> ValueLens.CreateAsResult |> Result.value
 
-        use awaiter = subs.Subscribe((fun (e: IMessageWithCID) -> e.CID = cid), 1)
+        use awaiter =
+            subs.Subscribe((fun (e: IMessageWithCID) -> e.CID = cid), 1)
 
         let! event =
             actorApi.CreateCommandSubscription
@@ -96,7 +118,8 @@ let run () =
                 (User.Register("alice", "s3cret"))
                 (fun (e: User.Event) ->
                     match e with
-                    | User.RegisterSucceeded _ | User.AlreadyRegistered -> true
+                    | User.RegisterSucceeded _
+                    | User.AlreadyRegistered -> true
                     | _ -> false)
                 None
 

@@ -16,29 +16,42 @@ type State = GeneratingCode | SendingMail of string | Completed
 type SagaData = { RetryCount: int }
 
 // 1. react to events -> next state
-let handleEvent (event: obj) (sagaState: SagaState<SagaData, State option>) : EventAction<State> =
+let handleEvent (event: obj)
+                (sagaState: SagaState<SagaData, State option>)
+                : EventAction<State> =
     match event, sagaState.State with
     | :? (Event<User.Event>) as e, None ->
         match e.EventDetails with
-        | User.VerificationRequested _ -> GeneratingCode |> StateChangedEvent
+        | User.VerificationRequested _ ->
+            GeneratingCode |> StateChangedEvent
         | _ -> UnhandledEvent
-    | :? string as m, Some (SendingMail _) when m = "sent" -> Completed |> StateChangedEvent
+    | :? string as m, Some (SendingMail _) when m = "sent" ->
+        Completed |> StateChangedEvent
     | _ -> UnhandledEvent
 
 // 2. on entering a state, choose a transition and issue commands
-let applySideEffects (userFactory: string -> Akkling.Cluster.Sharding.IEntityRef<obj>)
-                     (mail: unit -> IActorRef<obj>)
-                     (sagaState: SagaState<SagaData, State>) (recovering: bool) =
+let applySideEffects
+    (userFactory: string -> Akkling.Cluster.Sharding.IEntityRef<obj>)
+    (mail: unit -> IActorRef<obj>)
+    (sagaState: SagaState<SagaData, State>)
+    (recovering: bool) =
     match sagaState.State with
     | GeneratingCode ->
         let code = System.Random.Shared.Next(100000, 999999).ToString()
         // command back to the originating aggregate
-        Stay, [ { TargetActor = FactoryAndName { Factory = userFactory; Name = Originator }
-                  Command = User.SetVerificationCode code
-                  DelayInMs = None } ]
+        Stay,
+        [ { TargetActor =
+                FactoryAndName { Factory = userFactory; Name = Originator }
+            Command = User.SetVerificationCode code
+            DelayInMs = None } ]
     | SendingMail body ->
-        if recovering then Stay, []                       // don't re-send on recovery
-        else Stay, [ { TargetActor = ActorRef(mail ()); Command = box body; DelayInMs = None } ]
+        // don't re-send on recovery
+        if recovering then Stay, []
+        else
+            Stay,
+            [ { TargetActor = ActorRef(mail ())
+                Command = box body
+                DelayInMs = None } ]
     | Completed -> StopSaga, []
 
 // 3. fold cross-step data
@@ -46,9 +59,11 @@ let apply (sagaState: SagaState<SagaData, State>) = sagaState
 
 let init actorApi =
     let userFactory = User.factory actorApi
-    let mail () = spawnAnonymous actorApi.System (props mailBehavior) |> retype
+    let mail () =
+        spawnAnonymous actorApi.System (props mailBehavior) |> retype
     SagaBuilder.initSimple<SagaData, State, User.Event>
-        actorApi { RetryCount = 0 } handleEvent (applySideEffects userFactory mail) apply userFactory "UserSaga"
+        actorApi { RetryCount = 0 } handleEvent
+        (applySideEffects userFactory mail) apply userFactory "UserSaga"
 ```
 
 Register the trigger in your bootstrap — this is what fires the safe
@@ -59,7 +74,9 @@ actorApi.InitializeSagaStarter (fun evt ->
     match evt with
     | :? (Event<User.Event>) as e ->
         match e.EventDetails with
-        | User.VerificationRequested _ -> [ init actorApi |> fun fac id -> fac.RefFor DEFAULT_SHARD id ]
+        | User.VerificationRequested _ ->
+            [ init actorApi
+              |> fun fac id -> fac.RefFor DEFAULT_SHARD id ]
         | _ -> []
     | _ -> [])
 ```

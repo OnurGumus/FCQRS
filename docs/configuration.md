@@ -18,9 +18,10 @@ and a provider type — which is substituted into the defaults. So the minimal s
 [Get started](get-started.html):
 
 ```fsharp
+let connStr =
+    "Data Source=app.db;" |> ValueLens.TryCreate |> Result.value
 let connection =
-    Some { ConnectionString = "Data Source=app.db;" |> ValueLens.TryCreate |> Result.value
-           DBType = DBType.Sqlite }
+    Some { ConnectionString = connStr; DBType = DBType.Sqlite }
 
 let actorApi = FCQRS.Actor.api config loggerFactory connection clusterName
 ```
@@ -63,9 +64,21 @@ config {
   connection-string = "Data Source=app.db;"
   akka {
     persistence {
-      journal.sql        { connection-string = ${config.connection-string}  provider-name = "SQLite.MS"  auto-initialize = true }
-      query.journal.sql  { connection-string = ${config.connection-string}  provider-name = "SQLite.MS"  auto-initialize = true }
-      snapshot-store.sql { connection-string = ${config.connection-string}  provider-name = "SQLite.MS"  auto-initialize = true }
+      journal.sql {
+        connection-string = ${config.connection-string}
+        provider-name = "SQLite.MS"
+        auto-initialize = true
+      }
+      query.journal.sql {
+        connection-string = ${config.connection-string}
+        provider-name = "SQLite.MS"
+        auto-initialize = true
+      }
+      snapshot-store.sql {
+        connection-string = ${config.connection-string}
+        provider-name = "SQLite.MS"
+        auto-initialize = true
+      }
     }
   }
 }

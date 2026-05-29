@@ -36,11 +36,14 @@ let initialData = { Attempts = 0 }
 finish when our notifier reports back.
 
 ```fsharp
-let handleEvent (event: obj) (sagaState: SagaState<SagaData, WelcomeState option>) : EventAction<WelcomeState> =
+let handleEvent (event: obj)
+                (sagaState: SagaState<SagaData, WelcomeState option>)
+                : EventAction<WelcomeState> =
     match event, sagaState.State with
     | :? (Event<User.Event>) as e, None ->
         match e.EventDetails with
-        | User.RegisterSucceeded _ -> SendingWelcome |> StateChangedEvent
+        | User.RegisterSucceeded _ ->
+            SendingWelcome |> StateChangedEvent
         | _ -> UnhandledEvent
     | :? string as msg, Some SendingWelcome when msg = "sent" ->
         Completed |> StateChangedEvent
@@ -55,15 +58,18 @@ and the **commands** to issue. Here, entering `SendingWelcome` issues a command 
 being rebuilt after a restart.
 
 ```fsharp
-let applySideEffects (notifier: unit -> IActorRef<obj>)
-                     (sagaState: SagaState<SagaData, WelcomeState>) (recovering: bool) =
+let applySideEffects
+    (notifier: unit -> IActorRef<obj>)
+    (sagaState: SagaState<SagaData, WelcomeState>)
+    (recovering: bool) =
     match sagaState.State with
     | SendingWelcome ->
         if recovering then Stay, []
         else
-            Stay, [ { TargetActor = ActorRef(notifier ())
-                      Command = box "welcome alice"
-                      DelayInMs = None } ]
+            Stay,
+            [ { TargetActor = ActorRef(notifier ())
+                Command = box "welcome alice"
+                DelayInMs = None } ]
     | Completed ->
         StopSaga, []
 ```
@@ -80,7 +86,9 @@ to send.
 ```fsharp
 let apply (sagaState: SagaState<SagaData, WelcomeState>) =
     match sagaState.State with
-    | SendingWelcome -> { sagaState with Data = { sagaState.Data with Attempts = sagaState.Data.Attempts + 1 } }
+    | SendingWelcome ->
+        let d = sagaState.Data
+        { sagaState with Data = { d with Attempts = d.Attempts + 1 } }
     | _ -> sagaState
 ```
 
@@ -92,16 +100,19 @@ starts the saga — the rule that triggers the [safe start-up handshake](../conc
 ```fsharp
 let init (actorApi: IActor) =
     let userFactory = User.factory actorApi
-    let notifier () = spawnAnonymous actorApi.System (props notifierBehavior) |> retype
+    let notifier () =
+        spawnAnonymous actorApi.System (props notifierBehavior) |> retype
     SagaBuilder.initSimple<SagaData, WelcomeState, User.Event>
-        actorApi initialData handleEvent (applySideEffects notifier) apply userFactory "WelcomeSaga"
+        actorApi initialData handleEvent
+        (applySideEffects notifier) apply userFactory "WelcomeSaga"
 
 // in your bootstrap, alongside the aggregate:
 actorApi.InitializeSagaStarter (fun evt ->
     match evt with
     | :? (Event<User.Event>) as e ->
         match e.EventDetails with
-        | User.RegisterSucceeded _ -> [ fun id -> (init actorApi).RefFor DEFAULT_SHARD id ]
+        | User.RegisterSucceeded _ ->
+            [ fun id -> (init actorApi).RefFor DEFAULT_SHARD id ]
         | _ -> []
     | _ -> [])
 ```

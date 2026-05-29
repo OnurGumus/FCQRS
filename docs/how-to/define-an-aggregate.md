@@ -27,19 +27,24 @@ type Event =
 // decide: command + state -> action
 let handleCommand (cmd: Command<Command>) state =
     match cmd.CommandDetails, state with
-    | Register(u, p), { Username = None } -> RegisterSucceeded(u, p) |> PersistEvent
-    | Register _,      { Username = Some _ } -> AlreadyRegistered |> DeferEvent
-    | Login p, { Username = Some _; Password = Some s } when p = s -> LoginSucceeded |> PersistEvent
+    | Register(u, p), { Username = None } ->
+        RegisterSucceeded(u, p) |> PersistEvent
+    | Register _, { Username = Some _ } ->
+        AlreadyRegistered |> DeferEvent
+    | Login p, { Username = Some _; Password = Some s } when p = s ->
+        LoginSucceeded |> PersistEvent
     | Login _, _ -> LoginFailed |> DeferEvent
 
 // fold: event -> new state
 let applyEvent (event: Event<Event>) state =
     match event.EventDetails with
-    | RegisterSucceeded(u, p) -> { state with Username = Some u; Password = Some p }
+    | RegisterSucceeded(u, p) ->
+        { state with Username = Some u; Password = Some p }
     | _ -> state
 
 let init (actorApi: IActor) =
-    actorApi.InitializeActor { Username = None; Password = None } "User" handleCommand applyEvent
+    actorApi.InitializeActor
+        { Username = None; Password = None } "User" handleCommand applyEvent
 
 let factory actorApi entityId =
     (init actorApi).RefFor DEFAULT_SHARD entityId
