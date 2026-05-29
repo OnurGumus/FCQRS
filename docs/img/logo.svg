@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="fcqrs-tile" x1="0" y1="0" x2="0.4" y2="1">
+      <stop offset="0" stop-color="#4338CA"/>
+      <stop offset="1" stop-color="#2563EB"/>
+    </linearGradient>
+  </defs>
+  <rect x="4" y="4" width="120" height="120" rx="28" fill="url(#fcqrs-tile)"/>
+  <!-- geometric "F" monogram, drawn from rounded rects so it is renderer-independent -->
+  <g fill="#FFFFFF">
+    <rect x="42" y="34" width="15" height="60" rx="4"/>
+    <rect x="42" y="34" width="46" height="15" rx="4"/>
+    <rect x="42" y="57" width="33" height="15" rx="4"/>
+  </g>
+  <!-- accent: a small "command" dot, the one warm note against the cool tile -->
+  <circle cx="92" cy="86" r="8" fill="#F59E0B"/>
+</svg>
