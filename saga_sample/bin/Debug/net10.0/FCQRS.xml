@@ -942,7 +942,10 @@
 </member>
 <member name="F:FCQRS.CSharp.SagaDefinition.PrefixConversion@">
 <summary>
- How to derive saga entity ID from source entity ID
+ How to derive saga entity ID from source entity ID.
+ Defaults to identity (originatorId~Saga~correlationId). The previous default of
+ `PrefixConversion None` produced saga names without the ~Saga~ marker, which breaks
+ originator/saga name resolution and the SagaStarter Continue→SagaCheckDone handshake.
 </summary>
 </member>
 <member name="F:FCQRS.CSharp.SagaDefinition.Factory@">
@@ -957,7 +960,10 @@
 </member>
 <member name="P:FCQRS.CSharp.SagaDefinition.PrefixConversion(FCQRS.Common.PrefixConversion)">
 <summary>
- How to derive saga entity ID from source entity ID
+ How to derive saga entity ID from source entity ID.
+ Defaults to identity (originatorId~Saga~correlationId). The previous default of
+ `PrefixConversion None` produced saga names without the ~Saga~ marker, which breaks
+ originator/saga name resolution and the SagaStarter Continue→SagaCheckDone handshake.
 </summary>
 </member>
 <member name="P:FCQRS.CSharp.SagaDefinition.Factory(System.Func{System.String,Akkling.Cluster.Sharding.IEntityRef{System.Object}})">
@@ -972,7 +978,10 @@
 </member>
 <member name="P:FCQRS.CSharp.SagaDefinition.PrefixConversion">
 <summary>
- How to derive saga entity ID from source entity ID
+ How to derive saga entity ID from source entity ID.
+ Defaults to identity (originatorId~Saga~correlationId). The previous default of
+ `PrefixConversion None` produced saga names without the ~Saga~ marker, which breaks
+ originator/saga name resolution and the SagaStarter Continue→SagaCheckDone handshake.
 </summary>
 </member>
 <member name="P:FCQRS.CSharp.SagaDefinition.Factory">

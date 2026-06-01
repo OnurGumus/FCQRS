@@ -45,6 +45,21 @@ type Helpers =
         let shortString = Helpers.CreateShortString s
         ValueLens.Create shortString
 
+    /// Create a MessageId from a string (throws on failure)
+    static member CreateMessageId(s: string) : MessageId =
+        let shortString = Helpers.CreateShortString s
+        ValueLens.Create shortString
+
+    /// Create a new MessageId from a GUID v7
+    static member NewMessageId() : MessageId =
+        Guid.CreateVersion7().ToString() |> Helpers.CreateMessageId
+
+    /// Create a Version from a non-negative int64 (throws on failure)
+    static member CreateVersion(v: int64) : Version =
+        match ValueLens.TryCreate<Version, _, _> v with
+        | Ok ver -> ver
+        | Error e -> failwithf "Failed to create Version: %A" e
+
     /// Try to create a ShortString (returns Result instead of throwing)
     static member TryCreateShortString(s: string) : Result<ShortString, ModelError list> =
         ValueLens.TryCreate<ShortString, _, _> s
@@ -96,6 +111,32 @@ type EventActions =
     /// Create an IgnoreEvent action (command is ignored, no event produced)
     static member Ignore<'TEvent when 'TEvent: not null>() : EventAction<'TEvent> =
         EventAction.IgnoreEvent
+
+/// C#-friendly builders for the Command/Event envelopes that the pure
+/// handleCommand/applyEvent functions expect. Intended for unit tests: the
+/// envelope's plumbing fields (a fresh MessageId/CID, a UTC timestamp, no
+/// sender, empty metadata) are filled in for you, so a test supplies only the
+/// payload — and, for events, the aggregate version. The framework builds these
+/// envelopes itself at runtime; tests are the one place you build them by hand.
+type TestEnvelope =
+    /// Wrap a command payload in a Command envelope with default plumbing.
+    static member Command<'T>(details: 'T) : Command<'T> =
+        { CommandDetails = details
+          CreationDate = DateTime.UtcNow
+          Id = Helpers.NewMessageId()
+          Sender = None
+          CorrelationId = Helpers.NewCID()
+          Metadata = Map.empty }
+
+    /// Wrap an event payload in an Event envelope carrying the given version.
+    static member Event<'T when 'T: not null>(details: 'T, version: int64) : Event<'T> =
+        { EventDetails = details
+          CreationDate = DateTime.UtcNow
+          Id = Helpers.NewMessageId()
+          Sender = None
+          CorrelationId = Helpers.NewCID()
+          Version = Helpers.CreateVersion version
+          Metadata = Map.empty }
 
 /// C#-friendly class for defining saga starters (uses class for C# object initializer syntax)
 [<AllowNullLiteral>]
