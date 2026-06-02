@@ -11,6 +11,13 @@ open FCQRS.Common
 /// C# delegate for command handlers - returns Task<Event<TEvent>>
 type Handler<'TCmd, 'TEvent when 'TEvent: not null> = delegate of filter: Func<'TEvent, bool> * cid: CID * aggregateId: AggregateId * command: 'TCmd -> Task<Event<'TEvent>>
 
+/// The two C#-facing pieces of a wired aggregate: a Factory for entity refs
+/// (used by sagas to target the aggregate) and a Handler to send a command and
+/// await its event (used by the delivery layer). Returned by InitAggregate.
+type AggregateRefs<'TCommand, 'TEvent when 'TEvent: not null> =
+    { Factory: Func<string, Akkling.Cluster.Sharding.IEntityRef<obj>>
+      Handler: Handler<'TCommand, 'TEvent> }
+
 /// Extension methods for Async to make it easier to use from C#
 [<Extension>]
 type AsyncExtensions =
@@ -119,24 +126,35 @@ type EventActions =
 /// payload — and, for events, the aggregate version. The framework builds these
 /// envelopes itself at runtime; tests are the one place you build them by hand.
 type TestEnvelope =
-    /// Wrap a command payload in a Command envelope with default plumbing.
-    static member Command<'T>(details: 'T) : Command<'T> =
+    /// Wrap a command payload in a Command envelope, stamping CreationDate from
+    /// the given TimeProvider. Pass a FakeTimeProvider to test time-dependent
+    /// decision logic (e.g. sliding-window quotas) deterministically.
+    static member Command<'T>(details: 'T, timeProvider: TimeProvider) : Command<'T> =
         { CommandDetails = details
-          CreationDate = DateTime.UtcNow
+          CreationDate = timeProvider.GetUtcNow().UtcDateTime
           Id = Helpers.NewMessageId()
           Sender = None
           CorrelationId = Helpers.NewCID()
           Metadata = Map.empty }
 
-    /// Wrap an event payload in an Event envelope carrying the given version.
-    static member Event<'T when 'T: not null>(details: 'T, version: int64) : Event<'T> =
+    /// Wrap a command payload in a Command envelope using the system clock.
+    static member Command<'T>(details: 'T) : Command<'T> =
+        TestEnvelope.Command<'T>(details, TimeProvider.System)
+
+    /// Wrap an event payload in an Event envelope carrying the given version,
+    /// stamping CreationDate from the given TimeProvider.
+    static member Event<'T when 'T: not null>(details: 'T, version: int64, timeProvider: TimeProvider) : Event<'T> =
         { EventDetails = details
-          CreationDate = DateTime.UtcNow
+          CreationDate = timeProvider.GetUtcNow().UtcDateTime
           Id = Helpers.NewMessageId()
           Sender = None
           CorrelationId = Helpers.NewCID()
           Version = Helpers.CreateVersion version
           Metadata = Map.empty }
+
+    /// Wrap an event payload in an Event envelope using the system clock.
+    static member Event<'T when 'T: not null>(details: 'T, version: int64) : Event<'T> =
+        TestEnvelope.Event<'T>(details, version, TimeProvider.System)
 
 /// C#-friendly class for defining saga starters (uses class for C# object initializer syntax)
 [<AllowNullLiteral>]
@@ -232,6 +250,23 @@ type IActorExtensions =
         let cmdHandler cmd state = handleCommand.Invoke(cmd, state)
         let evtApplier evt state = applyEvent.Invoke(evt, state)
         actor.InitializeActor initialState entityName cmdHandler evtApplier
+
+    /// One-call aggregate wiring: registers the aggregate (sharding region) and
+    /// returns its Factory + Handler. Collapses the Init/Factory/Handler trio an
+    /// aggregate would otherwise hand-roll. Call it for EVERY aggregate you want
+    /// live — registration is the act of calling this, not a side effect.
+    static member InitAggregate<'TState, 'TCommand, 'TEvent when 'TEvent: not null>(
+        actor: IActor,
+        initialState: 'TState,
+        entityName: string,
+        handleCommand: Func<Command<'TCommand>, 'TState, EventAction<'TEvent>>,
+        applyEvent: Func<Event<'TEvent>, 'TState, 'TState>) : AggregateRefs<'TCommand, 'TEvent> =
+        let fac = IActorExtensions.InitActor<'TState, 'TCommand, 'TEvent>(actor, initialState, entityName, handleCommand, applyEvent)
+        let factory = Func<string, Akkling.Cluster.Sharding.IEntityRef<obj>>(fun entityId -> fac.RefFor DEFAULT_SHARD entityId)
+        let handler =
+            Handler<'TCommand, 'TEvent>(fun filter cid aggregateId command ->
+                IActorExtensions.SendCommandAsync<'TEvent, 'TCommand>(actor, factory, cid, aggregateId, command, filter))
+        { Factory = factory; Handler = handler }
 
     /// Send a command and wait for the event (C# friendly)
     [<Extension>]
@@ -502,3 +537,56 @@ type SagaBuilderCSharp =
         sagaEntityFac: EntityFac<obj>,
         entityId: string) : IEntityRef<obj> =
         sagaEntityFac.RefFor DEFAULT_SHARD entityId
+
+/// C#-friendly abstract base for an event-sourced aggregate. A concrete
+/// aggregate supplies only InitialState, EntityName, HandleCommand (the
+/// decision) and ApplyEvent (the fold); the base provides the wiring (Init).
+/// Designed to be subclassed from C#.
+[<AbstractClass>]
+type Aggregate<'TState, 'TCommand, 'TEvent when 'TEvent: not null>() =
+    abstract member InitialState: 'TState
+    abstract member EntityName: string
+    abstract member HandleCommand: Command<'TCommand> * 'TState -> EventAction<'TEvent>
+    abstract member ApplyEvent: Event<'TEvent> * 'TState -> 'TState
+
+    /// Register the aggregate and hand back its Factory + Handler.
+    member this.Init(actorApi: IActor) : AggregateRefs<'TCommand, 'TEvent> =
+        IActorExtensions.InitAggregate<'TState, 'TCommand, 'TEvent>(
+            actorApi,
+            this.InitialState,
+            this.EntityName,
+            Func<Command<'TCommand>, 'TState, EventAction<'TEvent>>(fun c s -> this.HandleCommand(c, s)),
+            Func<Event<'TEvent>, 'TState, 'TState>(fun e s -> this.ApplyEvent(e, s)))
+
+/// C#-friendly abstract base for a saga. A concrete saga supplies InitialData,
+/// SagaName, Originator (the aggregate it starts from), HandleEvent and
+/// ApplySideEffects; the base provides the wiring (Init/Factory) and the small
+/// transition DSL. Designed to be subclassed from C#.
+[<AbstractClass>]
+type Saga<'TEvent, 'TSagaData, 'TState when 'TEvent: not null and 'TState: not null>() =
+    abstract member InitialData: 'TSagaData
+    abstract member SagaName: string
+    abstract member Originator: Func<string, IEntityRef<obj>>
+    abstract member HandleEvent: obj * SagaState<'TSagaData, 'TState option> -> EventAction<'TState>
+    abstract member ApplySideEffects: SagaState<'TSagaData, 'TState> * bool -> SagaSideEffectResult<'TState>
+
+    /// Transition / event DSL — over TState.
+    static member StateChanged(next: 'TState) : EventAction<'TState> = SagaEventActions.StateChanged<'TState>(next)
+    static member Unhandled() : EventAction<'TState> = SagaEventActions.Unhandled<'TState>()
+    static member Stay() : SagaTransition<'TState> = SagaTransitions.Stay<'TState>()
+    static member StopSaga() : SagaTransition<'TState> = SagaTransitions.StopSaga<'TState>()
+
+    /// Register the saga; calling this IS the registration.
+    member this.Init(actorApi: IActor) : EntityFac<obj> =
+        SagaBuilderCSharp.Init<'TEvent, 'TSagaData, 'TState>(
+            actorApi,
+            this.InitialData,
+            Func<obj, SagaState<'TSagaData, 'TState option>, EventAction<'TState>>(fun e s -> this.HandleEvent(e, s)),
+            Func<SagaState<'TSagaData, 'TState>, bool, SagaSideEffectResult<'TState>>(fun s r -> this.ApplySideEffects(s, r)),
+            this.Originator,
+            this.SagaName)
+
+    /// The factory the saga-starter spawns instances from.
+    member this.Factory(actorApi: IActor) : Func<string, IEntityRef<obj>> =
+        let fac = this.Init(actorApi)
+        Func<string, IEntityRef<obj>>(fun entityId -> fac.RefFor DEFAULT_SHARD entityId)
