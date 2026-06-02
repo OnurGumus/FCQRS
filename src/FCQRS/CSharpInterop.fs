@@ -574,6 +574,7 @@ type Saga<'TEvent, 'TSagaData, 'TState when 'TEvent: not null and 'TState: not n
     static member StateChanged(next: 'TState) : EventAction<'TState> = SagaEventActions.StateChanged<'TState>(next)
     static member Unhandled() : EventAction<'TState> = SagaEventActions.Unhandled<'TState>()
     static member Stay() : SagaTransition<'TState> = SagaTransitions.Stay<'TState>()
+    static member NextState(next: 'TState) : SagaTransition<'TState> = SagaTransitions.NextState<'TState>(next)
     static member StopSaga() : SagaTransition<'TState> = SagaTransitions.StopSaga<'TState>()
 
     /// Register the saga; calling this IS the registration.
