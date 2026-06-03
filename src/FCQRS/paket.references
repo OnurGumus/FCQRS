@@ -8,6 +8,7 @@ Akkling.Streams
 Microsoft.Data.SQLite
 FSharp.Interop.Dynamic
 Microsoft.Extensions.Configuration
+Microsoft.Extensions.Hosting.Abstractions
 Hocon.Extensions.Configuration
 FsToolkit.ErrorHandling
 FSharp.SystemTextJson

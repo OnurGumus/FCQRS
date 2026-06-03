@@ -7,6 +7,7 @@ nuget FSharp.Core >= 9.0.303
 nuget FSharp.Interop.Dynamic >= 5.0.1.268
 nuget Microsoft.Extensions.Configuration >= 9.0.10
 nuget Microsoft.Extensions.Logging.Console >= 9.0.10
+nuget Microsoft.Extensions.Hosting.Abstractions >= 9.0.0
 nuget Microsoft.Data.SQLite >= 9.0.10
 nuget Akka.Cluster.Sharding >= 1.5.55
 nuget Akka.Cluster.Tools >= 1.5.55

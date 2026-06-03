@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <TargetFrameworks>net10.0</TargetFrameworks>
-    <Version>6.0.0-preview-8</Version>
+    <Version>6.0.0-preview-9</Version>
     <Nullable>enable</Nullable>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <FablePackageType>library</FablePackageType>
@@ -29,6 +29,7 @@
     <Compile Include="Query.fs" />
     <Compile Include="CSharpInterop.fs" />
     <Compile Include="Extensions.fs" />
+    <Compile Include="HostExtensions.fs" />
     <Content Include="paket.references" />
   </ItemGroup>
   <ItemGroup>
