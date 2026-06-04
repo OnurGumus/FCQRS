@@ -49,7 +49,7 @@ type FcqrsRuntime(actor: IActor) =
     member _.Actor = actor
 
     /// The projection subscription, set when the projection step runs at startup.
-    member val Subscription: FCQRS.Query.ISubscribe<IMessageWithCID> | null = null with get, set
+    member val Subscription: FCQRS.Query.ISubscribe | null = null with get, set
 
     /// Record an aggregate's wiring under its CLR type (called at startup).
     member _.Register(shardType: Type, factory: Func<string, IEntityRef<obj>>, boxedRefs: obj) =
@@ -75,16 +75,22 @@ type FcqrsBuilder internal (services: IServiceCollection, connectionString: stri
     let aggregateSteps = ResizeArray<IServiceProvider -> IActor -> FcqrsRuntime -> unit>()
     let sagaSteps = ResizeArray<IServiceProvider -> IActor -> FcqrsRuntime -> unit>()
     let sagaStarters = ResizeArray<obj -> Func<string, IEntityRef<obj>> option>()
-    let mutable projectionStep: (IServiceProvider -> IActor -> FCQRS.Query.ISubscribe<IMessageWithCID>) option = None
+    let mutable projectionStep: (IServiceProvider -> IActor -> FCQRS.Query.ISubscribe) option = None
 
-    // Registers the ISubscribe<> resolver in DI exactly once, on the first
+    // Registers the ISubscribe resolver in DI exactly once, on the first
     // AddProjection call. The subscription itself is created at startup.
     member private _.RegisterSubscriptionResolver() =
         if projectionStep.IsNone then
-            services.AddSingleton<FCQRS.Query.ISubscribe<IMessageWithCID>>(fun (sp: IServiceProvider) ->
+            // The canonical, non-generic ISubscribe.
+            services.AddSingleton<FCQRS.Query.ISubscribe>(fun (sp: IServiceProvider) ->
                 match sp.GetRequiredService<FcqrsRuntime>().Subscription with
                 | null -> failwith "Projection subscription is not initialized yet (the host has not started)."
                 | s -> s)
+            |> ignore
+            // The closed generic, for consumers that inject ISubscribe<IMessageWithCID>
+            // (resolves to the same instance, since ISubscribe : ISubscribe<IMessageWithCID>).
+            services.AddSingleton<FCQRS.Query.ISubscribe<IMessageWithCID>>(fun (sp: IServiceProvider) ->
+                sp.GetRequiredService<FCQRS.Query.ISubscribe>() :> FCQRS.Query.ISubscribe<IMessageWithCID>)
             |> ignore
 
     /// The underlying service collection (so you can keep chaining .Add… on it).

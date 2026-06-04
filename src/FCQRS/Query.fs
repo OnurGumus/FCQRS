@@ -100,6 +100,27 @@ type ISubscribe<'TDataEvent when 'TDataEvent :> IMessageWithCID> =
         ?cancellationToken: CancellationToken ->
             IAwaitableDisposable
 
+/// The canonical subscription stream: a non-generic shorthand for
+/// ISubscribe&lt;IMessageWithCID&gt; — the type every FCQRS projection /
+/// read-your-writes subscription actually uses (cf. IEnumerable vs
+/// IEnumerable&lt;T&gt;). Lets consumers write ISubscribe instead of the closed
+/// generic, and inject it by that name.
+type ISubscribe =
+    inherit ISubscribe<IMessageWithCID>
+
+/// Adapt a generic ISubscribe&lt;IMessageWithCID&gt; to the non-generic ISubscribe
+/// (forwards every Subscribe overload to the inner subscription).
+let asDefaultSubscribe (inner: ISubscribe<IMessageWithCID>) : ISubscribe =
+    { new ISubscribe with
+        member _.Subscribe(callback: IMessageWithCID -> unit, ?cancellationToken: CancellationToken) : IDisposable =
+            inner.Subscribe(callback, ?cancellationToken = cancellationToken)
+        member _.Subscribe(filter: IMessageWithCID -> bool, take: int, ?callback: IMessageWithCID -> unit, ?cancellationToken: CancellationToken) : IAwaitableDisposable =
+            inner.Subscribe(filter, take, ?callback = callback, ?cancellationToken = cancellationToken)
+        member _.Subscribe(cid: CID, take: int, ?callback: IMessageWithCID -> unit, ?cancellationToken: CancellationToken) : IAwaitableDisposable =
+            inner.Subscribe(cid, take, ?callback = callback, ?cancellationToken = cancellationToken)
+        member _.Subscribe(cid: CID, filter: IMessageWithCID -> bool, take: int, ?callback: IMessageWithCID -> unit, ?cancellationToken: CancellationToken) : IAwaitableDisposable =
+            inner.Subscribe(cid, filter, take, ?callback = callback, ?cancellationToken = cancellationToken) }
+
 [<AutoOpen>]
 module Internal =
     open Akka.Persistence.Sql.Query

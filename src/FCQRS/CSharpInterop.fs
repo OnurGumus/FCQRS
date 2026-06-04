@@ -224,25 +224,25 @@ type QueryApi =
     static member Init(
         actorApi: IActor,
         lastOffset: int,
-        eventHandler: Func<int64, obj, IMessageWithCID list>) : FCQRS.Query.ISubscribe<IMessageWithCID> =
+        eventHandler: Func<int64, obj, IMessageWithCID list>) : FCQRS.Query.ISubscribe =
         let handler offset evt = eventHandler.Invoke(offset, evt)
-        Query.init actorApi lastOffset handler
+        Query.init actorApi lastOffset handler |> Query.asDefaultSubscribe
 
     /// Initialize the query subscription (C# IList version - converts to F# list
     /// internally). An overload of Init, distinguished by the handler's return type.
     static member Init(
         actorApi: IActor,
         lastOffset: int,
-        eventHandler: Func<int64, obj, System.Collections.Generic.IList<IMessageWithCID>>) : FCQRS.Query.ISubscribe<IMessageWithCID> =
+        eventHandler: Func<int64, obj, System.Collections.Generic.IList<IMessageWithCID>>) : FCQRS.Query.ISubscribe =
         let handler offset evt = eventHandler.Invoke(offset, evt) |> List.ofSeq
-        Query.init actorApi lastOffset handler
+        Query.init actorApi lastOffset handler |> Query.asDefaultSubscribe
 
     /// Obsolete alias — InitWithList is now just an overload of Init.
     [<System.Obsolete("Use Init (it's now an overload); this alias will be removed in a future preview.")>]
     static member InitWithList(
         actorApi: IActor,
         lastOffset: int,
-        eventHandler: Func<int64, obj, System.Collections.Generic.IList<IMessageWithCID>>) : FCQRS.Query.ISubscribe<IMessageWithCID> =
+        eventHandler: Func<int64, obj, System.Collections.Generic.IList<IMessageWithCID>>) : FCQRS.Query.ISubscribe =
         QueryApi.Init(actorApi, lastOffset, eventHandler)
 
 /// Low-level wiring over an IActor: register the saga-starter, aggregates and
