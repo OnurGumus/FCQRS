@@ -2,7 +2,17 @@ namespace FCQRS
 
 open System
 open System.Runtime.CompilerServices
+open System.Threading.Tasks
 open FCQRS.Model.Data
+
+/// Top-level Async->Task conversion, discoverable from C# as `someAsync.AsTask()`
+/// (`using FCQRS;`). Replaces the non-discoverable FCQRS.CSharp.AsyncExtensions.
+[<Extension>]
+type AsyncTaskExtensions =
+    /// Run an F# Async as a Task (Async.StartAsTask).
+    [<Extension>]
+    static member AsTask<'T>(computation: Async<'T>) : Task<'T> =
+        Async.StartAsTask computation
 
 /// Top-level C# extension methods for ISubscribe. These live at *namespace*
 /// level (not nested inside the FCQRS.CSharp module) so C# actually discovers

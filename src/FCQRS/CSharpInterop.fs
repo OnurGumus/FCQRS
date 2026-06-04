@@ -18,20 +18,19 @@ type AggregateRefs<'TCommand, 'TEvent when 'TEvent: not null> =
     { Factory: Func<string, Akkling.Cluster.Sharding.IEntityRef<obj>>
       Handler: Handler<'TCommand, 'TEvent> }
 
-/// Extension methods for Async to make it easier to use from C#
-[<Extension>]
+/// Obsolete: nested in a module, so its [<Extension>] AsTask was never discoverable
+/// as an extension from C# (hence the duplicate ToTask). Use the top-level
+/// `AsTask` extension instead: `using FCQRS;` then `someAsync.AsTask()`.
+[<System.Obsolete("Use the top-level AsTask extension (using FCQRS;); this type will be removed in a future preview.")>]
 type AsyncExtensions =
-    /// Convert Async to Task
-    [<Extension>]
     static member AsTask(computation: Async<'T>) : Task<'T> =
         Async.StartAsTask computation
-
-    /// Static helper to convert Async to Task (for C# where extension may not resolve)
     static member ToTask(computation: Async<'T>) : Task<'T> =
         Async.StartAsTask computation
 
-/// Helper methods for creating FCQRS types from C#
-type Helpers =
+/// Factory methods for creating FCQRS's strongly-typed value/identifier types
+/// (CID, AggregateId, MessageId, ShortString, LongString, Version) from C#.
+type Values =
     /// Create a ShortString from a string (throws on failure)
     static member CreateShortString(s: string) : ShortString =
         match ValueLens.TryCreate<ShortString, _, _> s with
@@ -40,26 +39,26 @@ type Helpers =
 
     /// Create a CID from a string (throws on failure)
     static member CreateCID(s: string) : CID =
-        let shortString = Helpers.CreateShortString s
+        let shortString = Values.CreateShortString s
         ValueLens.Create shortString
 
     /// Create a new CID from a GUID v7
     static member NewCID() : CID =
-        Guid.CreateVersion7().ToString() |> Helpers.CreateCID
+        Guid.CreateVersion7().ToString() |> Values.CreateCID
 
     /// Create an AggregateId from a string (throws on failure)
     static member CreateAggregateId(s: string) : AggregateId =
-        let shortString = Helpers.CreateShortString s
+        let shortString = Values.CreateShortString s
         ValueLens.Create shortString
 
     /// Create a MessageId from a string (throws on failure)
     static member CreateMessageId(s: string) : MessageId =
-        let shortString = Helpers.CreateShortString s
+        let shortString = Values.CreateShortString s
         ValueLens.Create shortString
 
     /// Create a new MessageId from a GUID v7
     static member NewMessageId() : MessageId =
-        Guid.CreateVersion7().ToString() |> Helpers.CreateMessageId
+        Guid.CreateVersion7().ToString() |> Values.CreateMessageId
 
     /// Create a Version from a non-negative int64 (throws on failure)
     static member CreateVersion(v: int64) : Version =
@@ -81,8 +80,36 @@ type Helpers =
         | Ok v -> v
         | Error e -> failwithf "Failed to create LongString: %A" e
 
-/// C#-friendly factory methods for FSharpResult
-type Results =
+    /// Try to create a ShortString, C# Try-pattern style: returns success + out value.
+    static member TryCreateShortString(s: string, [<System.Runtime.InteropServices.Out>] result: byref<ShortString>) : bool =
+        match ValueLens.TryCreate<ShortString, _, _> s with
+        | Ok v -> result <- v; true
+        | Error _ -> false
+
+    /// Try to create a LongString, C# Try-pattern style: returns success + out value.
+    static member TryCreateLongString(s: string, [<System.Runtime.InteropServices.Out>] result: byref<LongString>) : bool =
+        match ValueLens.TryCreate<LongString, _, _> s with
+        | Ok v -> result <- v; true
+        | Error _ -> false
+
+/// Obsolete alias for <see cref="T:FCQRS.CSharp.Values"/>. Renamed because these
+/// are factories for FCQRS's value/identifier types, not general-purpose helpers.
+/// Will be removed in a future preview.
+[<System.Obsolete("Renamed to Values; this alias will be removed in a future preview.")>]
+type Helpers =
+    static member CreateShortString(s: string) : ShortString = Values.CreateShortString s
+    static member CreateCID(s: string) : CID = Values.CreateCID s
+    static member NewCID() : CID = Values.NewCID()
+    static member CreateAggregateId(s: string) : AggregateId = Values.CreateAggregateId s
+    static member CreateMessageId(s: string) : MessageId = Values.CreateMessageId s
+    static member NewMessageId() : MessageId = Values.NewMessageId()
+    static member CreateVersion(v: int64) : Version = Values.CreateVersion v
+    static member TryCreateShortString(s: string) : Result<ShortString, ModelError list> = Values.TryCreateShortString s
+    static member TryCreateLongString(s: string) : Result<LongString, ModelError list> = Values.TryCreateLongString s
+    static member CreateLongString(s: string) : LongString = Values.CreateLongString s
+
+/// C#-friendly factory methods for constructing an F# Result (Ok/Error) from C#.
+type FSharpResults =
     /// Create a successful result
     static member Ok<'T, 'E>(value: 'T) : Result<'T, 'E> =
         Ok value
@@ -91,19 +118,20 @@ type Results =
     static member Error<'T, 'E>(error: 'E) : Result<'T, 'E> =
         Error error
 
-/// C#-friendly string type creation with simple error handling
-type StringTypes =
-    /// Try to create a ShortString, returns (success, value, errorMessage)
-    static member TryCreateShortString(s: string, [<System.Runtime.InteropServices.Out>] result: byref<ShortString>) : bool =
-        match ValueLens.TryCreate<ShortString, _, _> s with
-        | Ok v -> result <- v; true
-        | Error _ -> false
+/// Obsolete alias for <see cref="T:FCQRS.CSharp.FSharpResults"/>. Renamed off the
+/// generic 'Results' (which also collides with Microsoft.AspNetCore.Http.Results).
+[<System.Obsolete("Renamed to FSharpResults; this alias will be removed in a future preview.")>]
+type Results =
+    static member Ok<'T, 'E>(value: 'T) : Result<'T, 'E> = FSharpResults.Ok<'T, 'E> value
+    static member Error<'T, 'E>(error: 'E) : Result<'T, 'E> = FSharpResults.Error<'T, 'E> error
 
-    /// Try to create a LongString, returns (success, value, errorMessage)
+/// Obsolete alias — the bool/out Try-create overloads now live on <see cref="T:FCQRS.CSharp.Values"/>.
+[<System.Obsolete("Use Values.TryCreateShortString / Values.TryCreateLongString; this alias will be removed in a future preview.")>]
+type StringTypes =
+    static member TryCreateShortString(s: string, [<System.Runtime.InteropServices.Out>] result: byref<ShortString>) : bool =
+        Values.TryCreateShortString(s, &result)
     static member TryCreateLongString(s: string, [<System.Runtime.InteropServices.Out>] result: byref<LongString>) : bool =
-        match ValueLens.TryCreate<LongString, _, _> s with
-        | Ok v -> result <- v; true
-        | Error _ -> false
+        Values.TryCreateLongString(s, &result)
 
 /// C#-friendly factory methods for EventAction
 type EventActions =
@@ -132,9 +160,9 @@ type TestEnvelope =
     static member Command<'T>(details: 'T, timeProvider: TimeProvider) : Command<'T> =
         { CommandDetails = details
           CreationDate = timeProvider.GetUtcNow().UtcDateTime
-          Id = Helpers.NewMessageId()
+          Id = Values.NewMessageId()
           Sender = None
-          CorrelationId = Helpers.NewCID()
+          CorrelationId = Values.NewCID()
           Metadata = Map.empty }
 
     /// Wrap a command payload in a Command envelope using the system clock.
@@ -146,10 +174,10 @@ type TestEnvelope =
     static member Event<'T when 'T: not null>(details: 'T, version: int64, timeProvider: TimeProvider) : Event<'T> =
         { EventDetails = details
           CreationDate = timeProvider.GetUtcNow().UtcDateTime
-          Id = Helpers.NewMessageId()
+          Id = Values.NewMessageId()
           Sender = None
-          CorrelationId = Helpers.NewCID()
-          Version = Helpers.CreateVersion version
+          CorrelationId = Values.NewCID()
+          Version = Values.CreateVersion version
           Metadata = Map.empty }
 
     /// Wrap an event payload in an Event envelope using the system clock.
@@ -185,9 +213,9 @@ type ActorApi =
         loggerFactory: Microsoft.Extensions.Logging.ILoggerFactory,
         sqliteConnectionString: string,
         clusterName: string) : IActor =
-        let connString = Helpers.CreateShortString sqliteConnectionString
+        let connString = Values.CreateShortString sqliteConnectionString
         let connection : Actor.Connection = { ConnectionString = connString; DBType = Actor.DBType.Sqlite }
-        let name = Helpers.CreateShortString clusterName
+        let name = Values.CreateShortString clusterName
         Actor.api configuration loggerFactory (Some connection) name
 
 /// C#-friendly Query API
@@ -200,17 +228,29 @@ type QueryApi =
         let handler offset evt = eventHandler.Invoke(offset, evt)
         Query.init actorApi lastOffset handler
 
-    /// Initialize the query subscription (C# IList version - converts to F# list internally)
-    static member InitWithList(
+    /// Initialize the query subscription (C# IList version - converts to F# list
+    /// internally). An overload of Init, distinguished by the handler's return type.
+    static member Init(
         actorApi: IActor,
         lastOffset: int,
         eventHandler: Func<int64, obj, System.Collections.Generic.IList<IMessageWithCID>>) : FCQRS.Query.ISubscribe<IMessageWithCID> =
         let handler offset evt = eventHandler.Invoke(offset, evt) |> List.ofSeq
         Query.init actorApi lastOffset handler
 
-/// Extension methods for IActor
+    /// Obsolete alias — InitWithList is now just an overload of Init.
+    [<System.Obsolete("Use Init (it's now an overload); this alias will be removed in a future preview.")>]
+    static member InitWithList(
+        actorApi: IActor,
+        lastOffset: int,
+        eventHandler: Func<int64, obj, System.Collections.Generic.IList<IMessageWithCID>>) : FCQRS.Query.ISubscribe<IMessageWithCID> =
+        QueryApi.Init(actorApi, lastOffset, eventHandler)
+
+/// Low-level wiring over an IActor: register the saga-starter, aggregates and
+/// actors, and send commands. Most members are plain static helpers (you call
+/// ActorWiring.Foo(actor, …)); a couple are genuine extension methods. For app
+/// composition, prefer the host-builder API (AddFcqrs/AddAggregate/AddSaga).
 [<Extension>]
-type IActorExtensions =
+type ActorWiring =
     /// Initialize saga starter with no sagas (for simple scenarios)
     [<Extension>]
     static member InitializeSagaStarterEmpty(actor: IActor) : unit =
@@ -261,11 +301,11 @@ type IActorExtensions =
         entityName: string,
         handleCommand: Func<Command<'TCommand>, 'TState, EventAction<'TEvent>>,
         applyEvent: Func<Event<'TEvent>, 'TState, 'TState>) : AggregateRefs<'TCommand, 'TEvent> =
-        let fac = IActorExtensions.InitActor<'TState, 'TCommand, 'TEvent>(actor, initialState, entityName, handleCommand, applyEvent)
+        let fac = ActorWiring.InitActor<'TState, 'TCommand, 'TEvent>(actor, initialState, entityName, handleCommand, applyEvent)
         let factory = Func<string, Akkling.Cluster.Sharding.IEntityRef<obj>>(fun entityId -> fac.RefFor DEFAULT_SHARD entityId)
         let handler =
             Handler<'TCommand, 'TEvent>(fun filter cid aggregateId command ->
-                IActorExtensions.SendCommandAsync<'TEvent, 'TCommand>(actor, factory, cid, aggregateId, command, filter))
+                ActorWiring.SendCommandAsync<'TEvent, 'TCommand>(actor, factory, cid, aggregateId, command, filter))
         { Factory = factory; Handler = handler }
 
     /// Send a command and wait for the event (C# friendly)
@@ -293,6 +333,30 @@ type IActorExtensions =
         let factory = fun s -> entityFactory.Invoke(s)
         let filterF = fun e -> filter.Invoke(e)
         actor.CreateCommandSubscription factory cid aggregateId command filterF None
+
+/// Obsolete alias for <see cref="T:FCQRS.CSharp.ActorWiring"/>. Renamed because
+/// most members are static wiring helpers, not extension methods.
+[<System.Obsolete("Renamed to ActorWiring; this alias will be removed in a future preview.")>]
+[<Extension>]
+type IActorExtensions =
+    [<Extension>]
+    static member InitializeSagaStarterEmpty(actor: IActor) : unit =
+        ActorWiring.InitializeSagaStarterEmpty actor
+    static member InitSagaStarterEmpty(actor: IActor) : unit =
+        ActorWiring.InitSagaStarterEmpty actor
+    static member InitSagaStarter(actor: IActor, eventHandler: Func<obj, System.Collections.Generic.IList<SagaDefinition>>) : unit =
+        ActorWiring.InitSagaStarter(actor, eventHandler)
+    static member InitSagaStarterSimple(actor: IActor, eventHandler: Func<obj, System.Collections.Generic.IList<Func<string, Akkling.Cluster.Sharding.IEntityRef<obj>>>>) : unit =
+        ActorWiring.InitSagaStarterSimple(actor, eventHandler)
+    static member InitActor<'TState, 'TCommand, 'TEvent when 'TEvent: not null>(actor: IActor, initialState: 'TState, entityName: string, handleCommand: Func<Command<'TCommand>, 'TState, EventAction<'TEvent>>, applyEvent: Func<Event<'TEvent>, 'TState, 'TState>) : Akkling.Cluster.Sharding.EntityFac<obj> =
+        ActorWiring.InitActor<'TState, 'TCommand, 'TEvent>(actor, initialState, entityName, handleCommand, applyEvent)
+    static member InitAggregate<'TState, 'TCommand, 'TEvent when 'TEvent: not null>(actor: IActor, initialState: 'TState, entityName: string, handleCommand: Func<Command<'TCommand>, 'TState, EventAction<'TEvent>>, applyEvent: Func<Event<'TEvent>, 'TState, 'TState>) : AggregateRefs<'TCommand, 'TEvent> =
+        ActorWiring.InitAggregate<'TState, 'TCommand, 'TEvent>(actor, initialState, entityName, handleCommand, applyEvent)
+    [<Extension>]
+    static member SendCommandAsync<'TEvent, 'TCommand when 'TEvent: not null>(actor: IActor, entityFactory: Func<string, Akkling.Cluster.Sharding.IEntityRef<obj>>, cid: CID, aggregateId: AggregateId, command: 'TCommand, filter: Func<'TEvent, bool>) : Task<Event<'TEvent>> =
+        ActorWiring.SendCommandAsync<'TEvent, 'TCommand>(actor, entityFactory, cid, aggregateId, command, filter)
+    static member CreateCommand<'TEvent, 'TCommand when 'TEvent: not null>(actor: IActor, entityFactory: Func<string, Akkling.Cluster.Sharding.IEntityRef<obj>>, cid: CID, aggregateId: AggregateId, command: 'TCommand, filter: Func<'TEvent, bool>) : Async<Event<'TEvent>> =
+        ActorWiring.CreateCommand<'TEvent, 'TCommand>(actor, entityFactory, cid, aggregateId, command, filter)
 
 /// Extension methods for ISubscribe
 [<Extension>]
@@ -413,8 +477,9 @@ type SagaCommands =
           Command = command
           DelayInMs = Some (delayMs, taskName) }
 
-/// C#-friendly saga builder
-type SagaBuilderCSharp =
+/// Low-level C# saga API (mirrors ActorApi/QueryApi). For most sagas, prefer the
+/// Saga&lt;_,_,_&gt; base class, which wraps this.
+type SagaApi =
     /// Initialize a saga with C# delegates
     /// 'TEvent - The triggering event type (from the originator aggregate)
     /// 'TSagaData - Cross-cutting saga data
@@ -471,7 +536,7 @@ type SagaBuilderCSharp =
                 { sagaState with Data = newData }
             | _ -> sagaState
 
-        SagaBuilderCSharp.Init<'TEvent, 'TSagaData, 'TSagaState>(
+        SagaApi.Init<'TEvent, 'TSagaData, 'TSagaState>(
             actorApi, sagaData, handleEvent, applySideEffects,
             Func<_, _>(fullApply), originatorFactory, sagaName)
 
@@ -484,7 +549,7 @@ type SagaBuilderCSharp =
         originatorFactory: Func<string, IEntityRef<obj>>,
         sagaName: string) : EntityFac<obj> =
 
-        SagaBuilderCSharp.Init<'TEvent, 'TSagaData, 'TSagaState>(
+        SagaApi.Init<'TEvent, 'TSagaData, 'TSagaState>(
             actorApi, sagaData, handleEvent, applySideEffects,
             Func<_, _, _>(fun data _ -> data), originatorFactory, sagaName)
 
@@ -512,7 +577,7 @@ type SagaBuilderCSharp =
         let wrappedApplySideEffects (sagaState: SagaState<'TSagaData, 'TSagaState>) (recovering: bool) =
             applySideEffects.Invoke(sagaState.Data, sagaState.State, recovering)
 
-        SagaBuilderCSharp.Init<'TEvent, 'TSagaData, 'TSagaState>(
+        SagaApi.Init<'TEvent, 'TSagaData, 'TSagaState>(
             actorApi, sagaData,
             Func<_, _, _>(wrappedHandleEvent),
             Func<_, _, _>(wrappedApplySideEffects),
@@ -527,7 +592,7 @@ type SagaBuilderCSharp =
         originatorFactory: Func<string, IEntityRef<obj>>,
         sagaName: string) : EntityFac<obj> =
 
-        SagaBuilderCSharp.InitSimple<'TEvent, 'TSagaData, 'TSagaState>(
+        SagaApi.InitSimple<'TEvent, 'TSagaData, 'TSagaState>(
             actorApi, sagaData, handleEvent, applySideEffects,
             Func<_, _, _>(fun data _ -> data), originatorFactory, sagaName)
 
@@ -551,7 +616,7 @@ type Aggregate<'TState, 'TCommand, 'TEvent when 'TEvent: not null>() =
 
     /// Register the aggregate and hand back its Factory + Handler.
     member this.Init(actorApi: IActor) : AggregateRefs<'TCommand, 'TEvent> =
-        IActorExtensions.InitAggregate<'TState, 'TCommand, 'TEvent>(
+        ActorWiring.InitAggregate<'TState, 'TCommand, 'TEvent>(
             actorApi,
             this.InitialState,
             this.EntityName,
@@ -579,7 +644,7 @@ type Saga<'TEvent, 'TSagaData, 'TState when 'TEvent: not null and 'TState: not n
 
     /// Register the saga; calling this IS the registration.
     member this.Init(actorApi: IActor) : EntityFac<obj> =
-        SagaBuilderCSharp.Init<'TEvent, 'TSagaData, 'TState>(
+        SagaApi.Init<'TEvent, 'TSagaData, 'TState>(
             actorApi,
             this.InitialData,
             Func<obj, SagaState<'TSagaData, 'TState option>, EventAction<'TState>>(fun e s -> this.HandleEvent(e, s)),

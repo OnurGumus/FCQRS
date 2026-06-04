@@ -11,8 +11,8 @@ namespace FCQRS
 //         .AddAggregate<DocumentShard, DocumentState, DocumentCommand, DocumentEvent>()
 //         .AddAggregate<UserShard, UserState, UserCommand, UserEvent>()
 //         .AddSaga<QuotaSaga, DocumentEvent, QuotaSagaData, QuotaState>(
-//             create:  sp => new QuotaSaga(sp.Aggregate<DocumentShard>().Factory,
-//                                          sp.Aggregate<UserShard>().Factory,
+//             create:  sp => new QuotaSaga(sp.AggregateFactory<DocumentShard>(),
+//                                          sp.AggregateFactory<UserShard>(),
 //                                          sp.GetRequiredService<ILogger<QuotaSaga>>()),
 //             startOn: e => e is Event<DocumentEvent> { EventDetails: DocumentEvent.CreateOrUpdateRequested })
 //         .AddProjection((offset, evt) => Projection.HandleEventWrapper(lf, conn, offset, evt));
@@ -36,10 +36,6 @@ open Akkling.Cluster.Sharding
 open FCQRS.Common
 open FCQRS.Model.Data
 open FCQRS.CSharp
-
-/// A type-erased handle to a registered aggregate: just its entity-ref factory,
-/// which is all a saga needs to target it. Returned by IServiceProvider.Aggregate&lt;T&gt;().
-type AggregateHandle = { Factory: Func<string, IEntityRef<obj>> }
 
 /// Runtime registry, populated once at host startup. Holds the live actor system,
 /// each aggregate's factory + refs (keyed by the aggregate's CLR type) and the
@@ -120,7 +116,7 @@ type FcqrsBuilder internal (services: IServiceCollection, connectionString: stri
         this
 
     /// Register a saga and the event that starts it. `create` builds the saga
-    /// (use sp.Aggregate&lt;T&gt;().Factory to reference the aggregates it coordinates);
+    /// (use sp.AggregateFactory&lt;T&gt;() to reference the aggregates it coordinates);
     /// `startOn` decides which originator events spawn an instance.
     member this.AddSaga<'TSaga, 'TEvent, 'TSagaData, 'TState
             when 'TSaga :> Saga<'TEvent, 'TSagaData, 'TState>
@@ -137,7 +133,7 @@ type FcqrsBuilder internal (services: IServiceCollection, connectionString: stri
     /// Register the read-model projection, resuming from the given offset (default 0).
     member this.AddProjection(handler: Func<int64, obj, IList<IMessageWithCID>>, [<Optional; DefaultParameterValue(0)>] lastOffset: int) : FcqrsBuilder =
         this.RegisterSubscriptionResolver()
-        projectionStep <- Some(fun _sp actor -> QueryApi.InitWithList(actor, lastOffset, handler))
+        projectionStep <- Some(fun _sp actor -> QueryApi.Init(actor, lastOffset, handler))
         this
 
     /// Register the read-model projection, building the handler (and resuming offset)
@@ -147,7 +143,7 @@ type FcqrsBuilder internal (services: IServiceCollection, connectionString: stri
             handler: Func<IServiceProvider, Func<int64, obj, IList<IMessageWithCID>>>,
             lastOffset: Func<IServiceProvider, int>) : FcqrsBuilder =
         this.RegisterSubscriptionResolver()
-        projectionStep <- Some(fun sp actor -> QueryApi.InitWithList(actor, lastOffset.Invoke sp, handler.Invoke sp))
+        projectionStep <- Some(fun sp actor -> QueryApi.Init(actor, lastOffset.Invoke sp, handler.Invoke sp))
         this
 
 /// The single startup step: creates the actor system (via the IActor singleton),
@@ -176,9 +172,9 @@ type internal FcqrsHostedService(sp: IServiceProvider, builder: FcqrsBuilder, ru
                             | Some f -> result.Add f
                             | None -> ()
                         result :> IList<_>)
-                IActorExtensions.InitSagaStarterSimple(actor, combined)
+                ActorWiring.InitSagaStarterSimple(actor, combined)
             else
-                IActorExtensions.InitSagaStarterEmpty actor
+                ActorWiring.InitSagaStarterEmpty actor
 
             // Finally the projection (resumes from the provided offset).
             match builder.ProjectionStep with
@@ -217,5 +213,5 @@ type FcqrsServiceCollectionExtensions =
     /// Resolve a registered aggregate's entity-ref factory by its CLR type. Use
     /// inside a saga's `create` delegate to reference the aggregates it coordinates.
     [<Extension>]
-    static member Aggregate<'TShard>(serviceProvider: IServiceProvider) : AggregateHandle =
-        { Factory = serviceProvider.GetRequiredService<FcqrsRuntime>().Factory(typeof<'TShard>) }
+    static member AggregateFactory<'TShard>(serviceProvider: IServiceProvider) : Func<string, IEntityRef<obj>> =
+        serviceProvider.GetRequiredService<FcqrsRuntime>().Factory(typeof<'TShard>)
