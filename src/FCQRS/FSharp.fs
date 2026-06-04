@@ -1,0 +1,182 @@
+/// Idiomatic-F# functional facade for FCQRS.
+///
+/// Gives F# consumers the same one-call ergonomics the C# host-builder
+/// (HostExtensions.fs) gives C#, but with F# idioms: records-of-functions for the
+/// definitions, typed handles for the results, an explicit wiring pipeline, and
+/// plain helpers for saga side effects. It is a *pure addition* — it wraps only the
+/// existing primitives (IActor.InitializeActor / SagaBuilder.initSimple / Query.init
+/// / InitializeSagaStarter / CreateCommandSubscription / Actor.api) and changes
+/// nothing in the C# interop layer or the core.
+///
+///     open FCQRS.FSharp
+///     let api       = Fcqrs.actor config loggerFactory (Some (Fcqrs.connect DBType.Sqlite conn)) "Cluster"
+///     let documents = Fcqrs.aggregate api { Name="Document"; Initial=...; Decide=...; Fold=... }
+///     let users     = Fcqrs.aggregate api { Name="User"; ... }
+///     let quota     = Fcqrs.saga<Data,State,Document.Event> api (quotaDef documents.Factory users.Factory)
+///     Fcqrs.wireSagaStarters api [ quota ]
+///     let subs      = Fcqrs.projection api { LastOffset = 0; Handle = handle }
+///     // send a command and await the resulting event (read-your-writes):
+///     let! ev = documents.Send (Fcqrs.newCid()) (Fcqrs.aggregateId id) cmd (fun e -> ...)
+module FCQRS.FSharp
+
+open Akkling.Cluster.Sharding
+open Microsoft.Extensions.Configuration
+open Microsoft.Extensions.Logging
+open FCQRS.Common
+open FCQRS.Model.Data
+
+// ---------------------------------------------------------------------------
+// Definitions (records of functions) + the handles returned after registration.
+// ---------------------------------------------------------------------------
+
+/// A pure aggregate definition: the four things that define an event-sourced
+/// aggregate. No wiring, no IActor.
+type Aggregate<'State, 'Command, 'Event when 'Event: not null> =
+    { Name: string
+      Initial: 'State
+      /// handleCommand (decide): command + current state -> what to do.
+      Decide: Command<'Command> -> 'State -> EventAction<'Event>
+      /// applyEvent (fold): event + current state -> next state (pure).
+      Fold: Event<'Event> -> 'State -> 'State }
+
+/// What you get back after registering an aggregate.
+type AggregateHandle<'Command, 'Event when 'Event: not null> =
+    { /// Entity-ref factory (DEFAULT_SHARD applied) — hand this to a saga to target it.
+      Factory: string -> IEntityRef<obj>
+      /// Send a command and await the first matching event (read-your-writes).
+      Send: CID -> AggregateId -> 'Command -> ('Event -> bool) -> Async<Event<'Event>> }
+
+/// A pure saga definition. HandleEvent is obj-based so a single saga can match
+/// events from several aggregates; ApplySideEffects returns the transition plus the
+/// commands to dispatch.
+type Saga<'Data, 'State when 'State: not null> =
+    { Name: string
+      InitialData: 'Data
+      /// The aggregate the saga starts from (its commands' Originator target).
+      Originator: string -> IEntityRef<obj>
+      HandleEvent: obj -> SagaState<'Data, 'State option> -> EventAction<'State>
+      ApplySideEffects: SagaState<'Data, 'State> -> bool -> SagaTransition<'State> * ExecuteCommand list
+      /// Which raw originator events spawn an instance of this saga.
+      StartOn: obj -> bool }
+
+/// What you get back after registering a saga.
+type SagaHandle =
+    { Factory: string -> IEntityRef<obj>
+      StartOn: obj -> bool }
+
+/// A read-model projection definition.
+type Projection =
+    { /// Resume from this journal offset (e.g. the last committed offset).
+      LastOffset: int
+      /// Called per persisted event; returns the read-model events to publish
+      /// to subscribers (empty list = nothing to notify).
+      Handle: int64 -> obj -> IMessageWithCID list }
+
+// ---------------------------------------------------------------------------
+// Saga side-effect command builders (wrap ExecuteCommand / TargetActor).
+// ---------------------------------------------------------------------------
+
+/// Send a command back to the saga's originator aggregate.
+let toOriginator (factory: string -> IEntityRef<obj>) (command: obj) : ExecuteCommand =
+    { TargetActor = FactoryAndName { Factory = factory; Name = Originator }
+      Command = command
+      DelayInMs = None }
+
+/// Send a command to a specific aggregate instance by id (cross-aggregate).
+let toAggregate (factory: string -> IEntityRef<obj>) (id: string) (command: obj) : ExecuteCommand =
+    { TargetActor = FactoryAndName { Factory = factory; Name = Name id }
+      Command = command
+      DelayInMs = None }
+
+/// Send a command to a concrete actor ref.
+let toActor (actorRef: Akkling.ActorRefs.IActorRef<obj>) (command: obj) : ExecuteCommand =
+    { TargetActor = ActorRef actorRef; Command = command; DelayInMs = None }
+
+/// Delayed variant of toOriginator (delayMs, taskName key).
+let toOriginatorAfter (factory: string -> IEntityRef<obj>) (delayMs: int64) (taskName: string) (command: obj) : ExecuteCommand =
+    { TargetActor = FactoryAndName { Factory = factory; Name = Originator }
+      Command = command
+      DelayInMs = Some(delayMs, taskName) }
+
+// ---------------------------------------------------------------------------
+// Optional pipe-friendly aliases. The DU cases (PersistEvent, StateChangedEvent,
+// Stay, StopSaga ...) work directly too; these just read nicely in pipelines.
+// ---------------------------------------------------------------------------
+
+let persist (event: 'e) : EventAction<'e> = PersistEvent event
+let defer (event: 'e) : EventAction<'e> = DeferEvent event
+let transitionTo (state: 'state) : EventAction<'state> = StateChangedEvent state
+let stay<'state> : SagaTransition<'state> = Stay
+let stop<'state> : SagaTransition<'state> = StopSaga
+let nextState (state: 'state) : SagaTransition<'state> = NextState state
+
+// ---------------------------------------------------------------------------
+// The verbs: build the actor system, register aggregates/sagas/projections.
+// ---------------------------------------------------------------------------
+
+module Fcqrs =
+
+    let private short (s: string) : ShortString =
+        s |> ValueLens.TryCreate |> Result.value
+
+    /// The single place DEFAULT_SHARD / RefFor is applied (mirrors CSharpInterop).
+    let private refFor (fac: EntityFac<obj>) : string -> IEntityRef<obj> =
+        fun entityId -> fac.RefFor DEFAULT_SHARD entityId
+
+    /// Build a SQLite/etc. Connection from a raw connection string (ShortString hidden).
+    let connect (dbType: FCQRS.Actor.DBType) (connectionString: string) : FCQRS.Actor.Connection =
+        { ConnectionString = short connectionString; DBType = dbType }
+
+    /// Create the actor system from plain values (cluster name as a string).
+    let actor (config: IConfiguration) (loggerFactory: ILoggerFactory) (connection: FCQRS.Actor.Connection option) (clusterName: string) : IActor =
+        FCQRS.Actor.api config loggerFactory connection (short clusterName)
+
+    /// A fresh correlation id (UUID v7).
+    let newCid () : CID =
+        System.Guid.CreateVersion7().ToString() |> ValueLens.CreateAsResult |> Result.value
+
+    /// An aggregate id from a string (e.g. a document/user key).
+    let aggregateId (s: string) : AggregateId =
+        s |> ValueLens.CreateAsResult |> Result.value
+
+    /// Register an aggregate and return its typed handle. Calling this IS the
+    /// registration (it initializes the sharding region).
+    let aggregate (api: IActor) (def: Aggregate<'State, 'Command, 'Event>) : AggregateHandle<'Command, 'Event> =
+        let fac = api.InitializeActor def.Initial def.Name def.Decide def.Fold
+        let factory = refFor fac
+        { Factory = factory
+          Send = fun cid id command filter -> api.CreateCommandSubscription factory cid id command filter None }
+
+    /// Register a saga and return its handle. 'OriginatorEvent is the event type of
+    /// the originating aggregate (used by the framework's start handshake); it is
+    /// not inferable from the obj-based HandleEvent, so pass it explicitly:
+    /// `Fcqrs.saga<Data, State, Document.Event> api def`.
+    let saga<'Data, 'State, 'OriginatorEvent when 'State: not null and 'OriginatorEvent: not null>
+        (api: IActor)
+        (def: Saga<'Data, 'State>)
+        : SagaHandle =
+        let fac =
+            SagaBuilder.initSimple<'Data, 'State, 'OriginatorEvent>
+                api
+                def.InitialData
+                def.HandleEvent
+                def.ApplySideEffects
+                id
+                def.Originator
+                def.Name
+        { Factory = refFor fac; StartOn = def.StartOn }
+
+    /// Wire every registered saga into one saga-starter (or the empty starter if
+    /// none). Call after the aggregates + sagas are registered.
+    let wireSagaStarters (api: IActor) (sagas: SagaHandle list) : unit =
+        match sagas with
+        | [] -> api.InitializeSagaStarter(fun (_: obj) -> ([]: (string -> IEntityRef<obj>) list))
+        | sagas ->
+            api.InitializeSagaStarter(fun (evt: obj) ->
+                [ for s in sagas do
+                      if s.StartOn evt then
+                          yield s.Factory ])
+
+    /// Register the read-model projection and return the subscription stream.
+    let projection (api: IActor) (p: Projection) : FCQRS.Query.ISubscribe =
+        FCQRS.Query.init api p.LastOffset p.Handle |> FCQRS.Query.asDefaultSubscribe
