@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <!-- override the repo Directory.Build.props (docs are for the library, not this test) -->
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Tests.fs" />
+  </ItemGroup>
+
+  <!-- Smoke-tests the *published* FCQRS.FSharp facade (preview13) end to end. -->
+  <ItemGroup>
+    <PackageReference Include="FCQRS" Version="6.0.0-preview13" />
+    <PackageReference Include="FCQRS.Model" Version="6.0.0-*" />
+    <PackageReference Include="Expecto" Version="10.*" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.*" />
+  </ItemGroup>
+
+</Project>
