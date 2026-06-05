@@ -10,3 +10,5 @@ tmp/
 # Claude IDE settings
 .claude/settings.local.json
 nupkg/
+test/Facade.Tests/bin/*
+test/Facade.Tests/obj/*
