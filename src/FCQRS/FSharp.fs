@@ -12,7 +12,7 @@
 ///     let api       = Fcqrs.actor config loggerFactory (Some (Fcqrs.connect DBType.Sqlite conn)) "Cluster"
 ///     let documents = Fcqrs.aggregate api { Name="Document"; Initial=...; Decide=...; Fold=... }
 ///     let users     = Fcqrs.aggregate api { Name="User"; ... }
-///     let quota     = Fcqrs.saga<Data,State,Document.Event> api (quotaDef documents.Factory users.Factory)
+///     let quota     = Fcqrs.saga api (quotaDef documents.Factory users.Factory)
 ///     Fcqrs.wireSagaStarters api [ quota ]
 ///     let subs      = Fcqrs.projection api { LastOffset = 0; Handle = handle }
 ///     // send a command and await the resulting event (read-your-writes):
@@ -49,15 +49,17 @@ type AggregateHandle<'Command, 'Event when 'Event: not null> =
 /// A pure saga definition. HandleEvent is obj-based so a single saga can match
 /// events from several aggregates; ApplySideEffects returns the transition plus the
 /// commands to dispatch.
-type Saga<'Data, 'State when 'State: not null> =
+type Saga<'Data, 'State, 'OriginatorEvent when 'State: not null and 'OriginatorEvent: not null> =
     { Name: string
       InitialData: 'Data
       /// The aggregate the saga starts from (its commands' Originator target).
       Originator: string -> IEntityRef<obj>
       HandleEvent: obj -> SagaState<'Data, 'State option> -> EventAction<'State>
       ApplySideEffects: SagaState<'Data, 'State> -> bool -> SagaTransition<'State> * ExecuteCommand list
-      /// Which raw originator events spawn an instance of this saga.
-      StartOn: obj -> bool }
+      /// Which originator events spawn an instance of this saga. Typed to the
+      /// originator's event so 'OriginatorEvent is inferred from the definition —
+      /// there is no type argument to remember (or to get silently wrong).
+      StartOn: Event<'OriginatorEvent> -> bool }
 
 /// What you get back after registering a saga.
 type SagaHandle =
@@ -147,14 +149,10 @@ module Fcqrs =
         { Factory = factory
           Send = fun cid id command filter -> api.CreateCommandSubscription factory cid id command filter None }
 
-    /// Register a saga and return its handle. 'OriginatorEvent is the event type of
-    /// the originating aggregate (used by the framework's start handshake); it is
-    /// not inferable from the obj-based HandleEvent, so pass it explicitly:
-    /// `Fcqrs.saga<Data, State, Document.Event> api def`.
-    let saga<'Data, 'State, 'OriginatorEvent when 'State: not null and 'OriginatorEvent: not null>
-        (api: IActor)
-        (def: Saga<'Data, 'State>)
-        : SagaHandle =
+    /// Register a saga and return its handle. The originator-event type is inferred
+    /// from `def.StartOn`, so there are no type arguments to supply:
+    /// `Fcqrs.saga api def`.
+    let saga (api: IActor) (def: Saga<'Data, 'State, 'OriginatorEvent>) : SagaHandle =
         let fac =
             SagaBuilder.initSimple<'Data, 'State, 'OriginatorEvent>
                 api
@@ -164,7 +162,12 @@ module Fcqrs =
                 id
                 def.Originator
                 def.Name
-        { Factory = refFor fac; StartOn = def.StartOn }
+        // Adapt the typed StartOn to the obj predicate the saga-starter feeds.
+        let startOn (o: obj) =
+            match o with
+            | :? (Event<'OriginatorEvent>) as e -> def.StartOn e
+            | _ -> false
+        { Factory = refFor fac; StartOn = startOn }
 
     /// Wire every registered saga into one saga-starter (or the empty starter if
     /// none). Call after the aggregates + sagas are registered.

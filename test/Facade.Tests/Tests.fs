@@ -65,12 +65,9 @@ module AutoReset =
         | Resetting -> Stay, [ toOriginator counterFactory (Counter.Reset :> obj) ]
         | Finished -> StopSaga, []
 
-    let private startsOn (evt: obj) =
-        match evt with
-        | :? (Event<Counter.Event>) as e ->
-            match e.EventDetails with
-            | Counter.Incremented n -> n >= 100
-            | _ -> false
+    let private startsOn (e: Event<Counter.Event>) =
+        match e.EventDetails with
+        | Counter.Incremented n -> n >= 100
         | _ -> false
 
     let definition counterFactory =
@@ -93,7 +90,7 @@ let private boot () =
             (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite (sprintf "Data Source=%s;" db))) "FacadeSmoke"
     let counter =
         Fcqrs.aggregate api { Name = "Counter"; Initial = Counter.initial; Decide = Counter.decide; Fold = Counter.fold }
-    let saga = Fcqrs.saga<_, _, Counter.Event> api (AutoReset.definition counter.Factory)
+    let saga = Fcqrs.saga api (AutoReset.definition counter.Factory)
     Fcqrs.wireSagaStarters api [ saga ]
     let subs = Fcqrs.projection api { LastOffset = 0; Handle = projection }
     counter, subs
