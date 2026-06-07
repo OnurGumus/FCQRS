@@ -25,6 +25,9 @@ open Microsoft.Extensions.Logging
 open FCQRS.Common
 open FCQRS.Model.Data
 
+/// An aggregate's entity-ref factory: an id -> its sharded actor ref.
+type AggregateFactory = string -> IEntityRef<obj>
+
 // ---------------------------------------------------------------------------
 // Definitions (records of functions) + the handles returned after registration.
 // ---------------------------------------------------------------------------
@@ -42,7 +45,7 @@ type Aggregate<'State, 'Command, 'Event when 'Event: not null> =
 /// What you get back after registering an aggregate.
 type AggregateHandle<'Command, 'Event when 'Event: not null> =
     { /// Entity-ref factory (DEFAULT_SHARD applied) — hand this to a saga to target it.
-      Factory: string -> IEntityRef<obj>
+      Factory: AggregateFactory
       /// Send a command and await the first matching event (read-your-writes).
       Send: CID -> AggregateId -> 'Command -> ('Event -> bool) -> Async<Event<'Event>> }
 
@@ -53,7 +56,7 @@ type Saga<'Data, 'State, 'OriginatorEvent when 'State: not null and 'OriginatorE
     { Name: string
       InitialData: 'Data
       /// The aggregate the saga starts from (its commands' Originator target).
-      Originator: string -> IEntityRef<obj>
+      Originator: AggregateFactory
       HandleEvent: obj -> SagaState<'Data, 'State option> -> EventAction<'State>
       ApplySideEffects: SagaState<'Data, 'State> -> bool -> SagaTransition<'State> * ExecuteCommand list
       /// Which originator events spawn an instance of this saga. Typed to the
@@ -63,7 +66,7 @@ type Saga<'Data, 'State, 'OriginatorEvent when 'State: not null and 'OriginatorE
 
 /// What you get back after registering a saga.
 type SagaHandle =
-    { Factory: string -> IEntityRef<obj>
+    { Factory: AggregateFactory
       StartOn: obj -> bool }
 
 /// A read-model projection definition.
@@ -79,13 +82,13 @@ type Projection =
 // ---------------------------------------------------------------------------
 
 /// Send a command back to the saga's originator aggregate.
-let toOriginator (factory: string -> IEntityRef<obj>) (command: obj) : ExecuteCommand =
+let toOriginator (factory: AggregateFactory) (command: obj) : ExecuteCommand =
     { TargetActor = FactoryAndName { Factory = factory; Name = Originator }
       Command = command
       DelayInMs = None }
 
 /// Send a command to a specific aggregate instance by id (cross-aggregate).
-let toAggregate (factory: string -> IEntityRef<obj>) (id: string) (command: obj) : ExecuteCommand =
+let toAggregate (factory: AggregateFactory) (id: string) (command: obj) : ExecuteCommand =
     { TargetActor = FactoryAndName { Factory = factory; Name = Name id }
       Command = command
       DelayInMs = None }
@@ -95,7 +98,7 @@ let toActor (actorRef: Akkling.ActorRefs.IActorRef<obj>) (command: obj) : Execut
     { TargetActor = ActorRef actorRef; Command = command; DelayInMs = None }
 
 /// Delayed variant of toOriginator (delayMs, taskName key).
-let toOriginatorAfter (factory: string -> IEntityRef<obj>) (delayMs: int64) (taskName: string) (command: obj) : ExecuteCommand =
+let toOriginatorAfter (factory: AggregateFactory) (delayMs: int64) (taskName: string) (command: obj) : ExecuteCommand =
     { TargetActor = FactoryAndName { Factory = factory; Name = Originator }
       Command = command
       DelayInMs = Some(delayMs, taskName) }
@@ -122,7 +125,7 @@ module Fcqrs =
         s |> ValueLens.TryCreate |> Result.value
 
     /// The single place DEFAULT_SHARD / RefFor is applied (mirrors CSharpInterop).
-    let private refFor (fac: EntityFac<obj>) : string -> IEntityRef<obj> =
+    let private refFor (fac: EntityFac<obj>) : AggregateFactory =
         fun entityId -> fac.RefFor DEFAULT_SHARD entityId
 
     /// Build a SQLite/etc. Connection from a raw connection string (ShortString hidden).
@@ -173,7 +176,7 @@ module Fcqrs =
     /// none). Call after the aggregates + sagas are registered.
     let wireSagaStarters (api: IActor) (sagas: SagaHandle list) : unit =
         match sagas with
-        | [] -> api.InitializeSagaStarter(fun (_: obj) -> ([]: (string -> IEntityRef<obj>) list))
+        | [] -> api.InitializeSagaStarter(fun (_: obj) -> ([]: (AggregateFactory) list))
         | sagas ->
             api.InitializeSagaStarter(fun (evt: obj) ->
                 [ for s in sagas do

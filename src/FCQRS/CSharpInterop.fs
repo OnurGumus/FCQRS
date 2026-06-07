@@ -11,11 +11,15 @@ open FCQRS.Common
 /// C# delegate for command handlers - returns Task<Event<TEvent>>
 type Handler<'TCmd, 'TEvent when 'TEvent: not null> = delegate of filter: Func<'TEvent, bool> * cid: CID * aggregateId: AggregateId * command: 'TCmd -> Task<Event<'TEvent>>
 
+/// C# delegate for an aggregate's entity-ref factory: an id -> its sharded actor
+/// ref. sp.AggregateFactory&lt;T&gt;() returns one; sagas use it to target an aggregate.
+type AggregateFactory = delegate of string -> Akkling.Cluster.Sharding.IEntityRef<obj>
+
 /// The two C#-facing pieces of a wired aggregate: a Factory for entity refs
 /// (used by sagas to target the aggregate) and a Handler to send a command and
 /// await its event (used by the delivery layer). Returned by InitAggregate.
 type AggregateRefs<'TCommand, 'TEvent when 'TEvent: not null> =
-    { Factory: Func<string, Akkling.Cluster.Sharding.IEntityRef<obj>>
+    { Factory: AggregateFactory
       Handler: Handler<'TCommand, 'TEvent> }
 
 /// Obsolete: nested in a module, so its [<Extension>] AsTask was never discoverable
@@ -188,7 +192,7 @@ type TestEnvelope =
 [<AllowNullLiteral>]
 type SagaDefinition() =
     /// Factory function to create entity reference from entity ID
-    member val Factory: Func<string, Akkling.Cluster.Sharding.IEntityRef<obj>> | null = null with get, set
+    member val Factory: AggregateFactory | null = null with get, set
     /// How to derive saga entity ID from source entity ID.
     /// Defaults to identity (originatorId~Saga~correlationId). The previous default of
     /// `PrefixConversion None` produced saga names without the ~Saga~ marker, which breaks
@@ -273,7 +277,7 @@ type ActorWiring =
     /// C#-friendly simplified InitializeSagaStarter where you just return factories
     static member InitSagaStarterSimple(
         actor: IActor,
-        eventHandler: Func<obj, System.Collections.Generic.IList<Func<string, Akkling.Cluster.Sharding.IEntityRef<obj>>>>) : unit =
+        eventHandler: Func<obj, System.Collections.Generic.IList<AggregateFactory>>) : unit =
         let handler evt =
             eventHandler.Invoke(evt)
             |> Seq.map (fun factory -> factory.Invoke)
@@ -302,7 +306,7 @@ type ActorWiring =
         handleCommand: Func<Command<'TCommand>, 'TState, EventAction<'TEvent>>,
         applyEvent: Func<Event<'TEvent>, 'TState, 'TState>) : AggregateRefs<'TCommand, 'TEvent> =
         let fac = ActorWiring.InitActor<'TState, 'TCommand, 'TEvent>(actor, initialState, entityName, handleCommand, applyEvent)
-        let factory = Func<string, Akkling.Cluster.Sharding.IEntityRef<obj>>(fun entityId -> fac.RefFor DEFAULT_SHARD entityId)
+        let factory = AggregateFactory(fun entityId -> fac.RefFor DEFAULT_SHARD entityId)
         let handler =
             Handler<'TCommand, 'TEvent>(fun filter cid aggregateId command ->
                 ActorWiring.SendCommandAsync<'TEvent, 'TCommand>(actor, factory, cid, aggregateId, command, filter))
@@ -312,7 +316,7 @@ type ActorWiring =
     [<Extension>]
     static member SendCommandAsync<'TEvent, 'TCommand when 'TEvent: not null>(
         actor: IActor,
-        entityFactory: Func<string, Akkling.Cluster.Sharding.IEntityRef<obj>>,
+        entityFactory: AggregateFactory,
         cid: CID,
         aggregateId: AggregateId,
         command: 'TCommand,
@@ -325,7 +329,7 @@ type ActorWiring =
     /// C#-friendly CreateCommandSubscription that returns FSharpAsync (for use with Handler delegate)
     static member CreateCommand<'TEvent, 'TCommand when 'TEvent: not null>(
         actor: IActor,
-        entityFactory: Func<string, Akkling.Cluster.Sharding.IEntityRef<obj>>,
+        entityFactory: AggregateFactory,
         cid: CID,
         aggregateId: AggregateId,
         command: 'TCommand,
@@ -346,16 +350,16 @@ type IActorExtensions =
         ActorWiring.InitSagaStarterEmpty actor
     static member InitSagaStarter(actor: IActor, eventHandler: Func<obj, System.Collections.Generic.IList<SagaDefinition>>) : unit =
         ActorWiring.InitSagaStarter(actor, eventHandler)
-    static member InitSagaStarterSimple(actor: IActor, eventHandler: Func<obj, System.Collections.Generic.IList<Func<string, Akkling.Cluster.Sharding.IEntityRef<obj>>>>) : unit =
+    static member InitSagaStarterSimple(actor: IActor, eventHandler: Func<obj, System.Collections.Generic.IList<AggregateFactory>>) : unit =
         ActorWiring.InitSagaStarterSimple(actor, eventHandler)
     static member InitActor<'TState, 'TCommand, 'TEvent when 'TEvent: not null>(actor: IActor, initialState: 'TState, entityName: string, handleCommand: Func<Command<'TCommand>, 'TState, EventAction<'TEvent>>, applyEvent: Func<Event<'TEvent>, 'TState, 'TState>) : Akkling.Cluster.Sharding.EntityFac<obj> =
         ActorWiring.InitActor<'TState, 'TCommand, 'TEvent>(actor, initialState, entityName, handleCommand, applyEvent)
     static member InitAggregate<'TState, 'TCommand, 'TEvent when 'TEvent: not null>(actor: IActor, initialState: 'TState, entityName: string, handleCommand: Func<Command<'TCommand>, 'TState, EventAction<'TEvent>>, applyEvent: Func<Event<'TEvent>, 'TState, 'TState>) : AggregateRefs<'TCommand, 'TEvent> =
         ActorWiring.InitAggregate<'TState, 'TCommand, 'TEvent>(actor, initialState, entityName, handleCommand, applyEvent)
     [<Extension>]
-    static member SendCommandAsync<'TEvent, 'TCommand when 'TEvent: not null>(actor: IActor, entityFactory: Func<string, Akkling.Cluster.Sharding.IEntityRef<obj>>, cid: CID, aggregateId: AggregateId, command: 'TCommand, filter: Func<'TEvent, bool>) : Task<Event<'TEvent>> =
+    static member SendCommandAsync<'TEvent, 'TCommand when 'TEvent: not null>(actor: IActor, entityFactory: AggregateFactory, cid: CID, aggregateId: AggregateId, command: 'TCommand, filter: Func<'TEvent, bool>) : Task<Event<'TEvent>> =
         ActorWiring.SendCommandAsync<'TEvent, 'TCommand>(actor, entityFactory, cid, aggregateId, command, filter)
-    static member CreateCommand<'TEvent, 'TCommand when 'TEvent: not null>(actor: IActor, entityFactory: Func<string, Akkling.Cluster.Sharding.IEntityRef<obj>>, cid: CID, aggregateId: AggregateId, command: 'TCommand, filter: Func<'TEvent, bool>) : Async<Event<'TEvent>> =
+    static member CreateCommand<'TEvent, 'TCommand when 'TEvent: not null>(actor: IActor, entityFactory: AggregateFactory, cid: CID, aggregateId: AggregateId, command: 'TCommand, filter: Func<'TEvent, bool>) : Async<Event<'TEvent>> =
         ActorWiring.CreateCommand<'TEvent, 'TCommand>(actor, entityFactory, cid, aggregateId, command, filter)
 
 /// Extension methods for ISubscribe
@@ -444,7 +448,7 @@ type SagaEventActions =
 type SagaCommands =
     /// Create a command to send to the originator aggregate
     static member ToOriginator(
-        factory: Func<string, IEntityRef<obj>>,
+        factory: AggregateFactory,
         command: obj) : ExecuteCommand =
         { TargetActor = FactoryAndName { Factory = factory.Invoke; Name = Originator }
           Command = command
@@ -452,7 +456,7 @@ type SagaCommands =
 
     /// Create a command to send to a named aggregate
     static member ToAggregate(
-        factory: Func<string, IEntityRef<obj>>,
+        factory: AggregateFactory,
         aggregateId: string,
         command: obj) : ExecuteCommand =
         { TargetActor = FactoryAndName { Factory = factory.Invoke; Name = Name aggregateId }
@@ -469,7 +473,7 @@ type SagaCommands =
 
     /// Create a delayed command
     static member ToOriginatorDelayed(
-        factory: Func<string, IEntityRef<obj>>,
+        factory: AggregateFactory,
         command: obj,
         delayMs: int64,
         taskName: string) : ExecuteCommand =
@@ -490,7 +494,7 @@ type SagaApi =
         handleEvent: Func<obj, SagaState<'TSagaData, 'TSagaState option>, EventAction<'TSagaState>>,
         applySideEffects: Func<SagaState<'TSagaData, 'TSagaState>, bool, SagaSideEffectResult<'TSagaState>>,
         apply: Func<SagaState<'TSagaData, SagaStateWrapper<'TSagaState, 'TEvent>>, SagaState<'TSagaData, SagaStateWrapper<'TSagaState, 'TEvent>>>,
-        originatorFactory: Func<string, IEntityRef<obj>>,
+        originatorFactory: AggregateFactory,
         sagaName: string) : EntityFac<obj> =
 
         // Convert C# handleEvent to F#
@@ -525,7 +529,7 @@ type SagaApi =
         handleEvent: Func<obj, SagaState<'TSagaData, 'TSagaState option>, EventAction<'TSagaState>>,
         applySideEffects: Func<SagaState<'TSagaData, 'TSagaState>, bool, SagaSideEffectResult<'TSagaState>>,
         apply: Func<'TSagaData, 'TSagaState, 'TSagaData>,
-        originatorFactory: Func<string, IEntityRef<obj>>,
+        originatorFactory: AggregateFactory,
         sagaName: string) : EntityFac<obj> =
 
         // Wrap the simplified apply into the full signature
@@ -546,7 +550,7 @@ type SagaApi =
         sagaData: 'TSagaData,
         handleEvent: Func<obj, SagaState<'TSagaData, 'TSagaState option>, EventAction<'TSagaState>>,
         applySideEffects: Func<SagaState<'TSagaData, 'TSagaState>, bool, SagaSideEffectResult<'TSagaState>>,
-        originatorFactory: Func<string, IEntityRef<obj>>,
+        originatorFactory: AggregateFactory,
         sagaName: string) : EntityFac<obj> =
 
         SagaApi.Init<'TEvent, 'TSagaData, 'TSagaState>(
@@ -562,7 +566,7 @@ type SagaApi =
         handleEvent: Func<Event<'TEvent>, 'TSagaData, 'TSagaState, EventAction<'TSagaState>>,
         applySideEffects: Func<'TSagaData, 'TSagaState, bool, SagaSideEffectResult<'TSagaState>>,
         apply: Func<'TSagaData, 'TSagaState, 'TSagaData>,
-        originatorFactory: Func<string, IEntityRef<obj>>,
+        originatorFactory: AggregateFactory,
         sagaName: string) : EntityFac<obj> =
 
         // Wrap simplified handleEvent - unwrap FSharpOption and cast event
@@ -589,7 +593,7 @@ type SagaApi =
         sagaData: 'TSagaData,
         handleEvent: Func<Event<'TEvent>, 'TSagaData, 'TSagaState, EventAction<'TSagaState>>,
         applySideEffects: Func<'TSagaData, 'TSagaState, bool, SagaSideEffectResult<'TSagaState>>,
-        originatorFactory: Func<string, IEntityRef<obj>>,
+        originatorFactory: AggregateFactory,
         sagaName: string) : EntityFac<obj> =
 
         SagaApi.InitSimple<'TEvent, 'TSagaData, 'TSagaState>(
@@ -631,7 +635,7 @@ type Aggregate<'TState, 'TCommand, 'TEvent when 'TEvent: not null>() =
 type Saga<'TEvent, 'TSagaData, 'TState when 'TEvent: not null and 'TState: not null>() =
     abstract member InitialData: 'TSagaData
     abstract member SagaName: string
-    abstract member Originator: Func<string, IEntityRef<obj>>
+    abstract member Originator: AggregateFactory
     abstract member HandleEvent: obj * SagaState<'TSagaData, 'TState option> -> EventAction<'TState>
     abstract member ApplySideEffects: SagaState<'TSagaData, 'TState> * bool -> SagaSideEffectResult<'TState>
 
@@ -653,6 +657,6 @@ type Saga<'TEvent, 'TSagaData, 'TState when 'TEvent: not null and 'TState: not n
             this.SagaName)
 
     /// The factory the saga-starter spawns instances from.
-    member this.Factory(actorApi: IActor) : Func<string, IEntityRef<obj>> =
+    member this.Factory(actorApi: IActor) : AggregateFactory =
         let fac = this.Init(actorApi)
-        Func<string, IEntityRef<obj>>(fun entityId -> fac.RefFor DEFAULT_SHARD entityId)
+        AggregateFactory(fun entityId -> fac.RefFor DEFAULT_SHARD entityId)

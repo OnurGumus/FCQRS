@@ -42,7 +42,7 @@ open FCQRS.CSharp
 /// projection subscription. Resolved from DI so endpoints can pull the Handlers /
 /// the subscription, and saga registrations can look up the aggregates they wire.
 type FcqrsRuntime(actor: IActor) =
-    let factories = Dictionary<Type, Func<string, IEntityRef<obj>>>()
+    let factories = Dictionary<Type, AggregateFactory>()
     let refs = Dictionary<Type, obj>()
 
     /// The live actor system.
@@ -52,12 +52,12 @@ type FcqrsRuntime(actor: IActor) =
     member val Subscription: FCQRS.Query.ISubscribe | null = null with get, set
 
     /// Record an aggregate's wiring under its CLR type (called at startup).
-    member _.Register(shardType: Type, factory: Func<string, IEntityRef<obj>>, boxedRefs: obj) =
+    member _.Register(shardType: Type, factory: AggregateFactory, boxedRefs: obj) =
         factories[shardType] <- factory
         refs[shardType] <- boxedRefs
 
     /// The entity-ref factory of a registered aggregate.
-    member _.Factory(shardType: Type) : Func<string, IEntityRef<obj>> =
+    member _.Factory(shardType: Type) : AggregateFactory =
         match factories.TryGetValue shardType with
         | true, f -> f
         | _ -> failwithf "Aggregate '%s' is not registered. Call AddAggregate for it before the saga that targets it." shardType.Name
@@ -74,7 +74,7 @@ type FcqrsRuntime(actor: IActor) =
 type FcqrsBuilder internal (services: IServiceCollection, connectionString: string, clusterName: string) =
     let aggregateSteps = ResizeArray<IServiceProvider -> IActor -> FcqrsRuntime -> unit>()
     let sagaSteps = ResizeArray<IServiceProvider -> IActor -> FcqrsRuntime -> unit>()
-    let sagaStarters = ResizeArray<obj -> Func<string, IEntityRef<obj>> option>()
+    let sagaStarters = ResizeArray<obj -> AggregateFactory option>()
     let mutable projectionStep: (IServiceProvider -> IActor -> FCQRS.Query.ISubscribe) option = None
 
     // Registers the ISubscribe resolver in DI exactly once, on the first
@@ -171,8 +171,8 @@ type internal FcqrsHostedService(sp: IServiceProvider, builder: FcqrsBuilder, ru
             // One saga-starter over all registered sagas (or empty if none).
             if builder.SagaStarters.Count > 0 then
                 let combined =
-                    Func<obj, IList<Func<string, IEntityRef<obj>>>>(fun evt ->
-                        let result = List<Func<string, IEntityRef<obj>>>()
+                    Func<obj, IList<AggregateFactory>>(fun evt ->
+                        let result = List<AggregateFactory>()
                         for starter in builder.SagaStarters do
                             match starter evt with
                             | Some f -> result.Add f
@@ -219,5 +219,5 @@ type FcqrsServiceCollectionExtensions =
     /// Resolve a registered aggregate's entity-ref factory by its CLR type. Use
     /// inside a saga's `create` delegate to reference the aggregates it coordinates.
     [<Extension>]
-    static member AggregateFactory<'TShard>(serviceProvider: IServiceProvider) : Func<string, IEntityRef<obj>> =
+    static member AggregateFactory<'TShard>(serviceProvider: IServiceProvider) : AggregateFactory =
         serviceProvider.GetRequiredService<FcqrsRuntime>().Factory(typeof<'TShard>)
