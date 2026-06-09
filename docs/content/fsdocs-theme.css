@@ -13,3 +13,110 @@
 .fsdocs-summary {
     color: #6a9955;
 }
+
+/* ---- Code-token colors (flat fallback) --------------------------------- */
+/* fsdocs-default.css colors these via native CSS nesting (.fssnip { & span.k }).
+   Where nesting isn't applied, the whole rule is dropped and code renders
+   monochrome. These flat equivalents guarantee coloring either way. */
+.fssnip span.s   { color: var(--code-strings-color); }
+.fssnip span.pf  { color: var(--code-printf-color); }
+.fssnip span.e   { color: var(--code-enumeration-color); }
+.fssnip span.id  { color: var(--code-identifiers-color); }
+.fssnip span.m   { color: var(--code-module-color); }
+.fssnip span.rt  { color: var(--code-reference-color); }
+.fssnip span.vt  { color: var(--code-value-color); }
+.fssnip span.if  { color: var(--code-interface-color); }
+.fssnip span.ta  { color: var(--code-typearg-color); }
+.fssnip span.d   { color: var(--code-disposable-color); }
+.fssnip span.prop{ color: var(--code-property-color); }
+.fssnip span.p   { color: var(--code-punctuation-color); }
+.fssnip span.pn  { color: var(--code-punctuation2-color); }
+.fssnip span.f   { color: var(--code-function-color); }
+.fssnip span.fn  { color: var(--code-function2-color); }
+.fssnip span.pat { color: var(--code-activepattern-color); }
+.fssnip span.u   { color: var(--code-unioncase-color); }
+.fssnip span.k   { color: var(--code-keywords-color); }
+.fssnip span.o   { color: var(--code-operators-color); }
+.fssnip span.n   { color: var(--code-numbers-color); }
+.fssnip span.l   { color: var(--code-linenumbers-color); }
+.fssnip span.v   { color: var(--code-mutable-color); font-weight: bold; }
+.fssnip span.prep{ color: var(--code-preprocessor-color); }
+.fssnip span.fsi { color: var(--code-fsioutput-color); }
+.fssnip span.inactive { color: var(--code-inactive-color); }
+.fssnip span.c   { color: var(--code-comment-color); font-style: italic; }
+
+/* ---- F# / C# language tabs --------------------------------------------- */
+.lang-tabbar {
+    display: flex;
+    gap: 0.25rem;
+    margin: 1rem 0 0;
+}
+
+.lang-tab {
+    font: inherit;
+    font-size: 0.85rem;
+    line-height: 1.4;
+    cursor: pointer;
+    border: 1px solid var(--code-fence-border-color, rgba(127, 127, 127, 0.35));
+    border-bottom: none;
+    background: rgba(127, 127, 127, 0.12);
+    color: inherit;
+    opacity: 0.65;
+    padding: 0.2rem 0.95rem;
+    border-radius: 6px 6px 0 0;
+}
+
+.lang-tab:hover {
+    opacity: 1;
+}
+
+.lang-tab.active {
+    opacity: 1;
+    font-weight: 600;
+    background: rgba(127, 127, 127, 0.22);
+}
+
+/* Sit the code block flush under the tab bar (in-place, not reparented). */
+pre.fssnip.lang-pane,
+table.pre.lang-pane {
+    margin-top: 0;
+    border-top-left-radius: 0;
+}
+
+/* highlight.js tokens for C#, mapped to the same palette F# uses. */
+.hljs-keyword,
+.hljs-built_in,
+.hljs-literal {
+    color: var(--code-keywords-color);
+}
+.hljs-string,
+.hljs-char,
+.hljs-meta .hljs-string {
+    color: var(--code-strings-color);
+}
+.hljs-comment,
+.hljs-quote {
+    color: var(--code-comment-color);
+    font-style: italic;
+}
+.hljs-number {
+    color: var(--code-numbers-color);
+}
+.hljs-title,
+.hljs-title.class_,
+.hljs-title.function_,
+.hljs-type,
+.hljs-class .hljs-title {
+    color: var(--code-reference-color);
+}
+.hljs-attr,
+.hljs-property {
+    color: var(--code-property-color, var(--code-identifiers-color));
+}
+.hljs-meta {
+    color: var(--code-preprocessor-color);
+}
+.hljs-operator,
+.hljs-punctuation {
+    color: var(--code-operators-color);
+}

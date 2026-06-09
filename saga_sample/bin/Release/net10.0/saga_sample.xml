@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<doc>
+<assembly><name>saga_sample</name></assembly>
+<members>
+<member name="T:Environments.AppEnv">
+ <summary>
+ Composition root for the application environment. While being a god object is an anti-pattern, it plays nicely with F# partial application.
+ Much better than DI magic with reflection. It wraps IConfiguration and ILoggerFactory.
+ </summary>
+</member>
+</members>
+</doc>

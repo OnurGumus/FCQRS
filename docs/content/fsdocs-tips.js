@@ -145,3 +145,134 @@ window.showTip = showTip;
 window.hideTip = hideTip;
 // Used by API documentation
 window.Clipboard_CopyTo = Clipboard_CopyTo;
+
+// ---------------------------------------------------------------------------
+// F# / C# language tabs.
+//
+// Authoring: put an empty <div class="cs-alt"></div> immediately before a C#
+// code block that is the twin of the F# block just above it. This script pairs
+// the F# block (preceding the marker) with the C# block (following it) into a
+// tabbed widget. The choice is sticky and global — pick C# once and every
+// tabbed block on the site shows C# (remembered via localStorage).
+// ---------------------------------------------------------------------------
+(function () {
+    const STORAGE_KEY = "fcqrs-lang";
+    const preferred = () => localStorage.getItem(STORAGE_KEY) || "fsharp";
+
+    // The outermost element of a rendered code block: the table.pre wrapper if
+    // present (C# fences), otherwise the bare pre (F# .fsx script snippets).
+    function blockRoot(codeEl) {
+        return codeEl.closest("table.pre") || codeEl.closest("pre");
+    }
+
+    function nearest(codeEls, marker, lang, following) {
+        const want = following
+            ? Node.DOCUMENT_POSITION_FOLLOWING
+            : Node.DOCUMENT_POSITION_PRECEDING;
+        const order = following ? codeEls : codeEls.slice().reverse();
+        for (const c of order) {
+            if (c.getAttribute("lang") !== lang) continue;
+            if (marker.compareDocumentPosition(c) & want) return c;
+        }
+        return null;
+    }
+
+    function setLang(lang) {
+        localStorage.setItem(STORAGE_KEY, lang);
+        applyLang(lang);
+    }
+
+    // Global toggle: every pane of the chosen language shows, the rest hide.
+    function applyLang(lang) {
+        document.querySelectorAll(".lang-tab").forEach(function (b) {
+            b.classList.toggle("active", b.dataset.lang === lang);
+        });
+        document.querySelectorAll(".lang-pane").forEach(function (p) {
+            p.style.display = p.dataset.lang === lang ? "" : "none";
+        });
+    }
+
+    // Pair each marker's preceding F# block with its following C# block. The
+    // blocks are NOT reparented (so every fsdocs style, incl. the #content >
+    // pre.fssnip border, keeps applying); we only insert a tab bar before the F#
+    // block and toggle display on the two blocks in place.
+    function buildPairs(root) {
+        const markers = Array.prototype.slice.call(root.querySelectorAll(".cs-alt"));
+        const codeEls = Array.prototype.slice.call(root.querySelectorAll("code[lang]"));
+
+        markers.forEach(function (marker) {
+            const cs = nearest(codeEls, marker, "csharp", true);
+            const fs = nearest(codeEls, marker, "fsharp", false);
+            if (!cs || !fs) return;
+            const fsRoot = blockRoot(fs);
+            const csRoot = blockRoot(cs);
+            if (!fsRoot || !csRoot || fsRoot === csRoot) return;
+
+            const bar = document.createElement("div");
+            bar.className = "lang-tabbar";
+            [["fsharp", "F#"], ["csharp", "C#"]].forEach(function (pair) {
+                const btn = document.createElement("button");
+                btn.type = "button";
+                btn.className = "lang-tab";
+                btn.dataset.lang = pair[0];
+                btn.textContent = pair[1];
+                btn.addEventListener("click", function () { setLang(pair[0]); });
+                bar.appendChild(btn);
+            });
+
+            fsRoot.parentNode.insertBefore(bar, fsRoot);
+            fsRoot.classList.add("lang-pane");
+            fsRoot.dataset.lang = "fsharp";
+            csRoot.classList.add("lang-pane");
+            csRoot.dataset.lang = "csharp";
+
+            if (marker.parentNode) marker.parentNode.removeChild(marker);
+        });
+    }
+
+    // Resolve a sibling asset (vendored next to this script in /content/), so the
+    // highlighter loads with no CDN — works offline and under a strict CSP.
+    function assetUrl(name) {
+        const tag = document.querySelector('script[src*="fsdocs-tips.js"]');
+        if (tag && tag.src) return tag.src.replace(/fsdocs-tips\.js.*$/, name);
+        return "content/" + name;
+    }
+
+    // Re-highlight ONLY C# blocks: fsdocs colours C# with its F# lexer, so C#
+    // type/method names fall back to the plain identifier colour. F# blocks are
+    // left exactly as fsdocs rendered them, preserving their hover tooltips.
+    function highlightCode() {
+        if (!window.hljs) return;
+        document.querySelectorAll('code[lang="csharp"]').forEach(function (el) {
+            if (el.dataset.hljs) return;
+            el.dataset.hljs = "1";
+            el.textContent = el.textContent; // drop fsdocs' weak C# spans → raw text
+            el.classList.add("language-csharp");
+            try { window.hljs.highlightElement(el); } catch (e) { /* ignore */ }
+        });
+    }
+
+    // Load highlight.js core (vendored next to this script), then highlight C#.
+    function loadHighlighter() {
+        if (!document.querySelector('code[lang="csharp"]')) return;
+        if (window.hljs) { highlightCode(); return; }
+        const core = document.createElement("script");
+        core.src = assetUrl("highlight.min.js");
+        core.onload = highlightCode;
+        document.head.appendChild(core);
+    }
+
+    function init() {
+        const root = document.getElementById("content") || document.body;
+        buildPairs(root);
+        applyLang(preferred());
+        loadHighlighter();
+    }
+
+    // The script is loaded as a deferred module, so the DOM may already be ready.
+    if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", init);
+    } else {
+        init();
+    }
+})();

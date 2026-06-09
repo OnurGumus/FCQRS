@@ -13,17 +13,16 @@ what you must supply, what you get for free, and how to override the defaults wh
 ## You usually do not write a HOCON file
 
 FCQRS carries an embedded default configuration and merges it with whatever `IConfiguration` you pass
-to `FCQRS.Actor.api`. The only thing you must supply is a database `Connection` — a connection string
-and a provider type — which is substituted into the defaults. So the minimal setup is the call from
-[Get started](get-started.html):
+to `Fcqrs.actor`. The only thing you must supply is a database `Connection` — a connection string and a
+provider type, built with `Fcqrs.connect` — which is substituted into the defaults. So the minimal
+setup is the call from [Get started](get-started.html):
 
 ```fsharp
-let connStr =
-    "Data Source=app.db;" |> ValueLens.TryCreate |> Result.value
-let connection =
-    Some { ConnectionString = connStr; DBType = DBType.Sqlite }
+open FCQRS.FSharp
 
-let actorApi = FCQRS.Actor.api config loggerFactory connection clusterName
+let connection = Fcqrs.connect FCQRS.Actor.DBType.Sqlite "Data Source=app.db;"
+
+let api = Fcqrs.actor config loggerFactory (Some connection) "MyCluster"
 ```
 
 An empty `ConfigurationBuilder().Build()` is a perfectly good `config`. `DBType` is a closed list —
