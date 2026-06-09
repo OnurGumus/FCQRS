@@ -151,6 +151,30 @@ type EventActions =
     static member Ignore<'TEvent when 'TEvent: not null>() : EventAction<'TEvent> =
         EventAction.IgnoreEvent
 
+/// Diagnostics helper: a short, readable case name for logging. Unwraps a
+/// Command&lt;_&gt;/Event&lt;_&gt; envelope to its payload (via IEnvelope), then a
+/// C# `union` to its active case (its generated `.Value`), and falls back to the
+/// type name — so F# DUs and plain payloads work too. Reflection-based; meant for
+/// logs, not hot paths.
+type Describe =
+    /// A short case name, e.g. "CreateOrUpdate" for a DocumentCommand.CreateOrUpdate
+    /// (or a Command/Event wrapping one). Returns "&lt;none&gt;" for null.
+    static member Case(value: obj | null) : string =
+        match value with
+        | null -> "<none>"
+        | v ->
+            // Envelope -> payload (a no-op for a bare payload).
+            let payload =
+                match v with
+                | :? IEnvelope as e -> e.Payload
+                | _ -> v
+            // C# union -> active case via its generated .Value (a no-op otherwise).
+            let case =
+                match payload.GetType().GetProperty "Value" with
+                | null -> payload
+                | prop -> match prop.GetValue payload with null -> payload | inner -> inner
+            case.GetType().Name
+
 /// C#-friendly builders for the Command/Event envelopes that the pure
 /// handleCommand/applyEvent functions expect. Intended for unit tests: the
 /// envelope's plumbing fields (a fresh MessageId/CID, a UTC timestamp, no
