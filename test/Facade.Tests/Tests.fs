@@ -78,6 +78,39 @@ module AutoReset =
           ApplySideEffects = applySideEffects counterFactory
           StartOn = startsOn }
 
+/// A saga that parks: on a big increment it enters Pinging, whose side effect
+/// sends Reset to the originator — and then it ignores everything, staying in
+/// Pinging forever. Used to prove that a saga recovered THROUGH A SNAPSHOT
+/// still re-drives its side effects (the SagaStartingEventWrapper at journal
+/// seq 1 is never replayed past a snapshot; the snapshot must carry it).
+module Parked =
+    type State = Pinging
+
+    let private handleEvent (evt: obj) (sagaState: SagaState<_, _>) =
+        match evt, sagaState.State with
+        | :? (Event<Counter.Event>) as e, None ->
+            match e.EventDetails with
+            | Counter.Incremented n when n >= 100 -> Pinging |> StateChangedEvent
+            | _ -> UnhandledEvent
+        | _ -> UnhandledEvent // parked: WasReset and everything else is ignored
+
+    let private applySideEffects counterFactory (sagaState: SagaState<_, _>) _recovering =
+        match sagaState.State with
+        | Pinging -> Stay, [ toOriginator counterFactory (Counter.Reset :> obj) ]
+
+    let private startsOn (e: Event<Counter.Event>) =
+        match e.EventDetails with
+        | Counter.Incremented n -> n >= 100
+        | _ -> false
+
+    let definition counterFactory =
+        { Name = "Parked"
+          InitialData = ()
+          Originator = counterFactory
+          HandleEvent = handleEvent
+          ApplySideEffects = applySideEffects counterFactory
+          StartOn = startsOn }
+
 let private projection (_offset: int64) (ev: obj) : IMessageWithCID list =
     match ev with
     | :? (Event<Counter.Event>) as e -> [ e :> IMessageWithCID ]
@@ -103,7 +136,32 @@ let private isWasReset (m: IMessageWithCID) =
         | _ -> false
     | _ -> false
 
-let tests =
+/// Boot a system for the snapshot-recovery test: saga snapshots every 2
+/// versions (Started = v1, Pinging = v2 -> snapshot covers the whole journal),
+/// with a per-test durable-ddata directory so two sequential incarnations
+/// share sharding state but tests don't contend.
+let private bootParked (db: string) (lmdb: string) =
+    let cfg =
+        ConfigurationBuilder()
+            .AddInMemoryCollection(
+                [ Collections.Generic.KeyValuePair<string, string | null>(
+                      "config:akka:persistence:snapshot-version-count", "2")
+                  Collections.Generic.KeyValuePair<string, string | null>(
+                      "config:akka:cluster:distributed-data:durable:lmdb", lmdb) ])
+            .Build()
+
+    let api =
+        Fcqrs.actor cfg NullLoggerFactory.Instance
+            (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite (sprintf "Data Source=%s;" db))) "SnapshotSmoke"
+
+    let counter =
+        Fcqrs.aggregate api { Name = "Counter"; Initial = Counter.initial; Decide = Counter.decide; Fold = Counter.fold }
+
+    let saga = Fcqrs.saga api (Parked.definition counter.Factory)
+    Fcqrs.wireSagaStarters api [ saga ]
+    api, counter
+
+let private roundTripTest =
     testCase "facade: aggregate handle round-trips a command, and a saga drives a follow-up into the originator"
     <| fun _ ->
         let counter, subs = boot ()
@@ -122,6 +180,59 @@ let tests =
         |> Async.RunSynchronously
         |> ignore
         Expect.isTrue (sawReset.Task.Wait(TimeSpan.FromSeconds 20.0)) "the saga reset the counter (WasReset observed through the projection)"
+
+let private snapshotRecoveryTest =
+    testCase "facade: a saga recovered through a snapshot re-drives its side effects"
+    <| fun _ ->
+        let db = Path.Combine(Path.GetTempPath(), sprintf "fcqrs_snap_%s.db" (Guid.NewGuid().ToString("N")))
+        let lmdb = Path.Combine(Path.GetTempPath(), sprintf "fcqrs_snap_lmdb_%s" (Guid.NewGuid().ToString("N")))
+
+        // Phase 1: park the saga past a snapshot boundary, then kill the system.
+        // Saga journal: wrapper(seq1), Started(v1), Pinging(v2 -> snapshot).
+        // Counter journal: Incremented(v1), WasReset(v2) from the parked side effect.
+        let api1, counter1 = bootParked db lmdb
+        let subs1 = Fcqrs.projection api1 { LastOffset = 0; Handle = projection }
+        use sawReset = subs1.Subscribe(isWasReset, 1)
+
+        counter1.Send (Fcqrs.newCid ()) (Fcqrs.aggregateId "big") (Counter.Increment 100)
+            (function Counter.Incremented _ -> true | _ -> false)
+        |> Async.RunSynchronously
+        |> ignore
+
+        Expect.isTrue (sawReset.Task.Wait(TimeSpan.FromSeconds 20.0)) "phase 1: the parked saga sent Reset once"
+        Threading.Thread.Sleep 3000 // let the async SaveSnapshot land before the kill
+        api1.Stop().Wait(TimeSpan.FromSeconds 30.0) |> ignore
+
+        // Phase 2: reboot on the same journal. remember-entities resurrects the
+        // saga; its recovery passes through the snapshot (the wrapper event is
+        // NOT replayed). A WasReset at version 3 can only exist if the recovered
+        // saga re-issued its pending Reset — the regression under test.
+        let api2, _ = bootParked db lmdb
+
+        let isFreshReset (m: IMessageWithCID) =
+            match m with
+            | :? (Event<Counter.Event>) as e ->
+                (match e.EventDetails with
+                 | Counter.WasReset -> true
+                 | _ -> false)
+                && (e.Version |> ValueLens.Value) = 3L
+            | _ -> false
+
+        // Fresh replay-from-0 projection per attempt: immune to broadcast-hub
+        // attach races, and replays the v3 event once it exists.
+        let mutable seen = false
+        let mutable attempts = 0
+
+        while not seen && attempts < 15 do
+            attempts <- attempts + 1
+            let subs = Fcqrs.projection api2 { LastOffset = 0; Handle = projection }
+            use awaiter = subs.Subscribe(isFreshReset, 1)
+            seen <- awaiter.Task.Wait(TimeSpan.FromSeconds 2.0)
+
+        Expect.isTrue seen "phase 2: the recovered saga re-drove Reset (WasReset v3 in the journal)"
+        api2.Stop().Wait(TimeSpan.FromSeconds 30.0) |> ignore
+
+let tests = testSequenced (testList "facade" [ roundTripTest; snapshotRecoveryTest ])
 
 [<EntryPoint>]
 let main argv = runTestsWithCLIArgs [] argv tests

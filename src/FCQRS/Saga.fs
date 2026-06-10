@@ -35,6 +35,15 @@ type private SagaStartingEventWrapper<'TEvent when 'TEvent : not null> =
     | SagaStartingEventWrapper of SagaStartingEvent<Event<'TEvent>>
     interface ISerializable
 
+// Snapshot payload. The SagaStartingEventWrapper is journal seq 1 and is never
+// replayed past a snapshot, so the snapshot must carry the starting event
+// itself — otherwise a saga recovered through a snapshot has startingEvent =
+// None and skips its recovery re-drive (pending commands never re-issued).
+type private SagaSnapshot<'SagaData, 'State, 'TEvent when 'TEvent : not null> =
+    { Parent: SagaStateWithVersion<'SagaData, 'State>
+      StartingEvent: SagaStartingEvent<Event<'TEvent>> option }
+    interface ISerializable
+
 let private runSaga<'TEvent, 'SagaData, 'State when 'TEvent : not null and 'State : not null>
     (snapshotVersionCount: int64)
     (mailbox: Eventsourced<obj>)
@@ -49,6 +58,7 @@ let private runSaga<'TEvent, 'SagaData, 'State when 'TEvent : not null and 'Stat
     body
     innerStateDefaults
     (currentSagaActivityRef: (Activity | null) ref)
+    (recoveredFromSnapshotRef: bool ref)
     (cleanupOnStop: unit -> unit)
     =
     let rec innerSet (startingEvent: option<SagaStarter.SagaStartingEvent<Event<'TEvent>>>, subscribed, subscriptionAcked) =
@@ -165,7 +175,19 @@ let private runSaga<'TEvent, 'SagaData, 'State when 'TEvent : not null and 'Stat
             | LifecycleEvent _ ->
                 return! innerSet (startingEvent, true, subscriptionAcked)
             | SnapshotOffer(snapState: obj) ->
-                return! snapState |> unbox<_> |> set innerSetValue
+                recoveredFromSnapshotRef.Value <- true
+
+                match snapState with
+                | :? SagaSnapshot<'SagaData, 'State, 'TEvent> as snap ->
+                    // Restore the starting event alongside the state — the wrapper
+                    // event predates the snapshot and will not be replayed.
+                    return! snap.Parent |> set (snap.StartingEvent, subscribed, subscriptionAcked)
+                | _ ->
+                    // Pre-SagaSnapshot shape (older journals): no starting event
+                    // available. The recovery re-drive still runs (see the
+                    // SubscriptionAcknowledged branch); re-issued commands just
+                    // lose the starting event's metadata.
+                    return! snapState |> unbox<_> |> set innerSetValue
             | SubscriptionAcknowledged mailbox _ ->
                 // notify saga starter about the subscription completed
                 let nextInner = startingEvent, true, true
@@ -177,6 +199,19 @@ let private runSaga<'TEvent, 'SagaData, 'State when 'TEvent : not null and 'Stat
                     match newState with
                     | Some newState ->
                         // Activity will be emitted when state is persisted (in Persisted branch)
+                        return! newState |> StateChanged |> box |> Persist <@> innerSet nextInner
+                    | None ->
+                        return! state |> set innerSetValue <@> innerSet nextInner
+                | None when recoveredFromSnapshotRef.Value ->
+                    // Recovered through a snapshot that carried no starting event
+                    // (pre-SagaSnapshot shape). The saga state is real and journaled,
+                    // so the recovery re-drive must still run — re-issue pending
+                    // commands and re-signal Continue — or the saga sits passive
+                    // until poked from outside.
+                    let newState = applySideEffects state None true
+
+                    match newState with
+                    | Some newState ->
                         return! newState |> StateChanged |> box |> Persist <@> innerSet nextInner
                     | None ->
                         return! state |> set innerSetValue <@> innerSet nextInner
@@ -246,14 +281,14 @@ let private runSaga<'TEvent, 'SagaData, 'State when 'TEvent : not null and 'Stat
                                     return!
                                         newSagaState |> set innerSetValue
                                         <@> persistNext
-                                        <@> SaveSnapshot parentState
+                                        <@> SaveSnapshot { Parent = parentState; StartingEvent = startingEvent }
                                 else
                                     return!
                                         newSagaState |> set innerSetValue
                                         <@> persistNext
                             | None ->
                                 if dueForSnapshot then
-                                    return! parentState |> set innerSetValue <@> SaveSnapshot parentState
+                                    return! parentState |> set innerSetValue <@> SaveSnapshot { Parent = parentState; StartingEvent = startingEvent }
                                 else
                                     return! parentState |> set innerSetValue
                         with ex ->
@@ -314,6 +349,10 @@ let private actorProp<'SagaData, 'State, 'TEvent when 'TEvent : not null and 'St
     // Ref cell to hold the current saga state activity (kept alive across iterations)
     // This is at actorProp level so both runSaga and applySideEffects can access it
     let currentSagaActivityRef: (Activity | null) ref = ref null
+    // Set when recovery delivered a SnapshotOffer — distinguishes "recovered
+    // through a snapshot, starting event may be missing" from "fresh start,
+    // starting event simply hasn't arrived yet" (which must NOT re-drive).
+    let recoveredFromSnapshotRef: bool ref = ref false
     // Cancelables for delayed commands the saga has scheduled, paired with the
     // wall-clock time at which the underlying schedule is guaranteed to have
     // fired (delay + buffer). Akka's ICancelable does not flip
@@ -521,6 +560,7 @@ let private actorProp<'SagaData, 'State, 'TEvent when 'TEvent : not null and 'St
             body
             innerStateDefaults
             currentSagaActivityRef
+            recoveredFromSnapshotRef
             cleanupOnStop
 
     set (None, false, false) initialState

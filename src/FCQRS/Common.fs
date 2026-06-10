@@ -352,17 +352,22 @@ module SagaBuilder =
         =
         match recovering with
         | true ->
-            let startingEvent = startingEvent.Value.Event
+            match startingEvent with
+            | Some se ->
+                let originator =
+                    FactoryAndName
+                        { Factory = originatorFactory
+                          Name = Originator }
 
-            let originator =
-                FactoryAndName
-                    { Factory = originatorFactory
-                      Name = Originator }
-
-            Stay,
-            [ { TargetActor = originator
-                Command = ContinueOrAbort startingEvent
-                DelayInMs = None } ]
+                Stay,
+                [ { TargetActor = originator
+                    Command = ContinueOrAbort se.Event
+                    DelayInMs = None } ]
+            | None ->
+                // Recovered through a pre-SagaSnapshot snapshot taken in Started:
+                // no starting event survives to version-check against. Stay put
+                // rather than NRE into a deterministic crash loop on recovery.
+                Stay, []
         | false -> Stay, []
 
     /// Standard wrapper for saga states that includes NotStarted/Started
