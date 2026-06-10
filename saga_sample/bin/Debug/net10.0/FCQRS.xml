@@ -389,6 +389,17 @@
  Defer the event. It will be stashed and processed later, potentially after other events.
 </summary>
 </member>
+<member name="T:FCQRS.Common.EventAction`1.PersistAllEvents">
+<summary>
+ Persist several events from one command as a single journal AtomicWrite:
+ all land or none do (one DB transaction in the SQL plugins), and no state
+ update, publish or saga wake-up happens until the whole batch is durable.
+ Versions are allocated sequentially. Atomic for THIS aggregate instance
+ only — atomicity across aggregates is saga territory. Note the read side
+ still projects the batch event-by-event (durability is atomic,
+ read-model visibility is not).
+</summary>
+</member>
 <member name="T:FCQRS.Common.EventAction`1.PersistEvent">
 <summary>
  Persist the event to the journal. The actor&apos;s state will be updated using the event handler *after* persistence succeeds.
@@ -1444,6 +1455,13 @@
  C# `union` to its active case (its generated `.Value`), and falls back to the
  type name — so F# DUs and plain payloads work too. Reflection-based; meant for
  logs, not hot paths.
+</summary>
+</member>
+<member name="M:FCQRS.CSharp.EventActions.PersistAll``1(``0[])">
+<summary>
+ Create a PersistAllEvents action: all events from this command persist as
+ one journal AtomicWrite (all-or-nothing), with sequential versions. State
+ updates and publishes happen only after the whole batch is durable.
 </summary>
 </member>
 <member name="M:FCQRS.CSharp.EventActions.Persist``1(``0)">
