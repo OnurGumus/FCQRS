@@ -193,7 +193,26 @@ module internal Internal =
                 let nextVersion: Version =
                     (state.Version |> ValueLens.Value) + 1L |> ValueLens.TryCreate |> Result.value
                 return! event |> toEvent nextVersion |> bodyInput.SendToSagaStarter |> Persist
-                
+
+            | PersistAllEvents [] -> return set state
+            | PersistAllEvents events ->
+                // One journal AtomicWrite: versions are pre-allocated sequentially,
+                // each event runs the saga-start handshake (any of them may start
+                // one), then the batch persists all-or-nothing. The Persisted
+                // callback fires per event after the WHOLE batch is durable, so
+                // folds/publishes/awaiters never observe a torn batch.
+                let baseVersion = state.Version |> ValueLens.Value
+
+                let boxedEvents =
+                    events
+                    |> List.mapi (fun i event ->
+                        let version: Version =
+                            baseVersion + int64 i + 1L |> ValueLens.TryCreate |> Result.value
+
+                        event |> toEvent version |> bodyInput.SendToSagaStarter)
+
+                return! boxedEvents |> Seq.ofList |> PersistAll
+
             | DeferEvent event ->
                 return! seq { event |> toEvent state.Version |> bodyInput.SendToSagaStarter } |> Defer
             | PublishEvent event ->

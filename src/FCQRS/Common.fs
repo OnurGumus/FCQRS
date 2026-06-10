@@ -185,6 +185,14 @@ module internal Internal =
 type EventAction<'T when 'T : not null> =
     /// Persist the event to the journal. The actor's state will be updated using the event handler *after* persistence succeeds.
     | PersistEvent of 'T
+    /// Persist several events from one command as a single journal AtomicWrite:
+    /// all land or none do (one DB transaction in the SQL plugins), and no state
+    /// update, publish or saga wake-up happens until the whole batch is durable.
+    /// Versions are allocated sequentially. Atomic for THIS aggregate instance
+    /// only — atomicity across aggregates is saga territory. Note the read side
+    /// still projects the batch event-by-event (durability is atomic,
+    /// read-model visibility is not).
+    | PersistAllEvents of 'T list
     /// Defer the event. It will be stashed and processed later, potentially after other events.
     | DeferEvent of 'T
     /// Publish the event immediately to the mediator without persisting it. The actor's state is not updated.

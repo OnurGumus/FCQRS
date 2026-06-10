@@ -147,6 +147,12 @@ type EventActions =
     static member Defer<'TEvent when 'TEvent: not null>(event: 'TEvent) : EventAction<'TEvent> =
         EventAction.DeferEvent event
 
+    /// Create a PersistAllEvents action: all events from this command persist as
+    /// one journal AtomicWrite (all-or-nothing), with sequential versions. State
+    /// updates and publishes happen only after the whole batch is durable.
+    static member PersistAll<'TEvent when 'TEvent: not null>([<ParamArray>] events: 'TEvent[]) : EventAction<'TEvent> =
+        EventAction.PersistAllEvents(List.ofArray events)
+
     /// Create an IgnoreEvent action (command is ignored, no event produced)
     static member Ignore<'TEvent when 'TEvent: not null>() : EventAction<'TEvent> =
         EventAction.IgnoreEvent

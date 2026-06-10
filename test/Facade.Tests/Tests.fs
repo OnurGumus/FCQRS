@@ -21,6 +21,7 @@ open FCQRS.FSharp
 module Counter =
     type Command =
         | Increment of int
+        | Split of int * int
         | Reset
 
     type Event =
@@ -33,6 +34,8 @@ module Counter =
     let decide (cmd: Command<Command>) _state =
         match cmd.CommandDetails with
         | Increment n -> Incremented n |> PersistEvent
+        // one command, two events, one journal AtomicWrite
+        | Split(a, b) -> persistAll [ Incremented a; Incremented b ]
         | Reset -> WasReset |> PersistEvent
 
     let fold (e: Event<Event>) state =
@@ -232,7 +235,31 @@ let private snapshotRecoveryTest =
         Expect.isTrue seen "phase 2: the recovered saga re-drove Reset (WasReset v3 in the journal)"
         api2.Stop().Wait(TimeSpan.FromSeconds 30.0) |> ignore
 
-let tests = testSequenced (testList "facade" [ roundTripTest; snapshotRecoveryTest ])
+let private persistAllTest =
+    testCase "facade: PersistAllEvents journals a batch atomically with sequential versions"
+    <| fun _ ->
+        let counter, _subs = boot ()
+
+        // One command -> two events. Awaiting the SECOND event proves the whole
+        // batch was journaled and published; its version proves sequencing.
+        let second =
+            counter.Send (Fcqrs.newCid ()) (Fcqrs.aggregateId "batch") (Counter.Split(3, 4))
+                (function Counter.Incremented 4 -> true | _ -> false)
+            |> Async.RunSynchronously
+
+        Expect.equal (second.Version |> ValueLens.Value) 2L "the batch's second event is version 2"
+
+        // A follow-up single event lands at version 3 — the batch advanced the
+        // aggregate's version by exactly two.
+        let next =
+            counter.Send (Fcqrs.newCid ()) (Fcqrs.aggregateId "batch") (Counter.Increment 1)
+                (function Counter.Incremented 1 -> true | _ -> false)
+            |> Async.RunSynchronously
+
+        Expect.equal (next.Version |> ValueLens.Value) 3L "a follow-up event continues after the batch"
+
+let tests =
+    testSequenced (testList "facade" [ roundTripTest; persistAllTest; snapshotRecoveryTest ])
 
 [<EntryPoint>]
 let main argv = runTestsWithCLIArgs [] argv tests
