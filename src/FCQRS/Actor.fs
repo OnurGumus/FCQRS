@@ -53,6 +53,17 @@ module internal Internal =
 
         let mediatorS = retype mediator
 
+        // Aggregates are eternal: a fold that throws means the journal and the
+        // code no longer agree, and an Akka actor restart would just drop the
+        // message and hide it. Same policy as sagas — kill the process.
+        let applyChecked (event: Event<'TEvent>) (st: 'TState) : 'TState =
+            try
+                applyNewState event st
+            with ex ->
+                logger.LogError(ex, "Fatal error applying event in aggregate {0}. Terminating process to prevent silent state divergence.", mailbox.Self.Path.ToString())
+                Environment.FailFast("Process terminated due to aggregate apply error", ex)
+                failwith "unreachable" // FailFast never returns; satisfies the compiler
+
         let publishEvent event =
             SagaStarter.Internal.publishEvent
                 logger
@@ -102,7 +113,7 @@ module internal Internal =
 
             // actor level events will come here
             | Deferred mailbox (:? Common.Event<'TEvent> as event) ->
-                let state = applyNewState event (state.State)
+                let state = applyChecked event (state.State)
                 publishEvent event
 
                 let newState =
@@ -136,7 +147,7 @@ module internal Internal =
                     act.SetTag("event.type", eventType) |> ignore
                     act.SetTag("version", versionN) |> ignore
 
-                let innerState = applyNewState event state.State
+                let innerState = applyChecked event state.State
                 publishEvent event
 
                 match activity with
@@ -155,7 +166,7 @@ module internal Internal =
                     return! state |> set
 
             | Recovering mailbox (:? Common.Event<'TEvent> as event) ->
-                let state = applyNewState event state.State
+                let state = applyChecked event state.State
 
                 let newState =
                     {   Version = event.Version
@@ -273,7 +284,13 @@ module internal Internal =
                                 cmd.CorrelationId
                                 (mailbox.Self.Path.Name |> ValueLens.CreateAsResult |> Result.value |> Some)
                                 cmd.Metadata
-                        let effect = handleCommand cmd state.State
+                        let effect =
+                            try
+                                handleCommand cmd state.State
+                            with ex ->
+                                bodyInput.Log.LogError(ex, "Fatal error in aggregate handleCommand for {0}. Terminating process to prevent silent command loss.", mailbox.Self.Path.ToString())
+                                Environment.FailFast("Process terminated due to aggregate command-handler error", ex)
+                                failwith "unreachable" // FailFast never returns; satisfies the compiler
 
                         match activity with
                         | null -> ()

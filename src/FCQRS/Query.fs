@@ -160,7 +160,6 @@ module Internal =
 
 
 let init<'TDataEvent, 'TPredicate, 't when 'TDataEvent :> IMessageWithCID> (actorApi: IActor) offsetCount handler =
-    let source = (readJournal actorApi.System).AllEvents(Offset.Sequence offsetCount)
     let logger = actorApi.LoggerFactory.CreateLogger "Query"
     logger.LogInformation "Query started"
     let subQueue = Source.queue OverflowStrategy.Fail 1024
@@ -169,28 +168,35 @@ let init<'TDataEvent, 'TPredicate, 't when 'TDataEvent :> IMessageWithCID> (acto
     let runnableGraph = subQueue |> Source.toMat subSink Keep.both
 
     let queue, subRunnable = runnableGraph |> Graph.run actorApi.Materializer
+
+    // A journal-read error must never silently complete the projection stream
+    // (frozen read models in a healthy-looking process). Restart the source
+    // with backoff instead — resuming from the last offset the handler actually
+    // processed, so a restart never replays already-projected events.
+    let mutable lastProcessedOffset = offsetCount
+
+    let restartSettings =
+        RestartSettings.Create(TimeSpan.FromSeconds 1.0, TimeSpan.FromSeconds 30.0, 0.2)
+
+    let source =
+        RestartSource.WithBackoff(
+            (fun () -> (readJournal actorApi.System).AllEvents(Offset.Sequence lastProcessedOffset)),
+            restartSettings)
+
     source
-   // |> Source.map(fun x -> printf "onur! %A" (DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff"));  x)
-    |> Source.recover (fun ex ->
-        logger.LogError(ex, "Error in query source")
-        None)
     |> Source.runForEach actorApi.Materializer (fun envelop ->
         try
             let offsetValue = (envelop.Offset :?> Sequence).Value
+            logger.LogTrace("data event : {@dataevent}", envelop.Event)
             let res = handler offsetValue envelop.Event
             res |> List.iter (fun x -> queue.OfferAsync(x).Wait())
+            lastProcessedOffset <- offsetValue
         with ex ->
             logger.LogCritical(ex, "Error in query handler")
             // FailFast, not Exit: Exit runs ProcessExit handlers (which can hang);
             // a broken projection must kill the process immediately and loudly.
             Environment.FailFast("Process terminated due to query projection error", ex))
     |> Async.Start
-
-    subscribeToStream
-        source
-        actorApi.Materializer
-        (Sink.ForEach(fun x -> logger.LogTrace("data event : {@dataevent}", x)))
-    |> ignore
 
     let subscribeCmd = subscribeCmd subRunnable actorApi
     let subscribeCmdWithFilter = subscribeCmdWithFilter subRunnable actorApi
