@@ -577,14 +577,28 @@ module SagaStarter =
         let internal toCheckSagas (event, originator, cid) =
             (event |> box |> Unchecked.nonNull, originator, cid) |> CheckSagas |> Command
 
-        let internal toSendMessage mediator (originator: IActorRef<_>) event =
+        let internal toSendMessage (askTimeout: TimeSpan) mediator (originator: IActorRef<_>) event =
             let cid =
                 toCidWithExisting originator.Path.Name (event.CorrelationId |> ValueLens.Value |> ValueLens.Value)
 
             let message =
                 Send(SagaStarterPath, (event, untyped originator, cid) |> toCheckSagas, true)
 
-            mediator <? message |> Async.RunSynchronously |> ignore // Fire-and-forget ask
+            // Deliberately synchronous: the aggregate blocks here until every saga
+            // this event starts is journaled and subscribed, so the event published
+            // after persist cannot be missed (lost-wakeup race). Deliberately
+            // BOUNDED: without a timeout a saga or SagaStarter failure mid-handshake
+            // parks this entity (and its dispatcher thread) forever. If the
+            // handshake cannot complete, crash the process — fail-fast policy.
+            try
+                (mediator: IActorRef<obj>).Ask(message, Some askTimeout)
+                |> Async.RunSynchronously
+                |> ignore
+            with ex ->
+                Environment.FailFast(
+                    $"FCQRS saga-start handshake did not complete within {askTimeout} for originator '{originator.Path.Name}'. Crashing per fail-fast policy.",
+                    ex)
+
             event |> box |> Unchecked.nonNull
 
         let internal publishEvent (logger: ILogger) (mailbox: Actor<_>) (mediator) event (cid) =
@@ -682,8 +696,11 @@ module SagaStarter =
                         | Some(originator, batches) ->
                             match batches |> List.tryFind (fun (lst, _) -> lst |> List.contains sender.Path.Name) with
                             | None ->
-                                log.Warning(
-                                    "Saga {0} sent Continue but is not tracked for originator {1} (possibly pruned or duplicate delivery)",
+                                // Routine, not anomalous: recovered sagas re-signal
+                                // Continue defensively, and duplicates/pruned batches
+                                // land here too.
+                                log.Debug(
+                                    "Saga {0} sent Continue but no batch is tracked for originator {1} (recovered saga re-signal, pruned batch, or duplicate delivery)",
                                     sender.Path.Name,
                                     originName)
                                 return! set state

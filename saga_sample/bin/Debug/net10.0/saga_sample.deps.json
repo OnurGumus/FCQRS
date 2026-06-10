@@ -8,7 +8,7 @@
     ".NETCoreApp,Version=v10.0": {
       "saga_sample/1.0.0": {
         "dependencies": {
-          "FCQRS": "6.0.0-preview-2",
+          "FCQRS": "6.0.0-preview17",
           "FSharp.Core": "10.0.102",
           "Hocon": "2.0.4",
           "Hocon.Extensions.Configuration": "2.0.4",
@@ -368,7 +368,7 @@
           }
         }
       },
-      "FCQRS.Model/6.0.0-preview-1": {
+      "FCQRS.Model/6.0.0-preview-3": {
         "dependencies": {
           "FSharp.Core": "10.0.102"
         },
@@ -715,6 +715,18 @@
           }
         }
       },
+      "Microsoft.Extensions.Diagnostics.Abstractions/10.0.8": {
+        "dependencies": {
+          "Microsoft.Extensions.DependencyInjection.Abstractions": "10.0.2",
+          "Microsoft.Extensions.Options": "10.0.2"
+        },
+        "runtime": {
+          "lib/net10.0/Microsoft.Extensions.Diagnostics.Abstractions.dll": {
+            "assemblyVersion": "10.0.0.0",
+            "fileVersion": "10.0.826.23019"
+          }
+        }
+      },
       "Microsoft.Extensions.FileProviders.Abstractions/10.0.2": {
         "dependencies": {
           "Microsoft.Extensions.Primitives": "10.0.2"
@@ -744,6 +756,21 @@
           "lib/net10.0/Microsoft.Extensions.FileSystemGlobbing.dll": {
             "assemblyVersion": "10.0.0.0",
             "fileVersion": "10.0.225.61305"
+          }
+        }
+      },
+      "Microsoft.Extensions.Hosting.Abstractions/10.0.8": {
+        "dependencies": {
+          "Microsoft.Extensions.Configuration.Abstractions": "10.0.2",
+          "Microsoft.Extensions.DependencyInjection.Abstractions": "10.0.2",
+          "Microsoft.Extensions.Diagnostics.Abstractions": "10.0.8",
+          "Microsoft.Extensions.FileProviders.Abstractions": "10.0.2",
+          "Microsoft.Extensions.Logging.Abstractions": "10.0.2"
+        },
+        "runtime": {
+          "lib/net10.0/Microsoft.Extensions.Hosting.Abstractions.dll": {
+            "assemblyVersion": "10.0.0.0",
+            "fileVersion": "10.0.826.23019"
           }
         }
       },
@@ -1223,7 +1250,7 @@
           }
         }
       },
-      "FCQRS/6.0.0-preview-2": {
+      "FCQRS/6.0.0-preview17": {
         "dependencies": {
           "Akka": "1.5.59",
           "Akka.Cluster": "1.5.59",
@@ -1251,7 +1278,7 @@
           "DotNetty.Handlers": "0.7.6",
           "DotNetty.Transport": "0.7.6",
           "Dynamitey": "3.0.3",
-          "FCQRS.Model": "6.0.0-preview-1",
+          "FCQRS.Model": "6.0.0-preview-3",
           "FCQRS.Serialization": "6.0.0-preview-1",
           "FSharp.Core": "10.0.102",
           "FSharp.Interop.Dynamic": "5.0.1.268",
@@ -1272,9 +1299,11 @@
           "Microsoft.Extensions.Configuration.FileExtensions": "10.0.2",
           "Microsoft.Extensions.DependencyInjection": "10.0.2",
           "Microsoft.Extensions.DependencyInjection.Abstractions": "10.0.2",
+          "Microsoft.Extensions.Diagnostics.Abstractions": "10.0.8",
           "Microsoft.Extensions.FileProviders.Abstractions": "10.0.2",
           "Microsoft.Extensions.FileProviders.Physical": "10.0.2",
           "Microsoft.Extensions.FileSystemGlobbing": "10.0.2",
+          "Microsoft.Extensions.Hosting.Abstractions": "10.0.8",
           "Microsoft.Extensions.Logging": "10.0.2",
           "Microsoft.Extensions.Logging.Abstractions": "10.0.2",
           "Microsoft.Extensions.ObjectPool": "10.0.2",
@@ -1497,12 +1526,12 @@
       "path": "dynamitey/3.0.3",
       "hashPath": "dynamitey.3.0.3.nupkg.sha512"
     },
-    "FCQRS.Model/6.0.0-preview-1": {
+    "FCQRS.Model/6.0.0-preview-3": {
       "type": "package",
       "serviceable": true,
-      "sha512": "sha512-TxV7xSgEZCA3dtKEKTQkSB5xQxHQ+BFg8VVU9IPwKo1r2hdLLElnulaES6bL10FiCGiB9OTlvvUKd+IwxHPkAw==",
-      "path": "fcqrs.model/6.0.0-preview-1",
-      "hashPath": "fcqrs.model.6.0.0-preview-1.nupkg.sha512"
+      "sha512": "sha512-YVhDFJvLfysQlyVqANmOTyle2juiYYygM0rTeABqLTdgTy9DoWuW1kliSJ605fDRVqkZCcgZNsGEnzPkymctZQ==",
+      "path": "fcqrs.model/6.0.0-preview-3",
+      "hashPath": "fcqrs.model.6.0.0-preview-3.nupkg.sha512"
     },
     "FCQRS.Serialization/6.0.0-preview-1": {
       "type": "package",
@@ -1651,6 +1680,13 @@
       "path": "microsoft.extensions.dependencyinjection.abstractions/10.0.2",
       "hashPath": "microsoft.extensions.dependencyinjection.abstractions.10.0.2.nupkg.sha512"
     },
+    "Microsoft.Extensions.Diagnostics.Abstractions/10.0.8": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-+f4C5g78QCGNyxzUfrTYsB7qYx06Zca0e88s3qFlea9/lQhgPImYdNprlgzl1uHhRU3fVHLfmbijayU2sJEZ6w==",
+      "path": "microsoft.extensions.diagnostics.abstractions/10.0.8",
+      "hashPath": "microsoft.extensions.diagnostics.abstractions.10.0.8.nupkg.sha512"
+    },
     "Microsoft.Extensions.FileProviders.Abstractions/10.0.2": {
       "type": "package",
       "serviceable": true,
@@ -1671,6 +1707,13 @@
       "sha512": "sha512-XozoMaWcFIv1tv0LDF+YMeZYjiNiNIewpNdZ3TEoVGf8ROrp0hVoEdUyUBsI8oYGM5U3Z5hiNEv0j2Z5COnMgg==",
       "path": "microsoft.extensions.filesystemglobbing/10.0.2",
       "hashPath": "microsoft.extensions.filesystemglobbing.10.0.2.nupkg.sha512"
+    },
+    "Microsoft.Extensions.Hosting.Abstractions/10.0.8": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-MoOWFPT88/pDfmWpbU9PydKRX/rJFQkliowE/L9wbQcl94IicUphb5BFgepkWiDkYYxPnuEqjN4buzOGW4vJpQ==",
+      "path": "microsoft.extensions.hosting.abstractions/10.0.8",
+      "hashPath": "microsoft.extensions.hosting.abstractions.10.0.8.nupkg.sha512"
     },
     "Microsoft.Extensions.Logging/10.0.2": {
       "type": "package",
@@ -1889,7 +1932,7 @@
       "path": "system.security.cryptography.protecteddata/10.0.2",
       "hashPath": "system.security.cryptography.protecteddata.10.0.2.nupkg.sha512"
     },
-    "FCQRS/6.0.0-preview-2": {
+    "FCQRS/6.0.0-preview17": {
       "type": "project",
       "serviceable": false,
       "sha512": ""

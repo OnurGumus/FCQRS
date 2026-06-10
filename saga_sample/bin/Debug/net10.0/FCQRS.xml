@@ -2,6 +2,156 @@
 <doc>
 <assembly><name>FCQRS</name></assembly>
 <members>
+<member name="M:FCQRS.SubscribeExtensions.SubscribeForFirst``1(FCQRS.Query.ISubscribe{``0},FCQRS.Model.Data.CID,System.Func{``0,System.Boolean})">
+<summary>
+ Subscribe for the first event matching the correlation id and a filter.
+</summary>
+</member>
+<member name="M:FCQRS.SubscribeExtensions.SubscribeForFirst``1(FCQRS.Query.ISubscribe{``0},FCQRS.Model.Data.CID)">
+<summary>
+ Subscribe for the first event matching the correlation id (take = 1).
+</summary>
+</member>
+<member name="M:FCQRS.SubscribeExtensions.SubscribeFor``1(FCQRS.Query.ISubscribe{``0},System.Func{``0,System.Boolean},System.Int32)">
+<summary>
+ Subscribe for `take` events matching a filter.
+</summary>
+</member>
+<member name="M:FCQRS.SubscribeExtensions.SubscribeFor``1(FCQRS.Query.ISubscribe{``0},FCQRS.Model.Data.CID,System.Func{``0,System.Boolean},System.Int32)">
+<summary>
+ Subscribe for `take` events matching the correlation id and a filter.
+</summary>
+</member>
+<member name="M:FCQRS.SubscribeExtensions.SubscribeFor``1(FCQRS.Query.ISubscribe{``0},FCQRS.Model.Data.CID,System.Int32)">
+<summary>
+ Subscribe for `take` events matching the correlation id.
+</summary>
+</member>
+<member name="T:FCQRS.SubscribeExtensions">
+<summary>
+ Top-level C# extension methods for ISubscribe. These live at *namespace*
+ level (not nested inside the FCQRS.CSharp module) so C# actually discovers
+ them as extensions — consumers `using FCQRS;` and write
+ `subs.SubscribeFor(cid, n)` / `subs.SubscribeForFirst(cid)`.
+</summary>
+</member>
+<member name="M:FCQRS.AsyncTaskExtensions.AsTask``1(Microsoft.FSharp.Control.FSharpAsync{``0})">
+<summary>
+ Run an F# Async as a Task (Async.StartAsTask).
+</summary>
+</member>
+<member name="T:FCQRS.AsyncTaskExtensions">
+<summary>
+ Top-level Async-&gt;Task conversion, discoverable from C# as `someAsync.AsTask()`
+ (`using FCQRS;`). Replaces the non-discoverable FCQRS.CSharp.AsyncExtensions.
+</summary>
+</member>
+<member name="M:FCQRS.FcqrsServiceCollectionExtensions.AggregateFactory``1(System.IServiceProvider)">
+<summary>
+ Resolve a registered aggregate&apos;s entity-ref factory by its CLR type. Use
+ inside a saga&apos;s `create` delegate to reference the aggregates it coordinates.
+</summary>
+</member>
+<member name="M:FCQRS.FcqrsServiceCollectionExtensions.AddFcqrs(Microsoft.Extensions.DependencyInjection.IServiceCollection,System.String,System.String)">
+<summary>
+ Register a SQLite-backed FCQRS actor system and the startup wiring. Returns
+ a builder for fluent .AddAggregate / .AddSaga / .AddProjection registration.
+ IConfiguration and ILoggerFactory are taken from the container.
+</summary>
+</member>
+<member name="T:FCQRS.FcqrsServiceCollectionExtensions">
+<summary>
+ `services.AddFcqrs(...)` and `serviceProvider.Aggregate&amp;lt;T&amp;gt;()`.
+</summary>
+</member>
+<member name="T:FCQRS.FcqrsHostedService">
+<summary>
+ The single startup step: creates the actor system (via the IActor singleton),
+ runs the recorded registration steps in order, wires the saga-starter from all
+ registered sagas, and starts the projection. Stops the actor system on shutdown.
+</summary>
+</member>
+<member name="P:FCQRS.FcqrsBuilder.Services">
+<summary>
+ The underlying service collection (so you can keep chaining .Add… on it).
+</summary>
+</member>
+<member name="M:FCQRS.FcqrsBuilder.AddSaga``4(System.Func{System.IServiceProvider,``0},System.Func{System.Object,System.Boolean})">
+<summary>
+ Register a saga and the event that starts it. `create` builds the saga
+ (use sp.AggregateFactory&amp;lt;T&amp;gt;() to reference the aggregates it coordinates);
+ `startOn` decides which originator events spawn an instance.
+</summary>
+</member>
+<member name="M:FCQRS.FcqrsBuilder.AddProjection(System.Func{System.IServiceProvider,System.Func{System.Int64,System.Object,System.Collections.Generic.IList{FCQRS.Model.Data.IMessageWithCID}}},System.Func{System.IServiceProvider,System.Int32})">
+<summary>
+ Register the read-model projection, building the handler (and resuming offset)
+ from DI. Use this overload when the projection needs services — e.g. an
+ ILoggerFactory — so it resolves them the same way the actor system does.
+</summary>
+</member>
+<member name="M:FCQRS.FcqrsBuilder.AddProjection(System.Func{System.Int64,System.Object,System.Collections.Generic.IList{FCQRS.Model.Data.IMessageWithCID}},System.Int32)">
+<summary>
+ Register the read-model projection, resuming from the given offset (default 0).
+</summary>
+</member>
+<member name="M:FCQRS.FcqrsBuilder.AddAggregate``4">
+<summary>
+ Register an aggregate. The shard is constructed via DI (ctor args resolved
+ from the container) and Init&apos;d at startup; its Handler and AggregateRefs are
+ registered so endpoints/sagas can resolve them.
+</summary>
+</member>
+<member name="T:FCQRS.FcqrsBuilder">
+<summary>
+ Fluent registration builder. Each AddXxx records a step to run at startup and,
+ where relevant, registers the resolved piece (Handler, refs, subscription) in
+ DI. Returned by IServiceCollection.AddFcqrs.
+</summary>
+</member>
+<member name="F:FCQRS.FcqrsRuntime.Subscription@">
+<summary>
+ The projection subscription, set when the projection step runs at startup.
+</summary>
+</member>
+<member name="P:FCQRS.FcqrsRuntime.Subscription(FCQRS.Query.ISubscribe)">
+<summary>
+ The projection subscription, set when the projection step runs at startup.
+</summary>
+</member>
+<member name="P:FCQRS.FcqrsRuntime.Subscription">
+<summary>
+ The projection subscription, set when the projection step runs at startup.
+</summary>
+</member>
+<member name="P:FCQRS.FcqrsRuntime.Actor">
+<summary>
+ The live actor system.
+</summary>
+</member>
+<member name="M:FCQRS.FcqrsRuntime.Register(System.Type,FCQRS.CSharp.AggregateFactory,System.Object)">
+<summary>
+ Record an aggregate&apos;s wiring under its CLR type (called at startup).
+</summary>
+</member>
+<member name="M:FCQRS.FcqrsRuntime.Refs``2(System.Type)">
+<summary>
+ The typed refs of a registered aggregate.
+</summary>
+</member>
+<member name="M:FCQRS.FcqrsRuntime.Factory(System.Type)">
+<summary>
+ The entity-ref factory of a registered aggregate.
+</summary>
+</member>
+<member name="T:FCQRS.FcqrsRuntime">
+<summary>
+ Runtime registry, populated once at host startup. Holds the live actor system,
+ each aggregate&apos;s factory + refs (keyed by the aggregate&apos;s CLR type) and the
+ projection subscription. Resolved from DI so endpoints can pull the Handlers /
+ the subscription, and saga registrations can look up the aggregates they wire.
+</summary>
+</member>
 <member name="T:FCQRS.Common.PrefixConversion">
 <summary>
  Default shard name used if no specific sharding strategy is provided.
@@ -327,6 +477,17 @@
  &lt;typeparam name=&quot;&apos;CommandDetails&quot;&gt;The specific type of the command payload.&lt;/typeparam&gt;
 </summary>
 </member>
+<member name="P:FCQRS.Common.IEnvelope.Payload">
+<summary>
+ The command/event details, boxed.
+</summary>
+</member>
+<member name="T:FCQRS.Common.IEnvelope">
+<summary>
+ Non-generic access to a Command&amp;lt;_&amp;gt;/Event&amp;lt;_&amp;gt; payload, so a boxed message
+ can be unwrapped to its details without knowing the concrete payload type.
+</summary>
+</member>
 <member name="T:FCQRS.Common.ISerializable">
 <summary>
  Marker interface for types that can be serialized by Akka.NET.
@@ -641,6 +802,15 @@
  Custom configuration provider for in-memory HOCON strings
 </summary>
 </member>
+<member name="T:FCQRS.Query.ISubscribe">
+<summary>
+ The canonical subscription stream: a non-generic shorthand for
+ ISubscribe&amp;lt;IMessageWithCID&amp;gt; — the type every FCQRS projection /
+ read-your-writes subscription actually uses (cf. IEnumerable vs
+ IEnumerable&amp;lt;T&amp;gt;). Lets consumers write ISubscribe instead of the closed
+ generic, and inject it by that name.
+</summary>
+</member>
 <member name="M:FCQRS.Query.ISubscribe`1.Subscribe(FCQRS.Model.Data.CID,Microsoft.FSharp.Core.FSharpFunc{`0,System.Boolean},System.Int32,Microsoft.FSharp.Core.FSharpOption{Microsoft.FSharp.Core.FSharpFunc{`0,Microsoft.FSharp.Core.Unit}},Microsoft.FSharp.Core.FSharpOption{System.Threading.CancellationToken})">
  <summary>
  Subscribes to events matching a specific correlation ID and an additional filter.
@@ -704,29 +874,239 @@
  </code>
  </example>
 </member>
-<member name="M:FCQRS.CSharp.SagaBuilderCSharp.InitSimple``3(FCQRS.Common.IActor,``1,System.Func{FCQRS.Common.Event{``0},``1,``2,FCQRS.Common.EventAction{``2}},System.Func{``1,``2,System.Boolean,FCQRS.CSharp.SagaSideEffectResult{``2}},System.Func{System.String,Akkling.Cluster.Sharding.IEntityRef{System.Object}},System.String)">
+<member name="M:FCQRS.Query.asDefaultSubscribe(FCQRS.Query.ISubscribe{FCQRS.Model.Data.IMessageWithCID})">
+<summary>
+ Adapt a generic ISubscribe&amp;lt;IMessageWithCID&amp;gt; to the non-generic ISubscribe
+ (forwards every Subscribe overload to the inner subscription).
+</summary>
+</member>
+<member name="P:FCQRS.FSharp.Projection.Handle">
+<summary>
+ Called per persisted event; returns the read-model events to publish
+ to subscribers (empty list = nothing to notify).
+</summary>
+</member>
+<member name="P:FCQRS.FSharp.Projection.LastOffset">
+<summary>
+ Resume from this journal offset (e.g. the last committed offset).
+</summary>
+</member>
+<member name="T:FCQRS.FSharp.Projection">
+<summary>
+ A read-model projection definition.
+</summary>
+</member>
+<member name="T:FCQRS.FSharp.SagaHandle">
+<summary>
+ What you get back after registering a saga.
+</summary>
+</member>
+<member name="P:FCQRS.FSharp.Saga`3.StartOn">
+<summary>
+ Which originator events spawn an instance of this saga. Typed to the
+ originator&apos;s event so &apos;OriginatorEvent is inferred from the definition —
+ there is no type argument to remember (or to get silently wrong).
+</summary>
+</member>
+<member name="P:FCQRS.FSharp.Saga`3.Originator">
+<summary>
+ The aggregate the saga starts from (its commands&apos; Originator target).
+</summary>
+</member>
+<member name="T:FCQRS.FSharp.Saga`3">
+<summary>
+ A pure saga definition. HandleEvent is obj-based so a single saga can match
+ events from several aggregates; ApplySideEffects returns the transition plus the
+ commands to dispatch.
+</summary>
+</member>
+<member name="P:FCQRS.FSharp.AggregateHandle`2.Send">
+<summary>
+ Send a command and await the first matching event (read-your-writes).
+</summary>
+</member>
+<member name="P:FCQRS.FSharp.AggregateHandle`2.Factory">
+<summary>
+ Entity-ref factory (DEFAULT_SHARD applied) — hand this to a saga to target it.
+</summary>
+</member>
+<member name="T:FCQRS.FSharp.AggregateHandle`2">
+<summary>
+ What you get back after registering an aggregate.
+</summary>
+</member>
+<member name="P:FCQRS.FSharp.Aggregate`3.Fold">
+<summary>
+ applyEvent (fold): event + current state -&gt; next state (pure).
+</summary>
+</member>
+<member name="P:FCQRS.FSharp.Aggregate`3.Decide">
+<summary>
+ handleCommand (decide): command + current state -&gt; what to do.
+</summary>
+</member>
+<member name="T:FCQRS.FSharp.Aggregate`3">
+<summary>
+ A pure aggregate definition: the four things that define an event-sourced
+ aggregate. No wiring, no IActor.
+</summary>
+</member>
+<member name="T:FCQRS.FSharp.AggregateFactory">
+<summary>
+ An aggregate&apos;s entity-ref factory: an id -&gt; its sharded actor ref.
+</summary>
+</member>
+<member name="M:FCQRS.FSharp.toOriginatorAfter(Microsoft.FSharp.Core.FSharpFunc{System.String,Akkling.Cluster.Sharding.IEntityRef{System.Object}},System.Int64,System.String,System.Object)">
+<summary>
+ Delayed variant of toOriginator (delayMs, taskName key).
+</summary>
+</member>
+<member name="M:FCQRS.FSharp.toActor(Akkling.ActorRefs.IActorRef{System.Object},System.Object)">
+<summary>
+ Send a command to a concrete actor ref.
+</summary>
+</member>
+<member name="M:FCQRS.FSharp.toAggregate(Microsoft.FSharp.Core.FSharpFunc{System.String,Akkling.Cluster.Sharding.IEntityRef{System.Object}},System.String,System.Object)">
+<summary>
+ Send a command to a specific aggregate instance by id (cross-aggregate).
+</summary>
+</member>
+<member name="M:FCQRS.FSharp.toOriginator(Microsoft.FSharp.Core.FSharpFunc{System.String,Akkling.Cluster.Sharding.IEntityRef{System.Object}},System.Object)">
+<summary>
+ Send a command back to the saga&apos;s originator aggregate.
+</summary>
+</member>
+<member name="M:FCQRS.FSharp.Fcqrs.projection(FCQRS.Common.IActor,FCQRS.FSharp.Projection)">
+<summary>
+ Register the read-model projection and return the subscription stream.
+</summary>
+</member>
+<member name="M:FCQRS.FSharp.Fcqrs.wireSagaStarters(FCQRS.Common.IActor,Microsoft.FSharp.Collections.FSharpList{FCQRS.FSharp.SagaHandle})">
+<summary>
+ Wire every registered saga into one saga-starter (or the empty starter if
+ none). Call after the aggregates + sagas are registered.
+</summary>
+</member>
+<member name="M:FCQRS.FSharp.Fcqrs.saga``3(FCQRS.Common.IActor,FCQRS.FSharp.Saga{``0,``1,``2})">
+<summary>
+ Register a saga and return its handle. The originator-event type is inferred
+ from `def.StartOn`, so there are no type arguments to supply:
+ `Fcqrs.saga api def`.
+</summary>
+</member>
+<member name="M:FCQRS.FSharp.Fcqrs.aggregate``3(FCQRS.Common.IActor,FCQRS.FSharp.Aggregate{``0,``1,``2})">
+<summary>
+ Register an aggregate and return its typed handle. Calling this IS the
+ registration (it initializes the sharding region).
+</summary>
+</member>
+<member name="M:FCQRS.FSharp.Fcqrs.aggregateId(System.String)">
+<summary>
+ An aggregate id from a string (e.g. a document/user key).
+</summary>
+</member>
+<member name="M:FCQRS.FSharp.Fcqrs.newCid">
+<summary>
+ A fresh correlation id (UUID v7).
+</summary>
+</member>
+<member name="M:FCQRS.FSharp.Fcqrs.actor(Microsoft.Extensions.Configuration.IConfiguration,Microsoft.Extensions.Logging.ILoggerFactory,Microsoft.FSharp.Core.FSharpOption{FCQRS.Actor.Connection},System.String)">
+<summary>
+ Create the actor system from plain values (cluster name as a string).
+</summary>
+</member>
+<member name="M:FCQRS.FSharp.Fcqrs.connect(FCQRS.Actor.DBType,System.String)">
+<summary>
+ Build a SQLite/etc. Connection from a raw connection string (ShortString hidden).
+</summary>
+</member>
+<member name="M:FCQRS.FSharp.Fcqrs.refFor(Akkling.Cluster.Sharding.EntityFac{System.Object},System.String)">
+<summary>
+ The single place DEFAULT_SHARD / RefFor is applied (mirrors CSharpInterop).
+</summary>
+</member>
+<member name="T:FCQRS.FSharp">
+<summary>
+ Idiomatic-F# functional facade for FCQRS.
+
+ Gives F# consumers the same one-call ergonomics the C# host-builder
+ (HostExtensions.fs) gives C#, but with F# idioms: records-of-functions for the
+ definitions, typed handles for the results, an explicit wiring pipeline, and
+ plain helpers for saga side effects. It is a *pure addition* — it wraps only the
+ existing primitives (IActor.InitializeActor / SagaBuilder.initSimple / Query.init
+ / InitializeSagaStarter / CreateCommandSubscription / Actor.api) and changes
+ nothing in the C# interop layer or the core.
+
+     open FCQRS.FSharp
+     let api       = Fcqrs.actor config loggerFactory (Some (Fcqrs.connect DBType.Sqlite conn)) &quot;Cluster&quot;
+     let documents = Fcqrs.aggregate api { Name=&quot;Document&quot;; Initial=...; Decide=...; Fold=... }
+     let users     = Fcqrs.aggregate api { Name=&quot;User&quot;; ... }
+     let quota     = Fcqrs.saga api (quotaDef documents.Factory users.Factory)
+     Fcqrs.wireSagaStarters api [ quota ]
+     let subs      = Fcqrs.projection api { LastOffset = 0; Handle = handle }
+     // send a command and await the resulting event (read-your-writes):
+     let! ev = documents.Send (Fcqrs.newCid()) (Fcqrs.aggregateId id) cmd (fun e -&gt; ...)
+</summary>
+</member>
+<member name="M:FCQRS.CSharp.Saga`3.StateChanged(`2)">
+<summary>
+ Transition / event DSL — over TState.
+</summary>
+</member>
+<member name="M:FCQRS.CSharp.Saga`3.Init(FCQRS.Common.IActor)">
+<summary>
+ Register the saga; calling this IS the registration.
+</summary>
+</member>
+<member name="M:FCQRS.CSharp.Saga`3.Factory(FCQRS.Common.IActor)">
+<summary>
+ The factory the saga-starter spawns instances from.
+</summary>
+</member>
+<member name="T:FCQRS.CSharp.Saga`3">
+<summary>
+ C#-friendly abstract base for a saga. A concrete saga supplies InitialData,
+ SagaName, Originator (the aggregate it starts from), HandleEvent and
+ ApplySideEffects; the base provides the wiring (Init/Factory) and the small
+ transition DSL. Designed to be subclassed from C#.
+</summary>
+</member>
+<member name="M:FCQRS.CSharp.Aggregate`3.Init(FCQRS.Common.IActor)">
+<summary>
+ Register the aggregate and hand back its Factory + Handler.
+</summary>
+</member>
+<member name="T:FCQRS.CSharp.Aggregate`3">
+<summary>
+ C#-friendly abstract base for an event-sourced aggregate. A concrete
+ aggregate supplies only InitialState, EntityName, HandleCommand (the
+ decision) and ApplyEvent (the fold); the base provides the wiring (Init).
+ Designed to be subclassed from C#.
+</summary>
+</member>
+<member name="M:FCQRS.CSharp.SagaApi.InitSimple``3(FCQRS.Common.IActor,``1,System.Func{FCQRS.Common.Event{``0},``1,``2,FCQRS.Common.EventAction{``2}},System.Func{``1,``2,System.Boolean,FCQRS.CSharp.SagaSideEffectResult{``2}},FCQRS.CSharp.AggregateFactory,System.String)">
 <summary>
  Initialize a saga with simplified signatures and no apply
 </summary>
 </member>
-<member name="M:FCQRS.CSharp.SagaBuilderCSharp.InitSimple``3(FCQRS.Common.IActor,``1,System.Func{FCQRS.Common.Event{``0},``1,``2,FCQRS.Common.EventAction{``2}},System.Func{``1,``2,System.Boolean,FCQRS.CSharp.SagaSideEffectResult{``2}},System.Func{``1,``2,``1},System.Func{System.String,Akkling.Cluster.Sharding.IEntityRef{System.Object}},System.String)">
+<member name="M:FCQRS.CSharp.SagaApi.InitSimple``3(FCQRS.Common.IActor,``1,System.Func{FCQRS.Common.Event{``0},``1,``2,FCQRS.Common.EventAction{``2}},System.Func{``1,``2,System.Boolean,FCQRS.CSharp.SagaSideEffectResult{``2}},System.Func{``1,``2,``1},FCQRS.CSharp.AggregateFactory,System.String)">
 <summary>
  Initialize a saga with simplified signatures - no FSharpOption, typed events
  handleEvent: (event, data, currentState) -&gt; EventAction
  applySideEffects: (data, state, recovering) -&gt; SagaSideEffectResult
 </summary>
 </member>
-<member name="M:FCQRS.CSharp.SagaBuilderCSharp.Init``3(FCQRS.Common.IActor,``1,System.Func{System.Object,FCQRS.Common.SagaState{``1,Microsoft.FSharp.Core.FSharpOption{``2}},FCQRS.Common.EventAction{``2}},System.Func{FCQRS.Common.SagaState{``1,``2},System.Boolean,FCQRS.CSharp.SagaSideEffectResult{``2}},System.Func{System.String,Akkling.Cluster.Sharding.IEntityRef{System.Object}},System.String)">
+<member name="M:FCQRS.CSharp.SagaApi.Init``3(FCQRS.Common.IActor,``1,System.Func{System.Object,FCQRS.Common.SagaState{``1,Microsoft.FSharp.Core.FSharpOption{``2}},FCQRS.Common.EventAction{``2}},System.Func{FCQRS.Common.SagaState{``1,``2},System.Boolean,FCQRS.CSharp.SagaSideEffectResult{``2}},FCQRS.CSharp.AggregateFactory,System.String)">
 <summary>
  Initialize a saga without apply (no data updates based on state)
 </summary>
 </member>
-<member name="M:FCQRS.CSharp.SagaBuilderCSharp.Init``3(FCQRS.Common.IActor,``1,System.Func{System.Object,FCQRS.Common.SagaState{``1,Microsoft.FSharp.Core.FSharpOption{``2}},FCQRS.Common.EventAction{``2}},System.Func{FCQRS.Common.SagaState{``1,``2},System.Boolean,FCQRS.CSharp.SagaSideEffectResult{``2}},System.Func{``1,``2,``1},System.Func{System.String,Akkling.Cluster.Sharding.IEntityRef{System.Object}},System.String)">
+<member name="M:FCQRS.CSharp.SagaApi.Init``3(FCQRS.Common.IActor,``1,System.Func{System.Object,FCQRS.Common.SagaState{``1,Microsoft.FSharp.Core.FSharpOption{``2}},FCQRS.Common.EventAction{``2}},System.Func{FCQRS.Common.SagaState{``1,``2},System.Boolean,FCQRS.CSharp.SagaSideEffectResult{``2}},System.Func{``1,``2,``1},FCQRS.CSharp.AggregateFactory,System.String)">
 <summary>
  Initialize a saga with simplified apply - just takes data and unwrapped state, returns new data
 </summary>
 </member>
-<member name="M:FCQRS.CSharp.SagaBuilderCSharp.Init``3(FCQRS.Common.IActor,``1,System.Func{System.Object,FCQRS.Common.SagaState{``1,Microsoft.FSharp.Core.FSharpOption{``2}},FCQRS.Common.EventAction{``2}},System.Func{FCQRS.Common.SagaState{``1,``2},System.Boolean,FCQRS.CSharp.SagaSideEffectResult{``2}},System.Func{FCQRS.Common.SagaState{``1,FCQRS.Common.SagaBuilder.SagaStateWrapper{``2,``0}},FCQRS.Common.SagaState{``1,FCQRS.Common.SagaBuilder.SagaStateWrapper{``2,``0}}},System.Func{System.String,Akkling.Cluster.Sharding.IEntityRef{System.Object}},System.String)">
+<member name="M:FCQRS.CSharp.SagaApi.Init``3(FCQRS.Common.IActor,``1,System.Func{System.Object,FCQRS.Common.SagaState{``1,Microsoft.FSharp.Core.FSharpOption{``2}},FCQRS.Common.EventAction{``2}},System.Func{FCQRS.Common.SagaState{``1,``2},System.Boolean,FCQRS.CSharp.SagaSideEffectResult{``2}},System.Func{FCQRS.Common.SagaState{``1,FCQRS.Common.SagaBuilder.SagaStateWrapper{``2,``0}},FCQRS.Common.SagaState{``1,FCQRS.Common.SagaBuilder.SagaStateWrapper{``2,``0}}},FCQRS.CSharp.AggregateFactory,System.String)">
 <summary>
  Initialize a saga with C# delegates
  &apos;TEvent - The triggering event type (from the originator aggregate)
@@ -734,27 +1114,28 @@
  &apos;TSagaState - User-defined saga states
 </summary>
 </member>
-<member name="M:FCQRS.CSharp.SagaBuilderCSharp.Factory(FCQRS.Common.IActor,Akkling.Cluster.Sharding.EntityFac{System.Object},System.String)">
+<member name="M:FCQRS.CSharp.SagaApi.Factory(FCQRS.Common.IActor,Akkling.Cluster.Sharding.EntityFac{System.Object},System.String)">
 <summary>
  Get the factory for a saga
 </summary>
 </member>
-<member name="T:FCQRS.CSharp.SagaBuilderCSharp">
+<member name="T:FCQRS.CSharp.SagaApi">
 <summary>
- C#-friendly saga builder
+ Low-level C# saga API (mirrors ActorApi/QueryApi). For most sagas, prefer the
+ Saga&amp;lt;_,_,_&amp;gt; base class, which wraps this.
 </summary>
 </member>
-<member name="M:FCQRS.CSharp.SagaCommands.ToOriginatorDelayed(System.Func{System.String,Akkling.Cluster.Sharding.IEntityRef{System.Object}},System.Object,System.Int64,System.String)">
+<member name="M:FCQRS.CSharp.SagaCommands.ToOriginatorDelayed(FCQRS.CSharp.AggregateFactory,System.Object,System.Int64,System.String)">
 <summary>
  Create a delayed command
 </summary>
 </member>
-<member name="M:FCQRS.CSharp.SagaCommands.ToOriginator(System.Func{System.String,Akkling.Cluster.Sharding.IEntityRef{System.Object}},System.Object)">
+<member name="M:FCQRS.CSharp.SagaCommands.ToOriginator(FCQRS.CSharp.AggregateFactory,System.Object)">
 <summary>
  Create a command to send to the originator aggregate
 </summary>
 </member>
-<member name="M:FCQRS.CSharp.SagaCommands.ToAggregate(System.Func{System.String,Akkling.Cluster.Sharding.IEntityRef{System.Object}},System.String,System.Object)">
+<member name="M:FCQRS.CSharp.SagaCommands.ToAggregate(FCQRS.CSharp.AggregateFactory,System.String,System.Object)">
 <summary>
  Create a command to send to a named aggregate
 </summary>
@@ -854,49 +1235,72 @@
  Extension methods for ISubscribe
 </summary>
 </member>
-<member name="M:FCQRS.CSharp.IActorExtensions.SendCommandAsync``2(FCQRS.Common.IActor,System.Func{System.String,Akkling.Cluster.Sharding.IEntityRef{System.Object}},FCQRS.Model.Data.CID,FCQRS.Model.Data.AggregateId,``1,System.Func{``0,System.Boolean})">
+<member name="T:FCQRS.CSharp.IActorExtensions">
+<summary>
+ Obsolete alias for &lt;see cref=&quot;T:FCQRS.CSharp.ActorWiring&quot;/&gt;. Renamed because
+ most members are static wiring helpers, not extension methods.
+</summary>
+</member>
+<member name="M:FCQRS.CSharp.ActorWiring.SendCommandAsync``2(FCQRS.Common.IActor,FCQRS.CSharp.AggregateFactory,FCQRS.Model.Data.CID,FCQRS.Model.Data.AggregateId,``1,System.Func{``0,System.Boolean})">
 <summary>
  Send a command and wait for the event (C# friendly)
 </summary>
 </member>
-<member name="M:FCQRS.CSharp.IActorExtensions.InitializeSagaStarterEmpty(FCQRS.Common.IActor)">
+<member name="M:FCQRS.CSharp.ActorWiring.InitializeSagaStarterEmpty(FCQRS.Common.IActor)">
 <summary>
  Initialize saga starter with no sagas (for simple scenarios)
 </summary>
 </member>
-<member name="M:FCQRS.CSharp.IActorExtensions.InitSagaStarterSimple(FCQRS.Common.IActor,System.Func{System.Object,System.Collections.Generic.IList{System.Func{System.String,Akkling.Cluster.Sharding.IEntityRef{System.Object}}}})">
+<member name="M:FCQRS.CSharp.ActorWiring.InitSagaStarterSimple(FCQRS.Common.IActor,System.Func{System.Object,System.Collections.Generic.IList{FCQRS.CSharp.AggregateFactory}})">
 <summary>
  C#-friendly simplified InitializeSagaStarter where you just return factories
 </summary>
 </member>
-<member name="M:FCQRS.CSharp.IActorExtensions.InitSagaStarterEmpty(FCQRS.Common.IActor)">
+<member name="M:FCQRS.CSharp.ActorWiring.InitSagaStarterEmpty(FCQRS.Common.IActor)">
 <summary>
  Static helper for C# where extension may not resolve
 </summary>
 </member>
-<member name="M:FCQRS.CSharp.IActorExtensions.InitSagaStarter(FCQRS.Common.IActor,System.Func{System.Object,System.Collections.Generic.IList{FCQRS.CSharp.SagaDefinition}})">
+<member name="M:FCQRS.CSharp.ActorWiring.InitSagaStarter(FCQRS.Common.IActor,System.Func{System.Object,System.Collections.Generic.IList{FCQRS.CSharp.SagaDefinition}})">
 <summary>
  C#-friendly InitializeSagaStarter that accepts Func returning IList of SagaDefinition
 </summary>
 </member>
-<member name="M:FCQRS.CSharp.IActorExtensions.InitActor``3(FCQRS.Common.IActor,``0,System.String,System.Func{FCQRS.Common.Command{``1},``0,FCQRS.Common.EventAction{``2}},System.Func{FCQRS.Common.Event{``2},``0,``0})">
+<member name="M:FCQRS.CSharp.ActorWiring.InitAggregate``3(FCQRS.Common.IActor,``0,System.String,System.Func{FCQRS.Common.Command{``1},``0,FCQRS.Common.EventAction{``2}},System.Func{FCQRS.Common.Event{``2},``0,``0})">
+<summary>
+ One-call aggregate wiring: registers the aggregate (sharding region) and
+ returns its Factory + Handler. Collapses the Init/Factory/Handler trio an
+ aggregate would otherwise hand-roll. Call it for EVERY aggregate you want
+ live — registration is the act of calling this, not a side effect.
+</summary>
+</member>
+<member name="M:FCQRS.CSharp.ActorWiring.InitActor``3(FCQRS.Common.IActor,``0,System.String,System.Func{FCQRS.Common.Command{``1},``0,FCQRS.Common.EventAction{``2}},System.Func{FCQRS.Common.Event{``2},``0,``0})">
 <summary>
  C#-friendly InitializeActor that accepts Func delegates instead of F# functions
 </summary>
 </member>
-<member name="M:FCQRS.CSharp.IActorExtensions.CreateCommand``2(FCQRS.Common.IActor,System.Func{System.String,Akkling.Cluster.Sharding.IEntityRef{System.Object}},FCQRS.Model.Data.CID,FCQRS.Model.Data.AggregateId,``1,System.Func{``0,System.Boolean})">
+<member name="M:FCQRS.CSharp.ActorWiring.CreateCommand``2(FCQRS.Common.IActor,FCQRS.CSharp.AggregateFactory,FCQRS.Model.Data.CID,FCQRS.Model.Data.AggregateId,``1,System.Func{``0,System.Boolean})">
 <summary>
  C#-friendly CreateCommandSubscription that returns FSharpAsync (for use with Handler delegate)
 </summary>
 </member>
-<member name="T:FCQRS.CSharp.IActorExtensions">
+<member name="T:FCQRS.CSharp.ActorWiring">
 <summary>
- Extension methods for IActor
+ Low-level wiring over an IActor: register the saga-starter, aggregates and
+ actors, and send commands. Most members are plain static helpers (you call
+ ActorWiring.Foo(actor, …)); a couple are genuine extension methods. For app
+ composition, prefer the host-builder API (AddFcqrs/AddAggregate/AddSaga).
 </summary>
 </member>
 <member name="M:FCQRS.CSharp.QueryApi.InitWithList(FCQRS.Common.IActor,System.Int32,System.Func{System.Int64,System.Object,System.Collections.Generic.IList{FCQRS.Model.Data.IMessageWithCID}})">
 <summary>
- Initialize the query subscription (C# IList version - converts to F# list internally)
+ Obsolete alias — InitWithList is now just an overload of Init.
+</summary>
+</member>
+<member name="M:FCQRS.CSharp.QueryApi.Init(FCQRS.Common.IActor,System.Int32,System.Func{System.Int64,System.Object,System.Collections.Generic.IList{FCQRS.Model.Data.IMessageWithCID}})">
+<summary>
+ Initialize the query subscription (C# IList version - converts to F# list
+ internally). An overload of Init, distinguished by the handler&apos;s return type.
 </summary>
 </member>
 <member name="M:FCQRS.CSharp.QueryApi.Init(FCQRS.Common.IActor,System.Int32,System.Func{System.Int64,System.Object,Microsoft.FSharp.Collections.FSharpList{FCQRS.Model.Data.IMessageWithCID}})">
@@ -966,7 +1370,7 @@
  originator/saga name resolution and the SagaStarter Continue→SagaCheckDone handshake.
 </summary>
 </member>
-<member name="P:FCQRS.CSharp.SagaDefinition.Factory(System.Func{System.String,Akkling.Cluster.Sharding.IEntityRef{System.Object}})">
+<member name="P:FCQRS.CSharp.SagaDefinition.Factory(FCQRS.CSharp.AggregateFactory)">
 <summary>
  Factory function to create entity reference from entity ID
 </summary>
@@ -994,6 +1398,54 @@
  C#-friendly class for defining saga starters (uses class for C# object initializer syntax)
 </summary>
 </member>
+<member name="M:FCQRS.CSharp.TestEnvelope.Event``1(``0,System.Int64)">
+<summary>
+ Wrap an event payload in an Event envelope using the system clock.
+</summary>
+</member>
+<member name="M:FCQRS.CSharp.TestEnvelope.Event``1(``0,System.Int64,System.TimeProvider)">
+<summary>
+ Wrap an event payload in an Event envelope carrying the given version,
+ stamping CreationDate from the given TimeProvider.
+</summary>
+</member>
+<member name="M:FCQRS.CSharp.TestEnvelope.Command``1(``0)">
+<summary>
+ Wrap a command payload in a Command envelope using the system clock.
+</summary>
+</member>
+<member name="M:FCQRS.CSharp.TestEnvelope.Command``1(``0,System.TimeProvider)">
+<summary>
+ Wrap a command payload in a Command envelope, stamping CreationDate from
+ the given TimeProvider. Pass a FakeTimeProvider to test time-dependent
+ decision logic (e.g. sliding-window quotas) deterministically.
+</summary>
+</member>
+<member name="T:FCQRS.CSharp.TestEnvelope">
+<summary>
+ C#-friendly builders for the Command/Event envelopes that the pure
+ handleCommand/applyEvent functions expect. Intended for unit tests: the
+ envelope&apos;s plumbing fields (a fresh MessageId/CID, a UTC timestamp, no
+ sender, empty metadata) are filled in for you, so a test supplies only the
+ payload — and, for events, the aggregate version. The framework builds these
+ envelopes itself at runtime; tests are the one place you build them by hand.
+</summary>
+</member>
+<member name="M:FCQRS.CSharp.Describe.Case(System.Object)">
+<summary>
+ A short case name, e.g. &quot;CreateOrUpdate&quot; for a DocumentCommand.CreateOrUpdate
+ (or a Command/Event wrapping one). Returns &quot;&amp;lt;none&amp;gt;&quot; for null.
+</summary>
+</member>
+<member name="T:FCQRS.CSharp.Describe">
+<summary>
+ Diagnostics helper: a short, readable case name for logging. Unwraps a
+ Command&amp;lt;_&amp;gt;/Event&amp;lt;_&amp;gt; envelope to its payload (via IEnvelope), then a
+ C# `union` to its active case (its generated `.Value`), and falls back to the
+ type name — so F# DUs and plain payloads work too. Reflection-based; meant for
+ logs, not hot paths.
+</summary>
+</member>
 <member name="M:FCQRS.CSharp.EventActions.Persist``1(``0)">
 <summary>
  Create a PersistEvent action (event will be persisted and published)
@@ -1014,89 +1466,123 @@
  C#-friendly factory methods for EventAction
 </summary>
 </member>
-<member name="M:FCQRS.CSharp.StringTypes.TryCreateShortString(System.String,FCQRS.Model.Data.ShortString@)">
-<summary>
- Try to create a ShortString, returns (success, value, errorMessage)
-</summary>
-</member>
-<member name="M:FCQRS.CSharp.StringTypes.TryCreateLongString(System.String,FCQRS.Model.Data.LongString@)">
-<summary>
- Try to create a LongString, returns (success, value, errorMessage)
-</summary>
-</member>
 <member name="T:FCQRS.CSharp.StringTypes">
 <summary>
- C#-friendly string type creation with simple error handling
-</summary>
-</member>
-<member name="M:FCQRS.CSharp.Results.Ok``2(``0)">
-<summary>
- Create a successful result
-</summary>
-</member>
-<member name="M:FCQRS.CSharp.Results.Error``2(``1)">
-<summary>
- Create an error result
+ Obsolete alias — the bool/out Try-create overloads now live on &lt;see cref=&quot;T:FCQRS.CSharp.Values&quot;/&gt;.
 </summary>
 </member>
 <member name="T:FCQRS.CSharp.Results">
 <summary>
- C#-friendly factory methods for FSharpResult
+ Obsolete alias for &lt;see cref=&quot;T:FCQRS.CSharp.FSharpResults&quot;/&gt;. Renamed off the
+ generic &apos;Results&apos; (which also collides with Microsoft.AspNetCore.Http.Results).
 </summary>
 </member>
-<member name="M:FCQRS.CSharp.Helpers.TryCreateShortString(System.String)">
+<member name="M:FCQRS.CSharp.FSharpResults.Ok``2(``0)">
 <summary>
- Try to create a ShortString (returns Result instead of throwing)
+ Create a successful result
 </summary>
 </member>
-<member name="M:FCQRS.CSharp.Helpers.TryCreateLongString(System.String)">
+<member name="M:FCQRS.CSharp.FSharpResults.Error``2(``1)">
 <summary>
- Try to create a LongString (returns Result instead of throwing)
+ Create an error result
 </summary>
 </member>
-<member name="M:FCQRS.CSharp.Helpers.NewCID">
+<member name="T:FCQRS.CSharp.FSharpResults">
 <summary>
- Create a new CID from a GUID v7
-</summary>
-</member>
-<member name="M:FCQRS.CSharp.Helpers.CreateShortString(System.String)">
-<summary>
- Create a ShortString from a string (throws on failure)
-</summary>
-</member>
-<member name="M:FCQRS.CSharp.Helpers.CreateLongString(System.String)">
-<summary>
- Create a LongString from a string (throws on failure)
-</summary>
-</member>
-<member name="M:FCQRS.CSharp.Helpers.CreateCID(System.String)">
-<summary>
- Create a CID from a string (throws on failure)
-</summary>
-</member>
-<member name="M:FCQRS.CSharp.Helpers.CreateAggregateId(System.String)">
-<summary>
- Create an AggregateId from a string (throws on failure)
+ C#-friendly factory methods for constructing an F# Result (Ok/Error) from C#.
 </summary>
 </member>
 <member name="T:FCQRS.CSharp.Helpers">
 <summary>
- Helper methods for creating FCQRS types from C#
+ Obsolete alias for &lt;see cref=&quot;T:FCQRS.CSharp.Values&quot;/&gt;. Renamed because these
+ are factories for FCQRS&apos;s value/identifier types, not general-purpose helpers.
+ Will be removed in a future preview.
 </summary>
 </member>
-<member name="M:FCQRS.CSharp.AsyncExtensions.ToTask``1(Microsoft.FSharp.Control.FSharpAsync{``0})">
+<member name="M:FCQRS.CSharp.Values.TryCreateShortString(System.String,FCQRS.Model.Data.ShortString@)">
 <summary>
- Static helper to convert Async to Task (for C# where extension may not resolve)
+ Try to create a ShortString, C# Try-pattern style: returns success + out value.
 </summary>
 </member>
-<member name="M:FCQRS.CSharp.AsyncExtensions.AsTask``1(Microsoft.FSharp.Control.FSharpAsync{``0})">
+<member name="M:FCQRS.CSharp.Values.TryCreateShortString(System.String)">
 <summary>
- Convert Async to Task
+ Try to create a ShortString (returns Result instead of throwing)
+</summary>
+</member>
+<member name="M:FCQRS.CSharp.Values.TryCreateLongString(System.String,FCQRS.Model.Data.LongString@)">
+<summary>
+ Try to create a LongString, C# Try-pattern style: returns success + out value.
+</summary>
+</member>
+<member name="M:FCQRS.CSharp.Values.TryCreateLongString(System.String)">
+<summary>
+ Try to create a LongString (returns Result instead of throwing)
+</summary>
+</member>
+<member name="M:FCQRS.CSharp.Values.NewMessageId">
+<summary>
+ Create a new MessageId from a GUID v7
+</summary>
+</member>
+<member name="M:FCQRS.CSharp.Values.NewCID">
+<summary>
+ Create a new CID from a GUID v7
+</summary>
+</member>
+<member name="M:FCQRS.CSharp.Values.CreateVersion(System.Int64)">
+<summary>
+ Create a Version from a non-negative int64 (throws on failure)
+</summary>
+</member>
+<member name="M:FCQRS.CSharp.Values.CreateShortString(System.String)">
+<summary>
+ Create a ShortString from a string (throws on failure)
+</summary>
+</member>
+<member name="M:FCQRS.CSharp.Values.CreateMessageId(System.String)">
+<summary>
+ Create a MessageId from a string (throws on failure)
+</summary>
+</member>
+<member name="M:FCQRS.CSharp.Values.CreateLongString(System.String)">
+<summary>
+ Create a LongString from a string (throws on failure)
+</summary>
+</member>
+<member name="M:FCQRS.CSharp.Values.CreateCID(System.String)">
+<summary>
+ Create a CID from a string (throws on failure)
+</summary>
+</member>
+<member name="M:FCQRS.CSharp.Values.CreateAggregateId(System.String)">
+<summary>
+ Create an AggregateId from a string (throws on failure)
+</summary>
+</member>
+<member name="T:FCQRS.CSharp.Values">
+<summary>
+ Factory methods for creating FCQRS&apos;s strongly-typed value/identifier types
+ (CID, AggregateId, MessageId, ShortString, LongString, Version) from C#.
 </summary>
 </member>
 <member name="T:FCQRS.CSharp.AsyncExtensions">
 <summary>
- Extension methods for Async to make it easier to use from C#
+ Obsolete: nested in a module, so its [&lt;Extension&gt;] AsTask was never discoverable
+ as an extension from C# (hence the duplicate ToTask). Use the top-level
+ `AsTask` extension instead: `using FCQRS;` then `someAsync.AsTask()`.
+</summary>
+</member>
+<member name="T:FCQRS.CSharp.AggregateRefs`2">
+<summary>
+ The two C#-facing pieces of a wired aggregate: a Factory for entity refs
+ (used by sagas to target the aggregate) and a Handler to send a command and
+ await its event (used by the delivery layer). Returned by InitAggregate.
+</summary>
+</member>
+<member name="T:FCQRS.CSharp.AggregateFactory">
+<summary>
+ C# delegate for an aggregate&apos;s entity-ref factory: an id -&gt; its sharded actor
+ ref. sp.AggregateFactory&amp;lt;T&amp;gt;() returns one; sagas use it to target an aggregate.
 </summary>
 </member>
 <member name="T:FCQRS.CSharp.Handler`2">

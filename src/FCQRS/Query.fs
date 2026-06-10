@@ -181,7 +181,9 @@ let init<'TDataEvent, 'TPredicate, 't when 'TDataEvent :> IMessageWithCID> (acto
             res |> List.iter (fun x -> queue.OfferAsync(x).Wait())
         with ex ->
             logger.LogCritical(ex, "Error in query handler")
-            Environment.Exit -1)
+            // FailFast, not Exit: Exit runs ProcessExit handlers (which can hang);
+            // a broken projection must kill the process immediately and loudly.
+            Environment.FailFast("Process terminated due to query projection error", ex))
     |> Async.Start
 
     subscribeToStream

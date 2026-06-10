@@ -41,6 +41,7 @@ module internal Internal =
         Log: ILogger }
     let runActor<'TEvent , 'TState when 'TEvent : not null>
         (snapshotVersionCount: int64)
+        (sagaStartTimeout: TimeSpan)
         (logger: ILogger)
         (mailbox: Eventsourced<obj>)
         mediator
@@ -162,7 +163,7 @@ module internal Internal =
 
                 return! newState |> set
             | _ ->
-                let starter = SagaStarter.Internal.toSendMessage mediatorS mailbox.Self
+                let starter = SagaStarter.Internal.toSendMessage sagaStartTimeout mediatorS mailbox.Self
 
                 let bodyInput =
                     {   Message = msg
@@ -221,6 +222,18 @@ module internal Internal =
             | true, v when v > 0L -> v
             | _ -> 30L
 
+        // Upper bound for the saga-start handshake (seconds). Generous: the
+        // handshake spans two saga journal writes and normally completes in
+        // milliseconds; hitting this bound means a saga or the SagaStarter died
+        // mid-handshake, and the process FailFasts rather than parking the
+        // entity forever.
+        let sagaStartTimeout: TimeSpan =
+            let s: string | null = config["config:akka:fcqrs:saga-start-timeout"]
+
+            match s |> System.Int32.TryParse with
+            | true, v when v > 0 -> TimeSpan.FromSeconds(float v)
+            | _ -> TimeSpan.FromSeconds 30.0
+
         let rec set (state: State<'State>) =
             let body (bodyInput: BodyInput<'Event>) =
                 let msg = bodyInput.Message
@@ -274,7 +287,7 @@ module internal Internal =
                         return Unhandled
                 }
 
-            runActor snapshotVersionCount logger mailbox mediator set state (apply: Event<_> -> 'State -> 'State) body
+            runActor snapshotVersionCount sagaStartTimeout logger mailbox mediator set state (apply: Event<_> -> 'State -> 'State) body
 
         let initialState =
             { 

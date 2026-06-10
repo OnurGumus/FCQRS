@@ -258,7 +258,9 @@ let private runSaga<'TEvent, 'SagaData, 'State when 'TEvent : not null and 'Stat
                                     return! parentState |> set innerSetValue
                         with ex ->
                             log.LogError(ex, "Fatal error during saga persisted event handling for {0}. Terminating process to prevent restart loop.", mailbox.Self.Path.ToString())
-                            System.Environment.Exit(-1)
+                            // FailFast, not Exit: Exit runs ProcessExit handlers (which can
+                            // hang or flush bad state); the policy is an immediate kill.
+                            System.Environment.FailFast "Process terminated due to saga error"
                             return! state |> set innerSetValue
 
 
@@ -454,7 +456,15 @@ let private actorProp<'SagaData, 'State, 'TEvent when 'TEvent : not null and 'St
             // This handles the old ResumeFirstEvent case
             cont mediator
             None
-        | Stay, _ -> None
+        | Stay, true ->
+            // A saga resurrected mid-handshake (persist failure + remember-entities,
+            // restart, rebalance) may never have sent Continue — and skipping it here
+            // left the originator blocked in the SagaStarter ask while this saga's
+            // ContinueOrAbort sat unprocessed in the originator's stalled mailbox:
+            // a process-local deadlock. Continue is idempotent at the starter
+            // (duplicates and untracked batches are tolerated), so always re-signal.
+            cont mediator
+            None
         | NextState newState, _ -> 
             Some newState
         | StopSaga, _ ->
