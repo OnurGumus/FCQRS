@@ -20,7 +20,7 @@ open Akkling.Cluster.Sharding
 open System.Diagnostics
 
 // ActivitySource for distributed tracing
-let private activitySource = new ActivitySource("FCQRS")
+let private activitySource = new ActivitySource(Common.Telemetry.ActivitySourceName)
 
 
 [<AutoOpen>]

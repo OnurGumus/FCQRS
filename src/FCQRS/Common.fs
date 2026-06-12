@@ -210,6 +210,35 @@ type EventAction<'T when 'T : not null> =
     | Unstash of EventAction<'T>
     | UnstashAll of EventAction<'T>
 
+/// Akka's internal log verbosity. FCQRS ships with Akka logging OFF (it is
+/// chatty); this enables it without hand-editing HOCON/config.
+[<RequireQualifiedAccess>]
+type AkkaLogLevel =
+    | Off
+    | Error
+    | Warning
+    | Info
+    | Debug
+
+    member this.ToHocon() =
+        match this with
+        | Off -> "OFF"
+        | Error -> "ERROR"
+        | Warning -> "WARNING"
+        | Info -> "INFO"
+        | Debug -> "DEBUG"
+
+/// FCQRS's ActivitySource names — register them with your tracing pipeline
+/// (e.g. OpenTelemetry: tracing.AddSource(Telemetry.AllActivitySources)).
+type Telemetry =
+    /// Commands and events flowing through aggregates.
+    static member ActivitySourceName: string = "FCQRS"
+    /// Saga state transitions.
+    static member SagaActivitySourceName: string = "FCQRS.Saga"
+    /// Every FCQRS source, for one-call registration.
+    static member AllActivitySources: string[] =
+        [| Telemetry.ActivitySourceName; Telemetry.SagaActivitySourceName |]
+
 /// Snapshot cadence for an aggregate or saga, set per entity at registration.
 type SnapshotPolicy =
     /// Use the global config (config:akka:persistence:snapshot-version-count), or 30.

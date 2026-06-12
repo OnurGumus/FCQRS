@@ -79,6 +79,8 @@ type FcqrsBuilder internal (services: IServiceCollection, connectionString: stri
     // Builder-level snapshot default: what an entity's SnapshotPolicy.Default
     // resolves to. Itself Default => fall through to the config key / 30.
     let mutable defaultSnapshotPolicy = SnapshotPolicy.Default
+    // Akka-internal logging override (loglevel * also set stdout-loglevel).
+    let mutable akkaLogging: (AkkaLogLevel * bool) option = None
 
     // Registers the ISubscribe resolver in DI exactly once, on the first
     // AddProjection call. The subscription itself is created at startup.
@@ -103,6 +105,15 @@ type FcqrsBuilder internal (services: IServiceCollection, connectionString: stri
     member this.WithDefaultSnapshotPolicy(policy: SnapshotPolicy) : FcqrsBuilder =
         defaultSnapshotPolicy <- policy
         this
+
+    /// Enable Akka's internal logging (FCQRS ships it OFF). `level` maps to
+    /// akka.loglevel; by default akka.stdout-loglevel is set to the same value.
+    /// FCQRS's own logs are unaffected — they follow the host's ILoggerFactory.
+    member this.WithAkkaLogging(level: AkkaLogLevel, [<Optional; DefaultParameterValue(true)>] includeStdout: bool) : FcqrsBuilder =
+        akkaLogging <- Some(level, includeStdout)
+        this
+
+    member internal _.AkkaLogging = akkaLogging
 
     member internal _.EffectiveSnapshotPolicy(entityPolicy: SnapshotPolicy) : SnapshotPolicy =
         match entityPolicy with
@@ -220,8 +231,25 @@ type FcqrsServiceCollectionExtensions =
         let builder = FcqrsBuilder(services, connectionString, clusterName)
 
         services.AddSingleton<IActor>(fun (sp: IServiceProvider) ->
-            let config = sp.GetRequiredService<IConfiguration>()
+            let baseConfig = sp.GetRequiredService<IConfiguration>()
             let loggerFactory = sp.GetRequiredService<ILoggerFactory>()
+
+            // Overlay the builder's Akka logging choice (in-memory keys win
+            // because they are added after the host configuration).
+            let config =
+                match builder.AkkaLogging with
+                | Some(level, includeStdout) ->
+                    let kv (k: string) (v: string) = KeyValuePair<string, string | null>(k, v)
+
+                    let overrides =
+                        [ kv "config:akka:loglevel" (level.ToHocon())
+                          if includeStdout then
+                              kv "config:akka:stdout-loglevel" (level.ToHocon()) ]
+
+                    ConfigurationBuilder().AddConfiguration(baseConfig).AddInMemoryCollection(overrides).Build()
+                    :> IConfiguration
+                | None -> baseConfig
+
             ActorApi.Create(config, loggerFactory, connectionString, clusterName))
         |> ignore
 

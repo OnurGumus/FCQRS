@@ -16,7 +16,7 @@ open AkklingHelpers
 open Microsoft.Extensions.Configuration
 open System.Diagnostics
 
-let private activitySource = new ActivitySource("FCQRS.Saga")
+let private activitySource = new ActivitySource(Common.Telemetry.SagaActivitySourceName)
 
 let private toStateChange state =
     state |> StateChanged |> box |> Persist :> Effect<obj>
