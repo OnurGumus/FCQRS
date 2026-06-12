@@ -207,6 +207,16 @@ type EventAction<'T when 'T : not null> =
     | Unstash of EventAction<'T>
     | UnstashAll of EventAction<'T>
 
+/// Snapshot cadence for an aggregate or saga, set per entity at registration.
+type SnapshotPolicy =
+    /// Use the global config (config:akka:persistence:snapshot-version-count), or 30.
+    | Default
+    /// Never snapshot: recovery always replays the full journal. Previously
+    /// saved snapshots are still honored on recovery.
+    | NoSnapshots
+    /// Snapshot every N versions (N > 0; invalid values fall back to Default).
+    | Every of int
+
 /// Represents the name identifying a target actor for a command, typically used within sagas.
 type TargetName =
     /// Identify the target by its string name (entity ID).
@@ -314,7 +324,7 @@ type IActor =
     /// <param name="apply">The event handler function: `Event -> State -> State`.</param>
     /// <returns>An entity factory (`EntityFac<obj>`) for creating instances of this actor.</returns>
     abstract InitializeActor:
-        'a -> string -> (Command<'c> -> 'a -> EventAction<'b>) -> (Event<'b> -> 'a -> 'a) -> EntityFac<obj> when 'b: not null
+        'a -> string -> (Command<'c> -> 'a -> EventAction<'b>) -> (Event<'b> -> 'a -> 'a) -> SnapshotPolicy -> EntityFac<obj> when 'b: not null
 
     /// Initializes a sharded, persistent saga actor.
     /// <param name="initialState">The initial state (`SagaState`) for new saga instances.</param>
@@ -332,6 +342,7 @@ type IActor =
             -> SagaTransition<'State> * ExecuteCommand list) ->
         (SagaState<'SagaState, 'State> -> SagaState<'SagaState, 'State>) ->
         string ->
+        SnapshotPolicy ->
             EntityFac<obj>
 
     /// Initializes the Saga Starter actor, configuring which events trigger which sagas.
@@ -485,6 +496,7 @@ module SagaBuilder =
                 -> SagaState<'SagaData, SagaStateWrapper<'UserState, 'TEvent>>)
         (originatorFactory: string -> IEntityRef<obj>)
         (sagaName: string)
+        (snapshotPolicy: SnapshotPolicy)
         =
         let initialState = createInitialState<'SagaData, 'UserState, 'TEvent> sagaData
         let handleEvent = wrapHandleEvent userHandleEvent
@@ -496,7 +508,7 @@ module SagaBuilder =
             =
             wrapApplySideEffects userApplySideEffects originatorFactory
 
-        actorApi.InitializeSaga initialState handleEvent applySideEffects userApply sagaName
+        actorApi.InitializeSaga initialState handleEvent applySideEffects userApply sagaName snapshotPolicy
 
     /// Simplified saga initialization with unwrapped apply function
     let initSimple<'SagaData, 'UserState, 'TEvent when 'UserState : not null and 'TEvent : not null>
@@ -508,6 +520,7 @@ module SagaBuilder =
         (userApply: SagaState<'SagaData, 'UserState> -> SagaState<'SagaData, 'UserState>)
         (originatorFactory: string -> IEntityRef<obj>)
         (sagaName: string)
+        (snapshotPolicy: SnapshotPolicy)
         =
         let wrappedApply = wrapApply userApply
         init<'SagaData, 'UserState, 'TEvent>
@@ -518,6 +531,7 @@ module SagaBuilder =
             wrappedApply
             originatorFactory
             sagaName
+            snapshotPolicy
 
 /// Contains types and functions related to the Saga Starter actor (internal implementation detail).
 module SagaStarter =

@@ -80,6 +80,7 @@ let init (actorApi: IActor) : Akkling.Cluster.Sharding.EntityFac<obj> =
         apply
         userFactory
         "UserSaga"
+        SnapshotPolicy.Default
 
 let factory actorApi entityId =
     (init actorApi).RefFor DEFAULT_SHARD entityId

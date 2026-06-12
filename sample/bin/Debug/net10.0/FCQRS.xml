@@ -211,7 +211,7 @@
  &lt;param name=&quot;eventHandler&quot;&gt;A function mapping a received event object to a list of saga definitions to start: `obj -&gt; list&lt;(Factory * Prefix * StartingEvent)&gt;`.&lt;/param&gt;
 </summary>
 </member>
-<member name="M:FCQRS.Common.IActor.InitializeSaga``3(FCQRS.Common.SagaState{``0,``1},Microsoft.FSharp.Core.FSharpFunc{System.Object,Microsoft.FSharp.Core.FSharpFunc{FCQRS.Common.SagaState{``0,``1},FCQRS.Common.EventAction{``1}}},Microsoft.FSharp.Core.FSharpFunc{FCQRS.Common.SagaState{``0,``1},Microsoft.FSharp.Core.FSharpFunc{Microsoft.FSharp.Core.FSharpOption{FCQRS.Common.SagaStarter.SagaStartingEvent{FCQRS.Common.Event{``2}}},Microsoft.FSharp.Core.FSharpFunc{System.Boolean,System.Tuple{FCQRS.Common.SagaTransition{``1},Microsoft.FSharp.Collections.FSharpList{FCQRS.Common.ExecuteCommand}}}}},Microsoft.FSharp.Core.FSharpFunc{FCQRS.Common.SagaState{``0,``1},FCQRS.Common.SagaState{``0,``1}},System.String)">
+<member name="M:FCQRS.Common.IActor.InitializeSaga``3(FCQRS.Common.SagaState{``0,``1},Microsoft.FSharp.Core.FSharpFunc{System.Object,Microsoft.FSharp.Core.FSharpFunc{FCQRS.Common.SagaState{``0,``1},FCQRS.Common.EventAction{``1}}},Microsoft.FSharp.Core.FSharpFunc{FCQRS.Common.SagaState{``0,``1},Microsoft.FSharp.Core.FSharpFunc{Microsoft.FSharp.Core.FSharpOption{FCQRS.Common.SagaStarter.SagaStartingEvent{FCQRS.Common.Event{``2}}},Microsoft.FSharp.Core.FSharpFunc{System.Boolean,System.Tuple{FCQRS.Common.SagaTransition{``1},Microsoft.FSharp.Collections.FSharpList{FCQRS.Common.ExecuteCommand}}}}},Microsoft.FSharp.Core.FSharpFunc{FCQRS.Common.SagaState{``0,``1},FCQRS.Common.SagaState{``0,``1}},System.String,FCQRS.Common.SnapshotPolicy)">
 <summary>
  Initializes a sharded, persistent saga actor.
  &lt;param name=&quot;initialState&quot;&gt;The initial state (`SagaState`) for new saga instances.&lt;/param&gt;
@@ -222,7 +222,7 @@
  &lt;returns&gt;An entity factory (`EntityFac&lt;obj&gt;`) for creating instances of this saga.&lt;/returns&gt;
 </summary>
 </member>
-<member name="M:FCQRS.Common.IActor.InitializeActor``3(``0,System.String,Microsoft.FSharp.Core.FSharpFunc{FCQRS.Common.Command{``1},Microsoft.FSharp.Core.FSharpFunc{``0,FCQRS.Common.EventAction{``2}}},Microsoft.FSharp.Core.FSharpFunc{FCQRS.Common.Event{``2},Microsoft.FSharp.Core.FSharpFunc{``0,``0}})">
+<member name="M:FCQRS.Common.IActor.InitializeActor``3(``0,System.String,Microsoft.FSharp.Core.FSharpFunc{FCQRS.Common.Command{``1},Microsoft.FSharp.Core.FSharpFunc{``0,FCQRS.Common.EventAction{``2}}},Microsoft.FSharp.Core.FSharpFunc{FCQRS.Common.Event{``2},Microsoft.FSharp.Core.FSharpFunc{``0,``0}},FCQRS.Common.SnapshotPolicy)">
 <summary>
  Initializes a sharded, persistent aggregate actor.
  &lt;param name=&quot;cfg&quot;&gt;Environment configuration (IConfiguration &amp; ILoggerFactory).&lt;/param&gt;
@@ -362,6 +362,27 @@
 <member name="T:FCQRS.Common.TargetName">
 <summary>
  Represents the name identifying a target actor for a command, typically used within sagas.
+</summary>
+</member>
+<member name="T:FCQRS.Common.SnapshotPolicy.Every">
+<summary>
+ Snapshot every N versions (N &gt; 0; invalid values fall back to Default).
+</summary>
+</member>
+<member name="T:FCQRS.Common.SnapshotPolicy.NoSnapshots">
+<summary>
+ Never snapshot: recovery always replays the full journal. Previously
+ saved snapshots are still honored on recovery.
+</summary>
+</member>
+<member name="T:FCQRS.Common.SnapshotPolicy.Default">
+<summary>
+ Use the global config (config:akka:persistence:snapshot-version-count), or 30.
+</summary>
+</member>
+<member name="T:FCQRS.Common.SnapshotPolicy">
+<summary>
+ Snapshot cadence for an aggregate or saga, set per entity at registration.
 </summary>
 </member>
 <member name="T:FCQRS.Common.EventAction`1.StateChangedEvent">
@@ -549,12 +570,12 @@
  Standard wrapper for saga states that includes NotStarted/Started
 </summary>
 </member>
-<member name="M:FCQRS.Common.SagaBuilder.initSimple``3(FCQRS.Common.IActor,``0,Microsoft.FSharp.Core.FSharpFunc{System.Object,Microsoft.FSharp.Core.FSharpFunc{FCQRS.Common.SagaState{``0,Microsoft.FSharp.Core.FSharpOption{``1}},FCQRS.Common.EventAction{``1}}},Microsoft.FSharp.Core.FSharpFunc{FCQRS.Common.SagaState{``0,``1},Microsoft.FSharp.Core.FSharpFunc{System.Boolean,System.Tuple{FCQRS.Common.SagaTransition{``1},Microsoft.FSharp.Collections.FSharpList{FCQRS.Common.ExecuteCommand}}}},Microsoft.FSharp.Core.FSharpFunc{FCQRS.Common.SagaState{``0,``1},FCQRS.Common.SagaState{``0,``1}},Microsoft.FSharp.Core.FSharpFunc{System.String,Akkling.Cluster.Sharding.IEntityRef{System.Object}},System.String)">
+<member name="M:FCQRS.Common.SagaBuilder.initSimple``3(FCQRS.Common.IActor,``0,Microsoft.FSharp.Core.FSharpFunc{System.Object,Microsoft.FSharp.Core.FSharpFunc{FCQRS.Common.SagaState{``0,Microsoft.FSharp.Core.FSharpOption{``1}},FCQRS.Common.EventAction{``1}}},Microsoft.FSharp.Core.FSharpFunc{FCQRS.Common.SagaState{``0,``1},Microsoft.FSharp.Core.FSharpFunc{System.Boolean,System.Tuple{FCQRS.Common.SagaTransition{``1},Microsoft.FSharp.Collections.FSharpList{FCQRS.Common.ExecuteCommand}}}},Microsoft.FSharp.Core.FSharpFunc{FCQRS.Common.SagaState{``0,``1},FCQRS.Common.SagaState{``0,``1}},Microsoft.FSharp.Core.FSharpFunc{System.String,Akkling.Cluster.Sharding.IEntityRef{System.Object}},System.String,FCQRS.Common.SnapshotPolicy)">
 <summary>
  Simplified saga initialization with unwrapped apply function
 </summary>
 </member>
-<member name="M:FCQRS.Common.SagaBuilder.init``3(FCQRS.Common.IActor,``0,Microsoft.FSharp.Core.FSharpFunc{System.Object,Microsoft.FSharp.Core.FSharpFunc{FCQRS.Common.SagaState{``0,Microsoft.FSharp.Core.FSharpOption{``1}},FCQRS.Common.EventAction{``1}}},Microsoft.FSharp.Core.FSharpFunc{FCQRS.Common.SagaState{``0,``1},Microsoft.FSharp.Core.FSharpFunc{System.Boolean,System.Tuple{FCQRS.Common.SagaTransition{``1},Microsoft.FSharp.Collections.FSharpList{FCQRS.Common.ExecuteCommand}}}},Microsoft.FSharp.Core.FSharpFunc{FCQRS.Common.SagaState{``0,FCQRS.Common.SagaBuilder.SagaStateWrapper{``1,``2}},FCQRS.Common.SagaState{``0,FCQRS.Common.SagaBuilder.SagaStateWrapper{``1,``2}}},Microsoft.FSharp.Core.FSharpFunc{System.String,Akkling.Cluster.Sharding.IEntityRef{System.Object}},System.String)">
+<member name="M:FCQRS.Common.SagaBuilder.init``3(FCQRS.Common.IActor,``0,Microsoft.FSharp.Core.FSharpFunc{System.Object,Microsoft.FSharp.Core.FSharpFunc{FCQRS.Common.SagaState{``0,Microsoft.FSharp.Core.FSharpOption{``1}},FCQRS.Common.EventAction{``1}}},Microsoft.FSharp.Core.FSharpFunc{FCQRS.Common.SagaState{``0,``1},Microsoft.FSharp.Core.FSharpFunc{System.Boolean,System.Tuple{FCQRS.Common.SagaTransition{``1},Microsoft.FSharp.Collections.FSharpList{FCQRS.Common.ExecuteCommand}}}},Microsoft.FSharp.Core.FSharpFunc{FCQRS.Common.SagaState{``0,FCQRS.Common.SagaBuilder.SagaStateWrapper{``1,``2}},FCQRS.Common.SagaState{``0,FCQRS.Common.SagaBuilder.SagaStateWrapper{``1,``2}}},Microsoft.FSharp.Core.FSharpFunc{System.String,Akkling.Cluster.Sharding.IEntityRef{System.Object}},System.String,FCQRS.Common.SnapshotPolicy)">
 <summary>
  High-level saga initialization that handles all wrapping automatically
 </summary>
@@ -912,6 +933,11 @@
  What you get back after registering a saga.
 </summary>
 </member>
+<member name="P:FCQRS.FSharp.Saga`3.Snapshots">
+<summary>
+ Snapshot cadence: Default (config / 30), NoSnapshots, or Every n.
+</summary>
+</member>
 <member name="P:FCQRS.FSharp.Saga`3.StartOn">
 <summary>
  Which originator events spawn an instance of this saga. Typed to the
@@ -944,6 +970,11 @@
 <member name="T:FCQRS.FSharp.AggregateHandle`2">
 <summary>
  What you get back after registering an aggregate.
+</summary>
+</member>
+<member name="P:FCQRS.FSharp.Aggregate`3.Snapshots">
+<summary>
+ Snapshot cadence: Default (config / 30), NoSnapshots, or Every n.
 </summary>
 </member>
 <member name="P:FCQRS.FSharp.Aggregate`3.Fold">
@@ -1059,6 +1090,12 @@
      let! ev = documents.Send (Fcqrs.newCid()) (Fcqrs.aggregateId id) cmd (fun e -&gt; ...)
 </summary>
 </member>
+<member name="P:FCQRS.CSharp.Saga`3.SnapshotPolicy">
+<summary>
+ Per-saga snapshot cadence. Override to use Every(n) or NoSnapshots;
+ the default falls back to config:akka:persistence:snapshot-version-count (or 30).
+</summary>
+</member>
 <member name="M:FCQRS.CSharp.Saga`3.StateChanged(`2)">
 <summary>
  Transition / event DSL — over TState.
@@ -1080,6 +1117,12 @@
  SagaName, Originator (the aggregate it starts from), HandleEvent and
  ApplySideEffects; the base provides the wiring (Init/Factory) and the small
  transition DSL. Designed to be subclassed from C#.
+</summary>
+</member>
+<member name="P:FCQRS.CSharp.Aggregate`3.SnapshotPolicy">
+<summary>
+ Per-aggregate snapshot cadence. Override to use Every(n) or NoSnapshots;
+ the default falls back to config:akka:persistence:snapshot-version-count (or 30).
 </summary>
 </member>
 <member name="M:FCQRS.CSharp.Aggregate`3.Init(FCQRS.Common.IActor)">
@@ -1115,6 +1158,11 @@
 <member name="M:FCQRS.CSharp.SagaApi.Init``3(FCQRS.Common.IActor,``1,System.Func{System.Object,FCQRS.Common.SagaState{``1,Microsoft.FSharp.Core.FSharpOption{``2}},FCQRS.Common.EventAction{``2}},System.Func{FCQRS.Common.SagaState{``1,``2},System.Boolean,FCQRS.CSharp.SagaSideEffectResult{``2}},System.Func{``1,``2,``1},FCQRS.CSharp.AggregateFactory,System.String)">
 <summary>
  Initialize a saga with simplified apply - just takes data and unwrapped state, returns new data
+</summary>
+</member>
+<member name="M:FCQRS.CSharp.SagaApi.Init``3(FCQRS.Common.IActor,``1,System.Func{System.Object,FCQRS.Common.SagaState{``1,Microsoft.FSharp.Core.FSharpOption{``2}},FCQRS.Common.EventAction{``2}},System.Func{FCQRS.Common.SagaState{``1,``2},System.Boolean,FCQRS.CSharp.SagaSideEffectResult{``2}},System.Func{FCQRS.Common.SagaState{``1,FCQRS.Common.SagaBuilder.SagaStateWrapper{``2,``0}},FCQRS.Common.SagaState{``1,FCQRS.Common.SagaBuilder.SagaStateWrapper{``2,``0}}},FCQRS.CSharp.AggregateFactory,System.String,FCQRS.Common.SnapshotPolicy)">
+<summary>
+ Initialize a saga with an explicit per-saga snapshot policy.
 </summary>
 </member>
 <member name="M:FCQRS.CSharp.SagaApi.Init``3(FCQRS.Common.IActor,``1,System.Func{System.Object,FCQRS.Common.SagaState{``1,Microsoft.FSharp.Core.FSharpOption{``2}},FCQRS.Common.EventAction{``2}},System.Func{FCQRS.Common.SagaState{``1,``2},System.Boolean,FCQRS.CSharp.SagaSideEffectResult{``2}},System.Func{FCQRS.Common.SagaState{``1,FCQRS.Common.SagaBuilder.SagaStateWrapper{``2,``0}},FCQRS.Common.SagaState{``1,FCQRS.Common.SagaBuilder.SagaStateWrapper{``2,``0}}},FCQRS.CSharp.AggregateFactory,System.String)">
@@ -1277,12 +1325,22 @@
  C#-friendly InitializeSagaStarter that accepts Func returning IList of SagaDefinition
 </summary>
 </member>
+<member name="M:FCQRS.CSharp.ActorWiring.InitAggregate``3(FCQRS.Common.IActor,``0,System.String,System.Func{FCQRS.Common.Command{``1},``0,FCQRS.Common.EventAction{``2}},System.Func{FCQRS.Common.Event{``2},``0,``0},FCQRS.Common.SnapshotPolicy)">
+<summary>
+ InitAggregate with an explicit per-aggregate snapshot policy.
+</summary>
+</member>
 <member name="M:FCQRS.CSharp.ActorWiring.InitAggregate``3(FCQRS.Common.IActor,``0,System.String,System.Func{FCQRS.Common.Command{``1},``0,FCQRS.Common.EventAction{``2}},System.Func{FCQRS.Common.Event{``2},``0,``0})">
 <summary>
  One-call aggregate wiring: registers the aggregate (sharding region) and
  returns its Factory + Handler. Collapses the Init/Factory/Handler trio an
  aggregate would otherwise hand-roll. Call it for EVERY aggregate you want
  live — registration is the act of calling this, not a side effect.
+</summary>
+</member>
+<member name="M:FCQRS.CSharp.ActorWiring.InitActor``3(FCQRS.Common.IActor,``0,System.String,System.Func{FCQRS.Common.Command{``1},``0,FCQRS.Common.EventAction{``2}},System.Func{FCQRS.Common.Event{``2},``0,``0},FCQRS.Common.SnapshotPolicy)">
+<summary>
+ InitActor with an explicit per-aggregate snapshot policy.
 </summary>
 </member>
 <member name="M:FCQRS.CSharp.ActorWiring.InitActor``3(FCQRS.Common.IActor,``0,System.String,System.Func{FCQRS.Common.Command{``1},``0,FCQRS.Common.EventAction{``2}},System.Func{FCQRS.Common.Event{``2},``0,``0})">

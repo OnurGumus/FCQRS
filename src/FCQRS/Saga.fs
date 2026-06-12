@@ -45,7 +45,7 @@ type private SagaSnapshot<'SagaData, 'State, 'TEvent when 'TEvent : not null> =
     interface ISerializable
 
 let private runSaga<'TEvent, 'SagaData, 'State when 'TEvent : not null and 'State : not null>
-    (snapshotVersionCount: int64)
+    (snapshotEvery: int64 option)
     (mailbox: Eventsourced<obj>)
     (log: ILogger)
     mediator
@@ -260,7 +260,9 @@ let private runSaga<'TEvent, 'SagaData, 'State when 'TEvent : not null and 'Stat
                             let newState = applySideEffects parentState startingEvent false
 
                             let dueForSnapshot =
-                                version >= snapshotVersionCount && version % snapshotVersionCount = 0L
+                                match snapshotEvery with
+                                | Some every -> version >= every && version % every = 0L
+                                | None -> false
 
                             match newState with
                             | Some newState ->
@@ -332,6 +334,7 @@ let private actorProp<'SagaData, 'State, 'TEvent when 'TEvent : not null and 'St
             -> bool
             -> SagaTransition<'State> * ExecuteCommand list)
     (apply: SagaState<'SagaData, 'State> -> SagaState<'SagaData, 'State>)
+    (snapshotPolicy: SnapshotPolicy)
     (actorApi: IActor)
     (mediator: IActorRef<_>)
     (mailbox: Eventsourced<obj>)
@@ -378,12 +381,18 @@ let private actorProp<'SagaData, 'State, 'TEvent when 'TEvent : not null and 'St
                 log.Debug(ex, "Error cancelling pending saga command during cleanup")
         pendingCancelablesRef.Value <- []
 
-    let snapshotVersionCount: int64 =
-        let s: string | null = config["config:akka:persistence:snapshot-version-count"]
+    // Per-entity policy first; Default falls back to the global config key, then 30.
+    let snapshotEvery: int64 option =
+        match snapshotPolicy with
+        | Every n when n > 0 -> Some(int64 n)
+        | NoSnapshots -> None
+        | Default
+        | Every _ ->
+            let s: string | null = config["config:akka:persistence:snapshot-version-count"]
 
-        match s |> System.Int64.TryParse with
-        | true, v when v > 0L -> v
-        | _ -> 30L
+            match s |> System.Int64.TryParse with
+            | true, v when v > 0L -> Some v
+            | _ -> Some 30L
 
     let applySideEffects
         (sagaState: ParentSaga<'SagaData, 'State>)
@@ -549,7 +558,7 @@ let private actorProp<'SagaData, 'State, 'TEvent when 'TEvent : not null and 'St
                           State = s } }
 
         runSaga
-            snapshotVersionCount
+            snapshotEvery
             mailbox
             logger
             mediator
@@ -577,6 +586,7 @@ let init<'SagaData, 'State, 'TEvent when 'TEvent : not null and 'State : not nul
             -> SagaTransition<'State> * ExecuteCommand list)
     (apply: SagaState<'SagaData, 'State> -> SagaState<'SagaData, 'State>)
     name
+    (snapshotPolicy: SnapshotPolicy)
     =
     let initialState =
         { Version = 0L
@@ -584,6 +594,6 @@ let init<'SagaData, 'State, 'TEvent when 'TEvent : not null and 'State : not nul
 
     entityFactoryFor actorApi.System shardResolver name
      <| propsPersist (
-         actorProp initialState name handleEvent applySideEffects apply actorApi (typed actorApi.Mediator)
+         actorProp initialState name handleEvent applySideEffects apply snapshotPolicy actorApi (typed actorApi.Mediator)
      )
      <| true

@@ -323,7 +323,19 @@ type ActorWiring =
         applyEvent: Func<Event<'TEvent>, 'TState, 'TState>) : Akkling.Cluster.Sharding.EntityFac<obj> =
         let cmdHandler cmd state = handleCommand.Invoke(cmd, state)
         let evtApplier evt state = applyEvent.Invoke(evt, state)
-        actor.InitializeActor initialState entityName cmdHandler evtApplier
+        actor.InitializeActor initialState entityName cmdHandler evtApplier SnapshotPolicy.Default
+
+    /// InitActor with an explicit per-aggregate snapshot policy.
+    static member InitActor<'TState, 'TCommand, 'TEvent when 'TEvent: not null>(
+        actor: IActor,
+        initialState: 'TState,
+        entityName: string,
+        handleCommand: Func<Command<'TCommand>, 'TState, EventAction<'TEvent>>,
+        applyEvent: Func<Event<'TEvent>, 'TState, 'TState>,
+        snapshotPolicy: SnapshotPolicy) : Akkling.Cluster.Sharding.EntityFac<obj> =
+        let cmdHandler cmd state = handleCommand.Invoke(cmd, state)
+        let evtApplier evt state = applyEvent.Invoke(evt, state)
+        actor.InitializeActor initialState entityName cmdHandler evtApplier snapshotPolicy
 
     /// One-call aggregate wiring: registers the aggregate (sharding region) and
     /// returns its Factory + Handler. Collapses the Init/Factory/Handler trio an
@@ -335,7 +347,17 @@ type ActorWiring =
         entityName: string,
         handleCommand: Func<Command<'TCommand>, 'TState, EventAction<'TEvent>>,
         applyEvent: Func<Event<'TEvent>, 'TState, 'TState>) : AggregateRefs<'TCommand, 'TEvent> =
-        let fac = ActorWiring.InitActor<'TState, 'TCommand, 'TEvent>(actor, initialState, entityName, handleCommand, applyEvent)
+        ActorWiring.InitAggregate<'TState, 'TCommand, 'TEvent>(actor, initialState, entityName, handleCommand, applyEvent, SnapshotPolicy.Default)
+
+    /// InitAggregate with an explicit per-aggregate snapshot policy.
+    static member InitAggregate<'TState, 'TCommand, 'TEvent when 'TEvent: not null>(
+        actor: IActor,
+        initialState: 'TState,
+        entityName: string,
+        handleCommand: Func<Command<'TCommand>, 'TState, EventAction<'TEvent>>,
+        applyEvent: Func<Event<'TEvent>, 'TState, 'TState>,
+        snapshotPolicy: SnapshotPolicy) : AggregateRefs<'TCommand, 'TEvent> =
+        let fac = ActorWiring.InitActor<'TState, 'TCommand, 'TEvent>(actor, initialState, entityName, handleCommand, applyEvent, snapshotPolicy)
         let factory = AggregateFactory(fun entityId -> fac.RefFor DEFAULT_SHARD entityId)
         let handler =
             Handler<'TCommand, 'TEvent>(fun filter cid aggregateId command ->
@@ -551,6 +573,40 @@ type SagaApi =
             fsharpApply
             fsharpFactory
             sagaName
+            SnapshotPolicy.Default
+
+    /// Initialize a saga with an explicit per-saga snapshot policy.
+    static member Init<'TEvent, 'TSagaData, 'TSagaState when 'TSagaState : not null and 'TEvent : not null>(
+        actorApi: IActor,
+        sagaData: 'TSagaData,
+        handleEvent: Func<obj, SagaState<'TSagaData, 'TSagaState option>, EventAction<'TSagaState>>,
+        applySideEffects: Func<SagaState<'TSagaData, 'TSagaState>, bool, SagaSideEffectResult<'TSagaState>>,
+        apply: Func<SagaState<'TSagaData, SagaStateWrapper<'TSagaState, 'TEvent>>, SagaState<'TSagaData, SagaStateWrapper<'TSagaState, 'TEvent>>>,
+        originatorFactory: AggregateFactory,
+        sagaName: string,
+        snapshotPolicy: SnapshotPolicy) : EntityFac<obj> =
+
+        let fsharpHandleEvent (evt: obj) (state: SagaState<'TSagaData, 'TSagaState option>) : EventAction<'TSagaState> =
+            handleEvent.Invoke(evt, state)
+
+        let fsharpApplySideEffects (state: SagaState<'TSagaData, 'TSagaState>) (recovering: bool) : SagaTransition<'TSagaState> * ExecuteCommand list =
+            let result = applySideEffects.Invoke(state, recovering)
+            (result.Transition, result.CommandsList)
+
+        let fsharpApply (state: SagaState<'TSagaData, SagaStateWrapper<'TSagaState, 'TEvent>>) =
+            apply.Invoke(state)
+
+        let fsharpFactory = fun (s: string) -> originatorFactory.Invoke(s)
+
+        SagaBuilder.init
+            actorApi
+            sagaData
+            fsharpHandleEvent
+            fsharpApplySideEffects
+            fsharpApply
+            fsharpFactory
+            sagaName
+            snapshotPolicy
 
     /// Initialize a saga with simplified apply - just takes data and unwrapped state, returns new data
     static member Init<'TEvent, 'TSagaData, 'TSagaState when 'TSagaState : not null and 'TEvent : not null>(
@@ -648,6 +704,11 @@ type Aggregate<'TState, 'TCommand, 'TEvent when 'TEvent: not null>() =
     abstract member HandleCommand: Command<'TCommand> * 'TState -> EventAction<'TEvent>
     abstract member ApplyEvent: Event<'TEvent> * 'TState -> 'TState
 
+    /// Per-aggregate snapshot cadence. Override to use Every(n) or NoSnapshots;
+    /// the default falls back to config:akka:persistence:snapshot-version-count (or 30).
+    abstract member SnapshotPolicy: SnapshotPolicy
+    default _.SnapshotPolicy = SnapshotPolicy.Default
+
     /// Register the aggregate and hand back its Factory + Handler.
     member this.Init(actorApi: IActor) : AggregateRefs<'TCommand, 'TEvent> =
         ActorWiring.InitAggregate<'TState, 'TCommand, 'TEvent>(
@@ -655,7 +716,8 @@ type Aggregate<'TState, 'TCommand, 'TEvent when 'TEvent: not null>() =
             this.InitialState,
             this.EntityName,
             Func<Command<'TCommand>, 'TState, EventAction<'TEvent>>(fun c s -> this.HandleCommand(c, s)),
-            Func<Event<'TEvent>, 'TState, 'TState>(fun e s -> this.ApplyEvent(e, s)))
+            Func<Event<'TEvent>, 'TState, 'TState>(fun e s -> this.ApplyEvent(e, s)),
+            this.SnapshotPolicy)
 
 /// C#-friendly abstract base for a saga. A concrete saga supplies InitialData,
 /// SagaName, Originator (the aggregate it starts from), HandleEvent and
@@ -676,6 +738,11 @@ type Saga<'TEvent, 'TSagaData, 'TState when 'TEvent: not null and 'TState: not n
     static member NextState(next: 'TState) : SagaTransition<'TState> = SagaTransitions.NextState<'TState>(next)
     static member StopSaga() : SagaTransition<'TState> = SagaTransitions.StopSaga<'TState>()
 
+    /// Per-saga snapshot cadence. Override to use Every(n) or NoSnapshots;
+    /// the default falls back to config:akka:persistence:snapshot-version-count (or 30).
+    abstract member SnapshotPolicy: SnapshotPolicy
+    default _.SnapshotPolicy = SnapshotPolicy.Default
+
     /// Register the saga; calling this IS the registration.
     member this.Init(actorApi: IActor) : EntityFac<obj> =
         SagaApi.Init<'TEvent, 'TSagaData, 'TState>(
@@ -683,8 +750,10 @@ type Saga<'TEvent, 'TSagaData, 'TState when 'TEvent: not null and 'TState: not n
             this.InitialData,
             Func<obj, SagaState<'TSagaData, 'TState option>, EventAction<'TState>>(fun e s -> this.HandleEvent(e, s)),
             Func<SagaState<'TSagaData, 'TState>, bool, SagaSideEffectResult<'TState>>(fun s r -> this.ApplySideEffects(s, r)),
+            Func<SagaState<'TSagaData, SagaStateWrapper<'TState, 'TEvent>>, SagaState<'TSagaData, SagaStateWrapper<'TState, 'TEvent>>>(id),
             this.Originator,
-            this.SagaName)
+            this.SagaName,
+            this.SnapshotPolicy)
 
     /// The factory the saga-starter spawns instances from.
     member this.Factory(actorApi: IActor) : AggregateFactory =

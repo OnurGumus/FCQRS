@@ -58,7 +58,7 @@ let applyEvent event state =
 // This function binds the above functions to the actor. Also initiates a shard. For aggregates it is okay not to call this function directly.
 let init  (actorApi: IActor) =
     let initialState = { Username = None; Password = None }
-    actorApi.InitializeActor  initialState "User" handleCommand applyEvent
+    actorApi.InitializeActor initialState "User" handleCommand applyEvent SnapshotPolicy.Default
 
 // This function creates an instance of the User aggregate or resumes if if it already exists based on the entityId which is a string.
 // entityId is url encoded. Don't use special characters or spaces in entityId or won't work.

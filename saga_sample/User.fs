@@ -52,7 +52,7 @@ let handleCommand (cmd: Command<_>) state =
 
 let init (actorApi: IActor) =
     let initialState = { Username = None; Password = None; VerificationCode = None }
-    actorApi.InitializeActor  initialState "User" handleCommand applyEvent
+    actorApi.InitializeActor initialState "User" handleCommand applyEvent SnapshotPolicy.Default
 
 let factory  actorApi entityId =
     (init  actorApi).RefFor DEFAULT_SHARD entityId

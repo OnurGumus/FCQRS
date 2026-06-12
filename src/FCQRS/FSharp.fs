@@ -40,7 +40,9 @@ type Aggregate<'State, 'Command, 'Event when 'Event: not null> =
       /// handleCommand (decide): command + current state -> what to do.
       Decide: Command<'Command> -> 'State -> EventAction<'Event>
       /// applyEvent (fold): event + current state -> next state (pure).
-      Fold: Event<'Event> -> 'State -> 'State }
+      Fold: Event<'Event> -> 'State -> 'State
+      /// Snapshot cadence: Default (config / 30), NoSnapshots, or Every n.
+      Snapshots: SnapshotPolicy }
 
 /// What you get back after registering an aggregate.
 type AggregateHandle<'Command, 'Event when 'Event: not null> =
@@ -62,7 +64,9 @@ type Saga<'Data, 'State, 'OriginatorEvent when 'State: not null and 'OriginatorE
       /// Which originator events spawn an instance of this saga. Typed to the
       /// originator's event so 'OriginatorEvent is inferred from the definition —
       /// there is no type argument to remember (or to get silently wrong).
-      StartOn: Event<'OriginatorEvent> -> bool }
+      StartOn: Event<'OriginatorEvent> -> bool
+      /// Snapshot cadence: Default (config / 30), NoSnapshots, or Every n.
+      Snapshots: SnapshotPolicy }
 
 /// What you get back after registering a saga.
 type SagaHandle =
@@ -148,7 +152,7 @@ module Fcqrs =
     /// Register an aggregate and return its typed handle. Calling this IS the
     /// registration (it initializes the sharding region).
     let aggregate (api: IActor) (def: Aggregate<'State, 'Command, 'Event>) : AggregateHandle<'Command, 'Event> =
-        let fac = api.InitializeActor def.Initial def.Name def.Decide def.Fold
+        let fac = api.InitializeActor def.Initial def.Name def.Decide def.Fold def.Snapshots
         let factory = refFor fac
         { Factory = factory
           Send = fun cid id command filter -> api.CreateCommandSubscription factory cid id command filter None }
@@ -166,6 +170,7 @@ module Fcqrs =
                 id
                 def.Originator
                 def.Name
+                def.Snapshots
         // Adapt the typed StartOn to the obj predicate the saga-starter feeds.
         let startOn (o: obj) =
             match o with

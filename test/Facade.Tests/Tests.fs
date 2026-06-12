@@ -79,7 +79,8 @@ module AutoReset =
           Originator = counterFactory
           HandleEvent = handleEvent
           ApplySideEffects = applySideEffects counterFactory
-          StartOn = startsOn }
+          StartOn = startsOn
+          Snapshots = Default }
 
 /// A saga that parks: on a big increment it enters Pinging, whose side effect
 /// sends Reset to the originator — and then it ignores everything, staying in
@@ -112,7 +113,10 @@ module Parked =
           Originator = counterFactory
           HandleEvent = handleEvent
           ApplySideEffects = applySideEffects counterFactory
-          StartOn = startsOn }
+          StartOn = startsOn
+          // The cadence under test: snapshot every 2 versions, set via the API
+          // (no config key) — Started=v1, Pinging=v2 -> snapshot covers the journal.
+          Snapshots = Every 2 }
 
 let private projection (_offset: int64) (ev: obj) : IMessageWithCID list =
     match ev with
@@ -125,7 +129,7 @@ let private boot () =
         Fcqrs.actor (ConfigurationBuilder().Build()) NullLoggerFactory.Instance
             (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite (sprintf "Data Source=%s;" db))) "FacadeSmoke"
     let counter =
-        Fcqrs.aggregate api { Name = "Counter"; Initial = Counter.initial; Decide = Counter.decide; Fold = Counter.fold }
+        Fcqrs.aggregate api { Name = "Counter"; Initial = Counter.initial; Decide = Counter.decide; Fold = Counter.fold; Snapshots = Default }
     let saga = Fcqrs.saga api (AutoReset.definition counter.Factory)
     Fcqrs.wireSagaStarters api [ saga ]
     let subs = Fcqrs.projection api { LastOffset = 0; Handle = projection }
@@ -139,17 +143,15 @@ let private isWasReset (m: IMessageWithCID) =
         | _ -> false
     | _ -> false
 
-/// Boot a system for the snapshot-recovery test: saga snapshots every 2
-/// versions (Started = v1, Pinging = v2 -> snapshot covers the whole journal),
-/// with a per-test durable-ddata directory so two sequential incarnations
+/// Boot a system for the snapshot-recovery test. The saga's cadence comes from
+/// its definition (Snapshots = Every 2 — the per-entity API override under
+/// test); per-test durable-ddata directory so two sequential incarnations
 /// share sharding state but tests don't contend.
 let private bootParked (db: string) (lmdb: string) =
     let cfg =
         ConfigurationBuilder()
             .AddInMemoryCollection(
                 [ Collections.Generic.KeyValuePair<string, string | null>(
-                      "config:akka:persistence:snapshot-version-count", "2")
-                  Collections.Generic.KeyValuePair<string, string | null>(
                       "config:akka:cluster:distributed-data:durable:lmdb", lmdb) ])
             .Build()
 
@@ -158,7 +160,7 @@ let private bootParked (db: string) (lmdb: string) =
             (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite (sprintf "Data Source=%s;" db))) "SnapshotSmoke"
 
     let counter =
-        Fcqrs.aggregate api { Name = "Counter"; Initial = Counter.initial; Decide = Counter.decide; Fold = Counter.fold }
+        Fcqrs.aggregate api { Name = "Counter"; Initial = Counter.initial; Decide = Counter.decide; Fold = Counter.fold; Snapshots = Default }
 
     let saga = Fcqrs.saga api (Parked.definition counter.Factory)
     Fcqrs.wireSagaStarters api [ saga ]

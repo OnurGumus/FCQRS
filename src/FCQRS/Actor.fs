@@ -40,7 +40,7 @@ module internal Internal =
         Mediator: IActorRef<Publish>
         Log: ILogger }
     let runActor<'TEvent , 'TState when 'TEvent : not null>
-        (snapshotVersionCount: int64)
+        (snapshotEvery: int64 option)
         (sagaStartTimeout: TimeSpan)
         (logger: ILogger)
         (mailbox: Eventsourced<obj>)
@@ -160,9 +160,10 @@ module internal Internal =
 
                 let state = newState
 
-                if versionN > 0L && versionN % snapshotVersionCount = 0L then
+                match snapshotEvery with
+                | Some every when versionN > 0L && versionN % every = 0L ->
                     return! state |> set <@> SaveSnapshot state
-                else
+                | _ ->
                     return! state |> set
 
             | Recovering mailbox (:? Common.Event<'TEvent> as event) ->
@@ -240,17 +241,24 @@ module internal Internal =
         (initialState: 'State)
         (name: string)
         toEvent
+        (snapshotPolicy: SnapshotPolicy)
         (mediator: IActorRef<Publish>)
         (mailbox: Eventsourced<obj>)
         =
         let logger = loggerFactory.CreateLogger name
 
-        let snapshotVersionCount: int64 =
-            let s: string | null = config["config:akka:persistence:snapshot-version-count"]
+        // Per-entity policy first; Default falls back to the global config key, then 30.
+        let snapshotEvery: int64 option =
+            match snapshotPolicy with
+            | Every n when n > 0 -> Some(int64 n)
+            | NoSnapshots -> None
+            | Default
+            | Every _ ->
+                let s: string | null = config["config:akka:persistence:snapshot-version-count"]
 
-            match s |> System.Int64.TryParse with
-            | true, v when v > 0L -> v
-            | _ -> 30L
+                match s |> System.Int64.TryParse with
+                | true, v when v > 0L -> Some v
+                | _ -> Some 30L
 
         // Upper bound for the saga-start handshake (seconds). Generous: the
         // handshake spans two saga journal writes and normally completes in
@@ -323,7 +331,7 @@ module internal Internal =
                         return Unhandled
                 }
 
-            runActor snapshotVersionCount sagaStartTimeout logger mailbox mediator set state (apply: Event<_> -> 'State -> 'State) body
+            runActor snapshotEvery sagaStartTimeout logger mailbox mediator set state (apply: Event<_> -> 'State -> 'State) body
 
         let initialState =
             { 
@@ -357,9 +365,9 @@ module internal Internal =
         let ex = Execute e
         ex |> actorApi.SubscribeForCommand
 
-    let init config loggerFactory initialState name toEvent (actorApi: IActor) handleCommand apply =
+    let init config loggerFactory initialState name toEvent (actorApi: IActor) handleCommand apply snapshotPolicy =
         AkklingHelpers.Internal.entityFactoryFor actorApi.System shardResolver name
-        <| propsPersist (actorProp config loggerFactory handleCommand apply initialState name toEvent (typed actorApi.Mediator))
+        <| propsPersist (actorProp config loggerFactory handleCommand apply initialState name toEvent snapshotPolicy (typed actorApi.Mediator))
         <| false
 
 /// Custom configuration provider for in-memory HOCON strings
@@ -575,9 +583,9 @@ let api (config: IConfiguration) (loggerFactory: ILoggerFactory) (connection: Co
         ///         userEventApplier)
         /// </code>
         /// </example>
-        member this.InitializeActor initialState name handleCommand apply =
+        member this.InitializeActor initialState name handleCommand apply snapshotPolicy =
             let toEvent mid ci sender metadata version event = toEvent system.Scheduler (Some mid) ci sender version metadata event
-            init config loggerFactory initialState name toEvent this handleCommand apply
+            init config loggerFactory initialState name toEvent this handleCommand apply snapshotPolicy
         
         /// <summary>
         /// Initializes a saga to manage a long-running business process across multiple actors.
@@ -605,8 +613,9 @@ let api (config: IConfiguration) (loggerFactory: ILoggerFactory) (connection: Co
             handleEvent
             applySideEffects
             apply
-            name : EntityFac<obj> =
-            Saga.init this initialState handleEvent applySideEffects apply name
+            name
+            snapshotPolicy : EntityFac<obj> =
+            Saga.init this initialState handleEvent applySideEffects apply name snapshotPolicy
         
         /// <summary>
         /// Initializes the saga starter actor with specific rules for saga initiation.
