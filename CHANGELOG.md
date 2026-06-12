@@ -1,5 +1,13 @@
 # Changelog
 
+## 6.0.0-preview25
+- **Single-type-argument `AddAggregate` / `AddSaga`**: the concrete class already
+  names its state/command/event types on its `Aggregate<,,>` / `Saga<,,>` base,
+  so registration no longer repeats them — `.AddAggregate<DocumentShard>()`, and
+  `.AddSaga(create: sp => new QuotaSaga(...), startOn: ...)` with `TSaga`
+  inferred from the lambda. Resolved via reflection once per registration at
+  host-composition time; the explicit four-type-argument overloads remain.
+
 ## 6.0.0-preview24
 - **Single-event projection handlers**: the common projection — update the read
   model and notify with the event itself — no longer needs a hand-written

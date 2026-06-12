@@ -8,13 +8,17 @@ namespace FCQRS
 //
 //     builder.Services
 //         .AddFcqrs(connectionString, "MyCluster")
-//         .AddAggregate<DocumentShard, DocumentState, DocumentCommand, DocumentEvent>()
-//         .AddAggregate<UserShard, UserState, UserCommand, UserEvent>()
-//         .AddSaga<QuotaSaga, DocumentEvent, QuotaSagaData, QuotaState>(
+//         .AddAggregate<DocumentShard>()
+//         .AddAggregate<UserShard>()
+//         .AddSaga(
 //             create:  sp => new QuotaSaga(sp.AggregateFactory<DocumentShard>(),
 //                                          sp.AggregateFactory<UserShard>(),
 //                                          sp.GetRequiredService<ILogger<QuotaSaga>>()),
 //             startOn: e => e is Event<DocumentEvent> { EventDetails: DocumentEvent.CreateOrUpdateRequested })
+//
+// (TState/TCommand/TEvent come off the class's Aggregate<,,>/Saga<,,> base — see
+// FcqrsBuilderExtensions at the bottom; the explicit four-type-argument overloads
+// on FcqrsBuilder below remain available.)
 //         .AddProjection((offset, evt) => Projection.HandleEventWrapper(lf, conn, offset, evt));
 //
 // The actual wiring runs once at host startup (an IHostedService), in the order
@@ -290,3 +294,60 @@ type FcqrsServiceCollectionExtensions =
     [<Extension>]
     static member AggregateFactory<'TShard>(serviceProvider: IServiceProvider) : AggregateFactory =
         serviceProvider.GetRequiredService<FcqrsRuntime>().Factory(typeof<'TShard>)
+
+[<AutoOpen>]
+module private BaseTypeArgs =
+    /// Walk the inheritance chain to the closed generic base built from
+    /// `definition` (Aggregate<,,> / Saga<,,>) and return its type arguments.
+    let rec baseArgs (definition: Type) (t: Type | null) : Type[] option =
+        match t with
+        | null -> None
+        | t when t.IsGenericType && t.GetGenericTypeDefinition() = definition -> Some(t.GetGenericArguments())
+        | t -> baseArgs definition t.BaseType
+
+/// Single-type-argument forms of AddAggregate / AddSaga. The concrete class
+/// already names its state/command/event types on its Aggregate<,,> / Saga<,,>
+/// base, so registration repeats none of them:
+///
+///     .AddAggregate<DocumentShard>()
+///     .AddSaga(create: sp => new QuotaSaga(...), startOn: e => ...)   // TSaga inferred
+///
+/// Reflection runs once per registration, while the host is being composed —
+/// nothing on the message path. The four-type-argument instance overloads remain
+/// for classes that acquire the base generically.
+[<Extension>]
+type FcqrsBuilderExtensions =
+
+    /// Register an aggregate naming only its class; TState/TCommand/TEvent are
+    /// read off its Aggregate&lt;TState, TCommand, TEvent&gt; base.
+    [<Extension>]
+    static member AddAggregate<'TShard when 'TShard: not struct>(builder: FcqrsBuilder) : FcqrsBuilder =
+        match baseArgs typedefof<Aggregate<obj, obj, obj>> typeof<'TShard> with
+        | Some args ->
+            let m = typeof<FcqrsBuilder>.GetMethod "AddAggregate" |> Unchecked.nonNull
+
+            m.MakeGenericMethod([| typeof<'TShard>; args[0]; args[1]; args[2] |]).Invoke(builder, [||])
+            |> Unchecked.nonNull
+            :?> FcqrsBuilder
+        | None ->
+            invalidOp
+                $"{typeof<'TShard>.Name} does not derive from Aggregate<TState, TCommand, TEvent> — inherit the base class, or use the four-type-argument AddAggregate."
+
+    /// Register a saga naming only its class (usually inferred from `create`);
+    /// TEvent/TSagaData/TState are read off its Saga&lt;TEvent, TSagaData, TState&gt; base.
+    [<Extension>]
+    static member AddSaga<'TSaga when 'TSaga: not struct>
+        (builder: FcqrsBuilder, create: Func<IServiceProvider, 'TSaga>, startOn: Func<obj, bool>)
+        : FcqrsBuilder =
+        match baseArgs typedefof<Saga<obj, obj, obj>> typeof<'TSaga> with
+        | Some args ->
+            let m = typeof<FcqrsBuilder>.GetMethod "AddSaga" |> Unchecked.nonNull
+
+            m
+                .MakeGenericMethod([| typeof<'TSaga>; args[0]; args[1]; args[2] |])
+                .Invoke(builder, [| box create; box startOn |])
+            |> Unchecked.nonNull
+            :?> FcqrsBuilder
+        | None ->
+            invalidOp
+                $"{typeof<'TSaga>.Name} does not derive from Saga<TEvent, TSagaData, TState> — inherit the base class, or use the four-type-argument AddSaga."

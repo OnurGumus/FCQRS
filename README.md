@@ -118,7 +118,7 @@ using Microsoft.Extensions.Hosting;
 var builder = Host.CreateApplicationBuilder(args);
 builder.Services
     .AddFcqrs("Data Source=myapp.db;", "MyCluster")    // SQLite-backed actor system
-    .AddAggregate<UserAggregate, UserState, UserCommand, UserEvent>();
+    .AddAggregate<UserAggregate>();   // TState/TCommand/TEvent come off the base class
 
 using var app = builder.Build();
 await app.StartAsync();
@@ -215,7 +215,7 @@ Projection.EnsureTables(conn);
 var builder = Host.CreateApplicationBuilder(args);
 builder.Services
     .AddFcqrs(conn, "MyCluster")
-    .AddAggregate<UserAggregate, UserState, UserCommand, UserEvent>()
+    .AddAggregate<UserAggregate>()
     .AddProjection(
         handler:    sp => (offset, evt) => Projection.HandleEventWrapper(conn, offset, evt),
         lastOffset: _  => 0);
