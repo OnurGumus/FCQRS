@@ -14,7 +14,8 @@
 ///     let users     = Fcqrs.aggregate api { Name="User"; ... }
 ///     let quota     = Fcqrs.saga api (quotaDef documents.Factory users.Factory)
 ///     Fcqrs.wireSagaStarters api [ quota ]
-///     let subs      = Fcqrs.projection api { LastOffset = 0; Handle = handle }
+///     let subs      = Fcqrs.projection api (Projection.single 0 updateReadModel)
+///     // (Projection.multi when you must control which notifications publish)
 ///     // send a command and await the resulting event (read-your-writes):
 ///     let! ev = documents.Send (Fcqrs.newCid()) (Fcqrs.aggregateId id) cmd (fun e -> ...)
 module FCQRS.FSharp
@@ -80,6 +81,24 @@ type Projection =
       /// Called per persisted event; returns the read-model events to publish
       /// to subscribers (empty list = nothing to notify).
       Handle: int64 -> obj -> IMessageWithCID list }
+
+/// Constructors for the two projection-handler shapes.
+[<CompilationRepresentation(CompilationRepresentationFlags.ModuleSuffix)>]
+module Projection =
+
+    /// Multi-event handler: full control — return exactly the notifications to
+    /// publish (empty list = nothing). Use when notifications must be filtered
+    /// or transformed, e.g. suppressing intermediate events so read-your-writes
+    /// only wakes on the final one.
+    let multi (lastOffset: int) (handle: int64 -> obj -> IMessageWithCID list) : Projection =
+        { LastOffset = lastOffset; Handle = handle }
+
+    /// Single-event handler: just update the read model (returns unit); each
+    /// aggregate event is then published to subscribers as-is. The common case
+    /// when every event is worth notifying.
+    let single (lastOffset: int) (handle: int64 -> obj -> unit) : Projection =
+        { LastOffset = lastOffset
+          Handle = FCQRS.Query.autoPublish handle }
 
 // ---------------------------------------------------------------------------
 // Saga side-effect command builders (wrap ExecuteCommand / TargetActor).

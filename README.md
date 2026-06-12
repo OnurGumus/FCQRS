@@ -191,6 +191,13 @@ public static class Projection
 }
 ```
 
+> **Shortcut — single-event handlers.** When every aggregate event is worth publishing as-is (the
+> common case), skip the list plumbing: hand `.AddProjection((offset, evt) => { ... })` a `void`
+> handler and FCQRS re-publishes each aggregate event automatically (saga internals never qualify).
+> Return a list — as above — when notifications must be filtered, e.g. suppressing intermediate
+> events so read-your-writes only wakes on the final one.
+> F#: `Projection.single` / `Projection.multi`.
+
 Register it (`.AddProjection`), subscribe before sending, then query the table. **`Program.cs`**:
 
 ```csharp

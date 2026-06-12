@@ -128,10 +128,16 @@ module RenamedCounter =
         | Incremented of int
         | WasReset
 
+// Multi-event handler shape: return exactly what to publish.
 let private projection (_offset: int64) (ev: obj) : IMessageWithCID list =
     match ev with
     | :? (Event<Counter.Event>) as e -> [ e :> IMessageWithCID ]
     | _ -> []
+
+// Single-event handler shape: just side-effect (here: count what flows
+// through); every aggregate event auto-publishes — equivalent to the multi
+// handler above for this domain, which is exactly the point of `single`.
+let private singleHandled = ref 0
 
 let private registerJournalTypes () =
     Fcqrs.journalTypes [ journalType<Counter.Event> "counter.event" ]
@@ -146,7 +152,8 @@ let private boot () =
         Fcqrs.aggregate api { Name = "Counter"; Initial = Counter.initial; Decide = Counter.decide; Fold = Counter.fold; Snapshots = Default }
     let saga = Fcqrs.saga api (AutoReset.definition counter.Factory)
     Fcqrs.wireSagaStarters api [ saga ]
-    let subs = Fcqrs.projection api { LastOffset = 0; Handle = projection }
+    // The projection stream invokes the handler sequentially, so a plain incr is safe.
+    let subs = Fcqrs.projection api (Projection.single 0 (fun _ _ -> incr singleHandled))
     counter, subs
 
 let private isWasReset (m: IMessageWithCID) =
@@ -200,6 +207,10 @@ let private roundTripTest =
         |> Async.RunSynchronously
         |> ignore
         Expect.isTrue (sawReset.Task.Wait(TimeSpan.FromSeconds 20.0)) "the saga reset the counter (WasReset observed through the projection)"
+
+        // 3. both notifications above arrived via Projection.single auto-publish —
+        //    and the unit handler itself demonstrably ran for each journal event.
+        Expect.isGreaterThan singleHandled.Value 0 "the single-event handler was invoked"
 
 let private snapshotRecoveryTest =
     testCase "facade: a saga recovered through a snapshot re-drives its side effects"

@@ -1,5 +1,17 @@
 # Changelog
 
+## 6.0.0-preview24
+- **Single-event projection handlers**: the common projection — update the read
+  model and notify with the event itself — no longer needs a hand-written
+  notification list. The handler just returns unit/void and FCQRS publishes
+  each journal event that is an `IMessageWithCID` (every aggregate `Event<'T>`;
+  saga internals never qualify, so they are never published).
+  F#: `Projection.single` (and `Projection.multi` for the existing
+  full-control shape); C#: `AddProjection((offset, evt) => { ... })`
+  `Action` overloads (direct + DI) and `QueryApi.Init(..., Action<long, object>)`.
+  List-returning ("multi") handlers are unchanged and remain the way to filter
+  notifications, e.g. suppressing intermediate events for read-your-writes.
+
 ## 6.0.0-preview23
 - Notification buffer config hardening: the queue takes
   config:akka:fcqrs:notification-buffer verbatim (any positive size),

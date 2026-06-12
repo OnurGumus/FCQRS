@@ -176,11 +176,29 @@ type FcqrsBuilder internal (services: IServiceCollection, connectionString: stri
         projectionStep <- Some(fun _sp actor -> QueryApi.Init(actor, lastOffset, handler))
         this
 
+    /// Register the read-model projection with a single-event handler: the
+    /// handler just updates the read model (returns void); each aggregate event
+    /// is then published to subscribers as-is. Use the list-returning overload
+    /// when notifications must be filtered — e.g. suppressing intermediate
+    /// events so read-your-writes only wakes on the final one.
+    member this.AddProjection(handler: Action<int64, obj>, [<Optional; DefaultParameterValue(0)>] lastOffset: int) : FcqrsBuilder =
+        this.RegisterSubscriptionResolver()
+        projectionStep <- Some(fun _sp actor -> QueryApi.Init(actor, lastOffset, handler))
+        this
+
     /// Register the read-model projection, building the handler (and resuming offset)
     /// from DI. Use this overload when the projection needs services — e.g. an
     /// ILoggerFactory — so it resolves them the same way the actor system does.
     member this.AddProjection(
             handler: Func<IServiceProvider, Func<int64, obj, IList<IMessageWithCID>>>,
+            lastOffset: Func<IServiceProvider, int>) : FcqrsBuilder =
+        this.RegisterSubscriptionResolver()
+        projectionStep <- Some(fun sp actor -> QueryApi.Init(actor, lastOffset.Invoke sp, handler.Invoke sp))
+        this
+
+    /// DI variant of the single-event handler overload.
+    member this.AddProjection(
+            handler: Func<IServiceProvider, Action<int64, obj>>,
             lastOffset: Func<IServiceProvider, int>) : FcqrsBuilder =
         this.RegisterSubscriptionResolver()
         projectionStep <- Some(fun sp actor -> QueryApi.Init(actor, lastOffset.Invoke sp, handler.Invoke sp))

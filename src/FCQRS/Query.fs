@@ -122,6 +122,22 @@ let asDefaultSubscribe (inner: ISubscribe<IMessageWithCID>) : ISubscribe =
         member _.Subscribe(cid: CID, filter: IMessageWithCID -> bool, take: int, ?callback: IMessageWithCID -> unit, ?cancellationToken: CancellationToken) : IAwaitableDisposable =
             inner.Subscribe(cid, filter, take, ?callback = callback, ?cancellationToken = cancellationToken) }
 
+/// Adapt a "single-event" projection handler — one that just updates the read
+/// model and returns unit — to the canonical list-returning shape: after the
+/// handler runs, the journal event itself is published to subscribers whenever
+/// it is an IMessageWithCID. Aggregate Event&lt;'T&gt;s are; saga internals are
+/// not, so subscribers only ever see aggregate events. This is the common
+/// projection (notify with each event as-is); write a list-returning handler
+/// when notifications must be filtered or transformed — e.g. suppressing
+/// intermediate events so read-your-writes only wakes on the final one.
+let autoPublish (handle: int64 -> obj -> unit) : int64 -> obj -> IMessageWithCID list =
+    fun offset evt ->
+        handle offset evt
+
+        match evt with
+        | :? IMessageWithCID as m -> [ m ]
+        | _ -> []
+
 [<AutoOpen>]
 module Internal =
     open Akka.Persistence.Sql.Query
