@@ -114,6 +114,7 @@ let toOriginatorAfter (factory: AggregateFactory) (delayMs: int64) (taskName: st
 
 let persist (event: 'e) : EventAction<'e> = PersistEvent event
 let persistAll (events: 'e list) : EventAction<'e> = PersistAllEvents events
+let persistAndSnapshot (event: 'e) : EventAction<'e> = PersistAndSnapshot event
 let defer (event: 'e) : EventAction<'e> = DeferEvent event
 let transitionTo (state: 'state) : EventAction<'state> = StateChangedEvent state
 let stay<'state> : SagaTransition<'state> = Stay

@@ -193,6 +193,9 @@ type EventAction<'T when 'T : not null> =
     /// still projects the batch event-by-event (durability is atomic,
     /// read-model visibility is not).
     | PersistAllEvents of 'T list
+    /// Persist the event and, once it is durable and folded, immediately save a
+    /// snapshot — a manual checkpoint, independent of the SnapshotPolicy cadence.
+    | PersistAndSnapshot of 'T
     /// Defer the event. It will be stashed and processed later, potentially after other events.
     | DeferEvent of 'T
     /// Publish the event immediately to the mediator without persisting it. The actor's state is not updated.

@@ -543,6 +543,7 @@ let private actorProp<'SagaData, 'State, 'TEvent when 'TEvent : not null and 'St
                         | PublishEvent _
                         | PersistEvent _
                         | PersistAllEvents _
+                        | PersistAndSnapshot _
                         | DeferEvent _ -> return Unhandled
                     with ex ->
                         log.Error(ex, "Fatal error in saga handleEvent for {0}. Terminating process to prevent restart loop.", name)

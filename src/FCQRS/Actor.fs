@@ -38,9 +38,13 @@ module internal Internal =
         PublishEvent: Event<'TEvent> -> unit
         SendToSagaStarter: Event<'TEvent> -> obj
         Mediator: IActorRef<Publish>
-        Log: ILogger }
+        Log: ILogger
+        /// Set by handleEffect when the in-flight persist should be followed by
+        /// an immediate snapshot (PersistAndSnapshot); cleared after saving.
+        ManualSnapshotRequested: bool ref }
     let runActor<'TEvent , 'TState when 'TEvent : not null>
         (snapshotEvery: int64 option)
+        (manualSnapshotRequested: bool ref)
         (sagaStartTimeout: TimeSpan)
         (logger: ILogger)
         (mailbox: Eventsourced<obj>)
@@ -160,10 +164,17 @@ module internal Internal =
 
                 let state = newState
 
-                match snapshotEvery with
-                | Some every when versionN > 0L && versionN % every = 0L ->
+                let manual = manualSnapshotRequested.Value
+                manualSnapshotRequested.Value <- false
+
+                let dueByCadence =
+                    match snapshotEvery with
+                    | Some every -> versionN > 0L && versionN % every = 0L
+                    | None -> false
+
+                if manual || dueByCadence then
                     return! state |> set <@> SaveSnapshot state
-                | _ ->
+                else
                     return! state |> set
 
             | Recovering mailbox (:? Common.Event<'TEvent> as event) ->
@@ -183,7 +194,8 @@ module internal Internal =
                         PublishEvent = publishEvent
                         SendToSagaStarter = starter
                         Mediator = mediator
-                        Log = logger }
+                        Log = logger
+                        ManualSnapshotRequested = manualSnapshotRequested }
 
                 return! body bodyInput
         }
@@ -193,6 +205,13 @@ module internal Internal =
             | PersistEvent event ->
                 let nextVersion: Version =
                     (state.Version |> ValueLens.Value) + 1L |> ValueLens.TryCreate |> Result.value
+                return! event |> toEvent nextVersion |> bodyInput.SendToSagaStarter |> Persist
+
+            | PersistAndSnapshot event ->
+                let nextVersion: Version =
+                    (state.Version |> ValueLens.Value) + 1L |> ValueLens.TryCreate |> Result.value
+                // flag consumed by the Persisted branch after the event is durable
+                bodyInput.ManualSnapshotRequested.Value <- true
                 return! event |> toEvent nextVersion |> bodyInput.SendToSagaStarter |> Persist
 
             | PersistAllEvents [] -> return set state
@@ -272,6 +291,9 @@ module internal Internal =
             | true, v when v > 0 -> TimeSpan.FromSeconds(float v)
             | _ -> TimeSpan.FromSeconds 30.0
 
+        // per-actor flag: a PersistAndSnapshot is in flight
+        let manualSnapshotRequested = ref false
+
         let rec set (state: State<'State>) =
             let body (bodyInput: BodyInput<'Event>) =
                 let msg = bodyInput.Message
@@ -331,7 +353,7 @@ module internal Internal =
                         return Unhandled
                 }
 
-            runActor snapshotEvery sagaStartTimeout logger mailbox mediator set state (apply: Event<_> -> 'State -> 'State) body
+            runActor snapshotEvery manualSnapshotRequested sagaStartTimeout logger mailbox mediator set state (apply: Event<_> -> 'State -> 'State) body
 
         let initialState =
             { 

@@ -147,6 +147,11 @@ type EventActions =
     static member Defer<'TEvent when 'TEvent: not null>(event: 'TEvent) : EventAction<'TEvent> =
         EventAction.DeferEvent event
 
+    /// Create a PersistAndSnapshot action: persist the event, then save a manual
+    /// snapshot once it is durable - independent of the SnapshotPolicy cadence.
+    static member PersistAndSnapshot<'TEvent when 'TEvent: not null>(event: 'TEvent) : EventAction<'TEvent> =
+        EventAction.PersistAndSnapshot event
+
     /// Create a PersistAllEvents action: all events from this command persist as
     /// one journal AtomicWrite (all-or-nothing), with sequential versions. State
     /// updates and publishes happen only after the whole batch is durable.

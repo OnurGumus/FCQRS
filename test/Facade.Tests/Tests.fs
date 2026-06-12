@@ -22,6 +22,7 @@ module Counter =
     type Command =
         | Increment of int
         | Split of int * int
+        | Checkpoint
         | Reset
 
     type Event =
@@ -36,6 +37,8 @@ module Counter =
         | Increment n -> Incremented n |> PersistEvent
         // one command, two events, one journal AtomicWrite
         | Split(a, b) -> persistAll [ Incremented a; Incremented b ]
+        // manual checkpoint: persist + immediate snapshot, no cadence involved
+        | Checkpoint -> WasReset |> persistAndSnapshot
         | Reset -> WasReset |> PersistEvent
 
     let fold (e: Event<Event>) state =
@@ -260,8 +263,47 @@ let private persistAllTest =
 
         Expect.equal (next.Version |> ValueLens.Value) 3L "a follow-up event continues after the batch"
 
+let private manualSnapshotTest =
+    testCase "facade: PersistAndSnapshot writes a snapshot row immediately"
+    <| fun _ ->
+        let db = Path.Combine(Path.GetTempPath(), sprintf "fcqrs_manualsnap_%s.db" (Guid.NewGuid().ToString("N")))
+        let api =
+            Fcqrs.actor (ConfigurationBuilder().Build()) NullLoggerFactory.Instance
+                (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite (sprintf "Data Source=%s;" db))) "ManualSnapSmoke"
+        let counter =
+            Fcqrs.aggregate api { Name = "Counter"; Initial = Counter.initial; Decide = Counter.decide; Fold = Counter.fold; Snapshots = Default }
+        Fcqrs.wireSagaStarters api []
+
+        let snapshotCount () =
+            use conn = new Microsoft.Data.Sqlite.SqliteConnection(sprintf "Data Source=%s;" db)
+            conn.Open()
+            use cmd = conn.CreateCommand()
+            cmd.CommandText <- "SELECT COUNT(*) FROM snapshot WHERE persistence_id LIKE '%snapcheck%'"
+            cmd.ExecuteScalar() :?> int64
+
+        // v1: plain persist — default cadence (30) means no snapshot
+        counter.Send (Fcqrs.newCid ()) (Fcqrs.aggregateId "snapcheck") (Counter.Increment 1)
+            (function Counter.Incremented _ -> true | _ -> false)
+        |> Async.RunSynchronously |> ignore
+
+        // v2: manual checkpoint — must produce a snapshot row despite cadence 30
+        counter.Send (Fcqrs.newCid ()) (Fcqrs.aggregateId "snapcheck") Counter.Checkpoint
+            (function Counter.WasReset -> true | _ -> false)
+        |> Async.RunSynchronously |> ignore
+
+        // SaveSnapshot is async; poll briefly
+        let mutable count = 0L
+        let mutable attempts = 0
+        while count = 0L && attempts < 20 do
+            attempts <- attempts + 1
+            Threading.Thread.Sleep 250
+            count <- try snapshotCount () with _ -> 0L
+
+        Expect.isTrue (count >= 1L) "the manual checkpoint wrote a snapshot row (version 2, far below the cadence of 30)"
+        api.Stop().Wait(TimeSpan.FromSeconds 30.0) |> ignore
+
 let tests =
-    testSequenced (testList "facade" [ roundTripTest; persistAllTest; snapshotRecoveryTest ])
+    testSequenced (testList "facade" [ roundTripTest; persistAllTest; manualSnapshotTest; snapshotRecoveryTest ])
 
 [<EntryPoint>]
 let main argv = runTestsWithCLIArgs [] argv tests
