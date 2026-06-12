@@ -59,7 +59,8 @@ jobs:
           user: ReverseBlade
       - name: Push (dependency order, skip already-published versions)
         run: |
-          for id in FCQRS.Model FCQRS.Serialization FCQRS.SQLProvider FCQRS; do
+          shopt -s nullglob
+          for id in FCQRS.Model FCQRS.Serialization FCQRS.SqlProvider FCQRS; do
             for pkg in ./nupkgs/$id.[0-9]*.nupkg; do
               case "$pkg" in *symbols*) continue ;; esac
               echo "pushing $pkg"
