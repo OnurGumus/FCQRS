@@ -106,6 +106,13 @@ type FcqrsBuilder internal (services: IServiceCollection, connectionString: stri
         defaultSnapshotPolicy <- policy
         this
 
+    /// Register stable journal names for payload types: manifests become
+    /// "fcqrs:ev(doc.event)" instead of CLR AssemblyQualifiedNames, so types can
+    /// be renamed/moved freely (update the mapping; old rows keep reading).
+    member this.WithJournalTypes(configure: Action<JournalTypeMapBuilder>) : FcqrsBuilder =
+        configure.Invoke(JournalTypeMapBuilder())
+        this
+
     /// Enable Akka's internal logging (FCQRS ships it OFF). `level` maps to
     /// akka.loglevel; by default akka.stdout-loglevel is set to the same value.
     /// FCQRS's own logs are unaffected — they follow the host's ILoggerFactory.

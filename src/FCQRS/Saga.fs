@@ -31,7 +31,7 @@ let private createCommand (mailbox: Eventsourced<_>) (command: 'TCommand) cid me
 
 type private ParentSaga<'SagaData, 'State> = SagaStateWithVersion<'SagaData, 'State>
 
-type private SagaStartingEventWrapper<'TEvent when 'TEvent : not null> =
+type internal SagaStartingEventWrapper<'TEvent when 'TEvent : not null> =
     | SagaStartingEventWrapper of SagaStartingEvent<Event<'TEvent>>
     interface ISerializable
 
@@ -39,7 +39,7 @@ type private SagaStartingEventWrapper<'TEvent when 'TEvent : not null> =
 // replayed past a snapshot, so the snapshot must carry the starting event
 // itself — otherwise a saga recovered through a snapshot has startingEvent =
 // None and skips its recovery re-drive (pending commands never re-issued).
-type private SagaSnapshot<'SagaData, 'State, 'TEvent when 'TEvent : not null> =
+type internal SagaSnapshot<'SagaData, 'State, 'TEvent when 'TEvent : not null> =
     { Parent: SagaStateWithVersion<'SagaData, 'State>
       StartingEvent: SagaStartingEvent<Event<'TEvent>> option }
     interface ISerializable

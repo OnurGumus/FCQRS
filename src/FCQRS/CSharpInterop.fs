@@ -137,6 +137,13 @@ type StringTypes =
     static member TryCreateLongString(s: string, [<System.Runtime.InteropServices.Out>] result: byref<LongString>) : bool =
         Values.TryCreateLongString(s, &result)
 
+/// Fluent registrar for stable journal type names (see JournalTypes).
+type JournalTypeMapBuilder internal () =
+    /// Map a payload type to its stable journal name (plus optional aliases).
+    member this.Type<'T>(name: string, [<ParamArray>] aliases: string[]) : JournalTypeMapBuilder =
+        JournalTypes.Map(typeof<'T>, name, aliases)
+        this
+
 /// C#-friendly factory methods for EventAction
 type EventActions =
     /// Create a PersistEvent action (event will be persisted and published)

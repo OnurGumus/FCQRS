@@ -122,12 +122,22 @@ module Parked =
           // (no config key) — Started=v1, Pinging=v2 -> snapshot covers the journal.
           Snapshots = Every 2 }
 
+/// A CLR "rename" of Counter.Event: same cases/shape, different type identity.
+module RenamedCounter =
+    type Event =
+        | Incremented of int
+        | WasReset
+
 let private projection (_offset: int64) (ev: obj) : IMessageWithCID list =
     match ev with
     | :? (Event<Counter.Event>) as e -> [ e :> IMessageWithCID ]
     | _ -> []
 
+let private registerJournalTypes () =
+    Fcqrs.journalTypes [ journalType<Counter.Event> "counter.event" ]
+
 let private boot () =
+    registerJournalTypes ()
     let db = Path.Combine(Path.GetTempPath(), sprintf "fcqrs_facade_%s.db" (Guid.NewGuid().ToString("N")))
     let api =
         Fcqrs.actor (ConfigurationBuilder().Build()) NullLoggerFactory.Instance
@@ -152,6 +162,7 @@ let private isWasReset (m: IMessageWithCID) =
 /// test); per-test durable-ddata directory so two sequential incarnations
 /// share sharding state but tests don't contend.
 let private bootParked (db: string) (lmdb: string) =
+    registerJournalTypes ()
     let cfg =
         ConfigurationBuilder()
             .AddInMemoryCollection(
@@ -393,9 +404,54 @@ let private overflowTest =
 
         api.Stop().Wait(TimeSpan.FromSeconds 30.0) |> ignore
 
+let private manifestTest =
+    testCase "facade: stable journal manifests - scheme, legacy fallback, rename survival"
+    <| fun _ ->
+        registerJournalTypes ()
+        use sys = Akka.Actor.ActorSystem.Create("manifest-test")
+        let ser = FCQRS.ActorSerialization.STJSerializer(sys :?> Akka.Actor.ExtendedActorSystem)
+
+        let ev: Event<Counter.Event> =
+            { EventDetails = Counter.Incremented 3
+              CreationDate = DateTime.UtcNow
+              Id = Guid.CreateVersion7().ToString() |> ValueLens.CreateAsResult |> Result.value
+              Sender = None
+              CorrelationId = Fcqrs.newCid ()
+              Version = 1L |> ValueLens.TryCreate |> Result.value
+              Metadata = Map.empty }
+
+        // 1. registered payload -> stable structured manifest
+        let manifest = ser.Manifest ev
+        Expect.equal manifest "fcqrs:ev(counter.event)" "stable manifest for a registered payload"
+
+        let bytes = ser.ToBinary ev
+        let back = ser.FromBinary(bytes, manifest) :?> Event<Counter.Event>
+        Expect.equal back.EventDetails (Counter.Incremented 3) "stable manifest round-trips"
+
+        // 2. legacy AQN manifest (what every pre-existing journal row carries)
+        let aqn = typeof<Event<Counter.Event>>.AssemblyQualifiedName |> string
+        let legacy = ser.FromBinary(bytes, aqn) :?> Event<Counter.Event>
+        Expect.equal legacy.EventDetails (Counter.Incremented 3) "legacy AQN manifests keep reading"
+
+        // 3. unregistered payload -> legacy manifest (no fcqrs: scheme)
+        let unregistered = ser.Manifest(box "plain string")
+        Expect.isFalse (unregistered.StartsWith "fcqrs:") "unregistered types fall back to AQN"
+
+        // 4. THE rename test: point the logical name at a different CLR type and
+        // the same journal bytes deserialize as the new type. This is the exact
+        // scenario that bricks AQN-manifest journals.
+        JournalTypes.Remap(typeof<RenamedCounter.Event>, "counter.event")
+
+        try
+            let renamed = ser.FromBinary(bytes, "fcqrs:ev(counter.event)") :?> Event<RenamedCounter.Event>
+            Expect.equal renamed.EventDetails (RenamedCounter.Incremented 3) "old rows deserialize as the renamed type"
+        finally
+            // restore for the rest of the suite
+            JournalTypes.Remap(typeof<Counter.Event>, "counter.event")
+
 let tests =
     testSequenced (
-        testList "facade" [ roundTripTest; persistAllTest; manualSnapshotTest; telemetryTest; overflowTest; snapshotRecoveryTest ]
+        testList "facade" [ manifestTest; roundTripTest; persistAllTest; manualSnapshotTest; telemetryTest; overflowTest; snapshotRecoveryTest ]
     )
 
 [<EntryPoint>]

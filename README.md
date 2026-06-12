@@ -287,6 +287,23 @@ Commands created while an `Activity` is current carry the trace context in their
 `Metadata`, and it flows command → events → sagas → projections automatically —
 one trace for the whole workflow, correlation ids stay plain GUIDs.
 
+## Journal-proof type names
+
+Journal rows are forever; CLR type names are not. Register stable names once
+and FCQRS writes manifests like `fcqrs:ev(doc.event)` instead of
+AssemblyQualifiedNames — rename or move the type later and only the mapping
+changes:
+
+```fsharp
+Fcqrs.journalTypes [ journalType<Document.Event> "doc.event" ]   // F#
+```
+```csharp
+.WithJournalTypes(m => m.Type<DocumentEvent>("doc.event"))       // C# builder
+```
+
+Old journals and unregistered types fall back to the legacy AQN manifests on
+read — nothing ever needs migrating.
+
 ## Documentation
 
 The full documentation lives at **[onurgumus.github.io/FCQRS](https://onurgumus.github.io/FCQRS/)**,

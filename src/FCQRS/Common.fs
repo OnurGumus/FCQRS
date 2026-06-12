@@ -265,6 +265,60 @@ let internal currentTraceparent () : string option =
     | null -> None
     | act -> Some $"00-{act.TraceId.ToHexString()}-{act.SpanId.ToHexString()}-01"
 
+/// Stable logical names for journal payload types. Register every command/event/
+/// state type that touches the journal; the serializer then writes manifests like
+/// "fcqrs:ev(doc.event)" instead of CLR AssemblyQualifiedNames — so types can be
+/// renamed or moved freely (update the mapping, old journal rows keep reading).
+/// Unregistered types fall back to the legacy AQN manifest.
+type JournalTypes private () =
+    static let byName = Collections.Concurrent.ConcurrentDictionary<string, Type>()
+    static let byType = Collections.Concurrent.ConcurrentDictionary<Type, string>()
+
+    static let validateName (name: string) =
+        if String.IsNullOrWhiteSpace name || name.IndexOfAny [| '('; ')'; ','; ':' |] >= 0 then
+            invalidArg "name" $"Journal type name '%s{name}' must be non-empty and must not contain '(', ')', ',' or ':'"
+
+    static member private MapCore(payloadType: Type, name: string, aliases: string[], allowReplace: bool) =
+        validateName name
+        aliases |> Array.iter validateName
+
+        let put (n: string) =
+            match byName.TryGetValue n with
+            | true, existing when existing <> payloadType && not allowReplace ->
+                invalidOp $"Journal name '%s{n}' is already mapped to %s{existing.FullName}; use Remap to replace it deliberately"
+            | _ -> byName[n] <- payloadType
+
+        put name
+        aliases |> Array.iter put
+
+        match byType.TryGetValue payloadType with
+        | true, existing when existing <> name && not allowReplace ->
+            invalidOp $"%s{payloadType.FullName} is already mapped to '%s{existing}'; use Remap to replace it deliberately"
+        | _ -> byType[payloadType] <- name
+
+    /// Map a payload type to its stable journal name (plus optional read-side aliases).
+    static member Map(payloadType: Type, name: string, [<ParamArray>] aliases: string[]) =
+        JournalTypes.MapCore(payloadType, name, aliases, false)
+
+    /// Map a payload type to its stable journal name (plus optional read-side aliases).
+    static member Map<'T>(name: string, [<ParamArray>] aliases: string[]) =
+        JournalTypes.MapCore(typeof<'T>, name, aliases, false)
+
+    /// Replace an existing mapping deliberately (e.g. pointing a logical name at a
+    /// renamed CLR type).
+    static member Remap(payloadType: Type, name: string, [<ParamArray>] aliases: string[]) =
+        JournalTypes.MapCore(payloadType, name, aliases, true)
+
+    static member internal TryGetName(t: Type) : string option =
+        match byType.TryGetValue t with
+        | true, n -> Some n
+        | _ -> None
+
+    static member internal TryGetType(name: string) : Type option =
+        match byName.TryGetValue name with
+        | true, t -> Some t
+        | _ -> None
+
 /// Snapshot cadence for an aggregate or saga, set per entity at registration.
 type SnapshotPolicy =
     /// Use the global config (config:akka:persistence:snapshot-version-count), or 30.

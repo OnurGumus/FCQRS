@@ -112,6 +112,9 @@ let toOriginatorAfter (factory: AggregateFactory) (delayMs: int64) (taskName: st
 // Stay, StopSaga ...) work directly too; these just read nicely in pipelines.
 // ---------------------------------------------------------------------------
 
+/// A (type, stable-journal-name) pair for Fcqrs.journalTypes.
+let journalType<'T> (name: string) : System.Type * string = typeof<'T>, name
+
 let persist (event: 'e) : EventAction<'e> = PersistEvent event
 let persistAll (events: 'e list) : EventAction<'e> = PersistAllEvents events
 let persistAndSnapshot (event: 'e) : EventAction<'e> = PersistAndSnapshot event
@@ -189,6 +192,13 @@ module Fcqrs =
                 [ for s in sagas do
                       if s.StartOn evt then
                           yield s.Factory ])
+
+    /// Register stable journal names for payload types (see JournalTypes):
+    ///     Fcqrs.journalTypes [ journalType<Document.Event> "doc.event"; ... ]
+    /// Call before the actor system writes anything.
+    let journalTypes (mappings: (System.Type * string) list) : unit =
+        for t, name in mappings do
+            JournalTypes.Map(t, name)
 
     /// Register the read-model projection and return the subscription stream.
     let projection (api: IActor) (p: Projection) : FCQRS.Query.ISubscribe =

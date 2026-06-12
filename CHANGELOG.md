@@ -28,6 +28,17 @@
   gated on `HasListeners()` (zero overhead when off); CIDs stay plain GUIDs.
   Register with `tracing.AddSource(Telemetry.AllActivitySources)`.
 
+### Journal manifests
+- **Stable logical type names**: register payload types once
+  (`Fcqrs.journalTypes [ journalType<Document.Event> "doc.event" ]` /
+  `.WithJournalTypes(m => m.Type<DocumentEvent>("doc.event"))`) and journal
+  manifests become `fcqrs:ev(doc.event)` instead of CLR
+  AssemblyQualifiedNames — CLR types can then be renamed or moved freely;
+  only the mapping changes and old rows keep deserializing
+  (`JournalTypes.Remap` for deliberate re-pointing, aliases supported).
+  Pre-existing journals and unregistered types keep using AQN manifests via a
+  read-side fallback: no migration needed, ever.
+
 ### Reliability
 - Read-your-writes notification queue: overflow now drops the oldest
   unconsumed notification (`DropHead`) instead of faulting the stream;
