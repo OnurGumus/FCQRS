@@ -5,7 +5,7 @@ tmp/
 .fsdocs/cache
 *.db
 /output
-/src/**/bin/
+bin/
 
 # Claude IDE settings
 .claude/settings.local.json

@@ -1,0 +1,26 @@
+# Build FCQRS and run the facade test suite (round-trip, PersistAll atomicity,
+# manual snapshot, telemetry trace-chain, saga snapshot kill-and-reboot).
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: Build
+        run: dotnet build src/FCQRS/FCQRS.fsproj -c Release
+      - name: Facade tests
+        run: dotnet run --project test/Facade.Tests -c Release
+      - name: Samples build
+        run: |
+          dotnet build sample -c Release
+          dotnet build saga_sample -c Release
