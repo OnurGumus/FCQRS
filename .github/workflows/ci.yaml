@@ -16,6 +16,8 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 10.0.x
+      - name: Restore tools (paket)
+        run: dotnet tool restore
       - name: Build
         run: dotnet build src/FCQRS/FCQRS.fsproj -c Release
       - name: Facade tests
