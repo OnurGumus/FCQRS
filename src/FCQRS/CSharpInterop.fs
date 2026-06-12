@@ -535,6 +535,40 @@ type SagaCommands =
           Command = command
           DelayInMs = None }
 
+    /// Create a command to the saga itself (raw; lands in HandleEvent) — e.g. timeouts.
+    static member ToSelf(command: obj) : ExecuteCommand =
+        { TargetActor = Self; Command = command; DelayInMs = None }
+
+    /// Create a delayed command to a specific aggregate instance.
+    static member ToAggregateDelayed(
+        factory: AggregateFactory,
+        entityId: string,
+        command: obj,
+        delayMs: int64,
+        taskName: string) : ExecuteCommand =
+        { TargetActor = FactoryAndName { Factory = factory.Invoke; Name = Name entityId }
+          Command = command
+          DelayInMs = Some (delayMs, taskName) }
+
+    /// Create a delayed command to a concrete actor ref.
+    static member ToActorDelayed(
+        actorRef: Akkling.ActorRefs.IActorRef<obj>,
+        command: obj,
+        delayMs: int64,
+        taskName: string) : ExecuteCommand =
+        { TargetActor = ActorRef actorRef
+          Command = command
+          DelayInMs = Some (delayMs, taskName) }
+
+    /// Schedule a message to the saga itself after a delay — the idiomatic saga timeout.
+    static member ToSelfDelayed(
+        command: obj,
+        delayMs: int64,
+        taskName: string) : ExecuteCommand =
+        { TargetActor = Self
+          Command = command
+          DelayInMs = Some (delayMs, taskName) }
+
     /// Create a delayed command
     static member ToOriginatorDelayed(
         factory: AggregateFactory,

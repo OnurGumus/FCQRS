@@ -101,9 +101,33 @@ let toAggregate (factory: AggregateFactory) (id: string) (command: obj) : Execut
 let toActor (actorRef: Akkling.ActorRefs.IActorRef<obj>) (command: obj) : ExecuteCommand =
     { TargetActor = ActorRef actorRef; Command = command; DelayInMs = None }
 
+/// Send a command to the saga itself (raw, lands in HandleEvent) — e.g. timeouts.
+let toSelf (command: obj) : ExecuteCommand =
+    { TargetActor = Self; Command = command; DelayInMs = None }
+
 /// Delayed variant of toOriginator (delayMs, taskName key).
 let toOriginatorAfter (factory: AggregateFactory) (delayMs: int64) (taskName: string) (command: obj) : ExecuteCommand =
     { TargetActor = FactoryAndName { Factory = factory; Name = Originator }
+      Command = command
+      DelayInMs = Some(delayMs, taskName) }
+
+/// Delayed variant of toAggregate.
+let toAggregateAfter (factory: AggregateFactory) (id: string) (delayMs: int64) (taskName: string) (command: obj) : ExecuteCommand =
+    { TargetActor = FactoryAndName { Factory = factory; Name = Name id }
+      Command = command
+      DelayInMs = Some(delayMs, taskName) }
+
+/// Delayed variant of toActor.
+let toActorAfter (actorRef: Akkling.ActorRefs.IActorRef<obj>) (delayMs: int64) (taskName: string) (command: obj) : ExecuteCommand =
+    { TargetActor = ActorRef actorRef
+      Command = command
+      DelayInMs = Some(delayMs, taskName) }
+
+/// Schedule a message to the saga itself after a delay — the idiomatic saga
+/// timeout: enter a state, toSelfAfter a reminder, and HandleEvent decides
+/// whether it still matters when it arrives.
+let toSelfAfter (delayMs: int64) (taskName: string) (command: obj) : ExecuteCommand =
+    { TargetActor = Self
       Command = command
       DelayInMs = Some(delayMs, taskName) }
 

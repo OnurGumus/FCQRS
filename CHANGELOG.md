@@ -1,5 +1,14 @@
 # Changelog
 
+## 6.0.0-preview22
+- **Complete delayed/self side-effect helpers**: the saga's scheduled-command
+  concept (ExecuteCommand.DelayInMs) is now reachable for every target on both
+  surfaces — F#: `toSelf`, `toSelfAfter`, `toAggregateAfter`, `toActorAfter`
+  (joining `toOriginatorAfter`); C#: `SagaCommands.ToSelf`, `ToSelfDelayed`,
+  `ToAggregateDelayed`, `ToActorDelayed` (joining `ToOriginatorDelayed`).
+  `toSelfAfter` is the idiomatic saga timeout: enter a state, schedule a
+  reminder to yourself, and HandleEvent decides whether it still matters.
+
 ## 6.0.0-preview21
 
 ### Snapshots
