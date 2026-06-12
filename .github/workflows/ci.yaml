@@ -1,5 +1,7 @@
-# Build FCQRS and run the facade test suite (round-trip, PersistAll atomicity,
-# manual snapshot, telemetry trace-chain, saga snapshot kill-and-reboot).
+# Build FCQRS, run the facade test suite, and - on main, after tests pass -
+# publish any NuGet package whose version isn't on nuget.org yet
+# (--skip-duplicate makes already-published versions a no-op, so publishing
+# is driven purely by bumping <Version> in an fsproj).
 name: ci
 
 on:
@@ -26,3 +28,44 @@ jobs:
         run: |
           dotnet build sample -c Release
           dotnet build saga_sample -c Release
+
+  publish:
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: Check for NUGET_API_KEY
+        id: key
+        run: |
+          if [ -z "${{ secrets.NUGET_API_KEY }}" ]; then
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::NUGET_API_KEY secret not set - skipping publish."
+          else
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Restore tools (paket)
+        if: steps.key.outputs.present == 'true'
+        run: dotnet tool restore
+      - name: Pack
+        if: steps.key.outputs.present == 'true'
+        run: |
+          for proj in src/FCQRS.Model src/FCQRS.Serialization src/FCQRS.SQLProvider src/FCQRS; do
+            dotnet pack "$proj" -c Release -o ./nupkgs
+          done
+      - name: Push (dependency order, skip already-published versions)
+        if: steps.key.outputs.present == 'true'
+        run: |
+          for id in FCQRS.Model FCQRS.Serialization FCQRS.SQLProvider FCQRS; do
+            for pkg in ./nupkgs/$id.[0-9]*.nupkg; do
+              case "$pkg" in *symbols*) continue ;; esac
+              echo "pushing $pkg"
+              dotnet nuget push "$pkg" \
+                --api-key "${{ secrets.NUGET_API_KEY }}" \
+                --source https://api.nuget.org/v3/index.json \
+                --skip-duplicate
+            done
+          done
