@@ -242,6 +242,51 @@ a per-user quota) is the natural next step.
 **[docs](https://onurgumus.github.io/FCQRS/)** build all of this up gradually (F# and C#), and
 **[focument_workshop](https://github.com/OnurGumus/focument_workshop)** is a full runnable web app.
 
+## Snapshots, batching, logging, telemetry
+
+A quick tour of the knobs added in the 6.0 previews (17–21):
+
+```fsharp
+// F# — per-entity snapshot cadence on the definition record
+Fcqrs.aggregate api
+    { Name = "Document"; Initial = initial; Decide = decide; Fold = fold
+      Snapshots = Every 100 }          // or NoSnapshots, or Default (config / 30)
+
+// decide can persist several events as ONE journal AtomicWrite (all-or-nothing),
+// or persist + take a manual snapshot checkpoint:
+| Split(a, b) -> persistAll [ Incremented a; Incremented b ]
+| CloseQuarter -> QuarterClosed summary |> persistAndSnapshot
+```
+
+```csharp
+// C# — the same via the host builder and base classes
+services.AddFcqrs(connectionString, "MyCluster")
+    .WithDefaultSnapshotPolicy(SnapshotPolicy.NewEvery(50))   // builder-wide default
+    .WithAkkaLogging(AkkaLogLevel.Info)                       // Akka internals (shipped OFF)
+    .AddAggregate<DocumentAggregate, ...>()
+    ...
+
+public sealed class DocumentAggregate : Aggregate<...>
+{
+    public override SnapshotPolicy SnapshotPolicy => SnapshotPolicy.NewEvery(100); // per-entity override
+    // EventActions.PersistAll(e1, e2)  /  EventActions.PersistAndSnapshot(e)
+}
+```
+
+Snapshot cadence resolution: per-entity override → builder default →
+`config:akka:persistence:snapshot-version-count` → 30.
+
+FCQRS's own logs follow your host's `ILoggerFactory` (categories are your entity
+and saga names, plus `Query`). Distributed tracing is one line:
+
+```csharp
+tracing.AddSource(FCQRS.Common.Telemetry.AllActivitySources);
+```
+
+Commands created while an `Activity` is current carry the trace context in their
+`Metadata`, and it flows command → events → sagas → projections automatically —
+one trace for the whole workflow, correlation ids stay plain GUIDs.
+
 ## Documentation
 
 The full documentation lives at **[onurgumus.github.io/FCQRS](https://onurgumus.github.io/FCQRS/)**,

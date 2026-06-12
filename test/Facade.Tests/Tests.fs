@@ -341,9 +341,61 @@ let private telemetryTest =
         Expect.isTrue (has "Event:") "an Event span carries the caller's TraceId"
         Expect.isTrue (has "Projection:") "a Projection span carries the caller's TraceId"
 
+let private overflowTest =
+    testCase "facade: unconsumed notifications overflow by dropping, not crashing"
+    <| fun _ ->
+        let db = Path.Combine(Path.GetTempPath(), sprintf "fcqrs_overflow_%s.db" (Guid.NewGuid().ToString("N")))
+
+        // Tiny notification buffer so a few dozen events overflow it.
+        let cfg =
+            ConfigurationBuilder()
+                .AddInMemoryCollection(
+                    [ Collections.Generic.KeyValuePair<string, string | null>(
+                          "config:akka:fcqrs:notification-buffer", "8") ])
+                .Build()
+
+        let api =
+            Fcqrs.actor cfg NullLoggerFactory.Instance
+                (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite (sprintf "Data Source=%s;" db))) "OverflowSmoke"
+
+        let counter =
+            Fcqrs.aggregate api { Name = "Counter"; Initial = Counter.initial; Decide = Counter.decide; Fold = Counter.fold; Snapshots = Default }
+
+        Fcqrs.wireSagaStarters api []
+        let subs = Fcqrs.projection api { LastOffset = 0; Handle = projection }
+
+        // 40 notification-producing events with NO subscriber attached: with the
+        // old Fail strategy this faulted the offer and killed the process.
+        for i in 1..40 do
+            counter.Send (Fcqrs.newCid ()) (Fcqrs.aggregateId "flood") (Counter.Increment i)
+                (function Counter.Incremented _ -> true | _ -> false)
+            |> Async.RunSynchronously
+            |> ignore
+
+        // The stream must still be alive: a subscriber attached NOW must see the
+        // next notification.
+        use awaiter =
+            subs.Subscribe(
+                (fun m ->
+                    match m with
+                    | :? (Event<Counter.Event>) as e -> e.EventDetails = Counter.Incremented 999
+                    | _ -> false),
+                1)
+
+        counter.Send (Fcqrs.newCid ()) (Fcqrs.aggregateId "flood") (Counter.Increment 999)
+            (function Counter.Incremented _ -> true | _ -> false)
+        |> Async.RunSynchronously
+        |> ignore
+
+        Expect.isTrue
+            (awaiter.Task.Wait(TimeSpan.FromSeconds 20.0))
+            "the notification stream survived the overflow and delivered to a late subscriber"
+
+        api.Stop().Wait(TimeSpan.FromSeconds 30.0) |> ignore
+
 let tests =
     testSequenced (
-        testList "facade" [ roundTripTest; persistAllTest; manualSnapshotTest; telemetryTest; snapshotRecoveryTest ]
+        testList "facade" [ roundTripTest; persistAllTest; manualSnapshotTest; telemetryTest; overflowTest; snapshotRecoveryTest ]
     )
 
 [<EntryPoint>]

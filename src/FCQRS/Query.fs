@@ -165,8 +165,21 @@ let private activitySource = new ActivitySource(Telemetry.QueryActivitySourceNam
 let init<'TDataEvent, 'TPredicate, 't when 'TDataEvent :> IMessageWithCID> (actorApi: IActor) offsetCount handler =
     let logger = actorApi.LoggerFactory.CreateLogger "Query"
     logger.LogInformation "Query started"
-    let subQueue = Source.queue OverflowStrategy.Fail 1024
-    let subSink = Sink.broadcastHub 1024
+
+    // Read-your-writes notifications are ephemeral: if nobody is subscribed,
+    // dropping the oldest is correct. OverflowStrategy.Fail here used to fault
+    // the offer once the buffer filled with no consumers attached - which the
+    // handler's catch then escalated to a process kill. Buffer size:
+    // config:akka:fcqrs:notification-buffer (default 1024).
+    let bufferSize =
+        let s: string | null = actorApi.Configuration["config:akka:fcqrs:notification-buffer"]
+
+        match System.Int32.TryParse s with
+        | true, v when v > 0 -> v
+        | _ -> 1024
+
+    let subQueue = Source.queue OverflowStrategy.DropHead bufferSize
+    let subSink = Sink.broadcastHub bufferSize
 
     let runnableGraph = subQueue |> Source.toMat subSink Keep.both
 

@@ -153,7 +153,10 @@ let private runSaga<'TEvent, 'SagaData, 'State when 'TEvent : not null and 'Stat
             | PersistentLifecycleEvent _
             | :? Persistence.SaveSnapshotSuccess
             | LifecycleEvent _ ->
-                return! innerSet (startingEvent, true, subscriptionAcked)
+                // Lifecycle noise must not mutate handshake state (this used to
+                // force subscribed=true, masking the real RecoveryCompleted /
+                // SubscriptionAcknowledged signals).
+                return! innerSet (startingEvent, subscribed, subscriptionAcked)
             | SnapshotOffer(snapState: obj) ->
                 recoveredFromSnapshotRef.Value <- true
 
