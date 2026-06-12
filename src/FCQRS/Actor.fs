@@ -128,28 +128,33 @@ module internal Internal =
 
             | Persisted mailbox (:? Common.Event<'TEvent> as event) ->
                 let versionN = event.Version |> ValueLens.Value
-                let eventCid = event.CorrelationId |> ValueLens.Value |> ValueLens.Value
-                let eventType =
-                    match box event.EventDetails with
-                    | null -> "null"
-                    | details -> sprintf "%A" details
-                let actorName = mailbox.Self.Path.Name
 
-                // Try to parse CID as W3C traceparent to recover trace context
                 let activity =
-                    let mutable parentContext = Unchecked.defaultof<ActivityContext>
-                    if ActivityContext.TryParse(eventCid, null, &parentContext) then
-                        activitySource.StartActivity($"Event:{eventType}", ActivityKind.Internal, parentContext)
+                    if activitySource.HasListeners() then
+                        let eventCid = event.CorrelationId |> ValueLens.Value |> ValueLens.Value
+
+                        let eventType =
+                            match box event.EventDetails with
+                            | null -> "null"
+                            | details -> sprintf "%A" details
+
+                        let act =
+                            match tryTraceContext event.Metadata eventCid with
+                            | Some parent ->
+                                activitySource.StartActivity($"Event:{eventType}", ActivityKind.Internal, parent)
+                            | None -> activitySource.StartActivity($"Event:{eventType}", ActivityKind.Internal)
+
+                        match act with
+                        | null -> ()
+                        | act ->
+                            act.SetTag("cid", eventCid) |> ignore
+                            act.SetTag("actor", mailbox.Self.Path.Name) |> ignore
+                            act.SetTag("event.type", eventType) |> ignore
+                            act.SetTag("version", versionN) |> ignore
+
+                        act
                     else
-                        // CID is not a traceparent - no tracing for this event
                         null
-                match activity with
-                | null -> ()
-                | act ->
-                    act.SetTag("cid", eventCid) |> ignore
-                    act.SetTag("actor", actorName) |> ignore
-                    act.SetTag("event.type", eventType) |> ignore
-                    act.SetTag("version", versionN) |> ignore
 
                 let innerState = applyChecked event state.State
                 publishEvent event
@@ -302,29 +307,34 @@ module internal Internal =
                     match msg, state with
                     | :? Persistence.RecoveryCompleted, _ -> return! state |> set
                     | :? (Common.Command<'Command>) as cmd, _ ->
-                        let cmdCid = cmd.CorrelationId |> ValueLens.Value |> ValueLens.Value
-                        let cmdType =
-                            match box cmd.CommandDetails with
-                            | null -> "null"
-                            | details -> sprintf "%A" details
-                        let actorName = mailbox.Self.Path.Name
-
-                        // Try to parse CID as W3C traceparent to recover trace context
+                        // Span only when someone is listening: the payload
+                        // formatting and context parsing are not free.
                         let activity =
-                            let mutable parentContext = Unchecked.defaultof<ActivityContext>
-                            if ActivityContext.TryParse(cmdCid, null, &parentContext) then
-                                activitySource.StartActivity($"Command:{cmdType}", ActivityKind.Internal, parentContext)
-                            else
-                                // CID is not a traceparent - no tracing for this command
-                                null
+                            if activitySource.HasListeners() then
+                                let cmdCid = cmd.CorrelationId |> ValueLens.Value |> ValueLens.Value
 
-                        match activity with
-                        | null -> ()
-                        | act ->
-                            act.SetTag("cid", cmdCid) |> ignore
-                            act.SetTag("actor", actorName) |> ignore
-                            act.SetTag("command.type", cmdType) |> ignore
-                            act.SetTag("version", state.Version |> ValueLens.Value) |> ignore
+                                let cmdType =
+                                    match box cmd.CommandDetails with
+                                    | null -> "null"
+                                    | details -> sprintf "%A" details
+
+                                let act =
+                                    match tryTraceContext cmd.Metadata cmdCid with
+                                    | Some parent ->
+                                        activitySource.StartActivity($"Command:{cmdType}", ActivityKind.Internal, parent)
+                                    | None -> activitySource.StartActivity($"Command:{cmdType}", ActivityKind.Internal)
+
+                                match act with
+                                | null -> ()
+                                | act ->
+                                    act.SetTag("cid", cmdCid) |> ignore
+                                    act.SetTag("actor", mailbox.Self.Path.Name) |> ignore
+                                    act.SetTag("command.type", cmdType) |> ignore
+                                    act.SetTag("version", state.Version |> ValueLens.Value) |> ignore
+
+                                act
+                            else
+                                null
 
                         // Keep original CID for pub/sub routing - trace hierarchy is via TraceId, not CID propagation
                         let toEvent =
@@ -369,6 +379,18 @@ module internal Internal =
     let createCommandSubscription (actorApi: IActor) factory (cid: CID) (id: AggregateId) command filter (metadata: Map<string, string> option) =
         let actor = factory (id |> ValueLens.Value |> ValueLens.Value)
 
+        // Stamp the ambient trace context (if any) so spans downstream — the
+        // aggregate, events, sagas, projections — parent onto the caller's trace.
+        let metadataWithTrace =
+            let baseMetadata = metadata |> Option.defaultValue Map.empty
+
+            if baseMetadata.ContainsKey Telemetry.TraceparentMetadataKey then
+                baseMetadata
+            else
+                match currentTraceparent () with
+                | Some tp -> baseMetadata.Add(Telemetry.TraceparentMetadataKey, tp)
+                | None -> baseMetadata
+
         let commonCommand: Command<_> =
             {
                 CommandDetails = command
@@ -376,7 +398,7 @@ module internal Internal =
                 CreationDate = actorApi.System.Scheduler.Now.UtcDateTime
                 CorrelationId = cid
                 Sender = None
-                Metadata = metadata |> Option.defaultValue Map.empty }
+                Metadata = metadataWithTrace }
 
         let e =
             { 

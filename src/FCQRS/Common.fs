@@ -235,9 +235,35 @@ type Telemetry =
     static member ActivitySourceName: string = "FCQRS"
     /// Saga state transitions.
     static member SagaActivitySourceName: string = "FCQRS.Saga"
+    /// Read-side projection of journal events.
+    static member QueryActivitySourceName: string = "FCQRS.Query"
     /// Every FCQRS source, for one-call registration.
     static member AllActivitySources: string[] =
-        [| Telemetry.ActivitySourceName; Telemetry.SagaActivitySourceName |]
+        [| Telemetry.ActivitySourceName
+           Telemetry.SagaActivitySourceName
+           Telemetry.QueryActivitySourceName |]
+    /// Metadata key carrying the W3C traceparent. Stamped automatically on
+    /// commands created while an Activity is current; flows command -> events ->
+    /// saga -> the saga's commands through the existing Metadata plumbing, so
+    /// the CID stays a plain correlation id and tracing rides beside it.
+    static member TraceparentMetadataKey: string = "traceparent"
+
+/// (Internal) Resolve a span's parent: the metadata traceparent first, then the
+/// CID itself for backward compat with traceparent-format CIDs.
+let internal tryTraceContext (metadata: Map<string, string>) (cidStr: string) : ActivityContext option =
+    let tryParse (s: string) =
+        let mutable ctx = Unchecked.defaultof<ActivityContext>
+        if ActivityContext.TryParse(s, null, &ctx) then Some ctx else None
+
+    match metadata.TryFind Telemetry.TraceparentMetadataKey with
+    | Some tp -> tryParse tp
+    | None -> tryParse cidStr
+
+/// (Internal) The current Activity as a traceparent string, if any.
+let internal currentTraceparent () : string option =
+    match Activity.Current with
+    | null -> None
+    | act -> Some $"00-{act.TraceId.ToHexString()}-{act.SpanId.ToHexString()}-01"
 
 /// Snapshot cadence for an aggregate or saga, set per entity at registration.
 type SnapshotPolicy =

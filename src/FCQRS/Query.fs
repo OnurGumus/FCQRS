@@ -6,6 +6,7 @@ open Akka.Streams
 open Akka.Streams.Dsl
 open Microsoft.Extensions.Logging
 open Common
+open System.Diagnostics
 open System.Threading
 open System
 open System.Threading.Tasks
@@ -159,6 +160,8 @@ module Internal =
             ks :> IKillSwitch, d
 
 
+let private activitySource = new ActivitySource(Telemetry.QueryActivitySourceName)
+
 let init<'TDataEvent, 'TPredicate, 't when 'TDataEvent :> IMessageWithCID> (actorApi: IActor) offsetCount handler =
     let logger = actorApi.LoggerFactory.CreateLogger "Query"
     logger.LogInformation "Query started"
@@ -188,6 +191,37 @@ let init<'TDataEvent, 'TPredicate, 't when 'TDataEvent :> IMessageWithCID> (acto
         try
             let offsetValue = (envelop.Offset :?> Sequence).Value
             logger.LogTrace("data event : {@dataevent}", envelop.Event)
+
+            // Projection span: closes the trace end-to-end (command -> event ->
+            // projection). Parent comes from the event's metadata traceparent.
+            use activity =
+                if activitySource.HasListeners() then
+                    match envelop.Event with
+                    | :? FCQRS.Model.Data.IMessage as msg ->
+                        let cidStr = msg.CID |> ValueLens.Value |> ValueLens.Value
+
+                        let payloadName =
+                            match envelop.Event with
+                            | :? IEnvelope as env -> env.Payload.GetType().Name
+                            | other -> other.GetType().Name
+
+                        let act =
+                            match tryTraceContext msg.Metadata cidStr with
+                            | Some p ->
+                                activitySource.StartActivity($"Projection:{payloadName}", ActivityKind.Internal, p)
+                            | None -> activitySource.StartActivity($"Projection:{payloadName}", ActivityKind.Internal)
+
+                        match act with
+                        | null -> ()
+                        | act ->
+                            act.SetTag("cid", cidStr) |> ignore
+                            act.SetTag("offset", offsetValue) |> ignore
+
+                        act
+                    | _ -> null
+                else
+                    null
+
             let res = handler offsetValue envelop.Event
             res |> List.iter (fun x -> queue.OfferAsync(x).Wait())
             lastProcessedOffset <- offsetValue

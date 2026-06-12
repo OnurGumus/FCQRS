@@ -67,38 +67,9 @@ let private runSaga<'TEvent, 'SagaData, 'State when 'TEvent : not null and 'Stat
         actor {
             let! msg = mailbox.Receive()
 
-            // Try to parse CID as W3C traceparent to recover trace context for OTEL
-            // Handle both IMessage and SagaStartingEvent (which wraps an IMessage)
-            let tryExtractCid (m: obj) =
-                match m with
-                | :? FCQRS.Model.Data.IMessage as im ->
-                    Some (im.CID |> ValueLens.Value |> ValueLens.Value)
-                | :? SagaStarter.SagaStartingEvent<FCQRS.Model.Data.IMessage> as se ->
-                    Some (se.Event.CID |> ValueLens.Value |> ValueLens.Value)
-                | _ ->
-                    // Try to get Event property via reflection for generic SagaStartingEvent
-                    let t = m.GetType()
-                    if t.Name.StartsWith("SagaStartingEvent") then
-                        match t.GetProperty("Event") with
-                        | null -> None
-                        | eventProp ->
-                            match eventProp.GetValue(m) with
-                            | :? FCQRS.Model.Data.IMessage as innerMsg ->
-                                Some (innerMsg.CID |> ValueLens.Value |> ValueLens.Value)
-                            | _ -> None
-                    else None
-
-            // Extract CID from the starting event (which has the original trace context)
-            let getCidFromStartingEvent () =
-                match startingEvent with
-                | Some se ->
-                    match box se with
-                    | null -> None
-                    | boxed -> tryExtractCid boxed
-                | None -> None
-
-            // Helper to create and emit a state change activity (only for state transitions)
-            // Activity is kept alive until next state change, so sub-activities become children
+            // Emit a state-change activity (kept alive until the next transition so
+            // sub-activities become children). Parent: the starting event's metadata
+            // traceparent first, the CID for backward compat second, none otherwise.
             let emitStateChangeActivity (newState: 'State) =
                 // Dispose previous activity if exists
                 match currentSagaActivityRef.Value with
@@ -107,40 +78,49 @@ let private runSaga<'TEvent, 'SagaData, 'State when 'TEvent : not null and 'Stat
                     prev.Dispose()
                     currentSagaActivityRef.Value <- null
 
-                match getCidFromStartingEvent () with
-                | Some cid ->
-                    let mutable parentContext = Unchecked.defaultof<ActivityContext>
-                    if ActivityContext.TryParse(cid, null, &parentContext) then
-                        let sagaName = mailbox.Self.Path.Name
-                        // Recursively extract innermost union case name
-                        // This unwraps SagaStateWrapper.UserDefined to get actual user state
-                        let rec getUnionCaseName (obj: obj) =
-                            let t = obj.GetType()
-                            if FSharpType.IsUnion(t) then
-                                let case, fields = FSharpValue.GetUnionFields(obj, t)
-                                // If case is "UserDefined" with one field, unwrap it
-                                if case.Name = "UserDefined" && fields.Length = 1 then
-                                    match fields.[0] with
-                                    | null -> case.Name
-                                    | field -> getUnionCaseName field
-                                else
-                                    case.Name
+                if activitySource.HasListeners() then
+                    // Recursively extract innermost union case name
+                    // (unwraps SagaStateWrapper.UserDefined to the user's state)
+                    let rec getUnionCaseName (obj: obj) =
+                        let t = obj.GetType()
+
+                        if FSharpType.IsUnion(t) then
+                            let case, fields = FSharpValue.GetUnionFields(obj, t)
+
+                            if case.Name = "UserDefined" && fields.Length = 1 then
+                                match fields.[0] with
+                                | null -> case.Name
+                                | field -> getUnionCaseName field
                             else
-                                sprintf "%A" obj
-                        let stateStr =
-                            match box newState with
-                            | null -> "null"
-                            | boxed -> getUnionCaseName boxed
-                        // Create activity and keep it alive (don't use 'use')
-                        // This allows sub-activities (commands, events) to become children
-                        match activitySource.StartActivity($"Saga:{stateStr}", ActivityKind.Internal, parentContext) with
-                        | null -> ()
-                        | act ->
-                            act.SetTag("cid", cid) |> ignore
-                            act.SetTag("saga.id", sagaName) |> ignore
-                            act.SetTag("saga.state", stateStr) |> ignore
-                            currentSagaActivityRef.Value <- act
-                | None -> ()
+                                case.Name
+                        else
+                            sprintf "%A" obj
+
+                    let stateStr =
+                        match box newState with
+                        | null -> "null"
+                        | boxed -> getUnionCaseName boxed
+
+                    let cidStr, parent =
+                        match startingEvent with
+                        | Some se ->
+                            let msg = se.Event :> FCQRS.Model.Data.IMessage
+                            let cidStr = msg.CID |> ValueLens.Value |> ValueLens.Value
+                            cidStr, tryTraceContext msg.Metadata cidStr
+                        | None -> "", None
+
+                    let act =
+                        match parent with
+                        | Some p -> activitySource.StartActivity($"Saga:{stateStr}", ActivityKind.Internal, p)
+                        | None -> activitySource.StartActivity($"Saga:{stateStr}", ActivityKind.Internal)
+
+                    match act with
+                    | null -> ()
+                    | act ->
+                        act.SetTag("cid", cidStr) |> ignore
+                        act.SetTag("saga.id", mailbox.Self.Path.Name) |> ignore
+                        act.SetTag("saga.state", stateStr) |> ignore
+                        currentSagaActivityRef.Value <- act
 
             match msg with
             | :? Event<AbortedEvent> ->

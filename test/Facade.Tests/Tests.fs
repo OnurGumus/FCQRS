@@ -9,6 +9,7 @@
 module FacadeTests
 
 open System
+open System.Diagnostics
 open System.IO
 open Expecto
 open Microsoft.Extensions.Configuration
@@ -302,8 +303,48 @@ let private manualSnapshotTest =
         Expect.isTrue (count >= 1L) "the manual checkpoint wrote a snapshot row (version 2, far below the cadence of 30)"
         api.Stop().Wait(TimeSpan.FromSeconds 30.0) |> ignore
 
+let private telemetryTest =
+    testCase "facade: spans flow command -> event -> projection under the caller's trace"
+    <| fun _ ->
+        let captured = Collections.Concurrent.ConcurrentBag<string * ActivityTraceId>()
+        use listener = new ActivityListener()
+        listener.ShouldListenTo <- fun src -> Array.contains src.Name Telemetry.AllActivitySources
+        listener.Sample <- SampleActivity<ActivityContext>(fun _ -> ActivitySamplingResult.AllDataAndRecorded)
+        listener.ActivityStopped <- fun a -> captured.Add((a.OperationName, a.TraceId))
+        ActivitySource.AddActivityListener listener
+
+        let counter, _subs = boot ()
+
+        // The "HTTP request": an ambient activity current while the command is
+        // created. Its context must ride the command's metadata into every span.
+        use root = new Activity("test-root")
+        root.Start() |> ignore
+
+        counter.Send (Fcqrs.newCid ()) (Fcqrs.aggregateId "traced") (Counter.Increment 7)
+            (function Counter.Incremented _ -> true | _ -> false)
+        |> Async.RunSynchronously
+        |> ignore
+
+        root.Stop()
+
+        // Spans are emitted on actor/stream threads; the projection one is last.
+        let mutable attempts = 0
+
+        let has (prefix: string) =
+            captured |> Seq.exists (fun (name, tid) -> name.StartsWith prefix && tid = root.TraceId)
+
+        while not (has "Command:" && has "Event:" && has "Projection:") && attempts < 40 do
+            attempts <- attempts + 1
+            Threading.Thread.Sleep 250
+
+        Expect.isTrue (has "Command:") "a Command span carries the caller's TraceId"
+        Expect.isTrue (has "Event:") "an Event span carries the caller's TraceId"
+        Expect.isTrue (has "Projection:") "a Projection span carries the caller's TraceId"
+
 let tests =
-    testSequenced (testList "facade" [ roundTripTest; persistAllTest; manualSnapshotTest; snapshotRecoveryTest ])
+    testSequenced (
+        testList "facade" [ roundTripTest; persistAllTest; manualSnapshotTest; telemetryTest; snapshotRecoveryTest ]
+    )
 
 [<EntryPoint>]
 let main argv = runTestsWithCLIArgs [] argv tests
