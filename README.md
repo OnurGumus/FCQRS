@@ -1,5 +1,9 @@
 # FCQRS
 
+[![NuGet](https://img.shields.io/nuget/vpre/FCQRS.svg?label=NuGet)](https://www.nuget.org/packages/FCQRS)
+[![Downloads](https://img.shields.io/nuget/dt/FCQRS.svg)](https://www.nuget.org/packages/FCQRS)
+[![CI](https://github.com/OnurGumus/FCQRS/actions/workflows/ci.yaml/badge.svg)](https://github.com/OnurGumus/FCQRS/actions/workflows/ci.yaml)
+
 FCQRS is a small F# framework for building applications with **CQRS** and **event sourcing** on top
 of Akka.NET actors, usable from both F# and C#. You write pure decision and fold functions; the
 framework supplies the actors, sharding, persistence, sagas, and client coordination.
