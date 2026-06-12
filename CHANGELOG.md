@@ -1,5 +1,12 @@
 # Changelog
 
+## 6.0.0-preview23
+- Notification buffer config hardening: the queue takes
+  config:akka:fcqrs:notification-buffer verbatim (any positive size),
+  while the BroadcastHub - which requires a power-of-two buffer - gets
+  the value rounded down to a power of two, clamped to [8, 4096].
+  Previously a non-power-of-two setting crashed stream materialization.
+
 ## 6.0.0-preview22
 - **Complete delayed/self side-effect helpers**: the saga's scheduled-command
   concept (ExecuteCommand.DelayInMs) is now reachable for every target on both

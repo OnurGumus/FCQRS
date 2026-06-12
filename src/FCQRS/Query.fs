@@ -178,8 +178,18 @@ let init<'TDataEvent, 'TPredicate, 't when 'TDataEvent :> IMessageWithCID> (acto
         | true, v when v > 0 -> v
         | _ -> 1024
 
+    // The queue accepts any positive size — make it as large as you like.
+    // The BroadcastHub does NOT: its buffer must be a power of two (and is a
+    // per-consumer smoothing window, not the shedding point), so it gets the
+    // configured value rounded down to a power of two, clamped to [8, 4096].
+    let hubBufferSize =
+        let clamped = max 8 (min bufferSize 4096)
+        let mutable p = 8
+        while p * 2 <= clamped do p <- p * 2
+        p
+
     let subQueue = Source.queue OverflowStrategy.DropHead bufferSize
-    let subSink = Sink.broadcastHub bufferSize
+    let subSink = Sink.broadcastHub hubBufferSize
 
     let runnableGraph = subQueue |> Source.toMat subSink Keep.both
 
