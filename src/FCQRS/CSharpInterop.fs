@@ -709,15 +709,19 @@ type Aggregate<'TState, 'TCommand, 'TEvent when 'TEvent: not null>() =
     abstract member SnapshotPolicy: SnapshotPolicy
     default _.SnapshotPolicy = SnapshotPolicy.Default
 
-    /// Register the aggregate and hand back its Factory + Handler.
-    member this.Init(actorApi: IActor) : AggregateRefs<'TCommand, 'TEvent> =
+    /// Register the aggregate with an explicit (already-resolved) snapshot policy.
+    member this.Init(actorApi: IActor, snapshotPolicy: SnapshotPolicy) : AggregateRefs<'TCommand, 'TEvent> =
         ActorWiring.InitAggregate<'TState, 'TCommand, 'TEvent>(
             actorApi,
             this.InitialState,
             this.EntityName,
             Func<Command<'TCommand>, 'TState, EventAction<'TEvent>>(fun c s -> this.HandleCommand(c, s)),
             Func<Event<'TEvent>, 'TState, 'TState>(fun e s -> this.ApplyEvent(e, s)),
-            this.SnapshotPolicy)
+            snapshotPolicy)
+
+    /// Register the aggregate and hand back its Factory + Handler.
+    member this.Init(actorApi: IActor) : AggregateRefs<'TCommand, 'TEvent> =
+        this.Init(actorApi, this.SnapshotPolicy)
 
 /// C#-friendly abstract base for a saga. A concrete saga supplies InitialData,
 /// SagaName, Originator (the aggregate it starts from), HandleEvent and
@@ -743,8 +747,8 @@ type Saga<'TEvent, 'TSagaData, 'TState when 'TEvent: not null and 'TState: not n
     abstract member SnapshotPolicy: SnapshotPolicy
     default _.SnapshotPolicy = SnapshotPolicy.Default
 
-    /// Register the saga; calling this IS the registration.
-    member this.Init(actorApi: IActor) : EntityFac<obj> =
+    /// Register the saga with an explicit (already-resolved) snapshot policy.
+    member this.Init(actorApi: IActor, snapshotPolicy: SnapshotPolicy) : EntityFac<obj> =
         SagaApi.Init<'TEvent, 'TSagaData, 'TState>(
             actorApi,
             this.InitialData,
@@ -753,9 +757,17 @@ type Saga<'TEvent, 'TSagaData, 'TState when 'TEvent: not null and 'TState: not n
             Func<SagaState<'TSagaData, SagaStateWrapper<'TState, 'TEvent>>, SagaState<'TSagaData, SagaStateWrapper<'TState, 'TEvent>>>(id),
             this.Originator,
             this.SagaName,
-            this.SnapshotPolicy)
+            snapshotPolicy)
+
+    /// Register the saga; calling this IS the registration.
+    member this.Init(actorApi: IActor) : EntityFac<obj> =
+        this.Init(actorApi, this.SnapshotPolicy)
+
+    /// The factory the saga-starter spawns instances from, with an explicit policy.
+    member this.Factory(actorApi: IActor, snapshotPolicy: SnapshotPolicy) : AggregateFactory =
+        let fac = this.Init(actorApi, snapshotPolicy)
+        AggregateFactory(fun entityId -> fac.RefFor DEFAULT_SHARD entityId)
 
     /// The factory the saga-starter spawns instances from.
     member this.Factory(actorApi: IActor) : AggregateFactory =
-        let fac = this.Init(actorApi)
-        AggregateFactory(fun entityId -> fac.RefFor DEFAULT_SHARD entityId)
+        this.Factory(actorApi, this.SnapshotPolicy)

@@ -76,6 +76,9 @@ type FcqrsBuilder internal (services: IServiceCollection, connectionString: stri
     let sagaSteps = ResizeArray<IServiceProvider -> IActor -> FcqrsRuntime -> unit>()
     let sagaStarters = ResizeArray<obj -> AggregateFactory option>()
     let mutable projectionStep: (IServiceProvider -> IActor -> FCQRS.Query.ISubscribe) option = None
+    // Builder-level snapshot default: what an entity's SnapshotPolicy.Default
+    // resolves to. Itself Default => fall through to the config key / 30.
+    let mutable defaultSnapshotPolicy = SnapshotPolicy.Default
 
     // Registers the ISubscribe resolver in DI exactly once, on the first
     // AddProjection call. The subscription itself is created at startup.
@@ -92,6 +95,19 @@ type FcqrsBuilder internal (services: IServiceCollection, connectionString: stri
             services.AddSingleton<FCQRS.Query.ISubscribe<IMessageWithCID>>(fun (sp: IServiceProvider) ->
                 sp.GetRequiredService<FCQRS.Query.ISubscribe>() :> FCQRS.Query.ISubscribe<IMessageWithCID>)
             |> ignore
+
+    /// Set the builder-wide default snapshot cadence: every aggregate/saga whose
+    /// own SnapshotPolicy is Default uses this instead. Per-entity overrides
+    /// (Every n / NoSnapshots) always win; leaving this unset keeps the config
+    /// key (config:akka:persistence:snapshot-version-count) / 30 fallback.
+    member this.WithDefaultSnapshotPolicy(policy: SnapshotPolicy) : FcqrsBuilder =
+        defaultSnapshotPolicy <- policy
+        this
+
+    member internal _.EffectiveSnapshotPolicy(entityPolicy: SnapshotPolicy) : SnapshotPolicy =
+        match entityPolicy with
+        | SnapshotPolicy.Default -> defaultSnapshotPolicy
+        | p -> p
 
     /// The underlying service collection (so you can keep chaining .Add… on it).
     member _.Services = services
@@ -111,7 +127,7 @@ type FcqrsBuilder internal (services: IServiceCollection, connectionString: stri
             and 'TEvent: not null>() : FcqrsBuilder =
         aggregateSteps.Add(fun sp actor runtime ->
             let shard = ActivatorUtilities.CreateInstance(sp, typeof<'TShard>) :?> Aggregate<'TState, 'TCommand, 'TEvent>
-            let refs = shard.Init actor
+            let refs = shard.Init(actor, this.EffectiveSnapshotPolicy shard.SnapshotPolicy)
             runtime.Register(typeof<'TShard>, refs.Factory, refs :> obj))
         services.AddSingleton<AggregateRefs<'TCommand, 'TEvent>>(fun (sp: IServiceProvider) ->
             sp.GetRequiredService<FcqrsRuntime>().Refs<'TCommand, 'TEvent>(typeof<'TShard>))
@@ -132,7 +148,7 @@ type FcqrsBuilder internal (services: IServiceCollection, connectionString: stri
             startOn: Func<obj, bool>) : FcqrsBuilder =
         sagaSteps.Add(fun sp actor _runtime ->
             let saga = create.Invoke sp
-            let sagaFactory = saga.Factory actor
+            let sagaFactory = saga.Factory(actor, this.EffectiveSnapshotPolicy saga.SnapshotPolicy)
             sagaStarters.Add(fun evt -> if startOn.Invoke evt then Some sagaFactory else None))
         this
 
