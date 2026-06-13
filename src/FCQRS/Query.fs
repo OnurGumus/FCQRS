@@ -138,6 +138,21 @@ let autoPublish (handle: int64 -> obj -> unit) : int64 -> obj -> IMessageWithCID
         | :? IMessageWithCID as m -> [ m ]
         | _ -> []
 
+/// Adapt a "filtered" projection handler — one that updates the read model and
+/// returns Publish/Suppress — to the canonical list-returning shape. Like
+/// autoPublish, but the handler gets a per-event say over whether subscribers
+/// wake: on Publish the journal event itself is notified (when it is an
+/// IMessageWithCID), on Suppress nothing is. The middle ground between autoPublish
+/// (always notify) and a hand-written list handler (notify anything).
+let filterPublish (handle: int64 -> obj -> Notify) : int64 -> obj -> IMessageWithCID list =
+    fun offset evt ->
+        match handle offset evt with
+        | Publish ->
+            match evt with
+            | :? IMessageWithCID as m -> [ m ]
+            | _ -> []
+        | Suppress -> []
+
 [<AutoOpen>]
 module Internal =
     open Akka.Persistence.Sql.Query

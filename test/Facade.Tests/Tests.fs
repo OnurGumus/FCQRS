@@ -460,9 +460,25 @@ let private manifestTest =
             // restore for the rest of the suite
             JournalTypes.Remap(typeof<Counter.Event>, "counter.event")
 
+/// The filtered single-event handler (Projection.filtered / Query.filterPublish):
+/// a per-event Publish/Suppress say over whether read-your-writes wakes. Pure, so
+/// no actor system — just the adapter's three branches.
+let private filteredProjectionTest =
+    testCase "filtered projection: Publish forwards a CID-bearing event, Suppress forwards nothing"
+    <| fun _ ->
+        let cid = Fcqrs.newCid ()
+        let msg = { new IMessageWithCID with member _.CID = cid }
+
+        let publishAll = FCQRS.Query.filterPublish (fun _ _ -> Publish)
+        let suppressAll = FCQRS.Query.filterPublish (fun _ _ -> Suppress)
+
+        Expect.equal (publishAll 0L (box msg)) [ msg ] "Publish forwards the event when it carries a CID"
+        Expect.isEmpty (publishAll 0L (box 42)) "Publish on a non-CID event notifies nothing"
+        Expect.isEmpty (suppressAll 0L (box msg)) "Suppress notifies nothing even for a CID-bearing event"
+
 let tests =
     testSequenced (
-        testList "facade" [ manifestTest; roundTripTest; persistAllTest; manualSnapshotTest; telemetryTest; overflowTest; snapshotRecoveryTest ]
+        testList "facade" [ manifestTest; roundTripTest; persistAllTest; manualSnapshotTest; telemetryTest; overflowTest; snapshotRecoveryTest; filteredProjectionTest ]
     )
 
 [<EntryPoint>]

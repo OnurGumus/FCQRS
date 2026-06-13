@@ -190,6 +190,16 @@ type FcqrsBuilder internal (services: IServiceCollection, connectionString: stri
         projectionStep <- Some(fun _sp actor -> QueryApi.Init(actor, lastOffset, handler))
         this
 
+    /// Register the read-model projection with a filtered single-event handler:
+    /// the handler updates the read model and returns Publish/Suppress per event
+    /// to control whether it wakes subscribers. The middle ground between the void
+    /// overload (publish all) and the list-returning one (full control) — e.g.
+    /// suppress an intermediate event so read-your-writes wakes only on the final.
+    member this.AddProjection(handler: Func<int64, obj, Notify>, [<Optional; DefaultParameterValue(0)>] lastOffset: int) : FcqrsBuilder =
+        this.RegisterSubscriptionResolver()
+        projectionStep <- Some(fun _sp actor -> QueryApi.Init(actor, lastOffset, handler))
+        this
+
     /// Register the read-model projection, building the handler (and resuming offset)
     /// from DI. Use this overload when the projection needs services — e.g. an
     /// ILoggerFactory — so it resolves them the same way the actor system does.
@@ -203,6 +213,14 @@ type FcqrsBuilder internal (services: IServiceCollection, connectionString: stri
     /// DI variant of the single-event handler overload.
     member this.AddProjection(
             handler: Func<IServiceProvider, Action<int64, obj>>,
+            lastOffset: Func<IServiceProvider, int>) : FcqrsBuilder =
+        this.RegisterSubscriptionResolver()
+        projectionStep <- Some(fun sp actor -> QueryApi.Init(actor, lastOffset.Invoke sp, handler.Invoke sp))
+        this
+
+    /// DI variant of the filtered single-event handler overload.
+    member this.AddProjection(
+            handler: Func<IServiceProvider, Func<int64, obj, Notify>>,
             lastOffset: Func<IServiceProvider, int>) : FcqrsBuilder =
         this.RegisterSubscriptionResolver()
         projectionStep <- Some(fun sp actor -> QueryApi.Init(actor, lastOffset.Invoke sp, handler.Invoke sp))

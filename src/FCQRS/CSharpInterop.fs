@@ -294,6 +294,17 @@ type QueryApi =
         let handler = Query.autoPublish (fun offset evt -> eventHandler.Invoke(offset, evt))
         Query.init actorApi lastOffset handler |> Query.asDefaultSubscribe
 
+    /// Initialize the query subscription with a filtered single-event handler:
+    /// the handler updates the read model and returns Publish/Suppress to say
+    /// whether this event wakes subscribers. Between the void Action overload
+    /// (publish all) and the list-returning one (full control).
+    static member Init(
+        actorApi: IActor,
+        lastOffset: int,
+        eventHandler: Func<int64, obj, Notify>) : FCQRS.Query.ISubscribe =
+        let handler = Query.filterPublish (fun offset evt -> eventHandler.Invoke(offset, evt))
+        Query.init actorApi lastOffset handler |> Query.asDefaultSubscribe
+
     /// Obsolete alias — InitWithList is now just an overload of Init.
     [<System.Obsolete("Use Init (it's now an overload); this alias will be removed in a future preview.")>]
     static member InitWithList(

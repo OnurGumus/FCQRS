@@ -100,6 +100,15 @@ module Projection =
         { LastOffset = lastOffset
           Handle = FCQRS.Query.autoPublish handle }
 
+    /// Filtered single-event handler: update the read model, then return
+    /// Publish/Suppress to decide whether *this* event wakes subscribers. The
+    /// middle rung between `single` (always publish) and `multi` (return an
+    /// arbitrary notification list) — reach for it in the common "publish each
+    /// event except the intermediate ones" case, without building a list.
+    let filtered (lastOffset: int) (handle: int64 -> obj -> Notify) : Projection =
+        { LastOffset = lastOffset
+          Handle = FCQRS.Query.filterPublish handle }
+
 // ---------------------------------------------------------------------------
 // Saga side-effect command builders (wrap ExecuteCommand / TargetActor).
 // ---------------------------------------------------------------------------

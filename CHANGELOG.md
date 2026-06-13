@@ -1,5 +1,19 @@
 # Changelog
 
+## 6.0.0-preview26
+- **Filtered single-event projection handlers**: the middle rung between the
+  `preview24` unit/void handler (publish every event) and the list-returning
+  ("multi") handler (notify anything). The handler updates the read model and
+  returns `Publish` or `Suppress` to say, per event, whether it should wake
+  subscribers — the common "publish each event except the intermediate ones"
+  case (e.g. suppress a pending-creation event so read-your-writes wakes only on
+  the saga's terminal verdict) without building a notification list.
+  F#: `Projection.filtered` (and `Query.filterPublish`, the adapter behind it);
+  C#: `AddProjection((offset, evt) => evt switch { ... })` `Func<long, object,
+  Notify>` overloads (direct + DI) and `QueryApi.Init(..., Func<long, object,
+  Notify>)`. The `Notify` discriminated union (`Publish | Suppress`) lives in
+  `FCQRS.Common`. The unit and list overloads are unchanged.
+
 ## 6.0.0-preview25
 - **Single-type-argument `AddAggregate` / `AddSaga`**: the concrete class already
   names its state/command/event types on its `Aggregate<,,>` / `Saga<,,>` base,

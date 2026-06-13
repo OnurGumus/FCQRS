@@ -25,6 +25,16 @@ open System.Diagnostics
 /// Marker interface for types that can be serialized by Akka.NET.
 type ISerializable = interface end
 
+/// Decision returned by a filtered projection handler: whether the event it just
+/// handled should be published to subscribers as-is. `Publish` notifies (so a
+/// read-your-writes awaiter wakes on it); `Suppress` updates the read model
+/// silently — e.g. an intermediate event that a later one supersedes. The middle
+/// ground between an always-publish handler and one returning an arbitrary
+/// notification list.
+type Notify =
+    | Publish
+    | Suppress
+
 /// Helper to extract TraceId from a CID (W3C traceparent format: 00-{traceId}-{spanId}-{flags})
 /// Returns the full CID string if not in traceparent format
 let extractTraceId (cid: CID) =
@@ -752,8 +762,8 @@ module SagaStarter =
                 if originatorName <> self.Path.Name then
                     sender <! event
 
-            mediator <! Publish(self.Path.Name, event)
-            mediator <! Publish(self.Path.Name + CID_Separator + cid, event)
+            mediator <! Akka.Cluster.Tools.PublishSubscribe.Publish(self.Path.Name, event)
+            mediator <! Akka.Cluster.Tools.PublishSubscribe.Publish(self.Path.Name + CID_Separator + cid, event)
 
         let internal cont mediator =
             mediator <! box (Send(SagaStarterPath, Continue |> Command, true))
