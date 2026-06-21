@@ -476,9 +476,18 @@ let private filteredProjectionTest =
         Expect.isEmpty (publishAll 0L (box 42)) "Publish on a non-CID event notifies nothing"
         Expect.isEmpty (suppressAll 0L (box msg)) "Suppress notifies nothing even for a CID-bearing event"
 
+/// persistIf (C# EventActions.PersistConditionally): persist when the guard holds,
+/// otherwise defer the same event (returned to the caller but not journalled).
+let private persistIfTest =
+    testCase "persistIf: true persists, false defers the same event"
+    <| fun _ ->
+        let e = Counter.Incremented 1
+        Expect.equal (persistIf true e) (PersistEvent e) "true -> PersistEvent"
+        Expect.equal (persistIf false e) (DeferEvent e) "false -> DeferEvent"
+
 let tests =
     testSequenced (
-        testList "facade" [ manifestTest; roundTripTest; persistAllTest; manualSnapshotTest; telemetryTest; overflowTest; snapshotRecoveryTest; filteredProjectionTest ]
+        testList "facade" [ manifestTest; roundTripTest; persistAllTest; manualSnapshotTest; telemetryTest; overflowTest; snapshotRecoveryTest; filteredProjectionTest; persistIfTest ]
     )
 
 [<EntryPoint>]

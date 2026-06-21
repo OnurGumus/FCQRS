@@ -1,5 +1,13 @@
 # Changelog
 
+## 6.0.0-preview27
+- **Conditional persist/defer helper**: `EventActions.PersistConditionally(shouldPersist, event)`
+  (C#) and `persistIf shouldPersist event` (F#) collapse the common
+  `cond ? Defer(e) : Persist(e)` ternary — persist the event when the guard holds,
+  otherwise defer it (still returned to the caller, so read-your-writes observes
+  it, but not written to the journal). The idempotent "emit this verdict, write it
+  only once" shape, e.g. re-approving an already-approved aggregate.
+
 ## 6.0.0-preview26
 - **Filtered single-event projection handlers**: the middle rung between the
   `preview24` unit/void handler (publish every event) and the list-returning

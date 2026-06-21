@@ -154,6 +154,14 @@ type EventActions =
     static member Defer<'TEvent when 'TEvent: not null>(event: 'TEvent) : EventAction<'TEvent> =
         EventAction.DeferEvent event
 
+    /// Persist the event when `shouldPersist` is true; otherwise Defer it - the
+    /// event is still returned to the caller (so read-your-writes observes it) but
+    /// not written to the journal. The idempotent "emit this verdict, but only
+    /// write it once" shape, e.g. re-approving an already-approved aggregate:
+    /// `PersistConditionally(state.Approval != Approved, new Approved(id))`.
+    static member PersistConditionally<'TEvent when 'TEvent: not null>(shouldPersist: bool, event: 'TEvent) : EventAction<'TEvent> =
+        if shouldPersist then EventAction.PersistEvent event else EventAction.DeferEvent event
+
     /// Create a PersistAndSnapshot action: persist the event, then save a manual
     /// snapshot once it is durable - independent of the SnapshotPolicy cadence.
     static member PersistAndSnapshot<'TEvent when 'TEvent: not null>(event: 'TEvent) : EventAction<'TEvent> =

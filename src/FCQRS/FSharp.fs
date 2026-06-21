@@ -171,6 +171,10 @@ let persist (event: 'e) : EventAction<'e> = PersistEvent event
 let persistAll (events: 'e list) : EventAction<'e> = PersistAllEvents events
 let persistAndSnapshot (event: 'e) : EventAction<'e> = PersistAndSnapshot event
 let defer (event: 'e) : EventAction<'e> = DeferEvent event
+/// Persist the event when `shouldPersist`, else defer it (returned but not
+/// journalled) — the idempotent "emit this verdict, write it only once" shape.
+let persistIf (shouldPersist: bool) (event: 'e) : EventAction<'e> =
+    if shouldPersist then PersistEvent event else DeferEvent event
 let transitionTo (state: 'state) : EventAction<'state> = StateChangedEvent state
 let stay<'state> : SagaTransition<'state> = Stay
 let stop<'state> : SagaTransition<'state> = StopSaga
