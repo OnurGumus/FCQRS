@@ -262,6 +262,19 @@ type Telemetry =
     /// the CID stays a plain correlation id and tracing rides beside it.
     static member TraceparentMetadataKey: string = "traceparent"
 
+    /// Optional hook invoked right before FCQRS kills the process on a fatal
+    /// error. FailFast skips finalizers and ProcessExit handlers, so without
+    /// this everything still sitting in a batch exporter or buffered log sink
+    /// is silently dropped — including the span and log entry of the fatal
+    /// flow itself (every fatal site logs before invoking this hook). Flush
+    /// your whole pipeline here, e.g.
+    ///   Telemetry.FatalFlush <- Action(fun () ->
+    ///       tracerProvider.ForceFlush(3000) |> ignore
+    ///       loggerProvider.ForceFlush(3000) |> ignore) // or Serilog's Log.CloseAndFlush()
+    /// It runs on a background thread with a 5-second cap so a hung exporter
+    /// cannot block the kill.
+    static member val FatalFlush: (Action | null) = null with get, set
+
 /// (Internal) Resolve a span's parent: the metadata traceparent first, then the
 /// CID itself for backward compat with traceparent-format CIDs.
 let internal tryTraceContext (metadata: Map<string, string>) (cidStr: string) : ActivityContext option =
@@ -278,6 +291,49 @@ let internal currentTraceparent () : string option =
     match Activity.Current with
     | null -> None
     | act -> Some $"00-{act.TraceId.ToHexString()}-{act.SpanId.ToHexString()}-01"
+
+/// (Internal) Fatal-path exit. Marks the in-flight span(s) failed and disposed
+/// (queueing them for export), gives the host's Telemetry.FatalFlush a bounded
+/// chance to drain its exporters, then FailFasts. FailFast is deliberate — see
+/// call sites — but it skips all normal shutdown, so this is the one point
+/// where spans from the fatal flow can still get out.
+let internal fatalFailFast (heldActivity: Activity | null) (message: string) (ex: exn) : unit =
+    let markFailed (act: Activity | null) =
+        match act with
+        | null -> ()
+        | act ->
+            try
+                // OTel semantic-convention exception event, portable across exporters.
+                let tags = ActivityTagsCollection()
+                tags.Add("exception.type", ex.GetType().FullName)
+                tags.Add("exception.message", ex.Message)
+                tags.Add("exception.stacktrace", string ex)
+                act.AddEvent(ActivityEvent("exception", tags = tags)) |> ignore
+                act.SetStatus(ActivityStatusCode.Error, message) |> ignore
+                act.Dispose()
+            with _ -> ()
+
+    // Capture before disposal: Dispose resets Activity.Current to the parent.
+    let current = Activity.Current
+    markFailed current
+
+    if not (obj.ReferenceEquals(heldActivity, current)) then
+        markFailed heldActivity
+
+    match Telemetry.FatalFlush with
+    | null -> ()
+    | flush ->
+        // The process is already broken: run the flush on a background thread
+        // with a hard cap so a hung exporter cannot block the kill.
+        try
+            let t = Threading.Thread(Threading.ThreadStart(fun () ->
+                try flush.Invoke() with _ -> ()))
+            t.IsBackground <- true
+            t.Start()
+            t.Join(TimeSpan.FromSeconds 5.0) |> ignore
+        with _ -> ()
+
+    Environment.FailFast(message, ex)
 
 /// Stable logical names for journal payload types. Register every command/event/
 /// state type that touches the journal; the serializer then writes manifests like
@@ -748,9 +804,10 @@ module SagaStarter =
                 |> Async.RunSynchronously
                 |> ignore
             with ex ->
-                Environment.FailFast(
-                    $"FCQRS saga-start handshake did not complete within {askTimeout} for originator '{originator.Path.Name}'. Crashing per fail-fast policy.",
-                    ex)
+                fatalFailFast
+                    null
+                    $"FCQRS saga-start handshake did not complete within {askTimeout} for originator '{originator.Path.Name}'. Crashing per fail-fast policy."
+                    ex
 
             event |> box |> Unchecked.nonNull
 

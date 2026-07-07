@@ -124,6 +124,14 @@ let private runSaga<'TEvent, 'SagaData, 'State when 'TEvent : not null and 'Stat
 
             match msg with
             | :? Event<AbortedEvent> ->
+                // Mark the state span Error before cleanupOnStop disposes it, so the
+                // aborted saga is flagged in the trace rather than ending silently.
+                match currentSagaActivityRef.Value with
+                | null -> ()
+                | act ->
+                    act.SetStatus(ActivityStatusCode.Error, "Saga aborted: originator restart detected")
+                    |> ignore
+
                 cleanupOnStop ()
                 let poision = Akka.Cluster.Sharding.Passivate <| Actor.PoisonPill.Instance
                 log.LogInformation("Aborting")
@@ -147,7 +155,7 @@ let private runSaga<'TEvent, 'SagaData, 'State when 'TEvent : not null and 'Stat
                         return! newState |> set innerSetValue
                     with ex ->
                         log.LogError(ex, "Fatal error during saga recovery for {0}. Terminating process to prevent restart loop.", mailbox.Self.Path.ToString())
-                        System.Environment.FailFast "Process terminated due to saga error"
+                        fatalFailFast currentSagaActivityRef.Value "Process terminated due to saga error" ex
                         return! innerSet (startingEvent, subscribed, subscriptionAcked)
 
             | PersistentLifecycleEvent _
@@ -280,7 +288,7 @@ let private runSaga<'TEvent, 'SagaData, 'State when 'TEvent : not null and 'Stat
                             log.LogError(ex, "Fatal error during saga persisted event handling for {0}. Terminating process to prevent restart loop.", mailbox.Self.Path.ToString())
                             // FailFast, not Exit: Exit runs ProcessExit handlers (which can
                             // hang or flush bad state); the policy is an immediate kill.
-                            System.Environment.FailFast "Process terminated due to saga error"
+                            fatalFailFast currentSagaActivityRef.Value "Process terminated due to saga error" ex
                             return! state |> set innerSetValue
 
 
@@ -387,7 +395,7 @@ let private actorProp<'SagaData, 'State, 'TEvent when 'TEvent : not null and 'St
                 applySideEffects2 sagaState.SagaState startingEvent recovering
             with ex ->
                 log.Error(ex, "Fatal error in saga applySideEffects2 for {0}. Terminating process to prevent restart loop.", name)
-                System.Environment.FailFast "Process terminated due to saga error"
+                fatalFailFast currentSagaActivityRef.Value "Process terminated due to saga error" ex
 
                 failwith "Process terminated due to saga error" // This line will never execute but satisfies the compiler
 
@@ -447,6 +455,32 @@ let private actorProp<'SagaData, 'State, 'TEvent when 'TEvent : not null and 'St
                     | ActorRef actor -> actor :?> ICanTell<_>, cmd.Command
                     | Self -> mailbox.Self, cmd.Command
 
+                // Timestamped marker on the long-lived state span: shows when within
+                // the state each command left, without a child span per command.
+                match currentSagaActivityRef.Value with
+                | null -> ()
+                | act ->
+                    let targetStr =
+                        match cmd.TargetActor with
+                        | FactoryAndName { Name = Name n } -> n
+                        | FactoryAndName { Name = Originator } -> mailbox.Self.Path.Name |> toOriginatorName
+                        | Sender -> mailbox.Sender().Path.Name
+                        | ActorRef _ -> "actorRef"
+                        | Self -> mailbox.Self.Path.Name
+
+                    let tags = ActivityTagsCollection()
+                    tags.Add("command.type", cmd.Command.GetType().Name)
+                    tags.Add("target", targetStr)
+
+                    let eventName =
+                        match cmd.DelayInMs with
+                        | Some(delayValue, _) ->
+                            tags.Add("delay.ms", delayValue)
+                            "command.scheduled"
+                        | None -> "command.issued"
+
+                    act.AddEvent(ActivityEvent(eventName, tags = tags)) |> ignore
+
                 match cmd.DelayInMs with
                 | Some (delayValue, name) ->
                     let currentScheduler = mailbox.System.Scheduler
@@ -479,7 +513,7 @@ let private actorProp<'SagaData, 'State, 'TEvent when 'TEvent : not null and 'St
                     targetActor <! finalCommand
             with ex ->
                 log.Error(ex, "Fatal error in saga command processing for {0}. Terminating process to prevent restart loop.", name)
-                System.Environment.FailFast "Process terminated due to saga error"
+                fatalFailFast currentSagaActivityRef.Value "Process terminated due to saga error" ex
 
         // Handle ResumeFirstEvent behavior internally when needed
         match transition, recovering with
@@ -530,7 +564,7 @@ let private actorProp<'SagaData, 'State, 'TEvent when 'TEvent : not null and 'St
                         | DeferEvent _ -> return Unhandled
                     with ex ->
                         log.Error(ex, "Fatal error in saga handleEvent for {0}. Terminating process to prevent restart loop.", name)
-                        System.Environment.FailFast "Process terminated due to saga error"
+                        fatalFailFast currentSagaActivityRef.Value "Process terminated due to saga error" ex
                         return Unhandled // This line will never execute but satisfies the compiler
             }
 

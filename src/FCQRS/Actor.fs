@@ -65,7 +65,7 @@ module internal Internal =
                 applyNewState event st
             with ex ->
                 logger.LogError(ex, "Fatal error applying event in aggregate {0}. Terminating process to prevent silent state divergence.", mailbox.Self.Path.ToString())
-                Environment.FailFast("Process terminated due to aggregate apply error", ex)
+                fatalFailFast null "Process terminated due to aggregate apply error" ex
                 failwith "unreachable" // FailFast never returns; satisfies the compiler
 
         let publishEvent event =
@@ -94,6 +94,37 @@ module internal Internal =
                     publishEvent e
                     return! state |> set
                 else
+                    // Restart detection fired: flag it in the trace so aborted flows
+                    // are findable without tag filters. Instantaneous Error span.
+                    if activitySource.HasListeners() then
+                        let eventCid = e.CorrelationId |> ValueLens.Value |> ValueLens.Value
+
+                        let eventType =
+                            match box e.EventDetails with
+                            | null -> "null"
+                            | details -> sprintf "%A" details
+
+                        let act =
+                            match tryTraceContext e.Metadata eventCid with
+                            | Some parent ->
+                                activitySource.StartActivity($"Abort:{eventType}", ActivityKind.Internal, parent)
+                            | None -> activitySource.StartActivity($"Abort:{eventType}", ActivityKind.Internal)
+
+                        match act with
+                        | null -> ()
+                        | act ->
+                            act.SetTag("cid", eventCid) |> ignore
+                            act.SetTag("actor", mailbox.Self.Path.Name) |> ignore
+                            act.SetTag("version.current", currentVersion) |> ignore
+                            act.SetTag("version.event", eventVersion) |> ignore
+
+                            act.SetStatus(
+                                ActivityStatusCode.Error,
+                                "Restart detected: event version does not match aggregate version")
+                            |> ignore
+
+                            act.Dispose()
+
                     let abortedEvent =
                         { EventDetails = AbortedEvent
                           CreationDate = mailbox.System.Scheduler.Now.UtcDateTime
@@ -348,13 +379,24 @@ module internal Internal =
                                 handleCommand cmd state.State
                             with ex ->
                                 bodyInput.Log.LogError(ex, "Fatal error in aggregate handleCommand for {0}. Terminating process to prevent silent command loss.", mailbox.Self.Path.ToString())
-                                Environment.FailFast("Process terminated due to aggregate command-handler error", ex)
+                                fatalFailFast null "Process terminated due to aggregate command-handler error" ex
                                 failwith "unreachable" // FailFast never returns; satisfies the compiler
 
                         match activity with
                         | null -> ()
                         | act ->
                             act.SetTag("effect", effect.GetType().Name) |> ignore
+
+                            // OTel convention: Unset means success; flag only the outcomes
+                            // the framework itself knows are wrong. An unhandled command is
+                            // the classic silent-hang scenario, so make it light up in traces.
+                            match effect with
+                            | UnhandledEvent ->
+                                act.SetStatus(ActivityStatusCode.Error, "Command not handled by aggregate") |> ignore
+                            | StateChangedEvent _ ->
+                                act.SetStatus(ActivityStatusCode.Error, "StateChangedEvent is not valid for aggregates") |> ignore
+                            | _ -> ()
+
                             act.Dispose()
 
                         return! handleEffect effect state mailbox toEvent state.Version bodyInput set

@@ -283,7 +283,9 @@ let init<'TDataEvent, 'TPredicate, 't when 'TDataEvent :> IMessageWithCID> (acto
             logger.LogCritical(ex, "Error in query handler")
             // FailFast, not Exit: Exit runs ProcessExit handlers (which can hang);
             // a broken projection must kill the process immediately and loudly.
-            Environment.FailFast("Process terminated due to query projection error", ex))
+            // (The projection span was already disposed by `use` during unwind,
+            // so it sits in the exporter queue — the flush below gets it out.)
+            fatalFailFast null "Process terminated due to query projection error" ex)
     |> Async.Start
 
     let subscribeCmd = subscribeCmd subRunnable actorApi

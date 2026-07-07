@@ -126,7 +126,7 @@ type STJSerializer(system: ExtendedActorSystem) =
             let msg = sprintf "Serialization error for type '%s': %s" (o.GetType().FullName |> string) ex.Message
             system.Log.Log(Akka.Event.LogLevel.ErrorLevel, ex, msg)
             eprintfn "%s" msg
-            Environment.FailFast("Process terminated due to serialization error", ex)
+            fatalFailFast null "Process terminated due to serialization error" ex
             failwith "unreachable" // FailFast never returns; satisfies the compiler
 
     override _.Manifest(o: obj) : string =
@@ -155,5 +155,5 @@ type STJSerializer(system: ExtendedActorSystem) =
             let msg =  sprintf "Deserialization error for manifest '%s': %s\nPayload preview: %s" manifest ex.Message preview
             system.Log.Log(Akka.Event.LogLevel.ErrorLevel, ex, msg)
             eprintfn "%s" msg
-            Environment.FailFast("Process terminated due to deserialization error", ex)
+            fatalFailFast null "Process terminated due to deserialization error" ex
             failwith "unreachable" // FailFast never returns; satisfies the compiler
