@@ -120,3 +120,33 @@ table.pre.lang-pane {
 .hljs-punctuation {
     color: var(--code-operators-color);
 }
+
+/* ---- Modernize toward the MassTransit look ----------------------------- */
+
+/* Code: 0.9rem, comfortable line-height, rounder panels. */
+code,
+pre.fssnip,
+table.pre,
+pre.fssnip code,
+table.pre code {
+    font-size: 0.9rem;
+    line-height: 1.55;
+}
+
+table.pre,
+pre.fssnip.highlighted,
+#content > pre.fssnip {
+    border-radius: 10px;
+}
+
+/* A modern purple accent in place of the default cyan — links, active nav,
+   callout borders, buttons. */
+:root {
+    --primary: #6d5ae6;
+}
+
+:root[data-theme="dark"],
+[data-theme="dark"] {
+    --primary: #a89bff;
+    --code-background: #1b1b21;    /* deeper, MassTransit-style code panel */
+}
