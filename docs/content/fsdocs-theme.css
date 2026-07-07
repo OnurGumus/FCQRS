@@ -150,3 +150,26 @@ pre.fssnip.highlighted,
     --primary: #a89bff;
     --code-background: #1b1b21;    /* deeper, MassTransit-style code panel */
 }
+
+/* ---- Sidebar nav to match the MassTransit (Astro Starlight) nav ---------- */
+/* Starlight's sidebar: section titles are 1rem, weight 600, NOT uppercase;
+   leaf links are 0.875rem. fsdocs ships 16px UPPERCASE headers + 16px links,
+   which reads as a different typeface next to Starlight. Align both, and use
+   Starlight's own sans stack on the nav. */
+ul.menu, #fsdocs-main-menu, #fsdocs-page-menu {
+    font-family: ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji",
+                 "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
+}
+
+/* .menu .nav-header wins over fsdocs' nested default (bare .nav-header loses). */
+.menu .nav-header {
+    text-transform: none;          /* Starlight group titles are normal-case */
+    font-weight: 600;
+    font-size: var(--font-200);    /* 16px */
+    letter-spacing: 0;
+}
+
+.menu .nav-item a {
+    font-size: var(--font-100);    /* 14px — Starlight leaf-link size */
+    line-height: 1.5;
+}
