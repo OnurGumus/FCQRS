@@ -71,7 +71,8 @@ let definition documentFactory userFactory =
       Originator = documentFactory
       HandleEvent = handleEvent
       ApplySideEffects = applySideEffects documentFactory userFactory
-      StartOn = startsOn }
+      StartOn = startsOn
+      Snapshots = Default }        // snapshot cadence: Default | NoSnapshots | Every n
 ```
 
 <div class="cs-alt"></div>
@@ -150,8 +151,8 @@ Register it from your composition root, after the aggregates it references — t
 safe [start-up handshake](../concepts/sagas.html):
 
 ```fsharp
-let documents = Fcqrs.aggregate api { Name = "Document"; Initial = Document.initial; Decide = Document.decide; Fold = Document.fold }
-let users     = Fcqrs.aggregate api { Name = "User";     Initial = User.initial;     Decide = User.decide;     Fold = User.fold }
+let documents = Fcqrs.aggregate api { Name = "Document"; Initial = Document.initial; Decide = Document.decide; Fold = Document.fold; Snapshots = Default }
+let users     = Fcqrs.aggregate api { Name = "User";     Initial = User.initial;     Decide = User.decide;     Fold = User.fold; Snapshots = Default }
 
 let quota = Fcqrs.saga api (definition documents.Factory users.Factory)
 Fcqrs.wireSagaStarters api [ quota ]

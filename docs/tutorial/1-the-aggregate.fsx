@@ -8,7 +8,7 @@ index: 2
 *)
 
 (*** hide ***)
-#r "nuget: FCQRS, 6.0.0-preview14"
+#r "nuget: FCQRS, 6.0.0-preview27"
 open System
 open FCQRS.Common
 open FCQRS.Model.Data
@@ -331,7 +331,8 @@ chapter 2.
             { Name = "Document"
               Initial = initial
               Decide = decide
-              Fold = fold }
+              Fold = fold
+              Snapshots = Default }        // snapshot cadence: Default | NoSnapshots | Every n
 
 (**
 <div class="cs-alt"></div>

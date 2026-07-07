@@ -8,7 +8,7 @@ index: 1
 *)
 
 (*** hide ***)
-#r "nuget: FCQRS, 6.0.0-preview14"
+#r "nuget: FCQRS, 6.0.0-preview27"
 
 (**
 # Get started
@@ -182,27 +182,23 @@ builder.Services
 (**
 ## 3. A minimal read side
 
-A projection is called once per event, in order. This one just forwards each `Document` event to
-subscribers so a caller can be told when the read side has caught up. (Concept:
-[The read side](concepts/read-models.html).)
+A projection is called once per event, in order — it updates a read model, and FCQRS publishes each
+aggregate event to subscribers so a caller can be told when the read side has caught up. This
+five-minute demo keeps no read model, so the handler does nothing; `Projection.single` wires it and
+lets the events auto-publish. (Concept: [The read side](concepts/read-models.html).)
 *)
 
-let handle (_offset: int64) (event: obj) : IMessageWithCID list =
-    match event with
-    | :? Event<Document.Event> as e -> [ e :> IMessageWithCID ]
-    | _ -> []
+let handle (_offset: int64) (_event: obj) = ()   // no read model here — events auto-publish
 
 (**
 <div class="cs-alt"></div>
 
 ```csharp
-// C#: the same projection function, registered with .AddProjection(...).
-public static IList<IMessageWithCID> Handle(long offset, object ev) =>
-    ev is Event<DocumentEvent> e
-        ? new List<IMessageWithCID> { e }
-        : new List<IMessageWithCID>();
+// C#: a projection handler is just void — update the read model; FCQRS publishes
+// each aggregate event for you.
+public static void Handle(long offset, object ev) { /* no read model in this demo */ }
 
-builder.Services.AddProjection(handler: _ => Handle, lastOffset: _ => 0);
+builder.Services.AddProjection((offset, ev) => Handle(offset, ev));
 ```
 *)
 
@@ -226,12 +222,13 @@ let run () =
                 { Name = "Document"
                   Initial = Document.initial
                   Decide = Document.decide
-                  Fold = Document.fold }
+                  Fold = Document.fold
+                  Snapshots = Default }        // snapshot cadence: Default | NoSnapshots | Every n
 
         // No sagas yet, but the saga-starter still has to be wired (with none).
         Fcqrs.wireSagaStarters api []
 
-        let subs = Fcqrs.projection api { LastOffset = 0; Handle = handle }
+        let subs = Fcqrs.projection api (Projection.single 0 handle)
 
         let cid = Fcqrs.newCid ()
         let id = Fcqrs.aggregateId "readme"

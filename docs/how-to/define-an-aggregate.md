@@ -42,7 +42,8 @@ let fold (event: Event<Event>) state =
 // Registering the aggregate returns its typed handle.
 let register (api: IActor) =
     Fcqrs.aggregate api
-        { Name = "Document"; Initial = initial; Decide = decide; Fold = fold }
+        { Name = "Document"; Initial = initial; Decide = decide; Fold = fold
+          Snapshots = Default }        // snapshot cadence: Default | NoSnapshots | Every n
 ```
 
 <div class="cs-alt"></div>

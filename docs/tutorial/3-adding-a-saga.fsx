@@ -8,7 +8,7 @@ index: 4
 *)
 
 (*** hide ***)
-#r "nuget: FCQRS, 6.0.0-preview14"
+#r "nuget: FCQRS, 6.0.0-preview27"
 open System
 open FCQRS.Common
 open FCQRS.Model.Data
@@ -445,7 +445,8 @@ framework **infers** the originator-event type — there's no type argument to r
           Originator = documentFactory
           HandleEvent = handleEvent
           ApplySideEffects = applySideEffects documentFactory userFactory
-          StartOn = startsOn }
+          StartOn = startsOn
+          Snapshots = Default }
 
 (**
 <div class="cs-alt"></div>
@@ -509,8 +510,8 @@ wires the saga-starter — the declaration that fires the safe
 *)
 
 let wire (api: IActor) =
-    let documents = Fcqrs.aggregate api { Name = "Document"; Initial = Document.initial; Decide = Document.decide; Fold = Document.fold }
-    let users     = Fcqrs.aggregate api { Name = "User";     Initial = User.initial;     Decide = User.decide;     Fold = User.fold }
+    let documents = Fcqrs.aggregate api { Name = "Document"; Initial = Document.initial; Decide = Document.decide; Fold = Document.fold; Snapshots = Default }
+    let users     = Fcqrs.aggregate api { Name = "User";     Initial = User.initial;     Decide = User.decide;     Fold = User.fold; Snapshots = Default }
     let quota = Fcqrs.saga api (QuotaSaga.definition documents.Factory users.Factory)
     Fcqrs.wireSagaStarters api [ quota ]
     documents

@@ -8,7 +8,7 @@ index: 3
 *)
 
 (*** hide ***)
-#r "nuget: FCQRS, 6.0.0-preview14"
+#r "nuget: FCQRS, 6.0.0-preview27"
 open System
 open Microsoft.Extensions.Configuration
 open Microsoft.Extensions.Logging
@@ -134,34 +134,29 @@ Server is a one-line change; the rest of your code doesn't notice. See
 ## A read side to listen on
 
 A **projection** is a function run once per event, in order. A real one folds each event into a SQL
-table you can query; ours does the smallest thing that still demonstrates the principle — it recognises
-`Document` events and hands each one back:
+table you can query; ours does the smallest thing possible — nothing — because we need no read model
+yet. FCQRS still publishes each aggregate event to subscribers, which is what the next step waits on:
 *)
 
-let handle (_offset: int64) (event: obj) : IMessageWithCID list =
-    match event with
-    | :? Event<Document.Event> as e -> [ e :> IMessageWithCID ]
-    | _ -> []
+let handle (_offset: int64) (_event: obj) = ()   // no read model yet — events auto-publish
 
 (**
 <div class="cs-alt"></div>
 
 ```csharp
-// C#: the same projection, returned as a method and registered via .AddProjection.
-public static IList<IMessageWithCID> Handle(long offset, object ev) =>
-    ev is Event<DocumentEvent> e
-        ? new List<IMessageWithCID> { e }
-        : new List<IMessageWithCID>();
+// C#: a projection handler is just void — update the read model; FCQRS publishes
+// each aggregate event to subscribers for you.
+public static void Handle(long offset, object ev) { /* no read model yet */ }
 
-builder.Services.AddProjection(handler: _ => Handle, lastOffset: _ => 0);
+builder.Services.AddProjection((offset, ev) => Handle(offset, ev));
 ```
 *)
 
 (**
-Why hand the event *back* instead of just doing the write? Because the list you return is **re-published
-to subscribers**, and that re-publish is what lets a caller know its write has reached the read side.
-That's the mechanism behind the next step. (This projection is deliberately minimal — a production one
-also writes to a table and tracks its offset, which is its own how-to:
+Why does an empty handler still work? Because with `Projection.single`, FCQRS **re-publishes each
+aggregate event to subscribers** after your handler runs — and that re-publish is what lets a caller
+know its write reached the read side. That's the mechanism behind the next step. (A production
+projection writes to a table and tracks its offset — its own how-to:
 [Add a projection](../how-to/add-a-projection.html).)
 
 ## Send a command — and read your own write
@@ -202,12 +197,13 @@ let run () =
                 { Name = "Document"
                   Initial = Document.initial
                   Decide = Document.decide
-                  Fold = Document.fold }
+                  Fold = Document.fold
+                  Snapshots = Default }
 
         // No sagas yet — the saga-starter still has to be wired, with none. (Ch. 3 adds one.)
         Fcqrs.wireSagaStarters api []
 
-        let subs = Fcqrs.projection api { LastOffset = 0; Handle = handle }
+        let subs = Fcqrs.projection api (Projection.single 0 handle)
 
         let cid = Fcqrs.newCid ()
         // A FIXED id, so every run addresses the SAME document — that's what lets the version climb.

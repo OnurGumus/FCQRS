@@ -153,14 +153,14 @@ dotnet add package Dapper
 ```
 
 A projection runs once per event, folds it into a table, and advances its offset in the **same
-transaction**. Return the events to re-publish — that's what lets you wait until the read side is
-current (read-your-writes). **`Projection.cs`**:
+transaction**. The handler just updates the read model — FCQRS publishes each aggregate event to
+subscribers for you, which is what lets you wait until the read side is current (read-your-writes).
+**`Projection.cs`**:
 
 ```csharp
 using Dapper;
 using Microsoft.Data.Sqlite;
-using static FCQRS.Common;        // Event<>
-using static FCQRS.Model.Data;     // IMessageWithCID
+using static FCQRS.Common;   // Event<>
 
 public static class Projection
 {
@@ -172,31 +172,24 @@ public static class Projection
         c.Execute("INSERT OR IGNORE INTO Offsets VALUES ('UserProjection', 0)");
     }
 
-    public static IList<IMessageWithCID> HandleEventWrapper(string conn, long offset, object evt)
+    // Just update the read model; FCQRS re-publishes each aggregate event as-is.
+    public static void Handle(string conn, long offset, object evt)
     {
         using var c = new SqliteConnection(conn); c.Open();
         using var tx = c.BeginTransaction();
-        var notify = new List<IMessageWithCID>();
-
-        if (evt is Event<UserEvent> { EventDetails: UserEvent.Registered e } userEvent)
-        {
+        if (evt is Event<UserEvent> { EventDetails: UserEvent.Registered e })
             c.Execute("INSERT OR IGNORE INTO Users (Username) VALUES (@u)", new { u = e.Username }, tx);
-            notify.Add(userEvent);   // re-publish → wakes the read-your-writes waiter
-        }
-
         c.Execute("UPDATE Offsets SET OffsetCount = @o WHERE OffsetName = 'UserProjection'", new { o = offset }, tx);
         tx.Commit();
-        return notify;
     }
 }
 ```
 
-> **Shortcut — single-event handlers.** When every aggregate event is worth publishing as-is (the
-> common case), skip the list plumbing: hand `.AddProjection((offset, evt) => { ... })` a `void`
-> handler and FCQRS re-publishes each aggregate event automatically (saga internals never qualify).
-> Return a list — as above — when notifications must be filtered, e.g. suppressing intermediate
-> events so read-your-writes only wakes on the final one.
-> F#: `Projection.single` / `Projection.multi`.
+> **Need to filter notifications?** This `void` handler publishes every aggregate event (the common
+> case). To wake read-your-writes on only *some* events — e.g. suppress an intermediate event so the
+> caller unblocks on the final one — return `Notify.Publish` / `Notify.Suppress` per event, or an
+> `IList<IMessageWithCID>` for full control. (F#: `Projection.single` / `Projection.filtered` /
+> `Projection.multi`.)
 
 Register it (`.AddProjection`), subscribe before sending, then query the table. **`Program.cs`**:
 
@@ -216,9 +209,7 @@ var builder = Host.CreateApplicationBuilder(args);
 builder.Services
     .AddFcqrs(conn, "MyCluster")
     .AddAggregate<UserAggregate>()
-    .AddProjection(
-        handler:    sp => (offset, evt) => Projection.HandleEventWrapper(conn, offset, evt),
-        lastOffset: _  => 0);
+    .AddProjection((offset, evt) => Projection.Handle(conn, offset, evt));
 
 using var app = builder.Build();
 await app.StartAsync();
