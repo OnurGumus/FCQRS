@@ -47,6 +47,7 @@ module internal Internal =
         (manualSnapshotRequested: bool ref)
         (sagaStartTimeout: TimeSpan)
         (logger: ILogger)
+        (flowLogger: ILogger)
         (mailbox: Eventsourced<obj>)
         mediator
         (set: State<'TState> -> _)
@@ -148,6 +149,13 @@ module internal Internal =
 
             // actor level events will come here
             | Deferred mailbox (:? Common.Event<'TEvent> as event) ->
+                if messageFlowEnabled flowLogger then
+                    flowLogger.LogInformation(
+                        "Aggregate {Aggregate} applied deferred event {Event} (not persisted) [cid: {CID}]",
+                        mailbox.Self.Path.Name,
+                        renderPayload event,
+                        event.CorrelationId |> ValueLens.Value |> ValueLens.Value)
+
                 let state = applyChecked event (state.State)
                 publishEvent event
 
@@ -159,6 +167,14 @@ module internal Internal =
 
             | Persisted mailbox (:? Common.Event<'TEvent> as event) ->
                 let versionN = event.Version |> ValueLens.Value
+
+                if messageFlowEnabled flowLogger then
+                    flowLogger.LogInformation(
+                        "Aggregate {Aggregate} persisted event {Event} (v{Version}) [cid: {CID}]",
+                        mailbox.Self.Path.Name,
+                        renderPayload event,
+                        versionN,
+                        event.CorrelationId |> ValueLens.Value |> ValueLens.Value)
 
                 let activity =
                     if activitySource.HasListeners() then
@@ -301,6 +317,7 @@ module internal Internal =
         (mailbox: Eventsourced<obj>)
         =
         let logger = loggerFactory.CreateLogger name
+        let flowLogger = loggerFactory.CreateLogger Telemetry.MessageFlowCategory
 
         // Per-entity policy first; Default falls back to the global config key, then 30.
         let snapshotEvery: int64 option =
@@ -382,6 +399,15 @@ module internal Internal =
                                 fatalFailFast null "Process terminated due to aggregate command-handler error" ex
                                 failwith "unreachable" // FailFast never returns; satisfies the compiler
 
+                        if messageFlowEnabled flowLogger then
+                            flowLogger.LogInformation(
+                                "Command {Command} to aggregate {Aggregate} (v{Version}) yielded {Effect} [cid: {CID}]",
+                                renderPayload cmd,
+                                mailbox.Self.Path.Name,
+                                state.Version |> ValueLens.Value,
+                                renderValue effect,
+                                cmd.CorrelationId |> ValueLens.Value |> ValueLens.Value)
+
                         match activity with
                         | null -> ()
                         | act ->
@@ -405,7 +431,7 @@ module internal Internal =
                         return Unhandled
                 }
 
-            runActor snapshotEvery manualSnapshotRequested sagaStartTimeout logger mailbox mediator set state (apply: Event<_> -> 'State -> 'State) body
+            runActor snapshotEvery manualSnapshotRequested sagaStartTimeout logger flowLogger mailbox mediator set state (apply: Event<_> -> 'State -> 'State) body
 
         let initialState =
             { 

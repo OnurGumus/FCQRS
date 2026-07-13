@@ -1,5 +1,29 @@
 # Changelog
 
+## 6.0.0-preview28
+- **Message-flow logging, on by default**: the command/event/saga narrative is
+  now readable straight from the console, no tracing pipeline required. Every
+  aggregate command logs what it yielded (`Command Register ... to aggregate
+  testuser (v0) yielded PersistEvent (VerificationRequested ...)`), every
+  persisted/deferred event, every saga state transition, every command a saga
+  sends or schedules (with target and delay), every event a saga picks up (with
+  the decision), and saga completion — all at Information level under the
+  dedicated `FCQRS.MessageFlow` category, each line carrying the CID so one
+  grep follows a whole workflow. Payloads render single-line; the internal
+  `ContinueOrAbort` handshake is excluded. Toggle process-wide with
+  `Telemetry.MessageFlowLogging <- false` or
+  `builder.WithMessageFlowLogging(false)`, or filter the category in logging
+  configuration (`"FCQRS.MessageFlow": "None"`).
+- **Failures flagged in traces**: command spans get Error status on
+  `UnhandledEvent` (the classic silent-hang) and on `StateChangedEvent` from an
+  aggregate; the restart-detection version mismatch emits an Error `Abort:`
+  span and marks the saga's state span before passivation; the saga state span
+  gains timestamped `command.issued`/`command.scheduled` events per side-effect
+  command. New `Telemetry.FatalFlush` hook (set it to your tracer/logger
+  `ForceFlush`) runs bounded inside the fail-fast path, after in-flight spans
+  are marked with the OTel exception event — so the fatal flow's own telemetry
+  gets out before the process dies.
+
 ## 6.0.0-preview27
 - **Conditional persist/defer helper**: `EventActions.PersistConditionally(shouldPersist, event)`
   (C#) and `persistIf shouldPersist event` (F#) collapse the common

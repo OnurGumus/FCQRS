@@ -262,6 +262,19 @@ type Telemetry =
     /// the CID stays a plain correlation id and tracing rides beside it.
     static member TraceparentMetadataKey: string = "traceparent"
 
+    /// Logger category of the out-of-box message-flow narrative: which command
+    /// reached which aggregate and what it yielded, saga state transitions, the
+    /// commands sagas issue, and the events they pick up. Written at
+    /// Information level — these lines describe the application's messages,
+    /// not FCQRS internals, so they are ON by default. Silence them with
+    /// Telemetry.MessageFlowLogging <- false (or
+    /// FcqrsBuilder.WithMessageFlowLogging(false)), or filter this category in
+    /// your logging configuration.
+    static member MessageFlowCategory: string = "FCQRS.MessageFlow"
+
+    /// Process-wide switch for the message-flow narrative logs. Default: on.
+    static member val MessageFlowLogging: bool = true with get, set
+
     /// Optional hook invoked right before FCQRS kills the process on a fatal
     /// error. FailFast skips finalizers and ProcessExit handlers, so without
     /// this everything still sitting in a batch exporter or buffered log sink
@@ -291,6 +304,44 @@ let internal currentTraceparent () : string option =
     match Activity.Current with
     | null -> None
     | act -> Some $"00-{act.TraceId.ToHexString()}-{act.SpanId.ToHexString()}-01"
+
+/// (Internal) Gate for the message-flow narrative lines: the process-wide
+/// switch first, then the category's own level so filtered sinks pay nothing.
+let internal messageFlowEnabled (logger: ILogger) : bool =
+    Telemetry.MessageFlowLogging && logger.IsEnabled LogLevel.Information
+
+/// (Internal) %A rendering collapsed to a single line, so every flow-narrative
+/// entry stays one greppable log line even for multi-field records.
+let internal renderValue (value: obj | null) : string =
+    let s =
+        match value with
+        | null -> "null"
+        | v -> sprintf "%A" v
+
+    if s.Contains '\n' then
+        s.Split([| '\r'; '\n' |], StringSplitOptions.RemoveEmptyEntries)
+        |> Array.map _.Trim()
+        |> String.concat " "
+    else
+        s
+
+/// (Internal) Render a message for the flow narrative: unwrap the Command/Event
+/// envelope to its domain payload (the envelope's CID/version are logged as
+/// separate properties), fall back to %A on the whole message.
+let internal renderPayload (msg: obj | null) : string =
+    match msg with
+    | null -> "null"
+    | msg ->
+        let t = msg.GetType()
+
+        let detailsProp =
+            match t.GetProperty "EventDetails" with
+            | null -> t.GetProperty "CommandDetails"
+            | p -> p
+
+        match detailsProp with
+        | null -> renderValue msg
+        | p -> renderValue (p.GetValue msg)
 
 /// (Internal) Fatal-path exit. Marks the in-flight span(s) failed and disposed
 /// (queueing them for export), gives the host's Telemetry.FatalFlush a bounded

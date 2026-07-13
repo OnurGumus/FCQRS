@@ -18,6 +18,28 @@ open System.Diagnostics
 
 let private activitySource = new ActivitySource(Common.Telemetry.SagaActivitySourceName)
 
+// Innermost union case name (unwraps SagaStateWrapper.UserDefined to the
+// user's state) — shared by the state-change span and the flow log line.
+let rec private getUnionCaseName (obj: obj) =
+    let t = obj.GetType()
+
+    if FSharpType.IsUnion(t) then
+        let case, fields = FSharpValue.GetUnionFields(obj, t)
+
+        if case.Name = "UserDefined" && fields.Length = 1 then
+            match fields.[0] with
+            | null -> case.Name
+            | field -> getUnionCaseName field
+        else
+            case.Name
+    else
+        sprintf "%A" obj
+
+let private stateName (state: 'State) =
+    match box state with
+    | null -> "null"
+    | boxed -> getUnionCaseName boxed
+
 let private toStateChange state =
     state |> StateChanged |> box |> Persist :> Effect<obj>
 
@@ -48,6 +70,7 @@ let private runSaga<'TEvent, 'SagaData, 'State when 'TEvent : not null and 'Stat
     (snapshotEvery: int64 option)
     (mailbox: Eventsourced<obj>)
     (log: ILogger)
+    (flowLogger: ILogger)
     mediator
     (set: _ -> ParentSaga<'SagaData, 'State> -> _)
     (state: ParentSaga<'SagaData, 'State>)
@@ -79,27 +102,7 @@ let private runSaga<'TEvent, 'SagaData, 'State when 'TEvent : not null and 'Stat
                     currentSagaActivityRef.Value <- null
 
                 if activitySource.HasListeners() then
-                    // Recursively extract innermost union case name
-                    // (unwraps SagaStateWrapper.UserDefined to the user's state)
-                    let rec getUnionCaseName (obj: obj) =
-                        let t = obj.GetType()
-
-                        if FSharpType.IsUnion(t) then
-                            let case, fields = FSharpValue.GetUnionFields(obj, t)
-
-                            if case.Name = "UserDefined" && fields.Length = 1 then
-                                match fields.[0] with
-                                | null -> case.Name
-                                | field -> getUnionCaseName field
-                            else
-                                case.Name
-                        else
-                            sprintf "%A" obj
-
-                    let stateStr =
-                        match box newState with
-                        | null -> "null"
-                        | boxed -> getUnionCaseName boxed
+                    let stateStr = stateName newState
 
                     let cidStr, parent =
                         match startingEvent with
@@ -231,6 +234,13 @@ let private runSaga<'TEvent, 'SagaData, 'State when 'TEvent : not null and 'Stat
                     match e with
                     | StateChanged originalState ->
                         try
+                            if messageFlowEnabled flowLogger then
+                                flowLogger.LogInformation(
+                                    "Saga {Saga} changed state to {State} [cid: {CID}]",
+                                    mailbox.Self.Path.Name,
+                                    stateName originalState,
+                                    mailbox.Self.Path.Name |> SagaStarter.Internal.toRawGuid)
+
                             // Emit activity for the persisted state change
                             emitStateChangeActivity originalState
                             let outerState = wrapper originalState
@@ -339,6 +349,8 @@ let private actorProp<'SagaData, 'State, 'TEvent when 'TEvent : not null and 'St
     let loggerFactory = actorApi.LoggerFactory
     let config = actorApi.Configuration
     let logger = loggerFactory.CreateLogger name
+    let flowLogger = loggerFactory.CreateLogger Telemetry.MessageFlowCategory
+    let flowCid = baseCid |> ValueLens.Value |> ValueLens.Value
 
     // Ref cell to hold the current saga state activity (kept alive across iterations)
     // This is at actorProp level so both runSaga and applySideEffects can access it
@@ -455,19 +467,43 @@ let private actorProp<'SagaData, 'State, 'TEvent when 'TEvent : not null and 'St
                     | ActorRef actor -> actor :?> ICanTell<_>, cmd.Command
                     | Self -> mailbox.Self, cmd.Command
 
+                let targetStr =
+                    match cmd.TargetActor with
+                    | FactoryAndName { Name = Name n } -> n
+                    | FactoryAndName { Name = Originator } -> mailbox.Self.Path.Name |> toOriginatorName
+                    | Sender -> mailbox.Sender().Path.Name
+                    | ActorRef _ -> "actorRef"
+                    | Self -> mailbox.Self.Path.Name
+
+                // The ContinueOrAbort handshake is framework plumbing, not part of
+                // the application's message narrative — keep it out of the flow log.
+                let isInternalHandshake =
+                    let t = cmd.Command.GetType()
+                    t.IsGenericType && t.GetGenericTypeDefinition() = typedefof<ContinueOrAbort<_>>
+
+                if messageFlowEnabled flowLogger && not isInternalHandshake then
+                    match cmd.DelayInMs with
+                    | Some(delayValue, _) ->
+                        flowLogger.LogInformation(
+                            "Saga {Saga} scheduled command {Command} to {Target} (+{Delay}ms) [cid: {CID}]",
+                            mailbox.Self.Path.Name,
+                            renderValue cmd.Command,
+                            targetStr,
+                            delayValue,
+                            flowCid)
+                    | None ->
+                        flowLogger.LogInformation(
+                            "Saga {Saga} sent command {Command} to {Target} [cid: {CID}]",
+                            mailbox.Self.Path.Name,
+                            renderValue cmd.Command,
+                            targetStr,
+                            flowCid)
+
                 // Timestamped marker on the long-lived state span: shows when within
                 // the state each command left, without a child span per command.
                 match currentSagaActivityRef.Value with
                 | null -> ()
                 | act ->
-                    let targetStr =
-                        match cmd.TargetActor with
-                        | FactoryAndName { Name = Name n } -> n
-                        | FactoryAndName { Name = Originator } -> mailbox.Self.Path.Name |> toOriginatorName
-                        | Sender -> mailbox.Sender().Path.Name
-                        | ActorRef _ -> "actorRef"
-                        | Self -> mailbox.Self.Path.Name
-
                     let tags = ActivityTagsCollection()
                     tags.Add("command.type", cmd.Command.GetType().Name)
                     tags.Add("target", targetStr)
@@ -537,6 +573,13 @@ let private actorProp<'SagaData, 'State, 'TEvent when 'TEvent : not null and 'St
             let poision = Cluster.Sharding.Passivate <| Actor.PoisonPill.Instance
             mailbox.Parent() <! poision
             log.Info("{0} Completed", name)
+
+            if messageFlowEnabled flowLogger then
+                flowLogger.LogInformation(
+                    "Saga {Saga} completed and stopped [cid: {CID}]",
+                    mailbox.Self.Path.Name,
+                    flowCid)
+
             None
 
     let rec set innerStateDefaults (sagaState: ParentSaga<'SagaData, 'State>) =
@@ -547,6 +590,14 @@ let private actorProp<'SagaData, 'State, 'TEvent when 'TEvent : not null and 'St
                 | msg, state ->
                     try
                         let state: EventAction<'State> = handleEvent msg state.SagaState
+
+                        if messageFlowEnabled flowLogger then
+                            flowLogger.LogInformation(
+                                "Saga {Saga} received {Event}, decided {Decision} [cid: {CID}]",
+                                mailbox.Self.Path.Name,
+                                renderPayload msg,
+                                renderValue state,
+                                flowCid)
 
                         match state with
                         | StateChangedEvent newState ->
@@ -579,6 +630,7 @@ let private actorProp<'SagaData, 'State, 'TEvent when 'TEvent : not null and 'St
             snapshotEvery
             mailbox
             logger
+            flowLogger
             mediator
             set
             sagaState

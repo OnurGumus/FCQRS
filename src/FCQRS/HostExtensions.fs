@@ -124,6 +124,16 @@ type FcqrsBuilder internal (services: IServiceCollection, connectionString: stri
         akkaLogging <- Some(level, includeStdout)
         this
 
+    /// The message-flow narrative — which command reached which aggregate and
+    /// what it yielded, saga state transitions, the commands sagas issue — is
+    /// written at Information level to the "FCQRS.MessageFlow" category and is
+    /// ON by default: these lines describe your application's messages, not
+    /// FCQRS internals. Turn it off here (a process-wide switch), or filter
+    /// the category in your logging configuration.
+    member this.WithMessageFlowLogging(enabled: bool) : FcqrsBuilder =
+        Telemetry.MessageFlowLogging <- enabled
+        this
+
     member internal _.AkkaLogging = akkaLogging
 
     member internal _.EffectiveSnapshotPolicy(entityPolicy: SnapshotPolicy) : SnapshotPolicy =
