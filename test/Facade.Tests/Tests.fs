@@ -122,6 +122,35 @@ module Parked =
           // (no config key) — Started=v1, Pinging=v2 -> snapshot covers the journal.
           Snapshots = Every 2 }
 
+/// A saga that starts on a big increment and then never leaves the framework's
+/// Started state (its handleEvent ignores everything). Used to prove restart
+/// detection: a saga recovering in Started re-sends ContinueOrAbort carrying its
+/// starting event, and an originator that has moved past that event's version
+/// must answer with AbortedEvent (observable as an "Abort:" span) instead of
+/// re-publishing a stale event.
+module Handshake =
+    type State = Idle // never entered: the saga parks in the framework's Started
+
+    let private handleEvent (_: obj) (_: SagaState<unit, State option>) : EventAction<State> = UnhandledEvent
+
+    let private applySideEffects (sagaState: SagaState<unit, State>) _recovering =
+        match sagaState.State with
+        | Idle -> StopSaga, [] // unreachable: handleEvent never transitions here
+
+    let private startsOn (e: Event<Counter.Event>) =
+        match e.EventDetails with
+        | Counter.Incremented n -> n >= 100
+        | _ -> false
+
+    let definition counterFactory =
+        { Name = "Handshake"
+          InitialData = ()
+          Originator = counterFactory
+          HandleEvent = handleEvent
+          ApplySideEffects = applySideEffects
+          StartOn = startsOn
+          Snapshots = Default }
+
 /// A CLR "rename" of Counter.Event: same cases/shape, different type identity.
 module RenamedCounter =
     type Event =
@@ -187,6 +216,94 @@ let private bootParked (db: string) (lmdb: string) =
     let saga = Fcqrs.saga api (Parked.definition counter.Factory)
     Fcqrs.wireSagaStarters api [ saga ]
     api, counter
+
+/// Boot a system for the restart-detection test: same durable-ddata pattern as
+/// bootParked (two sequential incarnations, remember-entities resurrects the saga).
+let private bootAbort (db: string) (lmdb: string) =
+    registerJournalTypes ()
+    let cfg =
+        ConfigurationBuilder()
+            .AddInMemoryCollection(
+                [ Collections.Generic.KeyValuePair<string, string | null>(
+                      "config:akka:cluster:distributed-data:durable:lmdb", lmdb) ])
+            .Build()
+
+    let api =
+        Fcqrs.actor cfg NullLoggerFactory.Instance
+            (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite (sprintf "Data Source=%s;" db))) "AbortSmoke"
+
+    let counter =
+        Fcqrs.aggregate api { Name = "Counter"; Initial = Counter.initial; Decide = Counter.decide; Fold = Counter.fold; Snapshots = Default }
+
+    let saga = Fcqrs.saga api (Handshake.definition counter.Factory)
+    Fcqrs.wireSagaStarters api [ saga ]
+    api, counter
+
+let private restartDetectionTest =
+    testCase "facade: restart detection - a saga recovering against a rolled-forward originator aborts"
+    <| fun _ ->
+        let db = Path.Combine(Path.GetTempPath(), sprintf "fcqrs_abort_%s.db" (Guid.NewGuid().ToString("N")))
+        let lmdb = Path.Combine(Path.GetTempPath(), sprintf "fcqrs_abort_lmdb_%s" (Guid.NewGuid().ToString("N")))
+
+        // The abort is observed through its "Abort:" span: the version-mismatch
+        // branch is the only place the aggregate emits one.
+        let aborts = Collections.Concurrent.ConcurrentBag<string>()
+        use listener = new ActivityListener()
+        listener.ShouldListenTo <- fun src -> src.Name = Telemetry.ActivitySourceName
+        listener.Sample <- SampleActivity<ActivityContext>(fun _ -> ActivitySamplingResult.AllDataAndRecorded)
+        listener.ActivityStopped <-
+            fun a ->
+                if a.OperationName.StartsWith "Abort:" then
+                    aborts.Add a.OperationName
+        ActivitySource.AddActivityListener listener
+
+        // Phase 1: Incremented 100 (v1) starts the saga, which parks in the
+        // framework's Started state. Saga journal: wrapper(seq1), Started(seq2).
+        let api1, counter1 = bootAbort db lmdb
+
+        counter1.Send (Fcqrs.newCid ()) (Fcqrs.aggregateId "drift") (Counter.Increment 100)
+            (function Counter.Incremented _ -> true | _ -> false)
+        |> Async.RunSynchronously
+        |> ignore
+
+        // Roll the originator forward: v2 makes the saga's starting event (v1) stale.
+        counter1.Send (Fcqrs.newCid ()) (Fcqrs.aggregateId "drift") (Counter.Increment 5)
+            (function Counter.Incremented _ -> true | _ -> false)
+        |> Async.RunSynchronously
+        |> ignore
+
+        // The Started transition is journaled asynchronously; wait for it so the
+        // reboot actually recovers a saga parked in Started.
+        let sagaRows () =
+            use conn = new Microsoft.Data.Sqlite.SqliteConnection(sprintf "Data Source=%s;" db)
+            conn.Open()
+            use cmd = conn.CreateCommand()
+            cmd.CommandText <- "SELECT COUNT(*) FROM journal WHERE persistence_id LIKE '%~Saga~%'"
+            cmd.ExecuteScalar() :?> int64
+
+        let mutable attempts = 0
+        while (try sagaRows () with _ -> 0L) < 2L && attempts < 40 do
+            attempts <- attempts + 1
+            Threading.Thread.Sleep 250
+
+        Expect.isGreaterThanOrEqual (sagaRows ()) 2L "phase 1: the saga journaled its Started state"
+        api1.Stop().Wait(TimeSpan.FromSeconds 30.0) |> ignore
+        Expect.isEmpty aborts "phase 1: no abort while the saga was live"
+
+        // Phase 2: reboot on the same journal. remember-entities resurrects the
+        // saga; recovering in Started it sends ContinueOrAbort with its v1 starting
+        // event, the originator recovers at v2, versions differ -> the aggregate
+        // must answer AbortedEvent (and emit the Abort: span) instead of
+        // re-publishing the stale event.
+        let api2, _ = bootAbort db lmdb
+
+        let mutable waits = 0
+        while aborts.IsEmpty && waits < 80 do
+            waits <- waits + 1
+            Threading.Thread.Sleep 250
+
+        Expect.isFalse aborts.IsEmpty "phase 2: the version mismatch fired restart detection (AbortedEvent path)"
+        api2.Stop().Wait(TimeSpan.FromSeconds 30.0) |> ignore
 
 let private roundTripTest =
     testCase "facade: aggregate handle round-trips a command, and a saga drives a follow-up into the originator"
@@ -487,7 +604,7 @@ let private persistIfTest =
 
 let tests =
     testSequenced (
-        testList "facade" [ manifestTest; roundTripTest; persistAllTest; manualSnapshotTest; telemetryTest; overflowTest; snapshotRecoveryTest; filteredProjectionTest; persistIfTest ]
+        testList "facade" [ manifestTest; roundTripTest; persistAllTest; manualSnapshotTest; telemetryTest; overflowTest; snapshotRecoveryTest; restartDetectionTest; filteredProjectionTest; persistIfTest ]
     )
 
 [<EntryPoint>]
