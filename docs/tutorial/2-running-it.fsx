@@ -8,7 +8,7 @@ index: 3
 *)
 
 (*** hide ***)
-#r "nuget: FCQRS, 6.0.0-preview28"
+#r "nuget: FCQRS, 6.0.0-rc1"
 open System
 open Microsoft.Extensions.Configuration
 open Microsoft.Extensions.Logging
