@@ -22,16 +22,6 @@ type AggregateRefs<'TCommand, 'TEvent when 'TEvent: not null> =
     { Factory: AggregateFactory
       Handler: Handler<'TCommand, 'TEvent> }
 
-/// Obsolete: nested in a module, so its [<Extension>] AsTask was never discoverable
-/// as an extension from C# (hence the duplicate ToTask). Use the top-level
-/// `AsTask` extension instead: `using FCQRS;` then `someAsync.AsTask()`.
-[<System.Obsolete("Use the top-level AsTask extension (using FCQRS;); this type will be removed in a future preview.")>]
-type AsyncExtensions =
-    static member AsTask(computation: Async<'T>) : Task<'T> =
-        Async.StartAsTask computation
-    static member ToTask(computation: Async<'T>) : Task<'T> =
-        Async.StartAsTask computation
-
 /// Factory methods for creating FCQRS's strongly-typed value/identifier types
 /// (CID, AggregateId, MessageId, ShortString, LongString, Version) from C#.
 type Values =
@@ -96,22 +86,6 @@ type Values =
         | Ok v -> result <- v; true
         | Error _ -> false
 
-/// Obsolete alias for <see cref="T:FCQRS.CSharp.Values"/>. Renamed because these
-/// are factories for FCQRS's value/identifier types, not general-purpose helpers.
-/// Will be removed in a future preview.
-[<System.Obsolete("Renamed to Values; this alias will be removed in a future preview.")>]
-type Helpers =
-    static member CreateShortString(s: string) : ShortString = Values.CreateShortString s
-    static member CreateCID(s: string) : CID = Values.CreateCID s
-    static member NewCID() : CID = Values.NewCID()
-    static member CreateAggregateId(s: string) : AggregateId = Values.CreateAggregateId s
-    static member CreateMessageId(s: string) : MessageId = Values.CreateMessageId s
-    static member NewMessageId() : MessageId = Values.NewMessageId()
-    static member CreateVersion(v: int64) : Version = Values.CreateVersion v
-    static member TryCreateShortString(s: string) : Result<ShortString, ModelError list> = Values.TryCreateShortString s
-    static member TryCreateLongString(s: string) : Result<LongString, ModelError list> = Values.TryCreateLongString s
-    static member CreateLongString(s: string) : LongString = Values.CreateLongString s
-
 /// C#-friendly factory methods for constructing an F# Result (Ok/Error) from C#.
 type FSharpResults =
     /// Create a successful result
@@ -122,20 +96,6 @@ type FSharpResults =
     static member Error<'T, 'E>(error: 'E) : Result<'T, 'E> =
         Error error
 
-/// Obsolete alias for <see cref="T:FCQRS.CSharp.FSharpResults"/>. Renamed off the
-/// generic 'Results' (which also collides with Microsoft.AspNetCore.Http.Results).
-[<System.Obsolete("Renamed to FSharpResults; this alias will be removed in a future preview.")>]
-type Results =
-    static member Ok<'T, 'E>(value: 'T) : Result<'T, 'E> = FSharpResults.Ok<'T, 'E> value
-    static member Error<'T, 'E>(error: 'E) : Result<'T, 'E> = FSharpResults.Error<'T, 'E> error
-
-/// Obsolete alias — the bool/out Try-create overloads now live on <see cref="T:FCQRS.CSharp.Values"/>.
-[<System.Obsolete("Use Values.TryCreateShortString / Values.TryCreateLongString; this alias will be removed in a future preview.")>]
-type StringTypes =
-    static member TryCreateShortString(s: string, [<System.Runtime.InteropServices.Out>] result: byref<ShortString>) : bool =
-        Values.TryCreateShortString(s, &result)
-    static member TryCreateLongString(s: string, [<System.Runtime.InteropServices.Out>] result: byref<LongString>) : bool =
-        Values.TryCreateLongString(s, &result)
 
 /// Fluent registrar for stable journal type names (see JournalTypes).
 type JournalTypeMapBuilder internal () =
@@ -313,14 +273,6 @@ type QueryApi =
         let handler = Query.filterPublish (fun offset evt -> eventHandler.Invoke(offset, evt))
         Query.init actorApi lastOffset handler |> Query.asDefaultSubscribe
 
-    /// Obsolete alias — InitWithList is now just an overload of Init.
-    [<System.Obsolete("Use Init (it's now an overload); this alias will be removed in a future preview.")>]
-    static member InitWithList(
-        actorApi: IActor,
-        lastOffset: int,
-        eventHandler: Func<int64, obj, System.Collections.Generic.IList<IMessageWithCID>>) : FCQRS.Query.ISubscribe =
-        QueryApi.Init(actorApi, lastOffset, eventHandler)
-
 /// Low-level wiring over an IActor: register the saga-starter, aggregates and
 /// actors, and send commands. Most members are plain static helpers (you call
 /// ActorWiring.Foo(actor, …)); a couple are genuine extension methods. For app
@@ -432,58 +384,6 @@ type ActorWiring =
         let filterF = fun e -> filter.Invoke(e)
         actor.CreateCommandSubscription factory cid aggregateId command filterF None
 
-/// Obsolete alias for <see cref="T:FCQRS.CSharp.ActorWiring"/>. Renamed because
-/// most members are static wiring helpers, not extension methods.
-[<System.Obsolete("Renamed to ActorWiring; this alias will be removed in a future preview.")>]
-[<Extension>]
-type IActorExtensions =
-    [<Extension>]
-    static member InitializeSagaStarterEmpty(actor: IActor) : unit =
-        ActorWiring.InitializeSagaStarterEmpty actor
-    static member InitSagaStarterEmpty(actor: IActor) : unit =
-        ActorWiring.InitSagaStarterEmpty actor
-    static member InitSagaStarter(actor: IActor, eventHandler: Func<obj, System.Collections.Generic.IList<SagaDefinition>>) : unit =
-        ActorWiring.InitSagaStarter(actor, eventHandler)
-    static member InitSagaStarterSimple(actor: IActor, eventHandler: Func<obj, System.Collections.Generic.IList<AggregateFactory>>) : unit =
-        ActorWiring.InitSagaStarterSimple(actor, eventHandler)
-    static member InitActor<'TState, 'TCommand, 'TEvent when 'TEvent: not null>(actor: IActor, initialState: 'TState, entityName: string, handleCommand: Func<Command<'TCommand>, 'TState, EventAction<'TEvent>>, applyEvent: Func<Event<'TEvent>, 'TState, 'TState>) : Akkling.Cluster.Sharding.EntityFac<obj> =
-        ActorWiring.InitActor<'TState, 'TCommand, 'TEvent>(actor, initialState, entityName, handleCommand, applyEvent)
-    static member InitAggregate<'TState, 'TCommand, 'TEvent when 'TEvent: not null>(actor: IActor, initialState: 'TState, entityName: string, handleCommand: Func<Command<'TCommand>, 'TState, EventAction<'TEvent>>, applyEvent: Func<Event<'TEvent>, 'TState, 'TState>) : AggregateRefs<'TCommand, 'TEvent> =
-        ActorWiring.InitAggregate<'TState, 'TCommand, 'TEvent>(actor, initialState, entityName, handleCommand, applyEvent)
-    [<Extension>]
-    static member SendCommandAsync<'TEvent, 'TCommand when 'TEvent: not null>(actor: IActor, entityFactory: AggregateFactory, cid: CID, aggregateId: AggregateId, command: 'TCommand, filter: Func<'TEvent, bool>) : Task<Event<'TEvent>> =
-        ActorWiring.SendCommandAsync<'TEvent, 'TCommand>(actor, entityFactory, cid, aggregateId, command, filter)
-    static member CreateCommand<'TEvent, 'TCommand when 'TEvent: not null>(actor: IActor, entityFactory: AggregateFactory, cid: CID, aggregateId: AggregateId, command: 'TCommand, filter: Func<'TEvent, bool>) : Async<Event<'TEvent>> =
-        ActorWiring.CreateCommand<'TEvent, 'TCommand>(actor, entityFactory, cid, aggregateId, command, filter)
-
-/// Extension methods for ISubscribe
-[<Extension>]
-type ISubscribeExtensions =
-    /// C#-friendly Subscribe that accepts Func instead of FSharpFunc
-    [<Extension>]
-    static member SubscribeFor<'T when 'T :> FCQRS.Model.Data.IMessageWithCID>(
-        subs: Query.ISubscribe<'T>,
-        filter: Func<'T, bool>,
-        take: int) : Query.IAwaitableDisposable =
-        subs.Subscribe((fun e -> filter.Invoke(e)), take)
-
-    /// C#-friendly Subscribe that matches by CID only
-    [<Extension>]
-    static member SubscribeFor<'T when 'T :> FCQRS.Model.Data.IMessageWithCID>(
-        subs: Query.ISubscribe<'T>,
-        cid: FCQRS.Model.Data.CID,
-        take: int) : Query.IAwaitableDisposable =
-        subs.Subscribe(cid, take)
-
-    /// C#-friendly Subscribe that matches by CID and additional filter
-    [<Extension>]
-    static member SubscribeFor<'T when 'T :> FCQRS.Model.Data.IMessageWithCID>(
-        subs: Query.ISubscribe<'T>,
-        cid: FCQRS.Model.Data.CID,
-        filter: Func<'T, bool>,
-        take: int) : Query.IAwaitableDisposable =
-        subs.Subscribe(cid, (fun e -> filter.Invoke(e)), take)
-
 // =============================================================================
 // SAGA C# INTEROP
 // =============================================================================
@@ -570,7 +470,7 @@ type SagaCommands =
         { TargetActor = Self; Command = command; DelayInMs = None }
 
     /// Create a delayed command to a specific aggregate instance.
-    static member ToAggregateDelayed(
+    static member ToAggregateAfter(
         factory: AggregateFactory,
         entityId: string,
         command: obj,
@@ -581,7 +481,7 @@ type SagaCommands =
           DelayInMs = Some (delayMs, taskName) }
 
     /// Create a delayed command to a concrete actor ref.
-    static member ToActorDelayed(
+    static member ToActorAfter(
         actorRef: Akkling.ActorRefs.IActorRef<obj>,
         command: obj,
         delayMs: int64,
@@ -591,7 +491,7 @@ type SagaCommands =
           DelayInMs = Some (delayMs, taskName) }
 
     /// Schedule a message to the saga itself after a delay — the idiomatic saga timeout.
-    static member ToSelfDelayed(
+    static member ToSelfAfter(
         command: obj,
         delayMs: int64,
         taskName: string) : ExecuteCommand =
@@ -600,7 +500,7 @@ type SagaCommands =
           DelayInMs = Some (delayMs, taskName) }
 
     /// Create a delayed command
-    static member ToOriginatorDelayed(
+    static member ToOriginatorAfter(
         factory: AggregateFactory,
         command: obj,
         delayMs: int64,

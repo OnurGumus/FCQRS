@@ -9,7 +9,7 @@ open Akka.Event
 open Akka.TestKit
 
 /// Proxy that carries a name through cancellation - uses a CancellationTokenSource to handle cancellation
-type NamedCancelable
+type internal NamedCancelable
     (
         ctsToManage: CancellationTokenSource,
         name: string option,

@@ -319,29 +319,16 @@ and Validator<'E when 'E: not null>(all) =
 
 #if FABLE_COMPILER
 
-    member x.IsDegist error input =
+    member x.IsDigit error input =
         x.IsValid<'T, string> (String.forall (fun c -> c >= '0' && c <= '9')) error input
 
 #else
 
-    member x.IsDegist error input =
+    member x.IsDigit error input =
         x.IsValid<'T, string> (String.forall (Char.IsDigit)) error input
 
 #endif
 
-let private instance<'E when 'E: not null> = Validator<'E>(true)
-
-/// IsValid helper from Validator method for custom rule functions, you can also extend Validator class directly.
-let isValid<'T, 'T0, 'E when 'E: not null> = instance<'E>.IsValid<'T, 'T0>
-
-/// IsValidOpt helper from Validator method for custom rule functions, you can also extend Validator class directly.
-let isValidOpt<'T, 'T0, 'T1, 'E when 'E: not null> = instance<'E>.IsValidOpt<'T, 'T0, 'T1>
-
-/// IsValidAsync helper from Validator method for custom rule functions, you can also extend Validator class directly.
-let isValidAsync<'T, 'T0, 'E when 'E: not null> = instance<'E>.IsValidAsync<'T, 'T0>
-
-/// IsValidOptAsync helper from Validator method for custom rule functions, you can also extend Validator class directly.
-let isValidOptAsync<'T, 'T0, 'T1, 'E when 'E: not null> = instance<'E>.IsValidOptAsync<'T, 'T0, 'T1>
 
 let validateSync all (tester: Validator<'E> -> 'T) =
     let validator = Validator(all)

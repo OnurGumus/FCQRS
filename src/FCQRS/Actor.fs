@@ -483,7 +483,7 @@ module internal Internal =
         <| false
 
 /// Custom configuration provider for in-memory HOCON strings
-type HoconStringConfigurationProvider(hoconString: string) =
+type internal HoconStringConfigurationProvider(hoconString: string) =
     inherit ConfigurationProvider()
 
     override this.Load() =
@@ -508,7 +508,7 @@ type HoconStringConfigurationProvider(hoconString: string) =
             this.Data.[kvp.Key] <- kvp.Value
 
 /// Custom configuration source for in-memory HOCON strings
-type HoconStringConfigurationSource(hoconString: string) =
+type internal HoconStringConfigurationSource(hoconString: string) =
     interface IConfigurationSource with
         member _.Build(builder: IConfigurationBuilder) =
             upcast new HoconStringConfigurationProvider(hoconString)

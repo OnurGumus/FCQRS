@@ -154,7 +154,7 @@ let filterPublish (handle: int64 -> obj -> Notify) : int64 -> obj -> IMessageWit
         | Suppress -> []
 
 [<AutoOpen>]
-module Internal =
+module internal Internal =
     open Akka.Persistence.Sql.Query
     let readJournal system =
         PersistenceQuery

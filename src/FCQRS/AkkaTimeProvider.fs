@@ -117,7 +117,7 @@ module Internal =
                 
 // Custom TimeProvider that uses Akka.NET's scheduler. This allows you to use akka testing schedulers for entirety of the system
 // Once you play with the akka testing schedulers and use this provider, you will still be able to control the time of the entire system.
-type AkkaTimeProvider(actorSystem: ActorSystem) =
+type internal AkkaTimeProvider(actorSystem: ActorSystem) =
     inherit TimeProvider()
 
     let scheduler = actorSystem.Scheduler

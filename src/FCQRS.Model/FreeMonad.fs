@@ -1,5 +1,5 @@
 // The Free monad type
-module FreeMonad
+module FCQRS.Model.FreeMonad
 // ============================================
 // CORE FREE MONAD
 // ============================================

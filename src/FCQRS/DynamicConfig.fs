@@ -41,7 +41,7 @@ module Internal =
 
                     replaceWithArray input childKey newInput
 
-let getSection (configs: KeyValuePair<string, _> seq) : obj =
+let internal getSection (configs: KeyValuePair<string, _> seq) : obj =
     let result = ExpandoObject()
 
     for kvp in configs do

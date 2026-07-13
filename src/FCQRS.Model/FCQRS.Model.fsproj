@@ -18,7 +18,6 @@
     <Compile Include="Aether.fs" />
     <Compile Include="Validation.fs" />
     <Compile Include="Model.fs" />
-    <Compile Include="Query.fs" />
     <Compile Include="CSharpHelpers.fs" />
     <Compile Include="FreeMonad.fs" />
   </ItemGroup>

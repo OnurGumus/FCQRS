@@ -148,12 +148,12 @@ type Event<'EventDetails when 'EventDetails : not null> =
 let DEFAULT_SHARD = "default-shard"
 // Internal types related to saga flow control
 
-type ContinueOrAbort<'EventDetails when 'EventDetails : not null> =
+type internal ContinueOrAbort<'EventDetails when 'EventDetails : not null> =
     | ContinueOrAbort of Event<'EventDetails>
 
     interface ISerializable
 
-type AbortedEvent = AbortedEvent
+type internal AbortedEvent = AbortedEvent
 
 [<AutoOpen>]
 module internal Internal =
@@ -597,7 +597,7 @@ type PrefixConversion = PrefixConversion of ((string -> string) option)
 module SagaBuilder =
     /// Standard recovery logic for Started state that all sagas should use
     /// Handles the version checking handshake with the originator aggregate
-    let handleStartedState
+    let internal handleStartedState
         recovering
         (startingEvent: option<SagaStartingEvent<_>>)
         (originatorFactory: string -> IEntityRef<obj>)
@@ -629,13 +629,13 @@ module SagaBuilder =
         | UserDefined of 'UserState
 
     /// Creates initial saga state with NotStarted
-    let createInitialState<'SagaData, 'UserState, 'TEvent when 'TEvent : not null>
+    let internal createInitialState<'SagaData, 'UserState, 'TEvent when 'TEvent : not null>
         (data: 'SagaData)
         : SagaState<'SagaData, SagaStateWrapper<'UserState, 'TEvent>> =
         { State = NotStarted; Data = data }
 
     /// Wraps user's applySideEffects to handle NotStarted/Started automatically
-    let wrapApplySideEffects<'SagaData, 'UserState, 'TEvent when 'TEvent : not null>
+    let internal wrapApplySideEffects<'SagaData, 'UserState, 'TEvent when 'TEvent : not null>
         (userApplySideEffects:
             SagaState<'SagaData, 'UserState> -> bool -> SagaTransition<'UserState> * ExecuteCommand list)
         (originatorFactory: string -> IEntityRef<obj>)
@@ -680,7 +680,7 @@ module SagaBuilder =
             | NextState newState -> NextState(UserDefined newState), commands
 
     /// Wraps user's handleEvent to skip NotStarted but allow Started states
-    let wrapHandleEvent<'SagaData, 'UserState, 'TEvent  when 'UserState : not null and 'TEvent : not null>
+    let internal wrapHandleEvent<'SagaData, 'UserState, 'TEvent  when 'UserState : not null and 'TEvent : not null>
         (userHandleEvent: obj -> SagaState<'SagaData, 'UserState option> -> EventAction<'UserState>)
         (event: obj)
         (sagaState: SagaState<'SagaData, SagaStateWrapper<'UserState, 'TEvent>>)
@@ -705,7 +705,7 @@ module SagaBuilder =
             | _ -> UnhandledEvent
 
     /// Wraps user's apply function to handle NotStarted/Started automatically
-    let wrapApply<'SagaData, 'UserState, 'TEvent when 'TEvent : not null>
+    let internal wrapApply<'SagaData, 'UserState, 'TEvent when 'TEvent : not null>
         (userApply: SagaState<'SagaData, 'UserState> -> SagaState<'SagaData, 'UserState>)
         (sagaState: SagaState<'SagaData, SagaStateWrapper<'UserState, 'TEvent>>)
         : SagaState<'SagaData, SagaStateWrapper<'UserState, 'TEvent>> =
@@ -1131,7 +1131,7 @@ module CommandHandler =
 
 
 
-type ShardFactoryWith<'T, 'TEvent, 'TCommand, 'TState
+type internal ShardFactoryWith<'T, 'TEvent, 'TCommand, 'TState
     when 'T: (static member ApplyEvent: Event<'TEvent> * 'TState -> 'TState)
     and 'T: (static member Init: IActor * string -> EntityFac<obj>)
     and 'TEvent: comparison
@@ -1139,15 +1139,15 @@ type ShardFactoryWith<'T, 'TEvent, 'TCommand, 'TState
     and 'T: (static member HandleCommand: Command<'TCommand> * 'TState -> EventAction<'TEvent>)> = 'T
 
 
-type ShardFactoryWithEnv<'T, 'TEnv, 'TEvent, 'TCommand, 'TState
+type internal ShardFactoryWithEnv<'T, 'TEnv, 'TEvent, 'TCommand, 'TState
     when 'T: (static member ApplyEvent: 'TEnv * Event<'TEvent> * 'TState -> 'TState)
     and 'T: (static member Init: 'TEnv * IActor * string -> EntityFac<obj>)
     and 'T: (static member Factory: 'TEnv * IActor -> (string -> IEntityRef<obj>))
     and 'T: (static member HandleCommand: 'TEnv * Command<'TCommand> * 'TState -> EventAction<'TEvent>)> = 'T
 
-type Handler<'Cmd, 'Event> = ('Event -> bool) -> CID -> AggregateId -> 'Cmd -> Async<'Event>
+type internal Handler<'Cmd, 'Event> = ('Event -> bool) -> CID -> AggregateId -> 'Cmd -> Async<'Event>
 
-module Curry =
+module internal Curry =
     let curry f x y = f (x, y)
 
     let uncurry f (x, y) = f x y
@@ -1159,7 +1159,7 @@ module Curry =
     let ofStatic3 (staticMember: 'a * 'b * 'c -> 'd) : 'a -> 'b -> 'c -> 'd = fun x y z -> staticMember (x, y, z)
 
 
-let inline commandHandler<'T, 'TEvent, 'TCommand, 'TState when ShardFactoryWith<'T, 'TEvent, 'TCommand, 'TState>>
+let inline internal commandHandler<'T, 'TEvent, 'TCommand, 'TState when ShardFactoryWith<'T, 'TEvent, 'TCommand, 'TState>>
     actorApi
     (eventFilter: 'TEvent -> bool)
     cid
@@ -1175,7 +1175,7 @@ let inline commandHandler<'T, 'TEvent, 'TCommand, 'TState when ShardFactoryWith<
     }
 
 
-let inline commandHandlerWithEnv<'T, 'TEnv, 'TEvent, 'TCommand, 'TState
+let inline internal commandHandlerWithEnv<'T, 'TEnv, 'TEvent, 'TCommand, 'TState
     when ShardFactoryWithEnv<'T, 'TEnv, 'TEvent, 'TCommand, 'TState>>
     env
     actorApi

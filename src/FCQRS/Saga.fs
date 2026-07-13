@@ -645,7 +645,7 @@ let private actorProp<'SagaData, 'State, 'TEvent when 'TEvent : not null and 'St
 
     set (None, false, false) initialState
 
-let init<'SagaData, 'State, 'TEvent when 'TEvent : not null and 'State : not null>
+let internal init<'SagaData, 'State, 'TEvent when 'TEvent : not null and 'State : not null>
     (actorApi: IActor)
     (initialState: SagaState<_, _>)
     (handleEvent: obj -> SagaState<'SagaData, 'State> -> EventAction<'State>)

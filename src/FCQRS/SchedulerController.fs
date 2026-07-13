@@ -6,7 +6,7 @@ open Akka.Actor // For IScheduler
 open Akka.TestKit // For ObservingScheduler
 open FCQRS.Scheduler
 // --- Agent Message and State Types ---
-type ControllerMessage =
+type internal ControllerMessage =
     | InitializeScheduler of obsScheduler: ObservingScheduler
     | WatchForTask of taskName: string // For manual pause and signal
     | RegisterAutoAdvanceOnAppearance of taskName: string // For automatic advance on appearance
@@ -15,7 +15,7 @@ type ControllerMessage =
     | InternalAdvancerTick
     | Stop // Optional: For gracefully stopping the agent
 
-type ControllerState = {
+type internal ControllerState = {
     Scheduler: ObservingScheduler option
     TaskToWatchFor: string option // Related to manual pause/signal
     CapturedTaskDetails: (string * TimeSpan) option // Related to manual pause/signal (name, delay)
