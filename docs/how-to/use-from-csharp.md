@@ -9,7 +9,14 @@ index: 7
 
 The model is identical to F#; the C# interop layer gives you typed entry points so you never touch an
 F# function value. Commands and events are **C# 15 `union` types** (the framework serializes them
-natively). Requires `net10.0`+ with `<LangVersion>preview</LangVersion>` for the `union` keyword.
+natively).
+
+> **Compiler requirement.** The `union` keyword is a preview language feature: you need `net10.0`+
+> with `<LangVersion>preview</LangVersion>` until C# 15 ships it as stable. The feature only affects
+> compilation — the compiled unions are ordinary structs, so the runtime and your deployment targets
+> need nothing special. If your team cannot enable a preview `LangVersion`, put the domain (commands,
+> events, aggregates, sagas) in a small F# project — that is the fully supported stable-compiler path
+> today — and keep the host, endpoints, and projections in C#.
 
 ## Commands and events as unions
 

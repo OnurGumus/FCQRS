@@ -15,7 +15,11 @@ how, and how messages are serialized underneath.
 
 The natural way to model a command or event type is a *closed set of alternatives*: a `Register` or a
 `Login`, never a third unnamed thing. F# has discriminated unions for exactly this. C# 15 adds the
-`union` keyword, and FCQRS treats those unions as first-class message types:
+`union` keyword, and FCQRS treats those unions as first-class message types. Note that `union` is
+still a **preview language feature** (`<LangVersion>preview</LangVersion>` on `net10.0`+) until C# 15
+ships — it affects only compilation, not the runtime. Teams that cannot enable a preview
+`LangVersion` should express the domain in a small F# project instead (see
+[Use FCQRS from C#](../how-to/use-from-csharp.html)):
 
 ```csharp
 public union UserCommand(UserCommand.Register, UserCommand.Login)
