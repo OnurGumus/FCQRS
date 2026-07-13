@@ -1,5 +1,29 @@
 # Changelog
 
+## 6.0.0-rc1
+Release candidate for 6.0.0 — the API is frozen from here barring rc-breaking
+bugs. All four packages (`FCQRS`, `FCQRS.Model`, `FCQRS.Serialization`,
+`FCQRS.SqlProvider`) align on this version.
+
+- **API-freeze cleanup** (breaking vs preview28, all on unused or obsolete
+  surface): removed the seven `[Obsolete]` C# shims (`AsyncExtensions`,
+  `Helpers`, `Results`, `StringTypes`, `IActorExtensions`,
+  `QueryApi.InitWithList`, nested `ISubscribeExtensions` — use the
+  namespace-level replacements); renamed `SagaCommands.To*Delayed` →
+  `To*After` to match the F# facade; internalized framework plumbing that was
+  never meant to be called (`ContinueOrAbort`/`AbortedEvent`, `SagaBuilder`
+  wrappers, `Saga.init`, HOCON config providers, scheduler internals,
+  `AkkaTimeProvider`, `Query.Internal`).
+- **FCQRS.Model cleanup**: `Validator.IsDegist` → `IsDigit`; removed the
+  mis-cased `ValueLens.Isvalid` duplicate, the mutable-singleton `isValid*`
+  helpers, and the unused `IQuery`/`DataEvent` module; `FreeMonad` moved from
+  the global namespace to `FCQRS.Model.FreeMonad`.
+- **New test coverage**: restart detection (the `ContinueOrAbort` version
+  handshake → `AbortedEvent`) is now exercised end to end across a
+  kill-and-reboot, alongside the existing saga-snapshot-recovery and
+  atomic-batch tests.
+- Includes everything from 6.0.0-preview28 below.
+
 ## 6.0.0-preview28
 - **Message-flow logging, on by default**: the command/event/saga narrative is
   now readable straight from the console, no tracing pipeline required. Every
