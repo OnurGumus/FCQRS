@@ -63,10 +63,13 @@ module public Serialization =
             | null -> failwithf "C# union type '%s' has no public 'Value' property" (typeKey t)
             | prop -> prop
         let cases =
-            t.GetConstructors()
+            // Non-public too: .NET 11 preview 6 allows a union declaration to use a
+            // non-public single-parameter constructor. A single-parameter ctor whose
+            // parameter is the union type itself is a copy constructor, not a case.
+            t.GetConstructors(BindingFlags.Public ||| BindingFlags.NonPublic ||| BindingFlags.Instance)
             |> Array.choose (fun ctor ->
                 match ctor.GetParameters() with
-                | [| p |] -> Some(p.ParameterType, ctor)
+                | [| p |] when p.ParameterType <> t -> Some(p.ParameterType, ctor)
                 | _ -> None)
         let ctorByCase = Dictionary<string, ConstructorInfo>()
         for caseType, ctor in cases do

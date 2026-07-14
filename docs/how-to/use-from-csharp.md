@@ -11,12 +11,19 @@ The model is identical to F#; the C# interop layer gives you typed entry points 
 F# function value. Commands and events are **C# 15 `union` types** (the framework serializes them
 natively).
 
-> **Compiler requirement.** The `union` keyword is a preview language feature: you need `net10.0`+
-> with `<LangVersion>preview</LangVersion>` until C# 15 ships it as stable. The feature only affects
-> compilation — the compiled unions are ordinary structs, so the runtime and your deployment targets
-> need nothing special. If your team cannot enable a preview `LangVersion`, put the domain (commands,
-> events, aggregates, sagas) in a small F# project — that is the fully supported stable-compiler path
-> today — and keep the host, endpoints, and projections in C#.
+> **Compiler requirement.** The `union` keyword is a preview language feature: use the .NET 11
+> preview SDK (preview 6 or later) with `<LangVersion>preview</LangVersion>` until C# 15 ships it as
+> stable. Since .NET 11 preview 6 the compiler support types (`UnionAttribute`, `IUnion`) ship in the
+> box when you target `net11.0`; on a `net10.0` target you must hand-author them. FCQRS packages ship
+> `net10.0` assets and run fine on `net11.0` hosts. If your team cannot enable a preview
+> `LangVersion`, put the domain (commands, events, aggregates, sagas) in a small F# project — that is
+> the fully supported stable-compiler path today — and keep the host, endpoints, and projections in C#.
+>
+> Note that .NET 11's System.Text.Json also serializes unions natively — but *caseless* (it writes
+> only the active case's value), which cannot disambiguate same-shaped cases in an event journal.
+> FCQRS's serializer therefore keeps its own explicit `{"$case": ..., "$value": ...}` format; it takes
+> precedence automatically and the journal format does not change on .NET 11 (verified against
+> preview 6).
 
 ## Commands and events as unions
 

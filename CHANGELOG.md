@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+- **.NET 11 preview 6 compatibility verified**: the in-box union support types
+  (`System.Runtime.CompilerServices.UnionAttribute`/`IUnion`) match FCQRS's
+  name-based detection, and FCQRS's `$case`-discriminated journal format takes
+  precedence over System.Text.Json 11's new caseless native union
+  serialization (same-shaped cases round-trip correctly; verified end to end
+  with a net11.0 consumer against the rc1 packages). Serializer hardening for
+  the preview 6 language rules: union case constructors may now be non-public,
+  so case discovery reflects non-public single-parameter constructors too
+  (copy constructors excluded). Ships with the next FCQRS.Serialization
+  publish.
+
 ## 6.0.0-rc1
 Release candidate for 6.0.0 — the API is frozen from here barring rc-breaking
 bugs. All four packages (`FCQRS`, `FCQRS.Model`, `FCQRS.Serialization`,
