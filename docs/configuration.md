@@ -130,6 +130,28 @@ Register them with your OpenTelemetry pipeline in one call:
 `tracing.AddSource(FCQRS.Common.Telemetry.AllActivitySources)`. Spans cost nothing until a listener
 is attached, so leaving this unwired is fine.
 
+Span **names** are low-cardinality case names — `Command:Register`, `Event:Registered`,
+`Saga:GeneratingCode`, `Abort:VerificationRequested` — never the payload values. That is what makes
+per-operation control work: on .NET 11 the `AddTracing` rules API can enable or disable a specific
+FCQRS operation from configuration without a redeploy, e.g.
+
+```csharp
+builder.Services.AddTracing(tracing =>
+{
+    tracing.EnableTracing(sourceName: "FCQRS.Saga");
+    tracing.DisableTracing(sourceName: "FCQRS", operationName: "Command:HealthPing");
+});
+```
+
+and trace viewers group and compute latency by operation correctly. It also means no payload value is
+ever written into an indexed span name.
+
+The **payload detail** — the full rendered message — rides in the span *tags* (`command.type` /
+`event.type`) and in the message-flow log lines, and is ON by default. For sensitive domains turn it
+off with `FCQRS.Common.Telemetry.IncludePayloads <- false` (or
+`builder.WithPayloadDiagnostics(false)`): tags and log lines then carry the case name only, matching
+the span name, while everything else about tracing and the flow log is unchanged.
+
 ## Scaling to a cluster
 
 Out of the box you get a single-node cluster — the process joins itself and sharding runs locally.

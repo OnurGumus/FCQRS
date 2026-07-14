@@ -487,7 +487,7 @@ let private actorProp<'SagaData, 'State, 'TEvent when 'TEvent : not null and 'St
                         flowLogger.LogInformation(
                             "Saga {Saga} scheduled command {Command} to {Target} (+{Delay}ms) [cid: {CID}]",
                             mailbox.Self.Path.Name,
-                            renderValue cmd.Command,
+                            payloadTag cmd.Command,
                             targetStr,
                             delayValue,
                             flowCid)
@@ -495,7 +495,7 @@ let private actorProp<'SagaData, 'State, 'TEvent when 'TEvent : not null and 'St
                         flowLogger.LogInformation(
                             "Saga {Saga} sent command {Command} to {Target} [cid: {CID}]",
                             mailbox.Self.Path.Name,
-                            renderValue cmd.Command,
+                            payloadTag cmd.Command,
                             targetStr,
                             flowCid)
 
@@ -595,8 +595,8 @@ let private actorProp<'SagaData, 'State, 'TEvent when 'TEvent : not null and 'St
                             flowLogger.LogInformation(
                                 "Saga {Saga} received {Event}, decided {Decision} [cid: {CID}]",
                                 mailbox.Self.Path.Name,
-                                renderPayload msg,
-                                renderValue state,
+                                logPayload msg,
+                                payloadTag state,
                                 flowCid)
 
                         match state with

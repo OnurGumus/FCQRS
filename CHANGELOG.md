@@ -1,6 +1,18 @@
 # Changelog
 
 ## Unreleased
+- **Low-cardinality span names + payload switch**: aggregate span names are now
+  the case name only (`Command:Register`, `Event:Registered`,
+  `Abort:VerificationRequested`) instead of embedding the rendered payload —
+  matching what saga spans already did. This makes .NET 11's rule-based
+  `AddTracing` API able to enable/disable a specific FCQRS operation, lets
+  trace viewers group and measure latency by operation, and stops payload
+  values (and any secret in them) from leaking into indexed span names. The
+  full payload still rides in the span tags (`command.type` / `event.type`)
+  and the message-flow log lines. New process-wide switch
+  `Telemetry.IncludePayloads` (default on) and
+  `FcqrsBuilder.WithPayloadDiagnostics(false)` reduce those tags and log lines
+  to the case name for sensitive domains; span names are unaffected either way.
 - **.NET 11 preview 6 compatibility verified**: the in-box union support types
   (`System.Runtime.CompilerServices.UnionAttribute`/`IUnion`) match FCQRS's
   name-based detection, and FCQRS's `$case`-discriminated journal format takes

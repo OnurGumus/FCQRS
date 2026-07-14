@@ -100,22 +100,20 @@ module internal Internal =
                     if activitySource.HasListeners() then
                         let eventCid = e.CorrelationId |> ValueLens.Value |> ValueLens.Value
 
-                        let eventType =
-                            match box e.EventDetails with
-                            | null -> "null"
-                            | details -> sprintf "%A" details
+                        let eventCase = caseNameOf (box e.EventDetails)
 
                         let act =
                             match tryTraceContext e.Metadata eventCid with
                             | Some parent ->
-                                activitySource.StartActivity($"Abort:{eventType}", ActivityKind.Internal, parent)
-                            | None -> activitySource.StartActivity($"Abort:{eventType}", ActivityKind.Internal)
+                                activitySource.StartActivity($"Abort:{eventCase}", ActivityKind.Internal, parent)
+                            | None -> activitySource.StartActivity($"Abort:{eventCase}", ActivityKind.Internal)
 
                         match act with
                         | null -> ()
                         | act ->
                             act.SetTag("cid", eventCid) |> ignore
                             act.SetTag("actor", mailbox.Self.Path.Name) |> ignore
+                            act.SetTag("event.type", payloadTag (box e.EventDetails)) |> ignore
                             act.SetTag("version.current", currentVersion) |> ignore
                             act.SetTag("version.event", eventVersion) |> ignore
 
@@ -153,7 +151,7 @@ module internal Internal =
                     flowLogger.LogInformation(
                         "Aggregate {Aggregate} applied deferred event {Event} (not persisted) [cid: {CID}]",
                         mailbox.Self.Path.Name,
-                        renderPayload event,
+                        logPayload event,
                         event.CorrelationId |> ValueLens.Value |> ValueLens.Value)
 
                 let state = applyChecked event (state.State)
@@ -172,7 +170,7 @@ module internal Internal =
                     flowLogger.LogInformation(
                         "Aggregate {Aggregate} persisted event {Event} (v{Version}) [cid: {CID}]",
                         mailbox.Self.Path.Name,
-                        renderPayload event,
+                        logPayload event,
                         versionN,
                         event.CorrelationId |> ValueLens.Value |> ValueLens.Value)
 
@@ -180,23 +178,20 @@ module internal Internal =
                     if activitySource.HasListeners() then
                         let eventCid = event.CorrelationId |> ValueLens.Value |> ValueLens.Value
 
-                        let eventType =
-                            match box event.EventDetails with
-                            | null -> "null"
-                            | details -> sprintf "%A" details
+                        let eventCase = caseNameOf (box event.EventDetails)
 
                         let act =
                             match tryTraceContext event.Metadata eventCid with
                             | Some parent ->
-                                activitySource.StartActivity($"Event:{eventType}", ActivityKind.Internal, parent)
-                            | None -> activitySource.StartActivity($"Event:{eventType}", ActivityKind.Internal)
+                                activitySource.StartActivity($"Event:{eventCase}", ActivityKind.Internal, parent)
+                            | None -> activitySource.StartActivity($"Event:{eventCase}", ActivityKind.Internal)
 
                         match act with
                         | null -> ()
                         | act ->
                             act.SetTag("cid", eventCid) |> ignore
                             act.SetTag("actor", mailbox.Self.Path.Name) |> ignore
-                            act.SetTag("event.type", eventType) |> ignore
+                            act.SetTag("event.type", payloadTag (box event.EventDetails)) |> ignore
                             act.SetTag("version", versionN) |> ignore
 
                         act
@@ -361,23 +356,20 @@ module internal Internal =
                             if activitySource.HasListeners() then
                                 let cmdCid = cmd.CorrelationId |> ValueLens.Value |> ValueLens.Value
 
-                                let cmdType =
-                                    match box cmd.CommandDetails with
-                                    | null -> "null"
-                                    | details -> sprintf "%A" details
+                                let cmdCase = caseNameOf (box cmd.CommandDetails)
 
                                 let act =
                                     match tryTraceContext cmd.Metadata cmdCid with
                                     | Some parent ->
-                                        activitySource.StartActivity($"Command:{cmdType}", ActivityKind.Internal, parent)
-                                    | None -> activitySource.StartActivity($"Command:{cmdType}", ActivityKind.Internal)
+                                        activitySource.StartActivity($"Command:{cmdCase}", ActivityKind.Internal, parent)
+                                    | None -> activitySource.StartActivity($"Command:{cmdCase}", ActivityKind.Internal)
 
                                 match act with
                                 | null -> ()
                                 | act ->
                                     act.SetTag("cid", cmdCid) |> ignore
                                     act.SetTag("actor", mailbox.Self.Path.Name) |> ignore
-                                    act.SetTag("command.type", cmdType) |> ignore
+                                    act.SetTag("command.type", payloadTag (box cmd.CommandDetails)) |> ignore
                                     act.SetTag("version", state.Version |> ValueLens.Value) |> ignore
 
                                 act
@@ -402,10 +394,10 @@ module internal Internal =
                         if messageFlowEnabled flowLogger then
                             flowLogger.LogInformation(
                                 "Command {Command} to aggregate {Aggregate} (v{Version}) yielded {Effect} [cid: {CID}]",
-                                renderPayload cmd,
+                                logPayload cmd,
                                 mailbox.Self.Path.Name,
                                 state.Version |> ValueLens.Value,
-                                renderValue effect,
+                                payloadTag effect,
                                 cmd.CorrelationId |> ValueLens.Value |> ValueLens.Value)
 
                         match activity with

@@ -443,13 +443,21 @@ let private manualSnapshotTest =
         api.Stop().Wait(TimeSpan.FromSeconds 30.0) |> ignore
 
 let private telemetryTest =
-    testCase "facade: spans flow command -> event -> projection under the caller's trace"
+    testCase "facade: spans flow command -> event -> projection under the caller's trace, with low-cardinality names"
     <| fun _ ->
-        let captured = Collections.Concurrent.ConcurrentBag<string * ActivityTraceId>()
+        // Capture each span's name, trace id, and the payload tag it carried.
+        let captured =
+            Collections.Concurrent.ConcurrentBag<string * ActivityTraceId * (obj | null)>()
         use listener = new ActivityListener()
         listener.ShouldListenTo <- fun src -> Array.contains src.Name Telemetry.AllActivitySources
         listener.Sample <- SampleActivity<ActivityContext>(fun _ -> ActivitySamplingResult.AllDataAndRecorded)
-        listener.ActivityStopped <- fun a -> captured.Add((a.OperationName, a.TraceId))
+        listener.ActivityStopped <-
+            fun a ->
+                let payloadTag =
+                    match a.GetTagItem "command.type" with
+                    | null -> a.GetTagItem "event.type"
+                    | t -> t
+                captured.Add((a.OperationName, a.TraceId, payloadTag))
         ActivitySource.AddActivityListener listener
 
         let counter, _subs = boot ()
@@ -469,16 +477,62 @@ let private telemetryTest =
         // Spans are emitted on actor/stream threads; the projection one is last.
         let mutable attempts = 0
 
-        let has (prefix: string) =
-            captured |> Seq.exists (fun (name, tid) -> name.StartsWith prefix && tid = root.TraceId)
+        let named (name: string) =
+            captured |> Seq.exists (fun (n, tid, _) -> n = name && tid = root.TraceId)
 
-        while not (has "Command:" && has "Event:" && has "Projection:") && attempts < 40 do
+        while not (named "Command:Increment" && named "Event:Incremented"
+                   && (captured |> Seq.exists (fun (n, tid, _) -> n.StartsWith "Projection:" && tid = root.TraceId)))
+              && attempts < 40 do
             attempts <- attempts + 1
             Threading.Thread.Sleep 250
 
-        Expect.isTrue (has "Command:") "a Command span carries the caller's TraceId"
-        Expect.isTrue (has "Event:") "an Event span carries the caller's TraceId"
-        Expect.isTrue (has "Projection:") "a Projection span carries the caller's TraceId"
+        // Span NAMES are exactly the case name — no field values, so per-operation
+        // tracing rules (AddTracing) and trace-viewer grouping work, and no payload
+        // leaks into an indexed span name.
+        Expect.isTrue (named "Command:Increment") "Command span is named by case only (no payload)"
+        Expect.isTrue (named "Event:Incremented") "Event span is named by case only (no payload)"
+
+        // The payload detail still rides in the tag (IncludePayloads defaults on).
+        let commandTag =
+            captured
+            |> Seq.tryPick (fun (n, _, tag) -> if n = "Command:Increment" then Option.ofObj tag else None)
+        Expect.equal (commandTag |> Option.map string) (Some "Increment 7")
+            "the command.type tag carries the full payload by default"
+
+let private payloadSwitchTest =
+    testCase "facade: WithPayloadDiagnostics(off) reduces span tags to the case name"
+    <| fun _ ->
+        let captured = Collections.Concurrent.ConcurrentBag<string * (obj | null)>()
+        use listener = new ActivityListener()
+        listener.ShouldListenTo <- fun src -> src.Name = Telemetry.ActivitySourceName
+        listener.Sample <- SampleActivity<ActivityContext>(fun _ -> ActivitySamplingResult.AllDataAndRecorded)
+        listener.ActivityStopped <- fun a -> captured.Add((a.OperationName, a.GetTagItem "command.type"))
+        ActivitySource.AddActivityListener listener
+
+        // Global switch — restore it no matter what so the rest of the suite is
+        // unaffected (tests run sequenced).
+        Telemetry.IncludePayloads <- false
+        try
+            let counter, _subs = boot ()
+            counter.Send (Fcqrs.newCid ()) (Fcqrs.aggregateId "redacted") (Counter.Increment 42)
+                (function Counter.Incremented _ -> true | _ -> false)
+            |> Async.RunSynchronously
+            |> ignore
+
+            let mutable attempts = 0
+            let commandTag () =
+                captured
+                |> Seq.tryPick (fun (n, tag) -> if n = "Command:Increment" then Some(Option.ofObj tag) else None)
+            while (commandTag ()).IsNone && attempts < 40 do
+                attempts <- attempts + 1
+                Threading.Thread.Sleep 250
+
+            // Name unchanged (always low-cardinality); tag is now the case name,
+            // NOT "Increment 42" — the value 42 never reaches the tag.
+            Expect.equal (commandTag () |> Option.flatten |> Option.map string) (Some "Increment")
+                "with payloads off, command.type is the case name only"
+        finally
+            Telemetry.IncludePayloads <- true
 
 let private overflowTest =
     testCase "facade: unconsumed notifications overflow by dropping, not crashing"
@@ -604,7 +658,7 @@ let private persistIfTest =
 
 let tests =
     testSequenced (
-        testList "facade" [ manifestTest; roundTripTest; persistAllTest; manualSnapshotTest; telemetryTest; overflowTest; snapshotRecoveryTest; restartDetectionTest; filteredProjectionTest; persistIfTest ]
+        testList "facade" [ manifestTest; roundTripTest; persistAllTest; manualSnapshotTest; telemetryTest; payloadSwitchTest; overflowTest; snapshotRecoveryTest; restartDetectionTest; filteredProjectionTest; persistIfTest ]
     )
 
 [<EntryPoint>]

@@ -134,6 +134,15 @@ type FcqrsBuilder internal (services: IServiceCollection, connectionString: stri
         Telemetry.MessageFlowLogging <- enabled
         this
 
+    /// Whether message *payloads* appear in diagnostics detail — the span tags
+    /// (command.type / event.type) and the message-flow log lines. ON by
+    /// default. Span *names* are always low-cardinality case names regardless,
+    /// so this never affects tracing rules or grouping. Turn it off for
+    /// sensitive domains: tags and log lines then carry the case name only.
+    member this.WithPayloadDiagnostics(enabled: bool) : FcqrsBuilder =
+        Telemetry.IncludePayloads <- enabled
+        this
+
     member internal _.AkkaLogging = akkaLogging
 
     member internal _.EffectiveSnapshotPolicy(entityPolicy: SnapshotPolicy) : SnapshotPolicy =

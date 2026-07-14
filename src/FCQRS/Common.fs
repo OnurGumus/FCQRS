@@ -275,6 +275,21 @@ type Telemetry =
     /// Process-wide switch for the message-flow narrative logs. Default: on.
     static member val MessageFlowLogging: bool = true with get, set
 
+    /// Process-wide switch for including rendered message *payloads* in
+    /// diagnostics. Default: on.
+    ///
+    /// Span *names* are always low-cardinality case names (e.g. "Command:Register")
+    /// regardless of this switch — payload values never appear there, so
+    /// per-operation tracing rules and trace-viewer grouping always work, and
+    /// nothing sensitive leaks into the indexed span name.
+    ///
+    /// This switch governs the *detail*: the payload rendered into span tags
+    /// (command.type / event.type) and into the message-flow log lines. Turn it
+    /// off (Telemetry.IncludePayloads &lt;- false, or
+    /// FcqrsBuilder.WithPayloadDiagnostics(false)) for sensitive domains — tags
+    /// and log lines then carry the case name only, matching the span name.
+    static member val IncludePayloads: bool = true with get, set
+
     /// Optional hook invoked right before FCQRS kills the process on a fatal
     /// error. FailFast skips finalizers and ProcessExit handlers, so without
     /// this everything still sitting in a batch exporter or buffered log sink
@@ -325,12 +340,11 @@ let internal renderValue (value: obj | null) : string =
     else
         s
 
-/// (Internal) Render a message for the flow narrative: unwrap the Command/Event
-/// envelope to its domain payload (the envelope's CID/version are logged as
-/// separate properties), fall back to %A on the whole message.
-let internal renderPayload (msg: obj | null) : string =
+/// (Internal) Unwrap a Command/Event envelope to its domain payload; a no-op
+/// (returns the value itself) for anything that is not an envelope.
+let internal detailsOf (msg: obj | null) : obj | null =
     match msg with
-    | null -> "null"
+    | null -> null
     | msg ->
         let t = msg.GetType()
 
@@ -340,8 +354,48 @@ let internal renderPayload (msg: obj | null) : string =
             | p -> p
 
         match detailsProp with
-        | null -> renderValue msg
-        | p -> renderValue (p.GetValue msg)
+        | null -> msg
+        | p -> p.GetValue msg
+
+/// (Internal) Render a message for the flow narrative: unwrap the Command/Event
+/// envelope to its domain payload (the envelope's CID/version are logged as
+/// separate properties), fall back to %A on the whole message.
+let internal renderPayload (msg: obj | null) : string = renderValue (detailsOf msg)
+
+/// (Internal) Low-cardinality case name of a domain payload: the F# DU case
+/// name, the active case of a C# 15 union (the runtime type of its generated
+/// .Value), or the plain type name. Never includes field values — this is what
+/// goes into span names, so per-operation tracing rules and trace grouping work
+/// and no payload/secret is written to an indexed span name.
+let internal caseNameOf (value: obj | null) : string =
+    match value with
+    | null -> "null"
+    | v ->
+        let t = v.GetType()
+        if Microsoft.FSharp.Reflection.FSharpType.IsUnion t then
+            let case, _ = Microsoft.FSharp.Reflection.FSharpValue.GetUnionFields(v, t)
+            case.Name
+        else
+            // C# 15 union: unwrap the active case via its generated .Value, then
+            // take that case's type name. A no-op for a plain payload type.
+            match t.GetProperty "Value" with
+            | null -> t.Name
+            | prop ->
+                match prop.GetValue v with
+                | null -> t.Name
+                | inner when obj.ReferenceEquals(inner, v) -> t.Name
+                | inner -> inner.GetType().Name
+
+/// (Internal) A raw value rendered for a span *tag* or flow-log line, honoring
+/// the IncludePayloads switch: full rendering when on, the bare case name when
+/// off. Span *names* never use this — they are always caseNameOf.
+let internal payloadTag (value: obj | null) : string =
+    if Telemetry.IncludePayloads then renderValue value else caseNameOf value
+
+/// (Internal) A Command/Event message rendered for a flow-log line, honoring the
+/// IncludePayloads switch: full payload when on, the domain payload's case name
+/// when off (the envelope is unwrapped either way).
+let internal logPayload (msg: obj | null) : string = payloadTag (detailsOf msg)
 
 /// (Internal) Fatal-path exit. Marks the in-flight span(s) failed and disposed
 /// (queueing them for export), gives the host's Telemetry.FatalFlush a bounded
