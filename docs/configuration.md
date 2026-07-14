@@ -88,69 +88,16 @@ and pass the result as the `config` argument.
 
 ## Logging and diagnostics
 
-**The message-flow log is on by default.** From `6.0.0-preview28`, FCQRS narrates your application's
-messages at `Information` level — no tracing pipeline required. Every aggregate command logs the
-effect it yielded, every persisted event logs its new version, and sagas log each event they pick up,
-each state transition, and each command they send (with target and delay). Every line carries the
-correlation ID, so grepping for one CID replays an entire workflow:
+FCQRS emits a plain-text **message-flow log** (on by default) and **distributed traces** out of the
+box, both on the standard .NET abstractions. The full story — the `FCQRS.MessageFlow` category and its
+switch, registering the trace sources, low-cardinality span names and the .NET 11 `AddTracing` rules,
+keeping payloads out of diagnostics, and the fatal-flush hook — lives in
+[Observe your system](how-to/observability.html).
 
-```text
-info: FCQRS.MessageFlow
-      Command Register ("alice", "pw") to aggregate alice (v0) yielded PersistEvent (VerificationRequested ...) [cid: 00-...]
-info: FCQRS.MessageFlow
-      Aggregate alice persisted event VerificationRequested ("alice", "pw") (v1) [cid: 00-...]
-info: FCQRS.MessageFlow
-      Saga alice~Saga~00-... received VerificationRequested ("alice", "pw"), decided StateChangedEvent (UserDefined GeneratingCode) [cid: 00-...]
-info: FCQRS.MessageFlow
-      Saga alice~Saga~00-... changed state to GeneratingCode [cid: 00-...]
-info: FCQRS.MessageFlow
-      Saga alice~Saga~00-... sent command SetVerificationCode "327470" to alice [cid: 00-...]
-```
-
-These are your application's messages, not FCQRS internals, so the switch lives in FCQRS rather than
-only in logging configuration. Turn it off process-wide:
-
-```fsharp
-FCQRS.Common.Telemetry.MessageFlowLogging <- false
-```
-
-or, with the C# hosting builder, `builder.WithMessageFlowLogging(false)`. All lines go to the
-dedicated **`FCQRS.MessageFlow`** logger category, so standard filtering also works — for example
-`"Logging:LogLevel:FCQRS.MessageFlow": "None"` in `appsettings.json` — and when the category is
-filtered out (or the switch is off) the log lines are never even formatted.
-
-**Akka's own logging ships OFF** — it is chatty, and FCQRS's logs (including the message flow) go
-through your `ILoggerFactory` regardless. To see Akka's internals, use
+The one piece that is pure configuration: **Akka's own logging ships OFF** (it is chatty; FCQRS's own
+logs go through your `ILoggerFactory` regardless). Enable Akka internals with
 `builder.WithAkkaLogging(AkkaLogLevel.Info)` from the hosting builder, or set `config:akka:loglevel`
-in configuration.
-
-**Distributed traces** are emitted alongside the logs: aggregates, sagas, and the projection each
-have an `ActivitySource`, and spans parent onto whatever trace was current when the command was sent.
-Register them with your OpenTelemetry pipeline in one call:
-`tracing.AddSource(FCQRS.Common.Telemetry.AllActivitySources)`. Spans cost nothing until a listener
-is attached, so leaving this unwired is fine.
-
-Span **names** are low-cardinality case names — `Command:Register`, `Event:Registered`,
-`Saga:GeneratingCode`, `Abort:VerificationRequested` — never the payload values. That is what makes
-per-operation control work: on .NET 11 the `AddTracing` rules API can enable or disable a specific
-FCQRS operation from configuration without a redeploy, e.g.
-
-```csharp
-builder.Services.AddTracing(tracing =>
-{
-    tracing.EnableTracing(sourceName: "FCQRS.Saga");
-    tracing.DisableTracing(sourceName: "FCQRS", operationName: "Command:HealthPing");
-});
-```
-
-and trace viewers group and compute latency by operation correctly. It also means no payload value is
-ever written into an indexed span name.
-
-The **payload detail** — the full rendered message — rides in the span *tags* (`command.type` /
-`event.type`) and in the message-flow log lines, and is ON by default. For sensitive domains turn it
-off with `FCQRS.Common.Telemetry.IncludePayloads <- false` (or
-`builder.WithPayloadDiagnostics(false)`): tags and log lines then carry the case name only, matching
-the span name, while everything else about tracing and the flow log is unchanged.
+in your `IConfiguration`.
 
 ## Scaling to a cluster
 

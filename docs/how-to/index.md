@@ -17,3 +17,4 @@ if you don't, the [Concepts](../concepts/index.html) section explains the why, a
 - **[Configure the database](configure-the-database.html)** — pick a provider; HOCON is optional.
 - **[Test your domain](test-your-domain.html)** — unit-test decisions and folds without Akka.
 - **[Use FCQRS from C#](use-from-csharp.html)** — the same model with C# 15 unions.
+- **[Observe your system](observability.html)** — the message-flow log, distributed traces, and keeping payloads out.
