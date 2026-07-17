@@ -1,6 +1,18 @@
 # Changelog
 
 ## Unreleased
+- **FCQRS.ExpectoTickSpec joins the 6.0 wave (breaking)**: `FeatureTest` now
+  takes the consumer's `Assembly` explicitly —
+  `createTest (assembly: Assembly) (resourcePrefix: string) (baseFeatureName: string)`
+  (previously the first string parameter doubled as the resource prefix and the
+  assembly was resolved via `GetExecutingAssembly()`). As a compiled package
+  the old resolution bound to the library itself, scanning an assembly with no
+  step definitions — which is why consumers had to vendor the source file to
+  use it at all. `StepDefinitions` are now cached per assembly, the project
+  carries package metadata at 6.0.0-rc1, and ci.yaml packs/publishes it with
+  the other packages. A cross-assembly regression test (`bridge.feature` +
+  steps in Facade.Tests, driven through the referenced library) pins the fix.
+  The `_` name-prefix focus behavior (ftestList/ftestCase) is unchanged.
 - **Low-cardinality span names + payload switch**: aggregate span names are now
   the case name only (`Command:Register`, `Event:Registered`,
   `Abort:VerificationRequested`) instead of embedding the rendered payload —

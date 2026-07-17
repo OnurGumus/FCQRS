@@ -656,9 +656,15 @@ let private persistIfTest =
         Expect.equal (persistIf true e) (PersistEvent e) "true -> PersistEvent"
         Expect.equal (persistIf false e) (DeferEvent e) "false -> DeferEvent"
 
+/// ExpectoTickSpec bridge: the feature resource and its steps live in THIS
+/// assembly, so this test fails if the bridge ever resolves steps against its
+/// own assembly instead of the one it is handed.
+let private bridgeTest =
+    FCQRS.ExpectoTickSpec.FeatureTest.createTest (Reflection.Assembly.GetExecutingAssembly()) "Facade" "bridge"
+
 let tests =
     testSequenced (
-        testList "facade" [ manifestTest; roundTripTest; persistAllTest; manualSnapshotTest; telemetryTest; payloadSwitchTest; overflowTest; snapshotRecoveryTest; restartDetectionTest; filteredProjectionTest; persistIfTest ]
+        testList "facade" [ manifestTest; roundTripTest; persistAllTest; manualSnapshotTest; telemetryTest; payloadSwitchTest; overflowTest; snapshotRecoveryTest; restartDetectionTest; filteredProjectionTest; persistIfTest; bridgeTest ]
     )
 
 [<EntryPoint>]

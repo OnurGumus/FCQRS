@@ -45,7 +45,7 @@ jobs:
         run: dotnet tool restore
       - name: Pack
         run: |
-          for proj in src/FCQRS.Model src/FCQRS.Serialization src/FCQRS.SQLProvider src/FCQRS; do
+          for proj in src/FCQRS.Model src/FCQRS.Serialization src/FCQRS.SQLProvider src/FCQRS src/FCQRS.ExpectoTickSpec; do
             dotnet pack "$proj" -c Release -o ./nupkgs
           done
       # Trusted Publishing: exchanges the workflow's OIDC identity for a
@@ -60,7 +60,7 @@ jobs:
       - name: Push (dependency order, skip already-published versions)
         run: |
           shopt -s nullglob
-          for id in FCQRS.Model FCQRS.Serialization FCQRS.SqlProvider FCQRS; do
+          for id in FCQRS.Model FCQRS.Serialization FCQRS.SqlProvider FCQRS FCQRS.ExpectoTickSpec; do
             for pkg in ./nupkgs/$id.[0-9]*.nupkg; do
               case "$pkg" in *symbols*) continue ;; esac
               echo "pushing $pkg"

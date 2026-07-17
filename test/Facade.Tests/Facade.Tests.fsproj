@@ -10,14 +10,21 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Include="BridgeSteps.fs" />
     <Compile Include="Tests.fs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="bridge.feature" LogicalName="Facade.bridge.feature" />
   </ItemGroup>
 
   <!-- Smoke-tests the FCQRS.FSharp facade end to end against the current source. -->
   <ItemGroup>
     <ProjectReference Include="..\..\src\FCQRS\FCQRS.fsproj" />
     <ProjectReference Include="..\..\src\FCQRS.Model\FCQRS.Model.fsproj" />
+    <ProjectReference Include="..\..\src\FCQRS.ExpectoTickSpec\FCQRS.ExpectoTickSpec.fsproj" />
     <PackageReference Include="Expecto" Version="10.*" />
+    <PackageReference Include="TickSpec" Version="2.*" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.*" />
   </ItemGroup>
 
