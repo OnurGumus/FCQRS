@@ -1,6 +1,20 @@
 # Changelog
 
 ## Unreleased
+- **FCQRS.ExpectoTickSpec 6.0.0-rc2 — Gherkin `@focus` / `@pending` tags**:
+  focus and pending are now tag-driven (TickSpec merges feature- and
+  rule-level tags into every scenario, so the tags work at any level) —
+  `@focus` maps to Expecto Focused, `@pending` to Pending, and `@pending`
+  wins when both apply. A feature whose scenarios are all pending (e.g. one
+  `@pending` above `Feature:`) is built from parsed SOURCE without binding
+  steps, so specs written ahead of their implementation join the suite as
+  pending scenarios instead of failing step binding (scenario-level
+  `@pending` still requires the file's other steps to bind). The legacy `_`
+  name-prefix focus remains, though note it cannot match TickSpec scenario
+  names (they carry the `Scenario: ` prefix) — tags are the reliable form.
+  Covered in Facade.Tests by a pending scenario with a deliberately wrong
+  expectation, a fully-unbound pending feature, and a focus tree-shape
+  assertion.
 - **FCQRS.ExpectoTickSpec joins the 6.0 wave (breaking)**: `FeatureTest` now
   takes the consumer's `Assembly` explicitly —
   `createTest (assembly: Assembly) (resourcePrefix: string) (baseFeatureName: string)`

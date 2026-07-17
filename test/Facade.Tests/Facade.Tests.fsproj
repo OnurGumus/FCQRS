@@ -16,6 +16,8 @@
 
   <ItemGroup>
     <EmbeddedResource Include="bridge.feature" LogicalName="Facade.bridge.feature" />
+    <EmbeddedResource Include="pending.feature" LogicalName="Facade.pending.feature" />
+    <EmbeddedResource Include="focused.feature" LogicalName="Facade.focused.feature" />
   </ItemGroup>
 
   <!-- Smoke-tests the FCQRS.FSharp facade end to end against the current source. -->

@@ -10,3 +10,9 @@ Feature: ExpectoTickSpec bridge
       Given a counter starting at 40
       When 2 is added
       Then the counter shows 42
+
+    @pending
+    Scenario: A pending scenario is reported, never run
+      Given a counter starting at 1
+      When 41 is added
+      Then the counter shows 999

@@ -658,13 +658,39 @@ let private persistIfTest =
 
 /// ExpectoTickSpec bridge: the feature resource and its steps live in THIS
 /// assembly, so this test fails if the bridge ever resolves steps against its
-/// own assembly instead of the one it is handed.
+/// own assembly instead of the one it is handed. Its @pending scenario has a
+/// deliberately WRONG expectation (999), so it fails loudly if pending ever
+/// executes instead of skipping.
 let private bridgeTest =
     FCQRS.ExpectoTickSpec.FeatureTest.createTest (Reflection.Assembly.GetExecutingAssembly()) "Facade" "bridge"
 
+/// Feature-level @pending: built from parsed source only — its steps do not
+/// exist anywhere, so this line THROWING is the regression (binding ran).
+let private pendingBridgeTest =
+    FCQRS.ExpectoTickSpec.FeatureTest.createTest (Reflection.Assembly.GetExecutingAssembly()) "Facade" "pending"
+
+/// @focus maps to Expecto Focused. The focused tree is only INSPECTED — never
+/// registered — so it cannot skip the real suite.
+let private focusShapeTest =
+    testCase "bridge: @focus tag maps to Expecto Focused"
+    <| fun _ ->
+        let tree =
+            FCQRS.ExpectoTickSpec.FeatureTest.createTest (Reflection.Assembly.GetExecutingAssembly()) "Facade" "focused"
+
+        let rec states t =
+            match t with
+            | TestCase(_, s) -> [ s ]
+            | TestList(ts, _) -> ts |> List.collect states
+            | TestLabel(_, inner, _) -> states inner
+            | Test.Sequenced(_, inner) -> states inner
+
+        let ss = states tree
+        Expect.contains ss Focused "the @focus scenario is Focused"
+        Expect.contains ss Normal "the untagged scenario stays Normal"
+
 let tests =
     testSequenced (
-        testList "facade" [ manifestTest; roundTripTest; persistAllTest; manualSnapshotTest; telemetryTest; payloadSwitchTest; overflowTest; snapshotRecoveryTest; restartDetectionTest; filteredProjectionTest; persistIfTest; bridgeTest ]
+        testList "facade" [ manifestTest; roundTripTest; persistAllTest; manualSnapshotTest; telemetryTest; payloadSwitchTest; overflowTest; snapshotRecoveryTest; restartDetectionTest; filteredProjectionTest; persistIfTest; bridgeTest; pendingBridgeTest; focusShapeTest ]
     )
 
 [<EntryPoint>]
