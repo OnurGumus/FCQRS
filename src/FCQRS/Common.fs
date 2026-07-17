@@ -144,6 +144,26 @@ type Event<'EventDetails when 'EventDetails : not null> =
         // so the boxed value is never null — assert it at the boundary.
         member this.Payload = nonNull (box this.EventDetails)
 
+/// Metadata key stamped onto DELIVERED aggregate event envelopes: "true" when
+/// the event was journaled (PersistEvent family), "false" when it was a
+/// deferred or publish-only reply. Only the outbound copy is stamped — the
+/// journal record stays clean — so read-your-writes callers can tell whether
+/// a projection event will ever follow this ack.
+[<Literal>]
+let JournaledMetadataKey = "fcqrs:journaled"
+
+type Event<'EventDetails when 'EventDetails : not null> with
+    /// Whether this envelope's event was journaled, read from the delivery
+    /// stamp: Some true (a projection event will follow), Some false (a
+    /// deferred/publish-only reply — nothing to await), or None (an envelope
+    /// that never passed through aggregate delivery, e.g. read back from the
+    /// journal, or produced by a pre-stamp FCQRS).
+    member this.Journaled: bool option =
+        match this.Metadata.TryFind JournaledMetadataKey with
+        | Some "true" -> Some true
+        | Some "false" -> Some false
+        | _ -> None
+
 [<Literal>]
 let DEFAULT_SHARD = "default-shard"
 // Internal types related to saga flow control

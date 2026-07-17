@@ -259,3 +259,30 @@ module Fcqrs =
     /// Register the read-model projection and return the subscription stream.
     let projection (api: IActor) (p: Projection) : FCQRS.Query.ISubscribe =
         FCQRS.Query.init api p.LastOffset p.Handle |> FCQRS.Query.asDefaultSubscribe
+
+    /// Read-your-writes in one call: subscribe on the CID BEFORE sending, send,
+    /// then await the projection ONLY if the delivered ack was journaled — a
+    /// deferred (rejection-style) ack never reaches the journal, so a naive
+    /// await would hang until timeout. The subscribe-before-send ordering is
+    /// what makes the wait race-free; owning it here means callers cannot get
+    /// it backwards. Awaits exactly ONE projected event: a batch persist
+    /// (PersistAllEvents) caller should Subscribe with an explicit take
+    /// instead. Envelopes without the delivery stamp (pre-stamp FCQRS) are
+    /// treated as journaled.
+    let sendAwaiting
+        (subscription: FCQRS.Query.ISubscribe<FCQRS.Model.Data.IMessageWithCID>)
+        (handle: AggregateHandle<'Command, 'Event>)
+        (cid: CID)
+        (id: AggregateId)
+        (command: 'Command)
+        (filter: 'Event -> bool)
+        : Async<Event<'Event>> =
+        async {
+            use awaiter = subscription.Subscribe(cid, 1)
+            let! evt = handle.Send cid id command filter
+
+            if evt.Journaled <> Some false then
+                do! awaiter.Task |> Async.AwaitTask
+
+            return evt
+        }

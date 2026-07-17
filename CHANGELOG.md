@@ -1,6 +1,33 @@
 # Changelog
 
-## Unreleased
+## 6.0.0-rc2 (FCQRS core + FCQRS.ExpectoTickSpec)
+- **Delivery stamp: journaled vs deferred acks are now distinguishable**:
+  aggregate delivery stamps `fcqrs:journaled` = `true`/`false` into the
+  Metadata of every OUTBOUND event envelope (the CID-correlated ack and the
+  saga/mediator publish) — `true` for persisted events, `false` for
+  deferred/publish-only replies. Only the delivered copy is stamped; the
+  journal record stays clean. New `Event.Journaled: bool option` reads it
+  (`None` for envelopes that never passed aggregate delivery, e.g. journal
+  reads or pre-stamp senders). This closes the gap where read-your-writes
+  callers could not tell whether a projection event would ever follow an
+  ack — a deferred rejection awaited naively hangs until timeout.
+- **`Fcqrs.sendAwaiting` — read-your-writes as one call**: subscribes on the
+  CID before sending (the ordering that makes the wait race-free), sends,
+  and awaits the projection only if the ack was journaled. Kills the
+  per-call-site "was this persisted?" predicates consumers had to write, and
+  makes the safe subscribe-before-send ordering impossible to get backwards.
+  Awaits exactly one projected event; batch persists should Subscribe with
+  an explicit take. Covered in Facade.Tests: persisted acks stamp true with
+  the read model consistent on return, deferred acks stamp false and return
+  without any phantom wait.
+- **Low-cardinality span names + payload switch** (was Unreleased; ships in
+  core rc2): aggregate span names are the case name only
+  (`Command:Register`, `Event:Registered`, `Abort:VerificationRequested`),
+  matching saga spans — .NET 11 rule-based `AddTracing` can target specific
+  FCQRS operations, trace viewers group by operation, and payload values
+  stop leaking into indexed span names (payloads still ride in span tags and
+  message-flow logs). Process-wide `Telemetry.IncludePayloads` switch and
+  `FcqrsBuilder.WithPayloadDiagnostics(false)` for sensitive domains.
 - **FCQRS.ExpectoTickSpec 6.0.0-rc2 — Gherkin `@focus` / `@pending` tags**:
   focus and pending are now tag-driven (TickSpec merges feature- and
   rule-level tags into every scenario, so the tags work at any level) —
@@ -27,18 +54,8 @@
   the other packages. A cross-assembly regression test (`bridge.feature` +
   steps in Facade.Tests, driven through the referenced library) pins the fix.
   The `_` name-prefix focus behavior (ftestList/ftestCase) is unchanged.
-- **Low-cardinality span names + payload switch**: aggregate span names are now
-  the case name only (`Command:Register`, `Event:Registered`,
-  `Abort:VerificationRequested`) instead of embedding the rendered payload —
-  matching what saga spans already did. This makes .NET 11's rule-based
-  `AddTracing` API able to enable/disable a specific FCQRS operation, lets
-  trace viewers group and measure latency by operation, and stops payload
-  values (and any secret in them) from leaking into indexed span names. The
-  full payload still rides in the span tags (`command.type` / `event.type`)
-  and the message-flow log lines. New process-wide switch
-  `Telemetry.IncludePayloads` (default on) and
-  `FcqrsBuilder.WithPayloadDiagnostics(false)` reduce those tags and log lines
-  to the case name for sensitive domains; span names are unaffected either way.
+
+## Unreleased
 - **.NET 11 preview 6 compatibility verified**: the in-box union support types
   (`System.Runtime.CompilerServices.UnionAttribute`/`IUnion`) match FCQRS's
   name-based detection, and FCQRS's `$case`-discriminated journal format takes

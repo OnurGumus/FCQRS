@@ -69,13 +69,23 @@ module internal Internal =
                 fatalFailFast null "Process terminated due to aggregate apply error" ex
                 failwith "unreachable" // FailFast never returns; satisfies the compiler
 
-        let publishEvent event =
+        // The delivery stamp: the CID-correlated caller (and sagas) can tell a
+        // journaled ack from a deferred/publish-only one — read-your-writes
+        // needs this to know whether a projection event will ever follow.
+        // Stamped ONLY on the outbound copy; the journal record stays clean.
+        let publishEvent journaled (event: Event<'TEvent>) =
+            let stamped =
+                { event with
+                    Metadata =
+                        event.Metadata
+                        |> Map.add Common.JournaledMetadataKey (if journaled then "true" else "false") }
+
             SagaStarter.Internal.publishEvent
                 logger
                 mailbox
                 mediator
-                event
-                (event.CorrelationId |> ValueLens.Value |> ValueLens.Value)
+                stamped
+                (stamped.CorrelationId |> ValueLens.Value |> ValueLens.Value)
 
         actor {
             let! msg = mailbox.Receive()
@@ -92,7 +102,7 @@ module internal Internal =
                 let eventVersion = e.Version |> ValueLens.Value
 
                 if currentVersion = eventVersion then
-                    publishEvent e
+                    publishEvent true e
                     return! state |> set
                 else
                     // Restart detection fired: flag it in the trace so aborted flows
@@ -155,7 +165,7 @@ module internal Internal =
                         event.CorrelationId |> ValueLens.Value |> ValueLens.Value)
 
                 let state = applyChecked event (state.State)
-                publishEvent event
+                publishEvent false event
 
                 let newState =
                     {   Version = event.Version
@@ -199,7 +209,7 @@ module internal Internal =
                         null
 
                 let innerState = applyChecked event state.State
-                publishEvent event
+                publishEvent true event
 
                 match activity with
                 | null -> ()
@@ -238,7 +248,7 @@ module internal Internal =
                 let bodyInput =
                     {   Message = msg
                         State = state
-                        PublishEvent = publishEvent
+                        PublishEvent = publishEvent false
                         SendToSagaStarter = starter
                         Mediator = mediator
                         Log = logger

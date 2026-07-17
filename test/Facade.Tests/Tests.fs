@@ -25,10 +25,13 @@ module Counter =
         | Split of int * int
         | Checkpoint
         | Reset
+        // acked to the caller but never journaled — exercises DeferEvent delivery
+        | Poke
 
     type Event =
         | Incremented of int
         | WasReset
+        | Poked
 
     type State = { Total: int }
     let initial = { Total = 0 }
@@ -41,11 +44,13 @@ module Counter =
         // manual checkpoint: persist + immediate snapshot, no cadence involved
         | Checkpoint -> WasReset |> persistAndSnapshot
         | Reset -> WasReset |> PersistEvent
+        | Poke -> Poked |> DeferEvent
 
     let fold (e: Event<Event>) state =
         match e.EventDetails with
         | Incremented n -> { state with Total = state.Total + n }
         | WasReset -> { Total = 0 }
+        | Poked -> state
 
 /// A saga that resets the counter whenever it sees a "big" (>= 100) increment —
 /// proving the saga reacts to an originator event and drives a command back into
@@ -156,6 +161,7 @@ module RenamedCounter =
     type Event =
         | Incremented of int
         | WasReset
+        | Poked
 
 // Multi-event handler shape: return exactly what to publish.
 let private projection (_offset: int64) (ev: obj) : IMessageWithCID list =
@@ -688,9 +694,45 @@ let private focusShapeTest =
         Expect.contains ss Focused "the @focus scenario is Focused"
         Expect.contains ss Normal "the untagged scenario stays Normal"
 
+/// Delivery stamp + sendAwaiting: a persisted ack is marked journaled and
+/// sendAwaiting returns only after the projection processed it; a deferred
+/// ack is marked not-journaled and sendAwaiting must NOT wait for a
+/// projection event that will never come (the naive await would hang).
+let private journaledStampTest =
+    testCase "journaled stamp: persisted true, deferred false, sendAwaiting never phantom-waits"
+    <| fun _ ->
+        let counter, subs = boot ()
+        let id = Fcqrs.aggregateId (Guid.NewGuid().ToString "N")
+        let incremented = function Counter.Incremented _ -> true | _ -> false
+        let poked = function Counter.Poked -> true | _ -> false
+
+        let persisted =
+            counter.Send (Fcqrs.newCid ()) id (Counter.Increment 1) incremented
+            |> Async.RunSynchronously
+        Expect.equal persisted.Journaled (Some true) "persisted ack stamps journaled=true"
+
+        let deferred =
+            counter.Send (Fcqrs.newCid ()) id Counter.Poke poked |> Async.RunSynchronously
+        Expect.equal deferred.Journaled (Some false) "deferred ack stamps journaled=false"
+
+        let before = singleHandled.Value
+
+        Fcqrs.sendAwaiting subs counter (Fcqrs.newCid ()) id (Counter.Increment 1) incremented
+        |> Async.RunSynchronously
+        |> ignore
+        Expect.isGreaterThan singleHandled.Value before "projection ran before sendAwaiting returned"
+
+        let sw = Stopwatch.StartNew()
+
+        Fcqrs.sendAwaiting subs counter (Fcqrs.newCid ()) id Counter.Poke poked
+        |> Async.RunSynchronously
+        |> ignore
+        sw.Stop()
+        Expect.isLessThan sw.Elapsed.TotalSeconds 5.0 "deferred sendAwaiting returned without waiting for a projection event"
+
 let tests =
     testSequenced (
-        testList "facade" [ manifestTest; roundTripTest; persistAllTest; manualSnapshotTest; telemetryTest; payloadSwitchTest; overflowTest; snapshotRecoveryTest; restartDetectionTest; filteredProjectionTest; persistIfTest; bridgeTest; pendingBridgeTest; focusShapeTest ]
+        testList "facade" [ manifestTest; roundTripTest; persistAllTest; manualSnapshotTest; telemetryTest; payloadSwitchTest; overflowTest; snapshotRecoveryTest; restartDetectionTest; filteredProjectionTest; persistIfTest; bridgeTest; pendingBridgeTest; focusShapeTest; journaledStampTest ]
     )
 
 [<EntryPoint>]
