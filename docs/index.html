@@ -1,0 +1,833 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="description" content="FCQRS — write pure business rules while the framework handles event-sourced reliability." />
+  <meta name="theme-color" content="#071d46" />
+  <title>FCQRS — You write the rules</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --navy-950: #051a3f;
+      --navy-900: #071d46;
+      --navy-800: #0a2b60;
+      --navy-700: #123f84;
+      --blue-600: #165cc4;
+      --green-700: #08752f;
+      --green-600: #0a8a38;
+      --green-100: #ecf8ef;
+      --red-600: #e22027;
+      --red-100: #fff0f0;
+      --purple-700: #5b21b6;
+      --purple-100: #f6f0ff;
+      --ink: #071a3b;
+      --muted: #4d5f7d;
+      --line: #d7e1ef;
+      --surface: #ffffff;
+      --surface-soft: #f7faff;
+      --shadow: 0 18px 55px rgb(7 29 70 / 11%);
+      --shadow-soft: 0 8px 28px rgb(7 29 70 / 8%);
+      --radius-xl: 28px;
+      --radius-lg: 20px;
+      --radius-md: 14px;
+      --page: min(1180px, calc(100% - 40px));
+      --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      --sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      font-family: var(--sans);
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 3% 38%, rgb(22 92 196 / 6%) 0 2px, transparent 2.5px) 0 0 / 12px 12px,
+        linear-gradient(#fff, #fbfdff 58%, #fff);
+      line-height: 1.5;
+      overflow-x: hidden;
+    }
+
+    a { color: inherit; text-decoration: none; }
+    button, a { -webkit-tap-highlight-color: transparent; }
+    svg { display: block; }
+
+    .visually-hidden {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
+
+    .site-header {
+      position: sticky;
+      top: 0;
+      z-index: 50;
+      border-bottom: 1px solid rgb(215 225 239 / 85%);
+      background: rgb(255 255 255 / 88%);
+      backdrop-filter: blur(18px);
+    }
+
+    .nav {
+      width: var(--page);
+      min-height: 72px;
+      margin-inline: auto;
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      align-items: center;
+      gap: 28px;
+    }
+
+    .brand {
+      display: inline-flex;
+      align-items: center;
+      gap: 11px;
+      font-size: 1.45rem;
+      font-weight: 900;
+      letter-spacing: -0.045em;
+    }
+
+    .brand-mark { width: 43px; height: 43px; }
+
+    .nav-links {
+      display: flex;
+      justify-content: center;
+      gap: clamp(18px, 3vw, 40px);
+      font-weight: 700;
+      font-size: .93rem;
+    }
+
+    .nav-links a { color: #243653; }
+    .nav-links a:hover { color: var(--green-700); }
+
+    .nav-actions { display: flex; gap: 10px; }
+    .button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 9px;
+      min-height: 44px;
+      padding: 0 17px;
+      border: 1px solid var(--line);
+      border-radius: 11px;
+      font-weight: 800;
+      background: var(--surface);
+      box-shadow: 0 2px 5px rgb(7 29 70 / 4%);
+      transition: translate .18s ease, box-shadow .18s ease, border-color .18s ease;
+    }
+
+    .button:hover { translate: 0 -2px; box-shadow: var(--shadow-soft); border-color: #b9c9de; }
+    .button.primary { color: white; border-color: var(--navy-900); background: var(--navy-900); }
+    .button svg { width: 17px; height: 17px; }
+
+    .mobile-toggle {
+      display: none;
+      width: 44px;
+      height: 44px;
+      border: 1px solid var(--line);
+      border-radius: 11px;
+      background: white;
+      color: var(--navy-900);
+    }
+
+    main { isolation: isolate; }
+    .container { width: var(--page); margin-inline: auto; }
+
+    .hero {
+      position: relative;
+      padding: clamp(62px, 8vw, 110px) 0 44px;
+      overflow: hidden;
+    }
+
+    .hero-shape {
+      position: absolute;
+      z-index: -2;
+      top: -40px;
+      right: -8vw;
+      width: min(690px, 55vw);
+      height: 520px;
+      opacity: .95;
+      background:
+        linear-gradient(132deg, rgb(22 92 196 / 10%), rgb(10 138 56 / 17%)),
+        white;
+      clip-path: polygon(22% 0, 100% 0, 100% 80%, 72% 66%, 54% 100%, 0 76%, 18% 44%);
+    }
+
+    /* Progressive enhancement: the new CSS shape() function keeps this curved shape responsive. */
+    @supports (clip-path: shape(from 0% 0%, line to 100% 0%, line to 100% 100%, close)) {
+      .hero-shape {
+        clip-path: shape(
+          from 22% 0%,
+          line to 100% 0%,
+          line to 100% 80%,
+          curve to 72% 66% with 92% 72% / 82% 64%,
+          curve to 54% 100% with 65% 72% / 61% 92%,
+          curve to 0% 76% with 36% 100% / 12% 91%,
+          curve to 18% 44% with 2% 64% / 10% 49%,
+          close
+        );
+      }
+    }
+
+    .hero-shape::after {
+      content: "";
+      position: absolute;
+      inset: 17% 10% 15% 20%;
+      background: linear-gradient(150deg, rgb(255 255 255 / 20%), rgb(255 255 255 / 76%));
+      clip-path: polygon(0 16%, 100% 0, 74% 100%, 12% 84%);
+    }
+
+    @supports (clip-path: shape(from 0% 0%, line to 100% 0%, close)) {
+      .hero-shape::after {
+        clip-path: shape(
+          from 0% 16%,
+          curve to 100% 0% with 30% 4% / 72% 2%,
+          curve to 74% 100% with 96% 34% / 90% 80%,
+          curve to 12% 84% with 58% 100% / 28% 90%,
+          curve to 0% 16% with 2% 61% / 0% 32%,
+          close
+        );
+      }
+    }
+
+    .hero-grid {
+      display: grid;
+      grid-template-columns: 1.15fr .85fr;
+      gap: clamp(42px, 7vw, 86px);
+      align-items: center;
+    }
+
+    .eyebrow {
+      width: 34px;
+      height: 4px;
+      margin-bottom: 19px;
+      border-radius: 999px;
+      background: var(--red-600);
+    }
+
+    h1 {
+      max-width: 760px;
+      margin: 0;
+      font-size: clamp(3rem, 6vw, 5.9rem);
+      line-height: .98;
+      letter-spacing: -.065em;
+      text-wrap: balance;
+    }
+
+    h1 .secondary {
+      display: block;
+      margin-top: .12em;
+      font-size: .68em;
+      line-height: 1.04;
+      letter-spacing: -.055em;
+    }
+
+    .green { color: var(--green-700); }
+    .red { color: var(--red-600); }
+
+    .hero-copy {
+      max-width: 650px;
+      margin-top: 26px;
+      font-size: clamp(1rem, 1.6vw, 1.17rem);
+      color: #263a59;
+    }
+
+    .hero-copy p { margin: 0 0 12px; }
+
+    .language-support {
+      display: inline-flex;
+      align-items: center;
+      gap: 18px;
+      margin-top: 17px;
+      padding: 11px 16px;
+      border: 1px solid var(--line);
+      border-radius: 13px;
+      background: rgb(255 255 255 / 78%);
+      box-shadow: 0 7px 25px rgb(7 29 70 / 5%);
+      font-weight: 800;
+    }
+
+    .language-badges { display: flex; align-items: center; gap: 8px; }
+    .language-logo { width: 40px; height: 40px; filter: drop-shadow(0 4px 7px rgb(7 29 70 / 14%)); }
+
+    .quickstart {
+      display: inline-flex;
+      align-items: center;
+      gap: 11px;
+      margin-top: 16px;
+      padding: 12px 17px;
+      border-radius: 12px;
+      background: var(--navy-900);
+      color: #eef4ff;
+      font: 700 clamp(.82rem, 1.3vw, .95rem)/1 var(--mono);
+      box-shadow: var(--shadow-soft);
+      max-width: 100%;
+      overflow-x: auto;
+    }
+    .quickstart .prompt { color: #77e58d; }
+    .quickstart .hint { font-family: var(--sans); font-weight: 700; font-size: .8rem; color: #9fb6da; white-space: nowrap; }
+
+    .code-card {
+      position: relative;
+      overflow: hidden;
+      border: 1px solid #bdcce0;
+      border-radius: var(--radius-lg);
+      background: rgb(255 255 255 / 92%);
+      box-shadow: var(--shadow);
+    }
+
+    .code-card::before {
+      content: "";
+      position: absolute;
+      inset: 0 0 auto;
+      height: 8px;
+      background: linear-gradient(90deg, var(--green-600), var(--navy-700), var(--blue-600));
+    }
+
+    .code-card-title {
+      padding: 22px 28px 15px;
+      font-size: .86rem;
+      font-weight: 900;
+      text-align: center;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+      color: white;
+      background: var(--navy-900);
+    }
+
+    .function {
+      padding: 22px 25px;
+    }
+
+    .function + .function { border-top: 1px solid var(--line); }
+    .function-head { display: flex; align-items: center; gap: 10px; margin-bottom: 11px; }
+    .step-number {
+      display: inline-grid;
+      place-items: center;
+      width: 29px;
+      height: 29px;
+      flex: 0 0 auto;
+      border-radius: 50%;
+      color: white;
+      background: var(--green-700);
+      font-weight: 900;
+    }
+    .function-name { font: 800 1.25rem/1 var(--mono); color: var(--green-700); }
+    .code {
+      margin: 0;
+      padding: 15px 17px;
+      border-radius: 10px;
+      background: var(--navy-900);
+      color: #f7fbff;
+      font: 700 clamp(.78rem, 1.3vw, .95rem)/1.5 var(--mono);
+      overflow-x: auto;
+      box-shadow: inset 0 1px 0 rgb(255 255 255 / 8%);
+    }
+    .code .keyword { color: #77e58d; }
+    .function p { margin: 10px 0 0; color: var(--muted); }
+
+    .section { padding: 42px 0; }
+    .section-title {
+      display: flex;
+      align-items: center;
+      gap: 18px;
+      margin: 0 0 27px;
+      font-size: clamp(1.1rem, 2vw, 1.35rem);
+      font-weight: 900;
+      text-align: center;
+      letter-spacing: -.02em;
+      text-transform: uppercase;
+    }
+    .section-title::before, .section-title::after {
+      content: "";
+      height: 1px;
+      flex: 1;
+      background: var(--line);
+    }
+    .section-title.green-title { color: var(--green-700); }
+
+    .flow {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 36px;
+      align-items: stretch;
+    }
+
+    .flow-card {
+      position: relative;
+      min-height: 205px;
+      padding: 20px 17px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-md);
+      background: white;
+      text-align: center;
+      box-shadow: 0 5px 16px rgb(7 29 70 / 4%);
+    }
+
+    .flow-card:not(:last-child)::after {
+      content: "→";
+      position: absolute;
+      top: 50%;
+      right: -29px;
+      translate: 0 -50%;
+      color: var(--navy-900);
+      font-size: 1.6rem;
+      font-weight: 800;
+    }
+
+    .flow-card.core {
+      border-color: #61b277;
+      background: linear-gradient(180deg, #fff, #f6fff8);
+    }
+    .flow-card svg { width: 58px; height: 58px; margin: 0 auto 12px; color: var(--navy-900); }
+    .flow-card.core svg, .flow-card.core h3 { color: var(--green-700); }
+    .flow-card h3 { margin: 0 0 6px; font-size: 1.05rem; }
+    .flow-card p { margin: 0; color: var(--muted); font-size: .9rem; }
+    .flow-card .mini-step { position: absolute; top: 12px; left: 12px; }
+
+    .reliability-grid {
+      display: grid;
+      grid-template-columns: repeat(7, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .reliability-card {
+      min-height: 166px;
+      padding: 16px 12px 14px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-md);
+      background: white;
+      text-align: center;
+      box-shadow: 0 5px 16px rgb(7 29 70 / 4%);
+    }
+    .reliability-card svg { width: 42px; height: 42px; margin: 0 auto 10px; color: var(--green-700); }
+    .reliability-card h3 { margin: 0 0 6px; font-size: .9rem; }
+    .reliability-card p { margin: 0; color: var(--muted); font-size: .77rem; line-height: 1.45; }
+
+    .benefit-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 18px;
+    }
+    .benefit-card {
+      position: relative;
+      overflow: hidden;
+      min-height: 255px;
+      padding: 24px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-lg);
+      background: white;
+      box-shadow: var(--shadow-soft);
+    }
+    .benefit-card::after {
+      content: "";
+      position: absolute;
+      inset: auto -14% -45% 38%;
+      height: 220px;
+      opacity: .7;
+      clip-path: polygon(0 100%, 25% 57%, 44% 74%, 66% 28%, 78% 48%, 100% 0, 100% 100%);
+      background: linear-gradient(160deg, transparent, var(--accent));
+    }
+    @supports (clip-path: shape(from 0% 100%, line to 25% 57%, line to 100% 0%, close)) {
+      .benefit-card::after {
+        clip-path: shape(
+          from 0% 100%,
+          curve to 25% 57% with 9% 83% / 15% 55%,
+          curve to 44% 74% with 32% 59% / 37% 76%,
+          curve to 66% 28% with 52% 73% / 58% 34%,
+          curve to 78% 48% with 71% 25% / 74% 45%,
+          curve to 100% 0% with 87% 47% / 95% 13%,
+          line to 100% 100%,
+          close
+        );
+      }
+    }
+    .benefit-card.reliable { --accent: var(--green-700); background: linear-gradient(150deg, white, var(--green-100)); }
+    .benefit-card.grow { --accent: var(--blue-600); background: linear-gradient(150deg, white, #eef5ff); }
+    .benefit-card.domain { --accent: var(--purple-700); background: linear-gradient(150deg, white, var(--purple-100)); }
+    .benefit-head { position: relative; z-index: 1; display: flex; align-items: center; gap: 13px; margin-bottom: 16px; }
+    .benefit-icon {
+      display: grid;
+      place-items: center;
+      width: 51px;
+      height: 51px;
+      flex: 0 0 auto;
+      border-radius: 50%;
+      color: white;
+      background: var(--accent);
+    }
+    .benefit-icon svg { width: 27px; height: 27px; color: white; }
+    .benefit-card h3 { margin: 0; font-size: 1.22rem; color: var(--accent); }
+    .benefit-card ul { position: relative; z-index: 1; margin: 0; padding: 0; list-style: none; color: var(--ink); }
+    .benefit-card li { display: flex; align-items: flex-start; gap: 9px; margin: 9px 0; font-size: .9rem; }
+    .benefit-card li::before { content: "✓"; color: currentColor; font-weight: 900; }
+
+    .under-hood {
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      gap: 22px;
+      align-items: center;
+      margin-top: 26px;
+      padding: 17px 22px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-md);
+      background: white;
+    }
+    .akka { display: flex; align-items: center; gap: 12px; min-width: 190px; }
+    .akka svg { width: 58px; height: 44px; }
+    .akka small { display: block; font-weight: 900; color: var(--muted); }
+    .akka strong { color: #1076bd; font-size: 1.2rem; }
+    .under-hood > p { margin: 0; color: #2f4260; }
+    .trust { display: flex; align-items: center; gap: 18px; }
+    .trust span { display: inline-flex; align-items: center; gap: 7px; font-weight: 800; font-size: .78rem; white-space: nowrap; }
+    .trust svg { width: 24px; height: 24px; color: var(--navy-900); }
+
+    .site-footer {
+      margin-top: 44px;
+      color: white;
+      background:
+        radial-gradient(circle at 85% 20%, rgb(10 138 56 / 25%), transparent 28%),
+        linear-gradient(115deg, #041632, #08285c);
+    }
+    .footer-grid {
+      width: var(--page);
+      margin-inline: auto;
+      padding: 30px 0;
+      display: grid;
+      grid-template-columns: 1.1fr repeat(3, .8fr);
+      gap: 16px;
+      align-items: stretch;
+    }
+    .footer-message { padding: 8px 28px 8px 0; border-right: 1px solid rgb(255 255 255 / 25%); }
+    .footer-message p { margin: 0; }
+    .footer-message .small { font-weight: 800; }
+    .footer-message .big { font-size: clamp(1.9rem, 4vw, 3rem); font-weight: 900; line-height: 1; letter-spacing: -.045em; }
+    .footer-message .sub { margin-top: 8px; color: #d9e6fb; font-size: .87rem; }
+    .resource {
+      display: flex;
+      align-items: center;
+      gap: 13px;
+      min-height: 84px;
+      padding: 14px 16px;
+      border: 1px solid rgb(255 255 255 / 23%);
+      border-radius: 13px;
+      background: rgb(255 255 255 / 4%);
+      transition: background .18s ease, translate .18s ease;
+    }
+    .resource:hover { background: rgb(255 255 255 / 9%); translate: 0 -2px; }
+    .resource-icon { display: grid; place-items: center; width: 44px; height: 44px; flex: 0 0 auto; border-radius: 10px; background: white; }
+    .resource-icon svg { width: 28px; height: 28px; }
+    .resource strong { display: block; }
+    .resource small { color: #cbd9ed; }
+    .resource .arrow { margin-left: auto; font-size: 1.4rem; }
+
+    @media (max-width: 1050px) {
+      .nav-links { display: none; }
+      .nav { grid-template-columns: auto 1fr auto; }
+      .hero-grid { grid-template-columns: 1fr; }
+      .code-card { max-width: 720px; }
+      .hero-shape { width: 78vw; opacity: .6; }
+      .reliability-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+      .under-hood { grid-template-columns: auto 1fr; }
+      .trust { grid-column: 1 / -1; justify-content: space-around; padding-top: 14px; border-top: 1px solid var(--line); }
+      .footer-grid { grid-template-columns: 1fr 1fr; }
+      .footer-message { border-right: 0; }
+    }
+
+    @media (max-width: 760px) {
+      :root { --page: min(100% - 28px, 680px); }
+      .site-header { position: relative; }
+      .nav { min-height: 64px; gap: 10px; }
+      .nav-actions .button:first-child { display: none; }
+      .nav-actions .button.primary { display: none; }
+      .mobile-toggle { display: inline-grid; place-items: center; justify-self: end; }
+      .nav-links {
+        position: absolute;
+        top: 64px;
+        left: 14px;
+        right: 14px;
+        display: none;
+        padding: 16px;
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        background: white;
+        box-shadow: var(--shadow);
+      }
+      .nav-links.open { display: grid; gap: 13px; }
+      .hero { padding-top: 48px; }
+      h1 { font-size: clamp(2.7rem, 14vw, 4.6rem); }
+      .language-support { align-items: flex-start; flex-direction: column; gap: 10px; }
+      .flow { grid-template-columns: 1fr; gap: 16px; }
+      .flow-card { min-height: 0; display: grid; grid-template-columns: 64px 1fr; text-align: left; align-items: center; column-gap: 14px; }
+      .flow-card svg { margin: 0; }
+      .flow-card h3, .flow-card p { grid-column: 2; }
+      .flow-card:not(:last-child)::after { content: "↓"; top: auto; right: 50%; bottom: -21px; translate: 50% 0; }
+      .flow-card .mini-step { position: static; grid-column: 1; grid-row: 1 / span 2; justify-self: end; translate: 24px -26px; }
+      .reliability-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .benefit-grid { grid-template-columns: 1fr; }
+      .under-hood { grid-template-columns: 1fr; }
+      .trust { display: grid; grid-template-columns: 1fr 1fr; }
+      .footer-grid { grid-template-columns: 1fr; }
+      .footer-message { padding-right: 0; }
+    }
+
+    @media (max-width: 430px) {
+      .brand { font-size: 1.25rem; }
+      .brand-mark { width: 38px; height: 38px; }
+      .reliability-grid { grid-template-columns: 1fr; }
+      .trust { grid-template-columns: 1fr; }
+      .section-title { font-size: 1rem; }
+      .code-card-title { padding-inline: 16px; }
+      .function { padding-inline: 16px; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+      *, *::before, *::after { transition-duration: .001ms !important; animation-duration: .001ms !important; animation-iteration-count: 1 !important; }
+    }
+  </style>
+</head>
+<body>
+  <!-- Inline SVG sprite: no external icon library or asset requests. -->
+  <svg class="visually-hidden" aria-hidden="true" focusable="false">
+    <symbol id="i-command" viewBox="0 0 64 64"><rect x="7" y="10" width="50" height="42" rx="6" fill="none" stroke="currentColor" stroke-width="3"/><path d="m18 25 8 7-8 7M32 39h13" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/><circle cx="15" cy="17" r="1.7" fill="currentColor"/><circle cx="21" cy="17" r="1.7" fill="currentColor"/></symbol>
+    <symbol id="i-events" viewBox="0 0 64 64"><rect x="9" y="16" width="35" height="28" rx="4" fill="none" stroke="currentColor" stroke-width="3"/><rect x="20" y="9" width="35" height="28" rx="4" fill="white" stroke="currentColor" stroke-width="3"/><path d="M27 18h19M27 25h14M16 28h18M16 35h14" stroke="currentColor" stroke-width="3" stroke-linecap="round"/></symbol>
+    <symbol id="i-state" viewBox="0 0 64 64"><path d="m32 5 23 13v28L32 59 9 46V18Z" fill="none" stroke="currentColor" stroke-width="3"/><path d="m9 18 23 14 23-14M32 32v27" fill="none" stroke="currentColor" stroke-width="3"/><path d="m32 20 10 6v12l-10 6-10-6V26Z" fill="#0a8a38" stroke="currentColor" stroke-width="2"/></symbol>
+    <symbol id="i-table" viewBox="0 0 64 64"><rect x="8" y="9" width="48" height="46" rx="4" fill="none" stroke="currentColor" stroke-width="3"/><path d="M8 22h48M24 9v46M40 9v46M8 38h48" stroke="currentColor" stroke-width="3"/></symbol>
+    <symbol id="i-journal" viewBox="0 0 64 64"><ellipse cx="32" cy="13" rx="21" ry="8" fill="none" stroke="currentColor" stroke-width="3"/><path d="M11 13v36c0 4 9 8 21 8s21-4 21-8V13M11 31c0 4 9 8 21 8s21-4 21-8M11 49c0 4 9 8 21 8s21-4 21-8" fill="none" stroke="currentColor" stroke-width="3"/></symbol>
+    <symbol id="i-cycle" viewBox="0 0 64 64"><path d="M49 18A22 22 0 0 0 14 29M15 17l-1 12 12-1M15 46a22 22 0 0 0 35-11M49 47l1-12-12 1" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-shield" viewBox="0 0 64 64"><path d="M32 6 53 14v16c0 14-9 23-21 29C20 53 11 44 11 30V14Z" fill="none" stroke="currentColor" stroke-width="3"/><path d="m22 31 7 7 14-16" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-check" viewBox="0 0 64 64"><circle cx="32" cy="32" r="24" fill="none" stroke="currentColor" stroke-width="3"/><path d="m20 32 8 8 17-19" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-camera" viewBox="0 0 64 64"><rect x="7" y="18" width="50" height="36" rx="7" fill="none" stroke="currentColor" stroke-width="3"/><circle cx="32" cy="36" r="11" fill="none" stroke="currentColor" stroke-width="3"/><path d="M20 18 24 10h16l4 8" fill="none" stroke="currentColor" stroke-width="3"/></symbol>
+    <symbol id="i-chart" viewBox="0 0 64 64"><path d="M10 55V12M10 55h45" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"/><rect x="18" y="35" width="7" height="15" rx="1" fill="none" stroke="currentColor" stroke-width="3"/><rect x="31" y="25" width="7" height="25" rx="1" fill="none" stroke="currentColor" stroke-width="3"/><rect x="44" y="13" width="7" height="37" rx="1" fill="none" stroke="currentColor" stroke-width="3"/></symbol>
+    <symbol id="i-document" viewBox="0 0 64 64"><path d="M15 7h24l11 11v39H15Z" fill="none" stroke="currentColor" stroke-width="3"/><path d="M39 7v12h11M23 30h19M23 38h19M23 46h14" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"/></symbol>
+    <symbol id="i-code" viewBox="0 0 64 64"><path d="m23 18-14 14 14 14M41 18l14 14-14 14M37 10 27 54" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-trend" viewBox="0 0 64 64"><path d="M9 49 25 33l10 9 20-27" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/><path d="M42 15h13v13" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-award" viewBox="0 0 64 64"><circle cx="32" cy="24" r="16" fill="none" stroke="currentColor" stroke-width="3"/><path d="m21 38-5 20 16-9 16 9-5-20" fill="none" stroke="currentColor" stroke-width="3"/><path d="m32 14 3 6 7 1-5 5 1 7-6-3-6 3 1-7-5-5 7-1Z" fill="none" stroke="currentColor" stroke-width="2"/></symbol>
+    <symbol id="i-tools" viewBox="0 0 64 64"><path d="m12 14 38 38M50 14 12 52" stroke="currentColor" stroke-width="4" stroke-linecap="round"/><path d="m8 10 10 2 4 8-6 6-8-4-2-10ZM56 10l-10 2-4 8 6 6 8-4 2-10Z" fill="none" stroke="currentColor" stroke-width="3"/></symbol>
+    <symbol id="i-bank" viewBox="0 0 64 64"><path d="M6 24h52L32 7ZM11 52h42M15 24v25M27 24v25M39 24v25M51 24v25" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-star" viewBox="0 0 64 64"><path d="m32 7 7 15 17 2-12 12 3 17-15-8-15 8 3-17L8 24l17-2Z" fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round"/></symbol>
+    <symbol id="i-github" viewBox="0 0 64 64"><path d="M32 6a26 26 0 0 0-8 50c1 .2 1.3-.4 1.3-1v-5c-7 1.5-8.5-3-8.5-3-1.1-3-2.8-3.8-2.8-3.8-2.3-1.6.2-1.6.2-1.6 2.5.2 3.8 2.6 3.8 2.6 2.2 3.8 5.8 2.7 7.2 2.1.2-1.6.9-2.7 1.6-3.3-5.6-.6-11.5-2.8-11.5-12.5 0-2.8 1-5 2.6-6.8-.3-.6-1.1-3.2.2-6.7 0 0 2.1-.7 7 2.6a24 24 0 0 1 12.8 0c4.9-3.3 7-2.6 7-2.6 1.3 3.5.5 6.1.2 6.7 1.6 1.8 2.6 4 2.6 6.8 0 9.7-5.9 11.9-11.5 12.5.9.8 1.7 2.3 1.7 4.6v6.8c0 .7.4 1.2 1.4 1A26 26 0 0 0 32 6Z" fill="currentColor"/></symbol>
+    <symbol id="i-package" viewBox="0 0 64 64"><path d="m32 5 24 13-24 13L8 18ZM8 18v28l24 13 24-13V18M32 31v28" fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round"/></symbol>
+  </svg>
+
+  <header class="site-header">
+    <nav class="nav" aria-label="Primary navigation">
+      <a class="brand" href="#top" aria-label="FCQRS home">
+        <svg class="brand-mark" viewBox="0 0 64 64" aria-hidden="true">
+          <defs><linearGradient id="brand-red" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#ff3b36"/><stop offset="1" stop-color="#c60008"/></linearGradient><linearGradient id="brand-blue" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#184c98"/><stop offset="1" stop-color="#03183d"/></linearGradient></defs>
+          <path d="M32 3 57 17v30L32 61 7 47V17Z" fill="url(#brand-blue)"/>
+          <path d="M32 10 49 20 32 30 22 24v17l10 6 17-10v10L32 57 13 46V20Z" fill="white"/>
+          <path d="m32 30 17-10 8 5v22L32 61V47l17-10V27L32 37Z" fill="url(#brand-red)"/>
+        </svg>
+        <span>FCQRS</span>
+      </a>
+
+      <div class="nav-links" id="navLinks">
+        <a href="#why">Why FCQRS</a>
+        <a href="#how">How it works</a>
+        <a href="#reliability">Reliability</a>
+        <a href="#resources">Resources</a>
+      </div>
+
+      <div class="nav-actions">
+        <a class="button" href="https://github.com/OnurGumus/FCQRS" target="_blank" rel="noreferrer">
+          <svg aria-hidden="true"><use href="#i-star"/></svg> Star on GitHub
+        </a>
+        <a class="button primary" href="https://github.com/OnurGumus/FCQRS#readme" target="_blank" rel="noreferrer">Get started</a>
+        <button class="mobile-toggle" type="button" aria-label="Toggle navigation" aria-expanded="false" aria-controls="navLinks">
+          <svg width="23" height="23" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+        </button>
+      </div>
+    </nav>
+  </header>
+
+  <main id="top">
+    <section class="hero" id="overview">
+      <div class="hero-shape" aria-hidden="true"></div>
+      <div class="container hero-grid">
+        <div>
+          <div class="eyebrow" aria-hidden="true"></div>
+          <h1>
+            You write the rules.
+            <span class="secondary">FCQRS <span class="green">delivers everything else.</span></span>
+          </h1>
+          <div class="hero-copy">
+            <p>Event-sourced reliability from day one — the journal, the sagas, the read models, and read-your-writes.</p>
+            <p>Two pure functions are yours; the distributed-systems weight is the framework’s.</p>
+          </div>
+          <div class="language-support" aria-label="First-class support for C sharp and F sharp">
+            <span>First-class support for C# and F#</span>
+            <span class="language-badges" aria-hidden="true">
+              <svg class="language-logo" viewBox="0 0 64 64"><defs><linearGradient id="cs" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#9146d8"/><stop offset="1" stop-color="#4b1b8d"/></linearGradient></defs><path d="m32 3 25 14v30L32 61 7 47V17Z" fill="url(#cs)"/><text x="32" y="40" text-anchor="middle" fill="white" font-family="system-ui,sans-serif" font-size="25" font-weight="900">C#</text></svg>
+              <svg class="language-logo" viewBox="0 0 64 64"><defs><linearGradient id="fs" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#1689d8"/><stop offset="1" stop-color="#00519a"/></linearGradient></defs><path d="M32 3 61 32 32 61 3 32Z" fill="url(#fs)"/><text x="32" y="40" text-anchor="middle" fill="white" font-family="system-ui,sans-serif" font-size="25" font-weight="900">F#</text></svg>
+            </span>
+          </div>
+          <div class="quickstart" aria-label="Install FCQRS from NuGet"><span class="prompt" aria-hidden="true">›</span>dotnet add package FCQRS<span class="hint">— running in minutes</span></div>
+        </div>
+
+        <article class="code-card" aria-label="The two functions you write">
+          <div class="code-card-title">The only code you write</div>
+          <div class="function">
+            <div class="function-head"><span class="step-number">1</span><span class="function-name">decide</span></div>
+            <pre class="code"><code>let <span class="keyword">decide</span> cmd state : EventAction&lt;Event&gt;</code></pre>
+            <p>Validate, decide, and emit events.</p>
+          </div>
+          <div class="function">
+            <div class="function-head"><span class="step-number">2</span><span class="function-name">fold</span></div>
+            <pre class="code"><code>let <span class="keyword">fold</span> state event : State</code></pre>
+            <p>Evolve state from events.</p>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <section class="section" id="how">
+      <div class="container">
+        <h2 class="section-title">How it works <span>(simple by design)</span></h2>
+        <div class="flow">
+          <article class="flow-card">
+            <svg aria-hidden="true"><use href="#i-command"/></svg>
+            <h3>Command</h3>
+            <p>A user action or external event.</p>
+          </article>
+          <article class="flow-card core">
+            <span class="step-number mini-step">1</span>
+            <svg aria-hidden="true"><use href="#i-code"/></svg>
+            <h3><code>decide</code></h3>
+            <p>You decide what happened.</p>
+          </article>
+          <article class="flow-card">
+            <svg aria-hidden="true"><use href="#i-events"/></svg>
+            <h3>Events</h3>
+            <p>Facts recorded as immutable events.</p>
+          </article>
+          <article class="flow-card core">
+            <span class="step-number mini-step">2</span>
+            <svg aria-hidden="true"><use href="#i-code"/></svg>
+            <h3><code>fold</code></h3>
+            <p>You transform events into new state.</p>
+          </article>
+          <article class="flow-card">
+            <svg aria-hidden="true"><use href="#i-table"/></svg>
+            <h3>Read models</h3>
+            <p>Fast, query-optimized views for your application.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="reliability">
+      <div class="container">
+        <h2 class="section-title green-title">FCQRS handles reliability</h2>
+        <div class="reliability-grid">
+          <article class="reliability-card"><svg aria-hidden="true"><use href="#i-journal"/></svg><h3>Durable journal</h3><p>Every event is persisted and never lost.</p></article>
+          <article class="reliability-card"><svg aria-hidden="true"><use href="#i-cycle"/></svg><h3>Sagas</h3><p>Long-running flows persist intent and resume.</p></article>
+          <article class="reliability-card"><svg aria-hidden="true"><use href="#i-shield"/></svg><h3>Crash recovery</h3><p>Restart exactly where the work left off.</p></article>
+          <article class="reliability-card"><svg aria-hidden="true"><use href="#i-check"/></svg><h3>Read-your-writes</h3><p>See the outcome of what you just wrote.</p></article>
+          <article class="reliability-card"><svg aria-hidden="true"><use href="#i-camera"/></svg><h3>Snapshots</h3><p>Capture state for faster replay and recovery.</p></article>
+          <article class="reliability-card"><svg aria-hidden="true"><use href="#i-chart"/></svg><h3>Telemetry</h3><p>Metrics and health signals built in.</p></article>
+          <article class="reliability-card"><svg aria-hidden="true"><use href="#i-document"/></svg><h3>Logging</h3><p>Structured logs for important events.</p></article>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="why" aria-labelledby="benefits-title">
+      <div class="container">
+        <h2 class="section-title" id="benefits-title">Why this matters</h2>
+        <div class="benefit-grid">
+          <article class="benefit-card reliable">
+            <div class="benefit-head"><span class="benefit-icon"><svg aria-hidden="true"><use href="#i-shield"/></svg></span><h3>Reliable by default</h3></div>
+            <ul>
+              <li>You never lose an event</li>
+              <li>No locks. No isolation levels.</li>
+              <li>Crashes don’t lose work</li>
+              <li>Read-your-writes built in</li>
+              <li>Snapshots keep recovery fast</li>
+            </ul>
+          </article>
+          <article class="benefit-card grow">
+            <div class="benefit-head"><span class="benefit-icon"><svg aria-hidden="true"><use href="#i-trend"/></svg></span><h3>Ready when you grow</h3></div>
+            <ul>
+              <li>Projections scale independently</li>
+              <li>Add nodes without changing domain code</li>
+              <li>Built on a proven foundation</li>
+              <li>Handles load and spikes gracefully</li>
+              <li>Scales across a cluster as you grow</li>
+            </ul>
+          </article>
+          <article class="benefit-card domain">
+            <div class="benefit-head"><span class="benefit-icon"><svg aria-hidden="true"><use href="#i-code"/></svg></span><h3>Focus on your domain</h3></div>
+            <ul>
+              <li>You write only <code>decide</code> and <code>fold</code></li>
+              <li>Textbook DDD aggregates</li>
+              <li>Testable without a runtime</li>
+              <li>Easy to use and set up</li>
+              <li>The framework handles the hard parts</li>
+            </ul>
+          </article>
+        </div>
+
+        <aside class="under-hood" aria-label="Implementation details">
+          <div class="akka">
+            <svg viewBox="0 0 100 76" aria-hidden="true"><path d="M25 68 57 8 97 68Z" fill="#29abe2"/><path d="M4 68 24 34 44 68Z" fill="#1076bd" stroke="#fff" stroke-width="3" stroke-linejoin="round"/></svg>
+            <div><small>BUILT ON</small><strong>Akka.NET</strong></div>
+          </div>
+          <p>FCQRS uses Akka.NET under the hood when you need it — but keeps the actor model out of your way.</p>
+          <div class="trust" aria-label="Project qualities">
+            <span><svg aria-hidden="true"><use href="#i-shield"/></svg>Reliable</span>
+            <span><svg aria-hidden="true"><use href="#i-award"/></svg>Mature</span>
+            <span><svg aria-hidden="true"><use href="#i-tools"/></svg>Battle-tested</span>
+            <span><svg aria-hidden="true"><use href="#i-bank"/></svg>Enterprise-proven</span>
+          </div>
+        </aside>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer" id="resources">
+    <div class="footer-grid">
+      <div class="footer-message">
+        <p class="small">Stop writing plumbing.</p>
+        <p class="big">Write your <span class="green">domain.</span></p>
+        <p class="sub">FCQRS makes event sourcing simple and reliable.</p>
+      </div>
+      <a class="resource" href="https://github.com/OnurGumus/FCQRS#readme" target="_blank" rel="noreferrer">
+        <span class="resource-icon" style="color: var(--red-600)"><svg aria-hidden="true"><use href="#i-document"/></svg></span>
+        <span><strong>Docs</strong><small>Read the guide</small></span><span class="arrow">›</span>
+      </a>
+      <a class="resource" href="https://www.nuget.org/packages/FCQRS" target="_blank" rel="noreferrer">
+        <span class="resource-icon" style="color: var(--green-700)"><svg aria-hidden="true"><use href="#i-package"/></svg></span>
+        <span><strong>NuGet</strong><small>Install FCQRS</small></span><span class="arrow">›</span>
+      </a>
+      <a class="resource" href="https://github.com/OnurGumus/FCQRS" target="_blank" rel="noreferrer">
+        <span class="resource-icon" style="color: var(--navy-900)"><svg aria-hidden="true"><use href="#i-github"/></svg></span>
+        <span><strong>GitHub</strong><small>View the source</small></span><span class="arrow">›</span>
+      </a>
+    </div>
+  </footer>
+
+  <script>
+    const toggle = document.querySelector('.mobile-toggle');
+    const links = document.querySelector('#navLinks');
+
+    toggle?.addEventListener('click', () => {
+      const open = links.classList.toggle('open');
+      toggle.setAttribute('aria-expanded', String(open));
+    });
+
+    links?.addEventListener('click', event => {
+      if (event.target instanceof HTMLAnchorElement) {
+        links.classList.remove('open');
+        toggle?.setAttribute('aria-expanded', 'false');
+      }
+    });
+  </script>
+</body>
+</html>
