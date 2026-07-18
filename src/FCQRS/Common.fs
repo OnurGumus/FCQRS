@@ -243,6 +243,26 @@ type EventAction<'T when 'T : not null> =
     | Stash of EventAction<'T>
     | Unstash of EventAction<'T>
     | UnstashAll of EventAction<'T>
+    /// Dispatch an async side effect (e.g. an AI/oracle read) as a "mini saga"
+    /// without the saga's persistence ceremony. The payload is an INSPECTABLE
+    /// DATA description of the effect (boxed) — NOT a closure — so `decide`
+    /// stays a pure `(command, state) -> effect` function you can unit-test by
+    /// asserting `decide cmd state = RunAsync (box (ClusterThemes texts))`
+    /// without any runtime. The oracle lives in the runner registered at
+    /// `Fcqrs.aggregateWithEffects`, which maps the description to a command;
+    /// that command is sent back to THIS aggregate (reusing the originating
+    /// CID) and re-enters `decide`, re-validated against current state.
+    ///
+    /// EPHEMERAL: the in-flight work is process state, NOT journaled. A crash,
+    /// restart, or shard rebalance while it runs loses it SILENTLY — nothing
+    /// re-issues it. Use this only when that loss is tolerable; when the result
+    /// MUST survive a crash, use a saga (which persists its intent).
+    ///
+    /// TOTAL: the registered runner must map every outcome (oracle error,
+    /// timeout) to a command (e.g. `ClusteringFailed`), never let an exception
+    /// escape — `Fcqrs.total` helps. An escaping exception fail-fasts the
+    /// process, like a throwing fold.
+    | RunAsync of obj
 
 /// Akka's internal log verbosity. FCQRS ships with Akka logging OFF (it is
 /// chatty); this enables it without hand-editing HOCON/config.
@@ -632,6 +652,19 @@ type IActor =
     /// <returns>An entity factory (`EntityFac<obj>`) for creating instances of this actor.</returns>
     abstract InitializeActor:
         'a -> string -> (Command<'c> -> 'a -> EventAction<'b>) -> (Event<'b> -> 'a -> 'a) -> SnapshotPolicy -> EntityFac<obj> when 'b: not null
+
+    /// Like InitializeActor, plus a runner for the `RunAsync` effect: it maps a
+    /// boxed effect description to a boxed command (self-dispatched, re-entering
+    /// decide). None means the aggregate does not use RunAsync (and using it
+    /// fail-fasts). The runner must be total (map failure to a command).
+    abstract InitializeActorWithRunner:
+        'a ->
+        string ->
+        (Command<'c> -> 'a -> EventAction<'b>) ->
+        (Event<'b> -> 'a -> 'a) ->
+        SnapshotPolicy ->
+        (obj -> Async<obj>) option ->
+            EntityFac<obj> when 'b: not null
 
     /// Initializes a sharded, persistent saga actor.
     /// <param name="initialState">The initial state (`SagaState`) for new saga instances.</param>

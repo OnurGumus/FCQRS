@@ -257,7 +257,7 @@ module internal Internal =
                 return! body bodyInput
         }
 
-    let rec handleEffect effect state  (mailbox: Eventsourced<obj>) toEvent nextVersion bodyInput set = actor {
+    let rec handleEffect effect state  (mailbox: Eventsourced<obj>) toEvent nextVersion bodyInput runEffect set = actor {
          match effect with
             | PersistEvent event ->
                 let nextVersion: Version =
@@ -300,13 +300,23 @@ module internal Internal =
             | UnhandledEvent -> return Unhandled
             | Stash effect ->
                 mailbox.Stash()
-                return! handleEffect effect state mailbox toEvent nextVersion bodyInput set
+                return! handleEffect effect state mailbox toEvent nextVersion bodyInput runEffect set
             | Unstash effect ->
                 mailbox.Unstash()
-                return! handleEffect effect state mailbox toEvent nextVersion bodyInput set
+                return! handleEffect effect state mailbox toEvent nextVersion bodyInput runEffect set
             | UnstashAll effect ->
                 mailbox.UnstashAll()
-                return! handleEffect effect state mailbox toEvent nextVersion bodyInput set
+                return! handleEffect effect state mailbox toEvent nextVersion bodyInput runEffect set
+
+            | RunAsync description ->
+                // A "mini saga": the registered runner turns the description
+                // into a command OFF the mailbox (the actor keeps processing
+                // other commands); runEffect then self-dispatches it, re-entering
+                // decide re-validated against current state. See RunAsync's doc
+                // for the ephemeral / totality contract. runEffect is built per
+                // command (it knows the originating CID and command type).
+                runEffect description
+                return set state
         }
 
     let actorProp
@@ -318,6 +328,7 @@ module internal Internal =
         (name: string)
         toEvent
         (snapshotPolicy: SnapshotPolicy)
+        (effectRunner: (obj -> Async<obj>) option)
         (mediator: IActorRef<Publish>)
         (mailbox: Eventsourced<obj>)
         =
@@ -427,7 +438,48 @@ module internal Internal =
 
                             act.Dispose()
 
-                        return! handleEffect effect state mailbox toEvent state.Version bodyInput set
+                        // Built per command so it closes over the originating
+                        // command (CID/metadata) and the aggregate's command
+                        // type — turns a RunAsync description into a self-command.
+                        let runEffect (description: obj) : unit =
+                            match effectRunner with
+                            | None ->
+                                logger.LogError(
+                                    "Aggregate {Aggregate} returned a RunAsync effect but was registered without an effect runner (use Fcqrs.aggregateWithEffects). Terminating.",
+                                    name)
+
+                                fatalFailFast
+                                    null
+                                    (sprintf "Aggregate '%s' used RunAsync without a registered effect runner" name)
+                                    (exn "no effect runner")
+                            | Some run ->
+                                Async.StartWithContinuations(
+                                    run description,
+                                    (fun (boxedCommand: obj) ->
+                                        // Reuse the originating envelope (CID, metadata) with a
+                                        // fresh id and the runner's command payload, then
+                                        // self-dispatch: re-enters decide, re-validated.
+                                        let selfCmd =
+                                            { cmd with
+                                                CommandDetails = unbox boxedCommand
+                                                Id =
+                                                    Guid.CreateVersion7().ToString()
+                                                    |> ValueLens.CreateAsResult
+                                                    |> Result.value
+                                                Sender = None }
+
+                                        mailbox.Self <! box selfCmd),
+                                    (fun (ex: exn) ->
+                                        logger.LogError(
+                                            ex,
+                                            "RunAsync runner threw for {0}; the runner must be total (map failure to a command, never an exception). Terminating.",
+                                            mailbox.Self.Path.ToString())
+
+                                        fatalFailFast null "RunAsync runner threw; totality violated" ex),
+                                    (fun (_: OperationCanceledException) -> ()),
+                                    System.Threading.CancellationToken.None)
+
+                        return! handleEffect effect state mailbox toEvent state.Version bodyInput runEffect set
                     | _ ->
                         bodyInput.Log.LogWarning("Unhandled message: {msg}", msg)
                         return Unhandled
@@ -479,9 +531,21 @@ module internal Internal =
         let ex = Execute e
         ex |> actorApi.SubscribeForCommand
 
-    let init config loggerFactory initialState name toEvent (actorApi: IActor) handleCommand apply snapshotPolicy =
+    let init config loggerFactory initialState name toEvent (actorApi: IActor) handleCommand apply snapshotPolicy effectRunner =
         AkklingHelpers.Internal.entityFactoryFor actorApi.System shardResolver name
-        <| propsPersist (actorProp config loggerFactory handleCommand apply initialState name toEvent snapshotPolicy (typed actorApi.Mediator))
+        <| propsPersist (
+            actorProp
+                config
+                loggerFactory
+                handleCommand
+                apply
+                initialState
+                name
+                toEvent
+                snapshotPolicy
+                effectRunner
+                (typed actorApi.Mediator)
+        )
         <| false
 
 /// Custom configuration provider for in-memory HOCON strings
@@ -699,7 +763,11 @@ let api (config: IConfiguration) (loggerFactory: ILoggerFactory) (connection: Co
         /// </example>
         member this.InitializeActor initialState name handleCommand apply snapshotPolicy =
             let toEvent mid ci sender metadata version event = toEvent system.Scheduler (Some mid) ci sender version metadata event
-            init config loggerFactory initialState name toEvent this handleCommand apply snapshotPolicy
+            init config loggerFactory initialState name toEvent this handleCommand apply snapshotPolicy None
+
+        member this.InitializeActorWithRunner initialState name handleCommand apply snapshotPolicy effectRunner =
+            let toEvent mid ci sender metadata version event = toEvent system.Scheduler (Some mid) ci sender version metadata event
+            init config loggerFactory initialState name toEvent this handleCommand apply snapshotPolicy effectRunner
         
         /// <summary>
         /// Initializes a saga to manage a long-running business process across multiple actors.

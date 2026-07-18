@@ -1,5 +1,28 @@
 # Changelog
 
+## 6.0.0-rc3 (FCQRS core)
+- **`RunAsync` effect — a "mini saga" without persistence ceremony**: `decide`
+  can now dispatch a short async side effect (e.g. an AI/oracle read) whose
+  result becomes a command sent back to the same aggregate, re-entering
+  `decide` (re-validated against current state) — all without standing up a
+  saga. The effect payload is an **inspectable DATA description**, not a
+  closure, so `decide` stays a pure `(command, state) -> effect` function you
+  unit-test by structural equality:
+  `decide cmd state = dispatch (ClusterThemes texts)` — no runtime, no oracle.
+  The oracle lives only in the runner registered at
+  `Fcqrs.aggregateWithEffects api def runner`; `dispatch desc` builds the
+  effect and `total onError work` makes a runner body total.
+
+  **EPHEMERAL** by design: the in-flight work is process state, NOT journaled —
+  a crash / restart / shard rebalance mid-flight loses it silently. Use it only
+  when that loss is tolerable; when the result must survive a crash, use a saga
+  (which persists its intent). **TOTAL**: the runner must map every outcome
+  (oracle error, timeout) to a command — an escaping exception fail-fasts the
+  process, like a throwing fold. Additive: `EventAction` gains a `RunAsync`
+  case and `IActor` an `InitializeActorWithRunner` method; `Fcqrs.aggregate`
+  and existing `decide`/`fold` are unchanged. Facade.Tests pins the pure-decide
+  equality, the success self-dispatch, and the total-failure path.
+
 ## 6.0.0-rc2 (FCQRS core + FCQRS.ExpectoTickSpec)
 - **Delivery stamp: journaled vs deferred acks are now distinguishable**:
   aggregate delivery stamps `fcqrs:journaled` = `true`/`false` into the

@@ -20,6 +20,13 @@ open FCQRS.FSharp
 
 /// A trivial counter aggregate.
 module Counter =
+    /// Inspectable DATA description of a side effect — returned by decide via
+    /// `dispatch`, executed by the registered runner. decide never touches the
+    /// oracle, so it stays pure and unit-testable by structural equality.
+    type Effect =
+        | AskThenAdd of int // "oracle" yields n; runner -> Increment n
+        | AskThenFail // "oracle" throws; total -> Reset
+
     type Command =
         | Increment of int
         | Split of int * int
@@ -27,6 +34,8 @@ module Counter =
         | Reset
         // acked to the caller but never journaled — exercises DeferEvent delivery
         | Poke
+        // decide returns a RunAsync effect (mini saga); the runner self-dispatches
+        | Dispatch of Effect
 
     type Event =
         | Incremented of int
@@ -45,6 +54,8 @@ module Counter =
         | Checkpoint -> WasReset |> persistAndSnapshot
         | Reset -> WasReset |> PersistEvent
         | Poke -> Poked |> DeferEvent
+        // pure: returns the effect DESCRIPTION, no oracle in sight
+        | Dispatch eff -> dispatch eff
 
     let fold (e: Event<Event>) state =
         match e.EventDetails with
@@ -176,6 +187,45 @@ let private singleHandled = ref 0
 
 let private registerJournalTypes () =
     Fcqrs.journalTypes [ journalType<Counter.Event> "counter.event" ]
+
+/// A total effect runner for Counter: maps each effect description to a
+/// command, and `total` maps any oracle exception to a command (never lets it
+/// escape). This is the ONLY place the "oracle" lives; decide stays pure.
+let private counterRunner (eff: Counter.Effect) : Async<Counter.Command> =
+    match eff with
+    | Counter.AskThenAdd n ->
+        total (fun _ -> Counter.Reset) (async {
+            do! Async.Sleep 15
+            return Counter.Increment n
+        })
+    | Counter.AskThenFail ->
+        total (fun _ -> Counter.Reset) (async {
+            do! Async.Sleep 15
+            return failwith "oracle down"
+        })
+
+let private mkCommand (details: 'c) : Command<'c> =
+    { CommandDetails = details
+      Id = Guid.CreateVersion7().ToString() |> ValueLens.CreateAsResult |> Result.value
+      CreationDate = DateTime.UtcNow
+      CorrelationId = Fcqrs.newCid ()
+      Sender = None
+      Metadata = Map.empty }
+
+/// Boot a system whose Counter is registered WITH the effect runner, so
+/// RunAsync effects have somewhere to run.
+let private bootWithRunner () =
+    registerJournalTypes ()
+    let db = Path.Combine(Path.GetTempPath(), sprintf "fcqrs_facade_run_%s.db" (Guid.NewGuid().ToString("N")))
+    let api =
+        Fcqrs.actor (ConfigurationBuilder().Build()) NullLoggerFactory.Instance
+            (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite (sprintf "Data Source=%s;" db))) "RunAsyncSmoke"
+    let counter =
+        Fcqrs.aggregateWithEffects api
+            { Name = "Counter"; Initial = Counter.initial; Decide = Counter.decide; Fold = Counter.fold; Snapshots = Default }
+            counterRunner
+    Fcqrs.wireSagaStarters api []
+    counter
 
 let private boot () =
     registerJournalTypes ()
@@ -730,9 +780,42 @@ let private journaledStampTest =
         sw.Stop()
         Expect.isLessThan sw.Elapsed.TotalSeconds 5.0 "deferred sendAwaiting returned without waiting for a projection event"
 
+/// RunAsync (mini saga): decide stays a PURE, inspectable function; the
+/// registered runner self-dispatches a command on success, and `total` turns
+/// an oracle failure into a command (not a crash).
+let private runAsyncTest =
+    testCase "RunAsync: decide pure/inspectable; runner self-dispatches on success and total-failure"
+    <| fun _ ->
+        // (1) decide is pure — assert the effect description by structural
+        //     equality, with no runtime, no oracle, no FCQRS.
+        Expect.equal
+            (Counter.decide (mkCommand (Counter.Dispatch(Counter.AskThenAdd 7))) Counter.initial)
+            (dispatch (Counter.AskThenAdd 7))
+            "decide returns the RunAsync description by structural equality"
+
+        let counter = bootWithRunner ()
+        let incremented = function Counter.Incremented _ -> true | _ -> false
+        let wasReset = function Counter.WasReset -> true | _ -> false
+
+        // (2) success: runner maps AskThenAdd 7 -> Increment 7, self-dispatched
+        //     and re-validated by decide -> Incremented 7.
+        let id1 = Fcqrs.aggregateId (Guid.NewGuid().ToString "N")
+        let ev =
+            counter.Send (Fcqrs.newCid ()) id1 (Counter.Dispatch(Counter.AskThenAdd 7)) incremented
+            |> Async.RunSynchronously
+        Expect.equal ev.EventDetails (Counter.Incremented 7) "success self-dispatched Increment 7"
+
+        // (3) totality: the oracle throws; `total` maps it to Reset -> WasReset,
+        //     NOT an exception/crash.
+        let id2 = Fcqrs.aggregateId (Guid.NewGuid().ToString "N")
+        let ev2 =
+            counter.Send (Fcqrs.newCid ()) id2 (Counter.Dispatch Counter.AskThenFail) wasReset
+            |> Async.RunSynchronously
+        Expect.equal ev2.EventDetails Counter.WasReset "oracle failure became a command, not a crash"
+
 let tests =
     testSequenced (
-        testList "facade" [ manifestTest; roundTripTest; persistAllTest; manualSnapshotTest; telemetryTest; payloadSwitchTest; overflowTest; snapshotRecoveryTest; restartDetectionTest; filteredProjectionTest; persistIfTest; bridgeTest; pendingBridgeTest; focusShapeTest; journaledStampTest ]
+        testList "facade" [ manifestTest; roundTripTest; persistAllTest; manualSnapshotTest; telemetryTest; payloadSwitchTest; overflowTest; snapshotRecoveryTest; restartDetectionTest; filteredProjectionTest; persistIfTest; bridgeTest; pendingBridgeTest; focusShapeTest; journaledStampTest; runAsyncTest ]
     )
 
 [<EntryPoint>]

@@ -176,6 +176,27 @@ let defer (event: 'e) : EventAction<'e> = DeferEvent event
 let persistIf (shouldPersist: bool) (event: 'e) : EventAction<'e> =
     if shouldPersist then PersistEvent event else DeferEvent event
 let transitionTo (state: 'state) : EventAction<'state> = StateChangedEvent state
+
+/// Dispatch an async side effect (a "mini saga" without persistence) by its
+/// DATA description. `decide` stays pure and inspectable —
+/// `decide cmd state = dispatch (ClusterThemes texts)` holds by structural
+/// equality — and the oracle lives in the runner registered at
+/// `Fcqrs.aggregateWithEffects`. EPHEMERAL: the in-flight work is not
+/// journaled; use a saga when the result must survive a crash. See
+/// `EventAction.RunAsync`.
+let dispatch (description: 'description) : EventAction<'event> = RunAsync(box description)
+
+/// Make an effect-runner body TOTAL: run `work`, mapping ANY exception (oracle
+/// error, timeout, cancellation) to a command via `onError`, so the runner
+/// never lets an exception escape (which would fail-fast the process).
+let total (onError: exn -> 'command) (work: Async<'command>) : Async<'command> =
+    async {
+        try
+            return! work
+        with ex ->
+            return onError ex
+    }
+
 let stay<'state> : SagaTransition<'state> = Stay
 let stop<'state> : SagaTransition<'state> = StopSaga
 let nextState (state: 'state) : SagaTransition<'state> = NextState state
@@ -213,6 +234,31 @@ module Fcqrs =
     /// registration (it initializes the sharding region).
     let aggregate (api: IActor) (def: Aggregate<'State, 'Command, 'Event>) : AggregateHandle<'Command, 'Event> =
         let fac = api.InitializeActor def.Initial def.Name def.Decide def.Fold def.Snapshots
+        let factory = refFor fac
+        { Factory = factory
+          Send = fun cid id command filter -> api.CreateCommandSubscription factory cid id command filter None }
+
+    /// Register an aggregate whose `decide` uses `dispatch` (the RunAsync
+    /// effect), supplying the runner that turns an effect DESCRIPTION into a
+    /// command sent back to the aggregate. `decide` stays pure — the oracle /
+    /// side effect lives only here. The runner MUST be total (wrap it with
+    /// `total` so an oracle error becomes a command, never an escaping
+    /// exception). See `EventAction.RunAsync` for the ephemeral contract.
+    let aggregateWithEffects
+        (api: IActor)
+        (def: Aggregate<'State, 'Command, 'Event>)
+        (runner: 'description -> Async<'Command>)
+        : AggregateHandle<'Command, 'Event> =
+        let boxedRunner: obj -> Async<obj> =
+            fun (description: obj) ->
+                async {
+                    let! (command: 'Command) = runner (unbox description)
+                    return box command
+                }
+
+        let fac =
+            api.InitializeActorWithRunner def.Initial def.Name def.Decide def.Fold def.Snapshots (Some boxedRunner)
+
         let factory = refFor fac
         { Factory = factory
           Send = fun cid id command filter -> api.CreateCommandSubscription factory cid id command filter None }
