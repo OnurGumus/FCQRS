@@ -7,6 +7,14 @@
   <meta name="theme-color" content="#071d46" />
   <title>FCQRS — You write the rules</title>
   <style>
+    /* Self-hosted Inter (variable, Latin subset) — no runtime CDN dependency. SIL OFL 1.1, see fonts/LICENSE. */
+    @font-face {
+      font-family: 'Inter';
+      font-style: normal;
+      font-display: swap;
+      font-weight: 100 900;
+      src: url('fonts/inter-latin-wght-normal.woff2') format('woff2-variations');
+    }
     :root {
       color-scheme: light;
       --navy-950: #051a3f;
@@ -640,7 +648,7 @@
         <a class="button" href="https://github.com/OnurGumus/FCQRS" target="_blank" rel="noreferrer">
           <svg aria-hidden="true"><use href="#i-star"/></svg> Star on GitHub
         </a>
-        <a class="button primary" href="https://github.com/OnurGumus/FCQRS#readme" target="_blank" rel="noreferrer">Get started</a>
+        <a class="button primary" href="get-started.html">Get started</a>
         <button class="mobile-toggle" type="button" aria-label="Toggle navigation" aria-expanded="false" aria-controls="navLinks">
           <svg width="23" height="23" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
         </button>
@@ -798,7 +806,7 @@
         <p class="big">Write your <span class="green">domain.</span></p>
         <p class="sub">FCQRS makes event sourcing simple and reliable.</p>
       </div>
-      <a class="resource" href="https://github.com/OnurGumus/FCQRS#readme" target="_blank" rel="noreferrer">
+      <a class="resource" href="overview.html">
         <span class="resource-icon" style="color: var(--red-600)"><svg aria-hidden="true"><use href="#i-document"/></svg></span>
         <span><strong>Docs</strong><small>Read the guide</small></span><span class="arrow">›</span>
       </a>
