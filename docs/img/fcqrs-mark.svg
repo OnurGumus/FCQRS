@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="512" height="512" role="img" aria-label="FCQRS">
+  <defs>
+    <linearGradient id="brand-red" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#ff3b36"/><stop offset="1" stop-color="#c60008"/></linearGradient>
+    <linearGradient id="brand-blue" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#184c98"/><stop offset="1" stop-color="#03183d"/></linearGradient>
+  </defs>
+  <path d="M32 3 57 17v30L32 61 7 47V17Z" fill="url(#brand-blue)"/>
+  <path d="M32 10 49 20 32 30 22 24v17l10 6 17-10v10L32 57 13 46V20Z" fill="white"/>
+  <path d="m32 30 17-10 8 5v22L32 61V47l17-10V27L32 37Z" fill="url(#brand-red)"/>
+</svg>
