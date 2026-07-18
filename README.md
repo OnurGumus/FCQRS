@@ -4,6 +4,8 @@
 [![Downloads](https://img.shields.io/nuget/dt/FCQRS.svg)](https://www.nuget.org/packages/FCQRS)
 [![CI](https://github.com/OnurGumus/FCQRS/actions/workflows/ci.yaml/badge.svg)](https://github.com/OnurGumus/FCQRS/actions/workflows/ci.yaml)
 
+> 🌐 **[See what FCQRS gives you →](https://onurgumus.github.io/FCQRS/)** — the landing page, at a glance.
+
 FCQRS is a small F# framework for building applications with **CQRS** and **event sourcing** on top
 of Akka.NET actors, usable from both F# and C#. You write pure decision and fold functions; the
 framework supplies the actors, sharding, persistence, sagas, and client coordination.
@@ -15,6 +17,25 @@ happened, and emits **events**. Events are appended to a journal (the source of 
 **read models** shaped for querying and to **sagas** that turn events into follow-up commands. A
 **correlation id** threads through a request so a caller knows exactly when the read side has caught
 up. The same domain reads almost identically in C#, using C# 15 discriminated `union` types.
+
+## What you get
+
+You write your business rules. FCQRS delivers the guarantees.
+
+- ✅ **You never lose data** — every change is recorded permanently and can't be quietly overwritten.
+- ✅ **A complete, trustworthy history of everything that happened** — a full audit trail by default, not something you bolt on later.
+- ✅ **Rebuild any report or view from history** — fix a mistake by replaying the past, never by patching production data.
+- ✅ **No race conditions to hunt down** — correct under concurrency by design; nothing to lock, nothing to tune.
+- ✅ **You always read your own writes** — no stale data, no arbitrary waits, no guessing when it's ready.
+- ✅ **You write rules, not infrastructure** — storage, recovery, and coordination are handled for you.
+- ✅ **Test your logic instantly** — verify your decisions with no database and no running system.
+- ✅ **The same product in F# and C#** — first-class in both languages; neither is an afterthought.
+- ✅ **Fast, query-ready views kept up to date for you** — read models that are always current, without extra work.
+- ✅ **Long-running processes that survive restarts** — multi-step work resumes exactly where it left off after a crash.
+- ✅ **Reach outside services without extra machinery** — call an AI or a lookup and act on the answer, no ceremony.
+- ✅ **See any workflow end to end** — built-in tracing and clear logs from day one.
+- ✅ **Scale from a laptop to a cluster** — the same code grows with you; no rewrite when traffic does.
+- ✅ **Up and running in minutes** — one line of setup and a connection string.
 
 ## Get set, go
 
