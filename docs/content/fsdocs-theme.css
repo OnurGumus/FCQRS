@@ -139,17 +139,91 @@ pre.fssnip.highlighted,
     border-radius: 10px;
 }
 
-/* A modern purple accent in place of the default cyan — links, active nav,
-   callout borders, buttons. */
+/* ======================================================================
+   Unify the docs with the FCQRS landing page — navy + green, Inter.
+   These override fsdocs-default.css (loaded earlier), so they win.
+   ====================================================================== */
+
+/* Self-hosted Inter (variable, Latin subset). url() is resolved relative
+   to THIS file (output/content/), so ../fonts works at every page depth. */
+@font-face {
+    font-family: 'Inter';
+    font-style: normal;
+    font-display: swap;
+    font-weight: 100 900;
+    src: url('../fonts/inter-latin-wght-normal.woff2') format('woff2-variations');
+}
+
 :root {
-    --primary: #6d5ae6;
+    --system-font: 'Inter', system-ui, -apple-system, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+    --heading-font-family: var(--system-font);
+    --radius: 12px;
+
+    --primary: #0e1c56;
+    --background: #ffffff;
+    --text-color: #22314d;
+    --text-hover: #0e1c56;
+    --heading-color: #0e1c56;
+
+    --link-color: #08752f;
+    --link-hover: #0a8a38;
+
+    --header-background: #ffffff;
+    --header-border: #d7e1ef;
+    --header-link-color: #0e1c56;
+    --mobile-menu-background: #ffffff;
+
+    --menu-color: #22314d;
+    --menu-item-hover-background: #ecf8ef;
+    --menu-item-hover-color: #08752f;
+    --nav-category: #4d5f7d;
+    --nav-item-border-color: #e6ecf4;
+    --nav-item-active-border-color: #08752f;
+
+    --aside-background: #f7faff;
+    --search-background: #eef3fc;
+    --doc-tip-background: #f4f7fb;
+    --blockquote-bacground-color: #f4f7fb;
+    --code-fence-border-color: #e2e9f3;
 }
 
 :root[data-theme="dark"],
 [data-theme="dark"] {
-    --primary: #a89bff;
-    --code-background: #1b1b21;    /* deeper, MassTransit-style code panel */
+    --primary: #5fe08b;
+    --background: #0a1830;
+    --text-color: #d6e2f4;
+    --text-hover: #ffffff;
+    --heading-color: #ffffff;
+
+    --link-color: #5fe08b;
+    --link-hover: #8fecac;
+
+    --header-background: #071429;
+    --header-border: #1a2b4a;
+    --header-link-color: #eef4ff;
+    --mobile-menu-background: #071429;
+
+    --menu-color: #c4d2e0;
+    --menu-item-hover-background: rgba(31, 180, 100, 0.16);
+    --menu-item-hover-color: #8fecac;
+    --nav-category: #7d8ba5;
+    --nav-item-border-color: #16263f;
+    --nav-item-active-border-color: #5fe08b;
+
+    --aside-background: #081a34;
+    --search-background: #0e2140;
+    --doc-tip-background: #0e2140;
+    --code-background: #06122a;    /* deep navy code panel */
+    --code-fence-border-color: #16263f;
 }
+
+/* Headings echo the landing's tighter, navy display type. */
+.content h1, .content h2, .content h3, .content h4 { letter-spacing: -0.02em; }
+.content h1 { letter-spacing: -0.03em; }
+
+/* Active nav item reads in the green accent, like the landing. */
+.menu .nav-item.active > a,
+.menu .nav-item a.active { color: var(--link-color); font-weight: 700; }
 
 /* ---- Sidebar nav to match the MassTransit (Astro Starlight) nav ---------- */
 /* Starlight's sidebar: section titles are 1rem, weight 600, NOT uppercase;
@@ -157,8 +231,7 @@ pre.fssnip.highlighted,
    which reads as a different typeface next to Starlight. Align both, and use
    Starlight's own sans stack on the nav. */
 ul.menu, #fsdocs-main-menu, #fsdocs-page-menu {
-    font-family: ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji",
-                 "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
+    font-family: var(--system-font);
 }
 
 /* .menu .nav-header wins over fsdocs' nested default (bare .nav-header loses). */
