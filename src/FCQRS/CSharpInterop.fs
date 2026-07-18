@@ -137,6 +137,14 @@ type EventActions =
     static member Ignore<'TEvent when 'TEvent: not null>() : EventAction<'TEvent> =
         EventAction.IgnoreEvent
 
+    /// Create a RunAsync effect (a "mini saga" without persistence) from an
+    /// INSPECTABLE description object. The runner registered via
+    /// `InitAggregateWithEffects` executes it and self-dispatches the resulting
+    /// command. EPHEMERAL (not journaled — a crash mid-flight loses it) and
+    /// TOTAL (the runner must map failure to a command). See EventAction.RunAsync.
+    static member Dispatch<'TEvent when 'TEvent: not null>(description: obj) : EventAction<'TEvent> =
+        EventAction.RunAsync description
+
 /// Diagnostics helper: a short, readable case name for logging. Unwraps a
 /// Command&lt;_&gt;/Event&lt;_&gt; envelope to its payload (via IEnvelope), then a
 /// C# `union` to its active case (its generated `.Value`), and falls back to the
@@ -352,6 +360,44 @@ type ActorWiring =
         applyEvent: Func<Event<'TEvent>, 'TState, 'TState>,
         snapshotPolicy: SnapshotPolicy) : AggregateRefs<'TCommand, 'TEvent> =
         let fac = ActorWiring.InitActor<'TState, 'TCommand, 'TEvent>(actor, initialState, entityName, handleCommand, applyEvent, snapshotPolicy)
+        let factory = AggregateFactory(fun entityId -> fac.RefFor DEFAULT_SHARD entityId)
+        let handler =
+            Handler<'TCommand, 'TEvent>(fun filter cid aggregateId command ->
+                ActorWiring.SendCommandAsync<'TEvent, 'TCommand>(actor, factory, cid, aggregateId, command, filter))
+        { Factory = factory; Handler = handler }
+
+    /// InitActor whose decide can return `EventActions.Dispatch(...)` (the
+    /// RunAsync effect). `runner` maps a boxed effect description to a Task of
+    /// the boxed command self-dispatched back to the aggregate. It MUST be total
+    /// — catch every failure into a command (try/catch in the Task); an escaping
+    /// exception fail-fasts the process, like a throwing fold. The in-flight work
+    /// is NOT journaled (ephemeral). See EventAction.RunAsync.
+    static member InitActorWithRunner<'TState, 'TCommand, 'TEvent when 'TEvent: not null>(
+        actor: IActor,
+        initialState: 'TState,
+        entityName: string,
+        handleCommand: Func<Command<'TCommand>, 'TState, EventAction<'TEvent>>,
+        applyEvent: Func<Event<'TEvent>, 'TState, 'TState>,
+        runner: Func<obj, Task<obj>>,
+        snapshotPolicy: SnapshotPolicy) : Akkling.Cluster.Sharding.EntityFac<obj> =
+        let cmdHandler cmd state = handleCommand.Invoke(cmd, state)
+        let evtApplier evt state = applyEvent.Invoke(evt, state)
+        let boxedRunner: obj -> Async<obj> = fun description -> runner.Invoke description |> Async.AwaitTask
+        actor.InitializeActorWithRunner initialState entityName cmdHandler evtApplier snapshotPolicy (Some boxedRunner)
+
+    /// InitAggregate whose decide can return `EventActions.Dispatch(...)` — see
+    /// InitActorWithRunner. Returns Factory + Handler like InitAggregate.
+    static member InitAggregateWithEffects<'TState, 'TCommand, 'TEvent when 'TEvent: not null>(
+        actor: IActor,
+        initialState: 'TState,
+        entityName: string,
+        handleCommand: Func<Command<'TCommand>, 'TState, EventAction<'TEvent>>,
+        applyEvent: Func<Event<'TEvent>, 'TState, 'TState>,
+        runner: Func<obj, Task<obj>>,
+        snapshotPolicy: SnapshotPolicy) : AggregateRefs<'TCommand, 'TEvent> =
+        let fac =
+            ActorWiring.InitActorWithRunner<'TState, 'TCommand, 'TEvent>(
+                actor, initialState, entityName, handleCommand, applyEvent, runner, snapshotPolicy)
         let factory = AggregateFactory(fun entityId -> fac.RefFor DEFAULT_SHARD entityId)
         let handler =
             Handler<'TCommand, 'TEvent>(fun filter cid aggregateId command ->

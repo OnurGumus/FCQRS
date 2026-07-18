@@ -797,6 +797,18 @@ let private runAsyncTest =
         let incremented = function Counter.Incremented _ -> true | _ -> false
         let wasReset = function Counter.WasReset -> true | _ -> false
 
+        // Capture spans so we can assert the runner (which runs OFF the mailbox)
+        // is traced under the caller's trace, low-cardinality name.
+        let captured = Collections.Concurrent.ConcurrentBag<string * ActivityTraceId>()
+        use listener = new ActivityListener()
+        listener.ShouldListenTo <- fun src -> src.Name = Telemetry.ActivitySourceName
+        listener.Sample <- SampleActivity<ActivityContext>(fun _ -> ActivitySamplingResult.AllDataAndRecorded)
+        listener.ActivityStopped <- fun a -> captured.Add((a.OperationName, a.TraceId))
+        ActivitySource.AddActivityListener listener
+
+        use root = new Activity("test-root")
+        root.Start() |> ignore
+
         // (2) success: runner maps AskThenAdd 7 -> Increment 7, self-dispatched
         //     and re-validated by decide -> Incremented 7.
         let id1 = Fcqrs.aggregateId (Guid.NewGuid().ToString "N")
@@ -804,6 +816,18 @@ let private runAsyncTest =
             counter.Send (Fcqrs.newCid ()) id1 (Counter.Dispatch(Counter.AskThenAdd 7)) incremented
             |> Async.RunSynchronously
         Expect.equal ev.EventDetails (Counter.Incremented 7) "success self-dispatched Increment 7"
+
+        root.Stop()
+
+        // The runner's span (off the mailbox) rides the command's trace context.
+        let mutable attempts = 0
+        while not (captured |> Seq.exists (fun (n, tid) -> n = "Dispatch:AskThenAdd" && tid = root.TraceId))
+              && attempts < 40 do
+            attempts <- attempts + 1
+            Threading.Thread.Sleep 100
+        Expect.isTrue
+            (captured |> Seq.exists (fun (n, tid) -> n = "Dispatch:AskThenAdd" && tid = root.TraceId))
+            "the runner execution is traced as a low-cardinality Dispatch span under the caller's trace"
 
         // (3) totality: the oracle throws; `total` maps it to Reset -> WasReset,
         //     NOT an exception/crash.

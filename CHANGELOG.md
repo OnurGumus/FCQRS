@@ -1,5 +1,20 @@
 # Changelog
 
+## 6.0.0-rc4 (FCQRS core)
+- **`RunAsync` gets telemetry**: the runner runs off the mailbox, so the trace
+  previously had a hole exactly where the latency lives. It is now spanned as
+  `Dispatch:<CaseName>` (low-cardinality, `dispatch.type` tag honoring
+  `Telemetry.IncludePayloads`), parented onto the originating command's trace
+  and disposed when the runner settles; the domain outcome still shows in the
+  child result-command span.
+- **`RunAsync` from C#**: `EventActions.Dispatch(description)` builds the effect,
+  and `ActorWiring.InitActorWithRunner` / `InitAggregateWithEffects` register an
+  aggregate with a **Task-based** runner (`Func<object, Task<object>>`, bridged
+  to the F# `Async` internally). Same ephemeral + total contract — catch every
+  failure into a command in the Task.
+- **Docs**: new how-to pages *Dispatch async effects* (RunAsync) and *Read your
+  writes* (`sendAwaiting` + the journaled stamp), linked from the how-to index.
+
 ## 6.0.0-rc3 (FCQRS core)
 - **`RunAsync` effect — a "mini saga" without persistence ceremony**: `decide`
   can now dispatch a short async side effect (e.g. an AI/oracle read) whose

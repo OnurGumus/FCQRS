@@ -453,9 +453,50 @@ module internal Internal =
                                     (sprintf "Aggregate '%s' used RunAsync without a registered effect runner" name)
                                     (exn "no effect runner")
                             | Some run ->
+                                // Span the runner execution — the async side effect
+                                // (e.g. the oracle call) runs OFF the mailbox, so
+                                // without this the trace has a hole exactly where the
+                                // latency lives. Low-cardinality name (case only),
+                                // parented onto the originating command's trace via
+                                // its traceparent metadata, disposed when the runner
+                                // settles. Its domain outcome shows in the child
+                                // result-command span.
+                                let dispatchActivity =
+                                    if activitySource.HasListeners() then
+                                        let cmdCid = cmd.CorrelationId |> ValueLens.Value |> ValueLens.Value
+
+                                        let act =
+                                            match tryTraceContext cmd.Metadata cmdCid with
+                                            | Some parent ->
+                                                activitySource.StartActivity(
+                                                    $"Dispatch:{caseNameOf description}",
+                                                    ActivityKind.Internal,
+                                                    parent)
+                                            | None ->
+                                                activitySource.StartActivity(
+                                                    $"Dispatch:{caseNameOf description}",
+                                                    ActivityKind.Internal)
+
+                                        match act with
+                                        | null -> ()
+                                        | act ->
+                                            act.SetTag("cid", cmdCid) |> ignore
+                                            act.SetTag("actor", mailbox.Self.Path.Name) |> ignore
+                                            act.SetTag("dispatch.type", payloadTag description) |> ignore
+
+                                        act
+                                    else
+                                        null
+
+                                let disposeActivity () =
+                                    match dispatchActivity with
+                                    | null -> ()
+                                    | act -> act.Dispose()
+
                                 Async.StartWithContinuations(
                                     run description,
                                     (fun (boxedCommand: obj) ->
+                                        disposeActivity ()
                                         // Reuse the originating envelope (CID, metadata) with a
                                         // fresh id and the runner's command payload, then
                                         // self-dispatch: re-enters decide, re-validated.
@@ -470,13 +511,19 @@ module internal Internal =
 
                                         mailbox.Self <! box selfCmd),
                                     (fun (ex: exn) ->
+                                        match dispatchActivity with
+                                        | null -> ()
+                                        | act ->
+                                            act.SetStatus(ActivityStatusCode.Error, "RunAsync runner threw") |> ignore
+                                            act.Dispose()
+
                                         logger.LogError(
                                             ex,
                                             "RunAsync runner threw for {0}; the runner must be total (map failure to a command, never an exception). Terminating.",
                                             mailbox.Self.Path.ToString())
 
                                         fatalFailFast null "RunAsync runner threw; totality violated" ex),
-                                    (fun (_: OperationCanceledException) -> ()),
+                                    (fun (_: OperationCanceledException) -> disposeActivity ()),
                                     System.Threading.CancellationToken.None)
 
                         return! handleEffect effect state mailbox toEvent state.Version bodyInput runEffect set
