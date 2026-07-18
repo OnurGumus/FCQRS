@@ -401,7 +401,7 @@
 
     .reliability-grid {
       display: grid;
-      grid-template-columns: repeat(7, minmax(0, 1fr));
+      grid-template-columns: repeat(5, minmax(0, 1fr));
       gap: 12px;
     }
 
@@ -417,6 +417,37 @@
     .reliability-card svg { width: 42px; height: 42px; margin: 0 auto 10px; color: var(--green-700); }
     .reliability-card h3 { margin: 0 0 6px; font-size: .9rem; }
     .reliability-card p { margin: 0; color: var(--muted); font-size: .77rem; line-height: 1.45; }
+
+    .reliability-extra {
+      margin-top: 16px;
+      display: flex; align-items: center; justify-content: center; flex-wrap: wrap;
+      gap: 8px 16px;
+      color: var(--muted); font-size: .86rem; font-weight: 700;
+    }
+    .reliability-extra .rx-label { text-transform: uppercase; letter-spacing: .1em; font-size: .7rem; }
+    .reliability-extra .rx-item { display: inline-flex; align-items: center; gap: 7px; }
+    .reliability-extra .rx-item svg { width: 18px; height: 18px; color: var(--green-700); }
+    .reliability-extra .rx-dot { color: var(--line); }
+
+    .quickstart code { font: inherit; color: #eef4ff; }
+    .copy-btn {
+      margin-left: 2px; padding: 5px 11px; border-radius: 8px;
+      border: 1px solid rgb(255 255 255 / 22%); background: rgb(255 255 255 / 8%);
+      color: #eef4ff; font: 700 .74rem/1 var(--sans); cursor: pointer;
+      transition: background .15s ease;
+    }
+    .copy-btn:hover { background: rgb(255 255 255 / 16%); }
+    .copy-btn:focus-visible { outline: 2px solid var(--green-600); outline-offset: 2px; }
+
+    .trust-strip {
+      display: flex; align-items: center; justify-content: center; flex-wrap: wrap;
+      gap: 10px 22px; padding: 2px 0 6px;
+      color: var(--muted); font-size: .87rem; font-weight: 700;
+    }
+    .trust-strip img { height: 20px; display: block; }
+    .trust-strip b { color: var(--ink); }
+    .trust-strip a { color: var(--green-700); border-bottom: 1px solid transparent; }
+    .trust-strip a:hover { border-color: currentColor; }
 
     .benefit-grid {
       display: grid;
@@ -677,7 +708,7 @@
               <svg class="language-logo" viewBox="0 0 64 64"><defs><linearGradient id="fs" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#378BBA"/><stop offset="1" stop-color="#2b6d93"/></linearGradient></defs><path d="M32 3 61 32 32 61 3 32Z" fill="url(#fs)"/><text x="32" y="40" text-anchor="middle" fill="white" font-family="system-ui,sans-serif" font-size="25" font-weight="900">F#</text></svg>
             </span>
           </div>
-          <div class="quickstart" aria-label="Install FCQRS from NuGet"><span class="prompt" aria-hidden="true">›</span>dotnet add package FCQRS<span class="hint">— running in minutes</span></div>
+          <div class="quickstart" aria-label="Install FCQRS from NuGet"><span class="prompt" aria-hidden="true">›</span><code>dotnet add package FCQRS</code><button class="copy-btn" type="button" data-copy="dotnet add package FCQRS">Copy</button><span class="hint">— running in minutes</span></div>
         </div>
 
         <article class="code-card" aria-label="The two functions you write">
@@ -695,6 +726,16 @@
         </article>
       </div>
     </section>
+
+    <div class="container">
+      <div class="trust-strip">
+        <a href="https://github.com/OnurGumus/FCQRS" aria-label="FCQRS on GitHub"><img src="https://img.shields.io/github/stars/OnurGumus/FCQRS?style=flat&amp;logo=github&amp;label=Stars&amp;color=0e1c56" alt="GitHub stars" width="96" height="20" /></a>
+        <span>Built on <b>Akka.NET</b></span>
+        <span>First-class <b>F#</b> &amp; <b>C#</b></span>
+        <span>Open source</span>
+        <a href="https://github.com/OnurGumus/focument_workshop">See a full app &rarr;</a>
+      </div>
+    </div>
 
     <section class="section" id="how">
       <div class="container">
@@ -740,9 +781,13 @@
           <article class="reliability-card"><svg aria-hidden="true"><use href="#i-shield"/></svg><h3>Crash recovery</h3><p>Restart exactly where the work left off.</p></article>
           <article class="reliability-card"><svg aria-hidden="true"><use href="#i-check"/></svg><h3>Read-your-writes</h3><p>See the outcome of what you just wrote.</p></article>
           <article class="reliability-card"><svg aria-hidden="true"><use href="#i-camera"/></svg><h3>Snapshots</h3><p>Capture state for faster replay and recovery.</p></article>
-          <article class="reliability-card"><svg aria-hidden="true"><use href="#i-chart"/></svg><h3>Telemetry</h3><p>Metrics and health signals built in.</p></article>
-          <article class="reliability-card"><svg aria-hidden="true"><use href="#i-document"/></svg><h3>Logging</h3><p>Structured logs for important events.</p></article>
         </div>
+        <p class="reliability-extra">
+          <span class="rx-label">Also built in</span>
+          <span class="rx-item"><svg aria-hidden="true"><use href="#i-chart"/></svg>Telemetry &amp; health signals</span>
+          <span class="rx-dot" aria-hidden="true">·</span>
+          <span class="rx-item"><svg aria-hidden="true"><use href="#i-document"/></svg>Structured logging</span>
+        </p>
       </div>
     </section>
 
@@ -765,7 +810,7 @@
             <ul>
               <li>Projections scale independently</li>
               <li>Add nodes without changing domain code</li>
-              <li>Built on a proven foundation</li>
+              <li>Built on Akka.NET</li>
               <li>Handles load and spikes gracefully</li>
               <li>Scales across a cluster as you grow</li>
             </ul>
@@ -835,6 +880,17 @@
         links.classList.remove('open');
         toggle?.setAttribute('aria-expanded', 'false');
       }
+    });
+
+    document.querySelectorAll('.copy-btn').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        try {
+          await navigator.clipboard.writeText(btn.dataset.copy);
+          const prev = btn.textContent;
+          btn.textContent = 'Copied';
+          setTimeout(() => { btn.textContent = prev; }, 1600);
+        } catch { /* clipboard unavailable */ }
+      });
     });
   </script>
 </body>
