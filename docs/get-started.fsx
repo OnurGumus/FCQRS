@@ -214,6 +214,32 @@ let handleProjection (_offset: int64) (message: obj) =
     | _ -> ()
 
 (**
+<div class="cs-alt"></div>
+
+```csharp
+var readModel = new ConcurrentDictionary<string, Document>();
+
+void HandleProjection(long _offset, object message)
+{
+    if (message is not Event<DocumentEvent> eventEnvelope)
+        return;
+
+    switch (eventEnvelope.EventDetails)
+    {
+        case DocumentEvent.Created created:
+            readModel[created.Document.Id] = created.Document;
+            break;
+        case DocumentEvent.Edited edited
+            when readModel.TryGetValue(edited.Id, out var document):
+            readModel[edited.Id] = document with { Content = edited.Content };
+            break;
+        case DocumentEvent.Edited edited:
+            throw new InvalidOperationException(
+                $"Projection received Edited before Created for {edited.Id}");
+    }
+}
+```
+
 This projection starts at offset zero, so it rebuilds the dictionary from all stored events on every
 run. A durable read model stores its last offset with each update and resumes from there.
 
@@ -236,22 +262,6 @@ let buildApi () : IActor =
 
 ```csharp
 var builder = Host.CreateApplicationBuilder(args);
-var readModel = new ConcurrentDictionary<string, Document>();
-
-void HandleProjection(long offset, object message)
-{
-    if (message is not Event<DocumentEvent> eventEnvelope) return;
-
-    switch (eventEnvelope.EventDetails)
-    {
-        case DocumentEvent.Created created:
-            readModel[created.Document.Id] = created.Document;
-            break;
-        case DocumentEvent.Edited edited when readModel.TryGetValue(edited.Id, out var document):
-            readModel[edited.Id] = document with { Content = edited.Content };
-            break;
-    }
-}
 
 builder.Services
     .AddFcqrs("Data Source=getstarted.db;", "getstarted")
