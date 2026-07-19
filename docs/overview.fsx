@@ -16,7 +16,10 @@ and C#, and it is built on one bet: that the reliability and clarity of an event
 actor-based system are worth having from day one — even for ordinary applications — and that the
 framework, not you, should carry the distributed-systems machinery.
 
-<img src="img/architecture.svg" alt="How FCQRS fits together" width="900"/>
+<figure style="margin: 1.5rem 0;">
+  <img src="img/two-models.png" alt="On the left, one tangled Entity Framework object graph; on the right, the same domain split into command-side aggregates that enforce invariants and query-side read models shaped for fast queries." style="width: 100%; height: auto; border: 1px solid var(--line, #d7e1ef); border-radius: 12px;"/>
+  <figcaption style="margin-top: .6rem; font-size: .9rem; color: var(--muted, #4d5f7d); text-align: center;">The split at the heart of CQRS: one side of the model enforces invariants (aggregates), the other is flattened for fast reads (read models). FCQRS gives you both — and keeps them in sync for you.</figcaption>
+</figure>
 
 ## What you actually write
 
@@ -29,6 +32,8 @@ sharding, persistence, and coordination.
 
 The same domain reads almost identically in C#, using C# 15 discriminated `union` types for commands
 and events — which the framework serializes natively.
+
+<img src="img/architecture.svg" alt="How FCQRS fits together" width="900"/>
 
 ## What you get
 
