@@ -1,5 +1,18 @@
 # Changelog
 
+## 6.0.0-rc2 satellites (FCQRS.Model, FCQRS.Serialization, FCQRS.SQLProvider)
+- **FCQRS.Model — Aether compose functions no longer crash for typed errors**:
+  five `compose*` functions returned `Error (unbox<'e> "Invalid path")`, which
+  threw `InvalidCastException` at `set` time whenever the error type parameter
+  was not `string`. They now return the same well-typed error the previously
+  fixed `>?>` operator does.
+- **FCQRS.Serialization — non-public union case constructors**: the C# `union`
+  converter binds case constructors regardless of visibility (previously
+  unreleased hardening; journal format unchanged).
+- **FCQRS.SQLProvider — paging composed Take before Skip**: `augmentQuery` with
+  `take=n, skip=m` returned items m+1..n of the first n rows (and nothing when
+  m >= n). Skip now composes before Take, giving conventional page semantics.
+
 ## 6.0.0-rc4 (FCQRS core)
 - **`RunAsync` gets telemetry**: the runner runs off the mailbox, so the trace
   previously had a hole exactly where the latency lives. It is now spanned as
