@@ -58,6 +58,18 @@ open FCQRS.Model.Data
 open FCQRS.FSharp
 ```
 
+<div class="cs-alt"></div>
+
+```csharp
+using System;
+using System.Diagnostics.CodeAnalysis;
+using FCQRS;
+using static FCQRS.Common;
+using static FCQRS.CSharp;
+using static FCQRS.Model.CSharp;
+using static FCQRS.Model.Data;
+```
+
 ## Make the illegal values impossible to type
 
 A title and document body have different meaning even though both arrive as strings. Separate domain
@@ -99,10 +111,6 @@ module Values =
 
 ```csharp
 // C#: validated value objects wrap FCQRS's ShortString / LongString.
-using static FCQRS.Model.CSharp;   // StringTypes
-using static FCQRS.Model.Data;      // ShortString, LongString
-using System.Diagnostics.CodeAnalysis;
-
 public readonly record struct DocumentId(Guid Value)
 {
     public static DocumentId OfGuid(Guid g) => new(g);
@@ -153,6 +161,39 @@ module Document =
             | _, Error e -> Error e
 
 (**
+<div class="cs-alt"></div>
+
+```csharp
+public sealed record Document(DocumentId Id, Title Title, Content Content)
+{
+    public static bool TryCreate(
+        Guid id,
+        string title,
+        string content,
+        [NotNullWhen(true)] out Document? result,
+        [NotNullWhen(false)] out string? error)
+    {
+        if (!Title.TryCreate(title, out var validTitle))
+        {
+            result = null;
+            error = "Invalid title";
+            return false;
+        }
+
+        if (!Content.TryCreate(content, out var validContent))
+        {
+            result = null;
+            error = "Invalid content";
+            return false;
+        }
+
+        result = new Document(DocumentId.OfGuid(id), validTitle, validContent);
+        error = null;
+        return true;
+    }
+}
+```
+
 `State` is the value FCQRS keeps in the actor and rebuilds during recovery. Before any event has been
 stored, the document is absent:
 *)
@@ -161,6 +202,15 @@ stored, the document is absent:
     let initial = { Document = None }
 
 (**
+<div class="cs-alt"></div>
+
+```csharp
+public sealed record DocumentState(Document? Document = null)
+{
+    public static readonly DocumentState Initial = new();
+}
+```
+
 The first model has one command and one event. Chapter 3 adds a separate `Publish` request with several
 possible outcomes. Defining commands and events separately now leaves room for that growth.
 *)
@@ -173,23 +223,7 @@ possible outcomes. Defining commands and events separately now leaves room for t
 <div class="cs-alt"></div>
 
 ```csharp
-// C#: the root + state are records; command and event are C# 15 unions.
-public sealed record Document(DocumentId Id, Title Title, Content Content)
-{
-    public static bool TryCreate(Guid id, string title, string content,
-        [NotNullWhen(true)] out Document? result, [NotNullWhen(false)] out string? error)
-    {
-        if (!Title.TryCreate(title, out var t)) { result = null; error = "Invalid title"; return false; }
-        if (!Content.TryCreate(content, out var c)) { result = null; error = "Invalid content"; return false; }
-        result = new Document(DocumentId.OfGuid(id), t, c); error = null; return true;
-    }
-}
-
-public record DocumentState(Document? Document = null)
-{
-    public static readonly DocumentState Initial = new();
-}
-
+// C#: commands and events are separate C# union types.
 public union DocumentCommand(DocumentCommand.CreateOrUpdate)
 {
     public record CreateOrUpdate(Document Document);
