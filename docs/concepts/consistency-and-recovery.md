@@ -2,7 +2,7 @@
 title: Consistency and recovery
 category: Concepts
 categoryindex: 4
-index: 6
+index: 8
 ---
 
 # Consistency and recovery
@@ -39,41 +39,14 @@ race inside the aggregate.
 
 ## Correlation ids connect the flow
 
-A **correlation id**, or CID, identifies the work caused by one request. FCQRS copies it from the
-command to its event, through saga commands and their events, and into projection notifications.
+A correlation id follows the work caused by one request across commands, events, saga steps, logs, and
+projection notifications. It also lets an active caller wait until the projection it will query has
+committed that request's event.
 
-The CID serves two distinct purposes:
-
-- logs and traces can group activity belonging to one request;
-- a caller can wait for the projection result caused by that request.
-
-It is not an aggregate id. The aggregate id answers “which domain owner?” The correlation id answers
-“which request flow?” One request can involve several aggregate identities while retaining one CID.
-
-## Read-your-writes is explicit coordination
-
-After sending a command, immediately querying a read model may return old data. Sleeping for an
-estimated delay makes the race intermittent rather than correct.
-
-FCQRS uses this sequence:
-
-1. create a CID;
-2. subscribe to the CID before sending;
-3. send the command;
-4. let the aggregate persist its event;
-5. let the required projection commit its data and offset;
-6. receive that projection's notification;
-7. query its read model.
-
-<img src="../img/cid-subscribe.svg" alt="A caller subscribes to a correlation id before sending, then queries after the projection commits" width="900"/>
-
-Subscribing first matters because notifications are ephemeral. A notification can pass before a late
-subscriber exists. The journal and projection offset are durable; the notification is only a
-request-scoped coordination signal.
-
-If the next response combines several read models, decide which must be current and wait for the
-appropriate signal from each. One projection's notification proves nothing about another projection's
-offset.
+The signal is explicit coordination across the eventual-consistency gap. It is not a durable queue or
+a promise that every read model is current. [Correlation IDs and
+read-your-writes](correlation-ids.html) develops the complete model, including why callers subscribe
+before sending and why deferred replies must skip the wait.
 
 ## Version, offset, and correlation id are not interchangeable
 
@@ -85,19 +58,21 @@ offset.
 
 Every persisted aggregate event receives the next version. A deferred reply is not stored and does not
 increment the persisted version. Its live fold must preserve recoverable state because replay cannot
-reproduce it.
+reproduce it. [Deferring, snapshots, and passivation](aggregate-lifecycle.html) follows those paths in
+detail.
 
 Projection offsets advance independently. Event version 8 for one order might appear at offset 52,413
 in the global stream.
 
-## Recovery rebuilds state from durable evidence
+## Each component recovers from different evidence
 
-When an aggregate actor starts, FCQRS loads the latest snapshot if one exists and replays subsequent
-events through the fold. Without a snapshot, it replays from the first event.
+An aggregate loads its latest snapshot if one exists and replays subsequent journal events through the
+fold. Without a snapshot, it replays from the first event.
 
 The journal is the durable evidence. In-memory actor state is reconstructed. That is why the fold must
 be deterministic and free of side effects. Recovery may happen after a crash, after passivation, or
-when sharding activates the identity on another node.
+when sharding activates the identity on another node. Snapshots change how much history is replayed,
+not the state that recovery must produce.
 
 A projection recovers differently. It loads its committed offset and resumes the event stream after
 that point. Its read-model data and offset must share a transaction or another explicit reliability
@@ -105,25 +80,6 @@ mechanism.
 
 A saga recovers its stored state and then re-drives the current step. Because delivery to another
 participant is outside the saga journal transaction, repeated commands must be safe.
-
-## Snapshots change cost, not truth
-
-Replaying thousands of events for one identity can increase activation latency. A **snapshot** stores
-the folded state and version at a checkpoint.
-
-Recovery then becomes:
-
-```text
-load snapshot at version 900
-replay events 901 through 927
-```
-
-The resulting state must match replaying versions 1 through 927. A snapshot does not replace journal
-history, change business semantics, or make a non-deterministic fold safe.
-
-FCQRS supports default, disabled, and every-N snapshot policies for aggregates and sagas. The default
-interval comes from configuration. Choose a cadence from measured recovery latency and storage cost,
-not from an assumption that more snapshots always improve the system.
 
 ## Restarts reveal uncertain delivery
 
@@ -160,5 +116,6 @@ between two convenient source-code lines.
 Chapter 2 of the [tutorial](../tutorial/2-running-it.html) demonstrates aggregate and projection
 recovery. Chapters 3 and 4 cover saga retry and compatibility. Use
 [Read your writes](../how-to/read-your-writes.html),
+[Define an aggregate](../how-to/define-an-aggregate.html),
 [Rebuild a read model](../how-to/rebuild-a-read-model.html), and
 [Evolve persisted events](../how-to/evolve-events.html) for the corresponding procedures.

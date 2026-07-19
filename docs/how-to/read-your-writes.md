@@ -11,6 +11,9 @@ An aggregate can store an event before a projection updates its read model. If a
 and immediately queries, it may receive the previous view. Read-your-writes waits for the required
 projection before performing that query.
 
+Read [Correlation IDs and read-your-writes](../concepts/correlation-ids.html) first if you need the
+mental model behind the sequence, projection boundary, and ephemeral notification.
+
 ## Use the combined F# helper
 
 `Fcqrs.sendAwaiting` subscribes before sending, sends the command, and waits for one projection

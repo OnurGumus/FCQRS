@@ -70,9 +70,10 @@ A **saga** coordinates work that crosses actor boundaries. For example, an `Orde
 start a process that sends commands to reserve stock and take payment. The saga stores its progress so
 the process can continue after a restart.
 
-Every command and event carries a **correlation id**. A client can subscribe to that id before sending
-a command and wait until the projection publishes the matching event. The signal tells the client when
-the new data is available to query, without polling or an arbitrary delay.
+Every command and event carries a [**correlation id**](concepts/correlation-ids.html). A client can
+subscribe to that id before sending a command and wait until the projection publishes the matching
+event. The signal tells the client when the new data is available to query, without polling or an
+arbitrary delay.
 
 FCQRS supplies the actor lifecycle, cluster sharding, event storage and replay, saga coordination,
 projection stream, and correlation subscriptions around the functions that define the domain.
@@ -103,7 +104,7 @@ This documentation is organized by what you are trying to do:
 * [Tutorial](tutorial/index.html): progress from one aggregate through read models, sagas, event
   evolution, failure testing, and production operation.
 * [Concepts](concepts/index.html): understand CQRS, event sourcing, aggregates, projections,
-  consistency, recovery, and sagas.
+  correlation, lifecycle, recovery, and sagas.
 * [How-to guides](how-to/index.html): find focused instructions for a specific task.
 * **Reference:** use the generated API documentation and the
   [configuration reference](configuration.html) while writing code.

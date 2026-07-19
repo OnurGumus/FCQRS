@@ -137,6 +137,9 @@ leaves the current state unchanged. FCQRS folds the deferred event in the live a
 cannot replay it. A state change caused only by a deferred event therefore disappears after restart.
 A deferred reply never wakes a journal projection subscription.
 
+[Deferring, snapshots, and passivation](../concepts/aggregate-lifecycle.html) explains why these
+choices remain correct after the actor leaves memory and later recovers.
+
 ## Keep replay deterministic
 
 `fold` runs both after persistence and during recovery. It must not read the clock, generate ids, call

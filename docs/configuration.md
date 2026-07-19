@@ -66,6 +66,9 @@ Snapshot policy resolves in this order:
 3. `config:akka:persistence:snapshot-version-count`;
 4. the fallback value `30`.
 
+See [Deferring, snapshots, and passivation](concepts/aggregate-lifecycle.html) before tuning the cadence.
+A snapshot changes replay cost, not the events that define recoverable state.
+
 Set `config:akka:scheduler` to FCQRS's `ObservingScheduler` only in tests that control delayed saga
 commands with a virtual clock.
 

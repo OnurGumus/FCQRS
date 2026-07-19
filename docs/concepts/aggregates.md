@@ -101,6 +101,9 @@ FCQRS also exposes actions for batches, explicit snapshots, publishing, and unha
 [aggregate how-to](../how-to/define-an-aggregate.html) gives the complete action table. The conceptual
 choice remains: persist every fact required to reconstruct the future decision state.
 
+[Deferring, snapshots, and passivation](aggregate-lifecycle.html) follows the stored and transient
+paths through recovery in detail.
+
 <img src="../img/write-path.svg" alt="A command is routed to one aggregate identity, decided against current state, persisted, folded, and published" width="900"/>
 
 ## Recovery explains the purity rules

@@ -43,9 +43,11 @@ their state.
 - A **read model** is the data produced by a projection for a particular query or screen.
 - An **offset** records how far a projection has consumed the journal.
 - A **saga** stores the progress of work that crosses aggregate or service boundaries.
-- A **correlation id** ties one request to the commands, events, saga steps, and projection signal it
-  causes.
-- A **snapshot** is a recovery checkpoint. It shortens replay but does not replace the journal.
+- A [**correlation id**](correlation-ids.html) ties one request to the commands, events, saga steps,
+  and projection signal it causes.
+- A [**snapshot**](aggregate-lifecycle.html) is a recovery checkpoint. It shortens replay but does not
+  replace the journal.
+- **Passivation** stops an inactive actor without deleting its journaled history.
 
 These terms describe different responsibilities. In particular, aggregate state, stored events, and
 read-model rows are not three names for the same data.
@@ -61,9 +63,13 @@ read-model rows are not three names for the same data.
    offsets, rebuild safely, and coordinate read-your-writes.
 4. [Sagas](sagas.html): coordinate several independent owners as a durable state machine, including
    retries, timeouts, and partial failure.
-5. [Consistency and recovery](consistency-and-recovery.html): put versions, offsets, correlation ids,
-   replay, snapshots, and restarts on one timeline.
-6. [C# interop and serialization](csharp-interop.html): map the same model to C#, understand the
+5. [Correlation IDs and read-your-writes](correlation-ids.html): follow one request through commands,
+   events, projections, logs, and the signal that makes an immediate query safe.
+6. [Deferring, snapshots, and passivation](aggregate-lifecycle.html): distinguish transient replies,
+   durable recovery checkpoints, and the lifetime of an in-memory actor.
+7. [Consistency and recovery](consistency-and-recovery.html): put aggregate decisions, journal writes,
+   projection commits, saga progress, and external effects on one timeline.
+8. [C# interop and serialization](csharp-interop.html): map the same model to C#, understand the
    compiler options, and treat serialized messages as durable contracts.
 
 ## A useful learning loop

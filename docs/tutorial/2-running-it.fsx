@@ -66,8 +66,9 @@ FCQRS, stores their events in SQLite, projects the events into query data, and s
 the complete path. Continue in the same `Program.fs`.
 
 > **Learn alongside this chapter:** read [The read side](../concepts/read-models.html) to understand
-> projections and offsets before wiring them, then use [Add a projection](../how-to/add-a-projection.html)
-> as the production-oriented recipe.
+> projections and offsets before wiring them. Use [Correlation IDs and
+> read-your-writes](../concepts/correlation-ids.html) when the chapter connects a command to its query,
+> then [Add a projection](../how-to/add-a-projection.html) as the production-oriented recipe.
 
 ## Two paths, on purpose: writing and reading
 
@@ -287,8 +288,10 @@ coordinated the query with that projection.
 ## Understand it and use it
 
 - **Understand:** [The read side](../concepts/read-models.html) follows facts through projections,
-  offsets, transactions, queries, and rebuilds. [Consistency and recovery](../concepts/consistency-and-recovery.html)
-  places the aggregate commit, projection commit, correlation id, version, and restart on one timeline.
+  offsets, transactions, queries, and rebuilds. [Correlation IDs and
+  read-your-writes](../concepts/correlation-ids.html) explains the request-scoped coordination, while
+  [Consistency and recovery](../concepts/consistency-and-recovery.html) places the wider timing and
+  failure boundaries on one timeline.
 - **Apply:** use [Add a projection](../how-to/add-a-projection.html),
   [Read your writes](../how-to/read-your-writes.html), and
   [Configure the database](../how-to/configure-the-database.html) in your application.

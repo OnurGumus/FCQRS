@@ -26,8 +26,9 @@ domain values, separate requests from recorded outcomes, and write the two pure 
 inside an aggregate.
 
 > **Learn alongside this chapter:** read [CQRS and event sourcing](../concepts/cqrs-and-event-sourcing.html)
-> for the ground-up mental model, then keep [Define an aggregate](../how-to/define-an-aggregate.html)
-> nearby as the shorter implementation recipe.
+> for the ground-up mental model. When this chapter introduces deferred replies and snapshot policy,
+> use [Deferring, snapshots, and passivation](../concepts/aggregate-lifecycle.html), then keep
+> [Define an aggregate](../how-to/define-an-aggregate.html) nearby as the shorter implementation recipe.
 
 ## Commands and events are not the same thing
 
@@ -329,7 +330,8 @@ let action = Document.decide (cmd (Document.CreateOrUpdate doc)) Document.initia
 
 - **Understand:** [CQRS and event sourcing](../concepts/cqrs-and-event-sourcing.html) explains why the
   write and query models separate. [Aggregates and the write side](../concepts/aggregates.html) develops
-  the consistency boundary, decision, fold, actor lifecycle, and recovery model from first principles.
+  the consistency boundary, decision, and fold. [Deferring, snapshots, and
+  passivation](../concepts/aggregate-lifecycle.html) develops the recovery lifecycle.
 - **Apply:** [Define an aggregate](../how-to/define-an-aggregate.html) is the focused recipe.
   [Test your domain](../how-to/test-your-domain.html) provides command and event envelope helpers and
   replay-test patterns.

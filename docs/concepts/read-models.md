@@ -113,6 +113,9 @@ Subscribe before sending. Subscribing afterward creates a race in which the noti
 have passed. The notification is a coordination signal, not durable business messaging. The data and
 offset remain the durable proof of projection progress.
 
+[Correlation IDs and read-your-writes](correlation-ids.html) follows this request flow from the API
+boundary through deferred replies, saga work, and projection-specific completion signals.
+
 ## Read models are disposable, rebuilds are not casual
 
 Because every read-model value is derived from retained events, it can be rebuilt:
