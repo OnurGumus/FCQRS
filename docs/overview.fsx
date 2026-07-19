@@ -13,7 +13,7 @@ index: 1
 A functional CQRS and event-sourcing framework built on Akka.NET, with first-class F# and C# APIs.
 
 <figure style="margin: 1.5rem 0;">
-  <img src="img/two-models.png" alt="On the left, one tangled Entity Framework object graph where every entity references every other; on the right, the same domain split into small command-side aggregates that each enforce their own invariants, plus flat query-side read models shaped for fast queries." style="width: 100%; height: auto; border: 1px solid var(--line, #d7e1ef); border-radius: 12px;"/>
+  <img src="img/two-models.png" alt="The same order domain shown in two ways: one shared model on the left, and separate decision-making and query models on the right." style="width: 100%; height: auto; border: 1px solid var(--line, #d7e1ef); border-radius: 12px;"/>
   <figcaption style="margin-top: .6rem; font-size: .9rem; color: var(--muted, #4d5f7d); text-align: center;">The same domain represented by one shared model and by separate write and read models.</figcaption>
 </figure>
 
@@ -40,25 +40,27 @@ CQRS separates them.
 The **write model** handles decisions and protects the rules of the system. The **read model** presents
 the information people and applications need. Each can then stay simple in its own way.
 
-## What FCQRS is
+## How FCQRS works
 
-FCQRS is an F# framework for building the two models with Akka.NET actors and event sourcing. Its APIs
-are also available from C#.
+FCQRS is a functional framework for building the two models with Akka.NET actors and event sourcing,
+usable from F# and C# alike.
 
-Every command for an order goes to one **actor** identified by that order's id. The actor handles one
-command at a time. If two cancellation requests arrive together,
-one is decided first and changes the order's state before the second is considered. The cancellation
-rule therefore has one place to run and one current state to inspect. Other orders are handled by other
-actors and can proceed at the same time, on the same server or elsewhere in the cluster.
+Every command for an order goes to one **actor** identified by that order's id. This decision-making
+actor represents an **aggregate**: the state and rules for one order. It handles one command at a time.
+If two cancellation requests arrive together, one is decided first and changes the order's state
+before the second is considered. The cancellation rule therefore has one place to run and one current
+state to inspect. Other order aggregates can proceed at the same time, on the same server or elsewhere
+in the cluster.
 
 The decision is an ordinary function. It receives the command and the current state, then returns an
-event such as `OrderCancelled` or a rejection such as `OrderAlreadyShipped`. A second function folds a
-stored event into the state. These functions contain the business rules but no database or actor code,
-so they can be tested on their own.
+event such as `OrderCancelled` or a rejection such as `OrderAlreadyShipped`. A rejection is returned to
+the caller but is not stored, so it must not change recoverable state. A second function folds a stored
+event into the state. These functions contain the business rules but no database or actor code, so they
+can be tested on their own.
 
-Stored events form the order's history. If its actor has been passivated or the process restarts, FCQRS
-replays those events to recover the current state. The state held by the actor is derived from the
-events; it is not a row that the actor overwrites.
+Stored events form the order's history. If the actor has been dropped from memory while idle, or the
+process restarts, FCQRS replays those events to recover the current state. The state held by the actor
+is derived from the events; it is not a row that the actor overwrites.
 
 The same events feed **projections** on the read side. One projection can maintain the order page while
 another maintains a customer history or a reporting table. A projection chooses the data structure
@@ -77,7 +79,7 @@ projection stream, and correlation subscriptions around the functions that defin
 
 <img src="img/architecture.svg" alt="How FCQRS fits together" width="900"/>
 
-## What FCQRS handles
+## What FCQRS handles at a glance
 
 * **One command at a time per aggregate.** Decisions about the same entity do not run concurrently
   inside the aggregate, eliminating race conditions within that boundary.
