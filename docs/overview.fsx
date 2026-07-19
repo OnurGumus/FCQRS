@@ -37,9 +37,9 @@ with business rules, and changing one side risks breaking the other.
 
 CQRS separates them.
 
-> **Motivation:** The extra path is worthwhile when decision rules and query needs change for different
-> reasons. Separating them lets each model stay small instead of making every screen and rule negotiate
-> one shared shape.
+> **Motivation:** Separating the models is extra work, but it is worthwhile when decision rules and
+> query needs change for different reasons. Each model can then stay small instead of making every
+> screen and rule negotiate one shared shape.
 
 The **write model** handles decisions and protects the rules of the system. The **read model** presents
 the information people and applications need. Each can then stay simple in its own way.
@@ -70,9 +70,10 @@ The same events feed **projections** on the read side. One projection can mainta
 another maintains a customer history or a reporting table. A projection chooses the data structure
 that fits its query. It does not have to copy the shape of the write model.
 
-A **saga** coordinates work that crosses aggregate boundaries. For example, a
-`PublicationRequested` event can start a process that reserves a URL slug and reports the reservation
-result to the document. The saga stores its progress so the process can continue after a restart.
+A **saga** coordinates work that crosses aggregate boundaries. For example, an `OrderPlaced` event can
+start a process that reserves stock with the inventory aggregate, takes payment with the payment
+aggregate, and reports the outcome to the order. The saga stores its progress so it can resume the next
+unfinished step after a restart.
 
 Every command and event carries a [**correlation id**](concepts/correlation-ids.html). A client can
 subscribe to that id before sending a command and wait until the projection publishes the matching
