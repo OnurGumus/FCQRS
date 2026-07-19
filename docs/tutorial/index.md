@@ -8,13 +8,12 @@ index: 1
 # Tutorial: from first command to production
 
 This course builds one application in stages. You begin with a pure function that decides whether a
-document may change. You finish with two aggregates, a read model, a saga, recovery tests, and a
-production checklist.
+document may change. You finish with a document aggregate, a slug aggregate, a read model, a
+publication saga, recovery tests, and a production checklist.
 
-The application is a document store. A document can be created and edited. A user aggregate owns a
-creation quota, and a saga coordinates the document and user when a new document is requested. The
-same domain is available as a complete application in
-[`focument_fsharp`](https://github.com/OnurGumus/focument_fsharp).
+The application is a document store. A document can be created and edited. Publishing requires a
+unique URL slug, so a saga coordinates the document with the aggregate that owns that slug. The rule
+is deliberately small enough to keep state transitions, safe startup, and recovery visible.
 
 By the end, you will be able to:
 
@@ -65,8 +64,8 @@ useful references.
    validated domain values, and write the `decide` and `fold` functions.
 2. [Run the write and read paths](2-running-it.html): host the aggregate, store events, project them
    into query data, and wait for the projection before reading.
-3. [Coordinate with a saga](3-adding-a-saga.html): enforce a user quota across document and user
-   aggregates while keeping each consistency boundary independent.
+3. [Coordinate with a saga](3-adding-a-saga.html): reserve a unique URL slug and publish the document
+   while keeping both consistency boundaries independent.
 4. [Test and evolve the system](4-testing-and-evolution.html): test decisions, replay, retry
    behaviour, and changes to persisted event contracts.
 5. [Prepare for production](5-production.html): configure durable storage, failure handling,

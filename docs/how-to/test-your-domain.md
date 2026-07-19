@@ -58,18 +58,21 @@ Expect.equal
     "creating a document stores Updated"
 ```
 
-For an aggregate with rejections, such as the extended `Document` from
-[chapter 3](../tutorial/3-adding-a-saga.html), which adds `Approve`/`Errored`, assert the deferred
-event the same way:
+For an idempotent verdict, such as publication confirmation in
+[chapter 3](../tutorial/3-adding-a-saga.html), assert the deferred event the same way:
 
 ```fsharp
-// approving a document that doesn't exist yet is a deferred rejection
-let action2 = Document.decide (command Document.Approve) Document.initial
+let publishedState =
+    { Document.Document = Some doc
+      Publication = Document.PublishedAs "guides/fcqrs" }
+
+// confirming again returns the same verdict without another journal write
+let action2 = Document.decide (command Document.ConfirmPublication) publishedState
 
 Expect.equal
     action2
-    (DeferEvent (Document.Errored Document.DocumentNotFound))
-    "approving a missing document returns a deferred rejection"
+    (DeferEvent (Document.Published(doc.Id, "guides/fcqrs")))
+    "repeated confirmation defers the existing publication verdict"
 ```
 
 Write one case for every meaningful command and state combination, including commands that should be
@@ -108,8 +111,8 @@ a changed fold can no longer reproduce the historical state.
 ## Test retry behaviour
 
 Call the same command against the state produced by its first event. A repeated command should not
-repeat a business effect. For the chapter 3 document, approving an already-approved document returns a
-deferred `ApprovedEvt` instead of persisting another approval.
+repeat a business effect. For the chapter 3 document, confirming an already published document returns
+a deferred `Published` reply instead of persisting another publication.
 
 Also test boundary times and generated ids. Put the chosen value in the command or event; never let a
 fold read the live clock or random generator.

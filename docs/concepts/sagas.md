@@ -7,157 +7,209 @@ index: 5
 
 # Sagas: durable coordination
 
-An aggregate can make a correct decision only from state it owns. An order aggregate may decide that
-an order is ready to place, but it does not own warehouse stock, a payment account, or an e-mail
-provider.
+An aggregate can make a correct decision only from state it owns. A document aggregate can decide
+whether a document is ready to publish, but it cannot decide whether the requested URL slug is already
+reserved by another document. That rule belongs to the aggregate identified by the slug.
 
-Combining every participant into one aggregate would create one enormous consistency boundary.
-Calling the participants directly from the order's fold would repeat external work during recovery.
-A **saga** coordinates the sequence while allowing each participant to keep its own state and rules.
+A **saga** coordinates the conversation between those independent owners. It stores where the
+conversation has reached, listens for outcomes, and sends the next command. It does not move another
+aggregate's rules into one large object.
 
 ## Start with a workflow that can stop halfway
 
-Consider placing an order:
+Publishing a document under `/guides/fcqrs` takes several steps:
 
-1. reserve stock;
-2. take payment;
-3. confirm the order;
-4. release stock if payment fails.
+1. the document records `PublicationRequested`;
+2. the saga asks the `guides/fcqrs` slug aggregate to reserve itself;
+3. the slug replies with `SlugReserved` or `SlugUnavailable`;
+4. the saga tells the document to confirm or reject publication.
 
-The process may stop after the stock service accepts the reservation but before the application
-records the response. Payment may time out. A node may restart while the saga is waiting. “Call these
-three functions in order” is not enough because the progress itself must survive failure.
-
-A saga turns that progress into persisted state.
+The process can stop after any step. A node may restart after the slug is reserved but before the
+document is confirmed. The saga therefore needs durable progress, not a chain of in-memory callbacks.
 
 ## A saga is a state machine
 
-<img src="../img/saga-lifecycle.svg" alt="A saga receives events, persists state transitions, and emits commands" width="760"/>
+The publication workflow can be written as a table before any FCQRS code:
 
-The order workflow might use these states:
+| Current state | Incoming event | Persisted next state | Command after persistence |
+|---|---|---|---|
+| not started | `PublicationRequested` | `ReservingSlug` | `ReserveSlug` |
+| `ReservingSlug` | `SlugReserved` | `ConfirmingPublication` | `ConfirmPublication` |
+| `ReservingSlug` | `SlugUnavailable` | `RejectingPublication` | `RejectPublication` |
+| `ConfirmingPublication` | `Published` | `Done` | none; stop |
+| `RejectingPublication` | `PublicationRejected` | `Done` | none; stop |
+
+The state names say what the workflow is waiting for. The state also carries the identifiers needed to
+repeat the next command after recovery.
+
+<img src="../img/saga-lifecycle.svg" alt="A saga receives an event, persists its next workflow state, sends commands for that state, and can recover and safely repeat those commands" width="760"/>
+
+## The saga has two functions
+
+An aggregate separates deciding an event from folding that event into state. A saga separates
+accepting an incoming event from performing the work associated with its persisted state.
 
 ```text
-WaitingForStock
-WaitingForPayment
-Completed
-Compensating
-Failed
+handleEvent      : incoming event + current saga state -> persisted next state
+applySideEffects : persisted saga state + recovering   -> transition + commands
 ```
 
-Events move the saga between states. Commands ask other owners to do the next piece of work.
+`handleEvent` is the saga's event-driven transition function. For example, `SlugReserved` is accepted
+only while the saga is `ReservingSlug`. It returns `StateChangedEvent ConfirmingPublication`. FCQRS
+stores that state change before running commands for the new state.
+
+`applySideEffects` runs after a state change is durable. In `ConfirmingPublication`, it returns a
+command to the originating document. FCQRS also calls it after recovery, with `recovering = true`, so
+the workflow can safely resume from the state it last stored.
+
+This ordering is the core guarantee:
 
 ```text
-OrderPlaced       -> WaitingForStock   + send ReserveStock
-StockReserved     -> WaitingForPayment + send TakePayment
-PaymentAccepted   -> Completed         + send ConfirmOrder
-PaymentRejected   -> Compensating      + send ReleaseStock
+incoming event
+  -> handleEvent chooses next state
+  -> next state is stored
+  -> applySideEffects issues commands
 ```
 
-This makes the workflow inspectable. The saga can recover its last stored state and determine what it
-was waiting for instead of restarting the whole procedure from memory.
+The state is stored first, so a restart has a durable answer to “what should happen next?”
+
+## `StateChangedEvent` and `SagaTransition` are different
+
+The two functions return different control values because they answer different questions.
+
+`handleEvent` normally returns:
+
+- `StateChangedEvent next`: accept the event and persist `next` as saga progress;
+- `UnhandledEvent`: this event is not valid for the current saga state.
+
+`applySideEffects` returns commands together with one of these transitions:
+
+| Transition | Meaning |
+|---|---|
+| `Stay` | Keep the current persisted state after issuing the commands |
+| `NextState next` | Persist another state immediately, without waiting for an incoming event |
+| `StopSaga` | Issue any returned commands, then complete and passivate the saga |
+
+Most workflows use `StateChangedEvent` for business events and `Stay` while waiting for a reply.
+`NextState` is useful for an internal step that should advance immediately. Use it carefully: every
+automatically entered state runs `applySideEffects` again, so a cycle of `NextState` transitions can
+loop without waiting for new information.
 
 ## Aggregates and sagas have different authority
-
-An aggregate owns a business invariant and decides a command from its own state. A saga owns only the
-workflow's progress. It does not reach into aggregate state or make another aggregate's decision.
 
 | Aggregate | Saga |
 |---|---|
 | Receives commands | Reacts to events |
 | Protects rules inside one identity | Coordinates independent identities |
-| Emits outcome events | Emits follow-up commands and stores transitions |
-| Owns domain decision state | Owns process progress |
+| Emits outcome events | Emits follow-up commands and stores workflow states |
+| Owns domain decision state | Owns only process progress |
 
-If a saga needs to ask whether stock is available, it sends a command to the stock aggregate. The stock
-aggregate applies the rule and publishes its outcome. This keeps one owner for each decision.
+The publication saga does not inspect the slug aggregate's state. It sends `ReserveSlug`, and the slug
+aggregate decides whether reservation is allowed. The saga reacts to that owner's answer.
+
+## Why a saga needs an explicit start
+
+Ordinary actors already exist logically before a caller sends a command. A saga instance is different:
+it represents one particular workflow and should exist only when its starting business event occurs.
+
+The `StartOn` predicate declares that boundary. For the publication saga it matches
+`PublicationRequested` and ignores every other document event. The aggregate that produced this event
+is the **originator**. Commands such as `toOriginator ConfirmPublication` route back to that exact
+document instance.
+
+Application code does not construct `SagaStartingEvent` directly. FCQRS wraps the matched originator
+event in that internal envelope so the saga can retain:
+
+- the event that created this workflow;
+- the originator identity and version used by the startup handshake;
+- the correlation and metadata context needed during recovery.
+
+The distinction matters: `PublicationRequested` is the domain fact; `SagaStartingEvent` is FCQRS
+runtime evidence about how this saga instance began.
 
 ## Starting is itself a race
 
-The first event has to create the saga and also be delivered to it. Publishing the event before the
-saga subscribes can lose the only message that starts the workflow.
+The first event must create the saga and also reach it. Publishing before the new saga subscribes can
+lose the one event that moves it out of its initial state.
 
-FCQRS uses a saga starter handshake:
+FCQRS closes that race with a saga starter handshake:
 
-1. the application declares which event starts the saga;
-2. the aggregate sends that event to the saga starter;
-3. the starter creates and subscribes the saga instance;
-4. the aggregate persists and publishes the event only after the subscription is ready.
+1. `StartOn` identifies an originator event that needs a saga;
+2. the originator contacts the saga starter before publishing that event;
+3. the starter creates the saga instance and establishes its subscription;
+4. the saga stores its starting envelope;
+5. the originator is allowed to persist and publish the domain event;
+6. `handleEvent` receives it with no user-defined state yet and stores the first state.
 
-<img src="../img/saga-starter.svg" alt="The saga starter creates and subscribes a saga before the aggregate publishes its starting event" width="940"/>
+<img src="../img/saga-starter.svg" alt="An originator event is matched by StartOn, the saga starter creates and subscribes the saga, and only then can the event be published safely" width="940"/>
 
-The handshake closes the startup race inside FCQRS. It does not make later external calls atomic with
-the saga journal.
+`Fcqrs.wireSagaStarters` in F#, or `AddSaga(..., startOn: ...)` in C#, installs these start rules. An
+empty F# application still calls `wireSagaStarters api []` so runtime startup follows one explicit
+path.
+
+## Resumption means re-drive, not rewind
+
+FCQRS stores each accepted saga state transition. On restart it loads a snapshot if available, replays
+later state changes, restores the starting-event context, and subscribes the saga again. It then calls
+`applySideEffects` for the recovered state with `recovering = true`.
+
+Suppose the last durable state is `ConfirmingPublication`. FCQRS knows the saga must send
+`ConfirmPublication`; it cannot know whether the previous process sent that command just before it
+stopped. The correct recovery action is therefore to re-drive the state with a retry-safe command.
+
+```text
+stored state: ConfirmingPublication
+unknown:      was ConfirmPublication delivered before the crash?
+resume:       send ConfirmPublication again safely
+```
+
+The document aggregate should treat a repeated confirmation as the same business result rather than
+publish twice. At an external boundary, use a stable idempotency key or query the operation's status.
+The `recovering` flag can select that status-check path when repeating the normal command is unsafe.
+
+Returning no commands for every recovered state is usually wrong. It strands a saga when the original
+command was never delivered. Resumability comes from durable state plus safe re-delivery, not from
+exactly-once messaging.
+
+## The starting event also protects resumption
+
+During recovery FCQRS uses the stored starting event to check the originator exchange and continue the
+startup protocol safely. If the originator has moved to an incompatible version of the exchange,
+FCQRS can abort rather than continue from stale assumptions.
+
+This check protects the FCQRS actor conversation. It does not make an independent database, payment
+provider, or HTTP service part of the saga journal transaction. External operations still require
+their own idempotency and reconciliation rules.
 
 ## Delivery and persistence cannot share one transaction
 
-Suppose the saga stores `WaitingForPayment` and sends `TakePayment`. The process can fail at several
-points:
+For any outgoing saga command, failure may occur:
 
-- before the command is delivered;
-- after delivery but before the payment service acts;
-- after payment succeeds but before the response reaches the saga;
-- after the saga receives the response but before its next transition is stored.
+- before delivery;
+- after delivery but before the receiver acts;
+- after the receiver acts but before its event reaches the saga;
+- after the saga receives the event but before its next state is stored.
 
-No local transaction can cover the saga journal and an independent actor or remote service. The
-correct design assumes a command may be repeated.
-
-Give operations stable idempotency keys, usually derived from the workflow and step identity. The
-receiver should return the same logical outcome when it sees the same operation again instead of
-charging twice or creating a second reservation.
-
-## Recovery re-drives the current state
-
-After replay, FCQRS calls the saga side-effect function with `recovering = true`. The saga knows its
-stored state but cannot know whether the last outgoing command crossed the process boundary before the
-failure.
-
-Recovery should therefore make safe progress. Depending on the integration, it can resend an
-idempotent command, query an external operation by idempotency key, or schedule a retry. Returning no
-command for every recovered state can leave a saga waiting forever.
-
-FCQRS version checks can detect an aggregate restart during a saga exchange. That protection does not
-replace idempotency at external boundaries.
-
-## Timeouts are domain events, not only infrastructure settings
-
-Every wait needs an answer to “what happens if the event never arrives?” A timeout may retry, move the
-saga to failure, start compensation, or alert an operator. The choice depends on the business meaning.
-
-Delayed saga commands support backoff, but retry policy needs a limit and visibility. An endless retry
-can be less safe than a failed state that an operator can inspect.
+No local transaction spans the saga journal and every participant. Design each step so repetition is
+safe, give every wait a timeout, and make failed or compensating states visible to operators.
 
 ## Compensation is a new action
 
-In a database transaction, rollback makes intermediate writes disappear. A distributed workflow
-cannot generally erase completed actions. Releasing stock is not a rollback of reserving stock; it is
-a new business action with its own possible failure. A sent e-mail may have no meaningful
-compensation.
+A distributed workflow cannot generally erase work that already succeeded. Releasing a reserved slug
+is not time travel; it is another command with its own outcome and possible failure. A sent e-mail may
+have no useful compensation at all.
 
-Model compensation explicitly:
-
-- which completed steps require it;
-- in which order compensations run;
-- whether compensation is idempotent;
-- what happens when compensation fails.
-
-Some workflows should stop for human resolution rather than pretend every action is reversible.
-
-## Keep the dependency graph understandable
-
-Prefer a one-directional flow in which the saga coordinates participants. Circular workflows can
-create hidden waits: saga A waits for an event produced only after saga B completes, while saga B waits
-for saga A.
-
-Name states after what the workflow is waiting for, store the identifiers needed to continue, and log
-every transition with the correlation id. A useful saga can answer: where am I, what event moves me
-forward, what command did I issue, and what is the timeout behaviour?
+Model compensation explicitly: what triggers it, which state stores its progress, whether it is
+idempotent, and what happens if it fails. Some workflows should stop for human resolution rather than
+pretend every action is reversible.
 
 ## Decide whether you need a saga
 
 Use a saga when work crosses independent consistency boundaries and its progress must survive restart.
-Use an ordinary aggregate command when one owner can decide the rule. Use an async effect for
-best-effort work that may safely be lost and does not need durable progress.
+Use an aggregate command when one owner can decide the rule. Use an async effect for best-effort work
+that may safely be lost and does not need durable progress.
 
-Chapter 3 of the [tutorial](../tutorial/3-adding-a-saga.html) builds a quota workflow from two
-aggregates. Use [Write a saga](../how-to/write-a-saga.html) for the API recipe and
-[Dispatch async effects](../how-to/dispatch-async-effects.html) to compare the non-durable alternative.
+Chapter 3 of the [tutorial](../tutorial/3-adding-a-saga.html) builds the publication workflow from a
+document and a slug aggregate. [Write a saga](../how-to/write-a-saga.html) is the compact F# and C#
+recipe. [Consistency and recovery](consistency-and-recovery.html) places saga resumption beside the
+other durable boundaries.

@@ -26,16 +26,15 @@ None of these tests requires Akka.NET or a database.
 The important cases for the document aggregate are states and commands, not methods and mocks. Write
 the cases down before writing the assertions:
 
-| Existing document | Command | Expected action |
+| Publication state | Command | Expected action |
 |---|---|---|
-| none | `CreateOrUpdate` | persist `CreateOrUpdateRequested` |
-| same document | `CreateOrUpdate` | persist `Updated` |
-| different document | `CreateOrUpdate` | defer `DocumentNotFound` |
-| pending | `Approve` | persist `ApprovedEvt` |
-| approved | `Approve` again | defer `ApprovedEvt` |
+| draft | `Publish "guides/fcqrs"` | persist `PublicationRequested` |
+| reserving the same slug | `Publish "guides/fcqrs"` again | defer `PublicationRequested` |
+| reserving | `ConfirmPublication` | persist `Published` |
+| published | `ConfirmPublication` again | defer `Published` |
 
-The last row is a retry case. The reply still tells the saga that the document is approved, but the
-aggregate does not store a second approval.
+The last row is a retry case. The reply still tells the saga that the document is published, but the
+aggregate does not store a second publication.
 
 Use a command envelope helper and call `decide` directly:
 
@@ -48,12 +47,12 @@ let command details : Command<_> =
       CorrelationId = Fcqrs.newCid ()
       Metadata = Map.empty }
 
-let action = Document.decide (command Document.Approve) approvedState
-test <@ action = DeferEvent (Document.ApprovedEvt documentId) @>
+let action = Document.decide (command Document.ConfirmPublication) publishedState
+test <@ action = DeferEvent (Document.Published(documentId, "guides/fcqrs")) @>
 ```
 
-Use fixed timestamps in tests. A fixed time makes a failure reproducible and lets you test the user
-quota at the exact edge of its one-minute window.
+Use fixed timestamps in test envelopes even when the current rule does not read time. Stable inputs
+make failures reproducible and keep future time-dependent rules deterministic.
 
 ## Test folds with histories
 
@@ -61,14 +60,14 @@ A single fold assertion verifies one transition. A replay test verifies that the
 
 ```fsharp
 let recovered =
-    [ Document.CreateOrUpdateRequested(document, owner)
-      Document.ApprovedEvt document.Id
-      Document.Updated editedDocument ]
+    [ Document.Updated document
+      Document.PublicationRequested(document.Id, "guides/fcqrs")
+      Document.Published(document.Id, "guides/fcqrs") ]
     |> List.mapi (fun index details -> event (int64 index + 1L) details)
     |> List.fold (fun state stored -> Document.fold stored state) Document.initial
 
-test <@ recovered.Document = Some editedDocument @>
-test <@ recovered.Approval = Document.Approved @>
+test <@ recovered.Document = Some document @>
+test <@ recovered.Publication = Document.PublishedAs "guides/fcqrs" @>
 ```
 
 This test is the executable definition of recovery. If a fold reads the clock, generates an id, or
@@ -79,14 +78,14 @@ command or event instead.
 
 Test a saga in two layers:
 
-- `handleEvent` maps an incoming event and current saga state to a transition;
-- `applySideEffects` maps the resulting state to commands.
+- `handleEvent` maps an incoming event and current saga state to a persisted state action;
+- `applySideEffects` maps the resulting state to commands and a saga transition.
 
-For `CheckingQuota(owner, documentId)`, assert that the saga sends one `ConsumeQuota` command to the
-user aggregate identified by `owner`. For `Approving documentId`, assert that it sends `Approve` to the
-originating document. Call `applySideEffects` with `recovering = true` and verify that it returns a
-command safe for re-delivery or a recovery-specific status check. Do not assume the original command
-was either delivered or lost when the process stopped.
+For `ReservingSlug(documentId, "guides/fcqrs")`, assert that the saga sends one `Reserve` command to the
+slug aggregate identified by `guides/fcqrs`. For `ConfirmingPublication`, assert that it sends
+`ConfirmPublication` to the originating document. Call `applySideEffects` with `recovering = true` and
+verify that it returns a command safe for re-delivery or a recovery-specific status check. Do not
+assume the original command was either delivered or lost when the process stopped.
 
 ## Treat persisted events as contracts
 

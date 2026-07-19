@@ -296,5 +296,5 @@ coordinated the query with that projection.
   [Read your writes](../how-to/read-your-writes.html), and
   [Configure the database](../how-to/configure-the-database.html) in your application.
 
-Next, add a [saga](3-adding-a-saga.html) for a rule that spans a document and its owner.
+Next, add a [saga](3-adding-a-saga.html) for a publication rule that spans a document and its URL slug.
 *)

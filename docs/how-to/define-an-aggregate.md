@@ -18,32 +18,36 @@ The implementation has three domain types and two pure functions:
 open FCQRS.Common
 open FCQRS.FSharp
 
-type Approval = Pending | Approved
-type State = { Document: Root option; Approval: Approval }
-let initial = { Document = None; Approval = Pending }
+type State = { Document: Root option }
+let initial = { Document = None }
 
 type Command =
-    | CreateOrUpdate of Root
-    | Approve
+    | Create of Root
+    | Edit of DocumentId * Content
 
 type Event =
-    | Updated of Root
-    | ApprovedEvt
-    | Errored
+    | Created of Root
+    | Edited of DocumentId * Content
+    | DocumentNotFound of DocumentId
 
 // decide (handleCommand): command + state -> action
 let decide (cmd: Command<Command>) state =
     match cmd.CommandDetails, state.Document with
-    | CreateOrUpdate doc, _ -> Updated doc |> PersistEvent
-    | Approve, Some _ -> ApprovedEvt |> PersistEvent
-    | Approve, None -> Errored |> DeferEvent
+    | Create doc, None -> Created doc |> PersistEvent
+    | Create doc, Some current when current.Id = doc.Id -> Created current |> DeferEvent
+    | Edit(id, content), Some current when current.Id = id -> Edited(id, content) |> PersistEvent
+    | Edit(id, _), _ -> DocumentNotFound id |> DeferEvent
+    | _ -> UnhandledEvent
 
 // fold (applyEvent): event -> new state
 let fold (event: Event<Event>) state =
     match event.EventDetails with
-    | Updated doc -> { state with Document = Some doc }
-    | ApprovedEvt -> { state with Approval = Approved }
-    | Errored -> state
+    | Created doc -> { Document = Some doc }
+    | Edited(id, content) ->
+        match state.Document with
+        | Some current when current.Id = id -> { Document = Some { current with Content = content } }
+        | _ -> state
+    | DocumentNotFound _ -> state
 
 // Registering the aggregate returns its typed handle.
 let register (api: IActor) =
@@ -61,22 +65,20 @@ using static FCQRS.Common;     // Command<>, Event<>, EventAction<>
 using static FCQRS.CSharp;      // Aggregate<>, EventActions
 using Microsoft.Extensions.DependencyInjection;
 
-public union DocumentCommand(DocumentCommand.CreateOrUpdate, DocumentCommand.Approve)
+public union DocumentCommand(DocumentCommand.Create, DocumentCommand.Edit)
 {
-    public record CreateOrUpdate(Root Document);
-    public record Approve;
+    public record Create(Root Document);
+    public record Edit(DocumentId Id, Content Content);
 }
 
-public union DocumentEvent(DocumentEvent.Updated, DocumentEvent.ApprovedEvt, DocumentEvent.Errored)
+public union DocumentEvent(DocumentEvent.Created, DocumentEvent.Edited, DocumentEvent.DocumentNotFound)
 {
-    public record Updated(Root Document);
-    public record ApprovedEvt;
-    public record Errored;
+    public record Created(Root Document);
+    public record Edited(DocumentId Id, Content Content);
+    public record DocumentNotFound(DocumentId Id);
 }
 
-public enum Approval { Pending, Approved }
-
-public record DocumentState(Root? Document = null, Approval Approval = Approval.Pending)
+public record DocumentState(Root? Document = null)
 {
     public static readonly DocumentState Initial = new();
 }
@@ -91,12 +93,14 @@ public sealed class DocumentAggregate : Aggregate<DocumentState, DocumentCommand
         Command<DocumentCommand> cmd, DocumentState state) =>
         (cmd.CommandDetails, state.Document) switch
         {
-            (DocumentCommand.CreateOrUpdate c, _) =>
-                EventActions.Persist<DocumentEvent>(new DocumentEvent.Updated(c.Document)),
-            (DocumentCommand.Approve, { } _) =>
-                EventActions.Persist<DocumentEvent>(new DocumentEvent.ApprovedEvt()),
-            (DocumentCommand.Approve, null) =>
-                EventActions.Defer<DocumentEvent>(new DocumentEvent.Errored()),
+            (DocumentCommand.Create c, null) =>
+                EventActions.Persist<DocumentEvent>(new DocumentEvent.Created(c.Document)),
+            (DocumentCommand.Create c, { } current) when current.Id == c.Document.Id =>
+                EventActions.Defer<DocumentEvent>(new DocumentEvent.Created(current)),
+            (DocumentCommand.Edit e, { } current) when current.Id == e.Id =>
+                EventActions.Persist<DocumentEvent>(new DocumentEvent.Edited(e.Id, e.Content)),
+            (DocumentCommand.Edit e, _) =>
+                EventActions.Defer<DocumentEvent>(new DocumentEvent.DocumentNotFound(e.Id)),
             _ => EventActions.Ignore<DocumentEvent>()
         };
 
@@ -104,8 +108,9 @@ public sealed class DocumentAggregate : Aggregate<DocumentState, DocumentCommand
     public override DocumentState ApplyEvent(Event<DocumentEvent> evt, DocumentState state) =>
         evt.EventDetails switch
         {
-            DocumentEvent.Updated e => state with { Document = e.Document },
-            DocumentEvent.ApprovedEvt => state with { Approval = Approval.Approved },
+            DocumentEvent.Created e => state with { Document = e.Document },
+            DocumentEvent.Edited e when state.Document is { } current && current.Id == e.Id =>
+                state with { Document = current with { Content = e.Content } },
             _ => state
         };
 }

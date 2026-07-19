@@ -31,7 +31,7 @@ An **invariant** is a rule that must remain true after every accepted command. E
 
 - an order cannot ship twice;
 - a bank account cannot spend beyond its permitted limit;
-- a document cannot be approved before it exists.
+- a document cannot be published before it exists.
 
 Put the state needed to decide one invariant inside one aggregate. Do not start by copying a database
 entity graph into aggregate state. Start from the decision and ask which facts it must inspect

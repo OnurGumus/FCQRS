@@ -18,13 +18,13 @@ versions, saga transitions, and commands issued by sagas. Every line contains th
 
 ```text
 info: FCQRS.MessageFlow
-      Command CreateOrUpdate (...) to aggregate doc-42 (v0) yielded PersistEvent (CreateOrUpdateRequested ...) [cid: ...]
+      Command Publish ("guides/fcqrs") to aggregate doc-42 yielded PersistEvent (PublicationRequested ...) [cid: ...]
 info: FCQRS.MessageFlow
-      Aggregate doc-42 persisted event CreateOrUpdateRequested (...) (v1) [cid: ...]
+      Aggregate doc-42 persisted event PublicationRequested (...) (v2) [cid: ...]
 info: FCQRS.MessageFlow
-      Saga doc-42~QuotaSaga~... changed state to CheckingQuota [cid: ...]
+      Saga doc-42~PublicationSaga~... changed state to ReservingSlug [cid: ...]
 info: FCQRS.MessageFlow
-      Saga doc-42~QuotaSaga~... sent command ConsumeQuota (...) to alice [cid: ...]
+      Saga doc-42~PublicationSaga~... sent command Reserve (...) to guides/fcqrs [cid: ...]
 ```
 
 Disable the process-wide narrative with

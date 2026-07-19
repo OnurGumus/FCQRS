@@ -17,537 +17,494 @@ open FCQRS.FSharp
 (**
 # 3. Adding a saga
 
-This chapter adds a user quota to the document application. It reuses the validated values from
-[chapter 1](1-the-aggregate.html) and adds `Username`, which also identifies the user aggregate.
+The document application can now store and project documents. This chapter adds one cross-aggregate
+rule: a document may be published under a URL slug only when the aggregate identified by that slug
+reserves it for that document.
 
-> **Learn alongside this chapter:** read [Sagas](../concepts/sagas.html) for the durable state-machine,
-> retry, timeout, and compensation model. Use [Write a saga](../how-to/write-a-saga.html) as the compact
-> API reference while implementing the chapter.
+This example is intentionally small. The only new problem is durable coordination, so the saga
+mechanics remain visible.
+
+> **Learn alongside this chapter:** read [Sagas](../concepts/sagas.html) for transitions,
+> `SagaStartingEvent`, safe startup, and resumption. Use [Write a
+> saga](../how-to/write-a-saga.html) as the compact API reference.
+
+## The rule belongs to two owners
+
+The document aggregate owns whether one document is ready to publish. A slug aggregate owns whether
+one URL slug is available. Neither aggregate can make both decisions from its own state.
+
+The saga coordinates this conversation:
+
+<pre>
+Document                  Publication saga                 Slug[guides/fcqrs]
+   |                              |                                |
+   |-- PublicationRequested ---->|                                |
+   |                              |-- Reserve(documentId) -------->|
+   |                              |<-- SlugReserved / Unavailable --|
+   |<-- ConfirmPublication -------|                                |
+   |          or                  |                                |
+   |<-- RejectPublication --------|                                |
+   |                              |                                |
+   |-- Published / Rejected ----->|-- stop                         |
+</pre>
+
+The target aggregates still own every business decision. The saga owns only the progress of this
+conversation.
+
+## Keep the domain types small
+
+Chapter 1 covered validated titles and content. This chapter uses strings for those already-understood
+fields so the workflow code is easier to see. Validate the slug at the application boundary before
+sending `Publish`.
 *)
 
 module Values =
     type DocumentId =
         | DocumentId of Guid
-        static member OfGuid g = DocumentId g
-        member this.Value = let (DocumentId g) = this in g
-        override this.ToString() = let (DocumentId g) = this in g.ToString()
-    type Title =
-        | Title of ShortString
-        static member TryCreate s =
-            match ValueLens.TryCreate s with
-            | Ok ss -> Ok(Title ss)
-            | Error _ -> Error "Invalid title"
-        member this.Value = let (Title s) = this in ValueLens.Value s
-    type Content =
-        | Content of LongString
-        static member TryCreate s =
-            match ValueLens.TryCreate s with
-            | Ok ss -> Ok(Content ss)
-            | Error _ -> Error "Invalid content"
-        member this.Value = let (Content s) = this in ValueLens.Value s
-    type Username =
-        | Username of ShortString
-        static member TryCreate s =
-            match ValueLens.TryCreate s with
-            | Ok ss -> Ok(Username ss)
-            | Error _ -> Error "a username is required"
-        member this.Value = let (Username s) = this in ValueLens.Value s
+        static member OfGuid value = DocumentId value
+        member this.Value = let (DocumentId value) = this in value
+        override this.ToString() = let (DocumentId value) = this in value.ToString()
 
 (**
-The rule is: each user may create at most three documents per minute. A document aggregate cannot
-enforce it because its state contains one document. The user aggregate can own the quota because its
-state covers one user's recent document creations. A **saga** coordinates the request between the two
-aggregates.
+## Step 1: let the document request publication
 
-## Why an aggregate can't reach across the boundary
-
-An aggregate serializes decisions about its own state. Reading another aggregate's state inside that
-decision would create a consistency boundary that neither actor owns. Instead, the document records a
-request. The saga reacts to that event, sends a command to the user, and sends the user's result back to
-the document.
-
-Aggregates turn commands into events. Sagas react to events by issuing commands. A saga also stores its
-state, allowing the coordination to continue after recovery.
-
-Here's the flow we're about to build, end to end:
-
-<pre>
-  create request
-        |
-        v
-  Document  -- CreateOrUpdateRequested -->  (this starts the saga)
-        |
-        v
-  saga  -- ConsumeQuota -->  User[owner]
-                                |
-                 +--------------+--------------+
-                 |                             |
-          QuotaApproved                 QuotaRejected
-          (within quota)                (over quota)
-                 |                             |
-                 v                             v
-          saga: Approve                 saga: Hold
-                 |                             |
-                 v                             v
-   Document: ApprovedEvt        Document: HeldForApproval
-</pre>
-
-This design adds a persistent coordinator and asynchronous steps. Use it when work crosses aggregate
-boundaries or must retain progress across restarts. A short best-effort lookup can use an
-[ephemeral async effect](../how-to/dispatch-async-effects.html) instead.
-
-## Step 1: record a pending document request
-
-Creating a document now stores `CreateOrUpdateRequested`. That event starts the saga. The saga later
-sends `Approve` or `Hold` to the same document. Editing an existing document remains a direct update
-because the quota applies only to creation.
+The document stores `PublicationRequested` before any reservation begins. Its status records the slug
+being reserved, so confirmation and rejection remain valid after recovery.
 *)
 
 module Document =
     open Values
 
     type Root =
-        { Id: DocumentId; Title: Title; Content: Content }
-        static member TryCreate(guid, title, content) =
-            match Title.TryCreate title, Content.TryCreate content with
-            | Ok t, Ok c -> Ok { Id = DocumentId.OfGuid guid; Title = t; Content = c }
-            | Error e, _ -> Error e
-            | _, Error e -> Error e
+        { Id: DocumentId
+          Title: string
+          Content: string }
 
-    type Approval = Pending | AwaitingApproval | Approved | Rejected
-    type DocumentError = DocumentNotFound
+    type PublicationStatus =
+        | Draft
+        | ReservingSlug of string
+        | PublishedAs of string
+        | RejectedFor of string
+
+    type State =
+        { Document: Root option
+          Publication: PublicationStatus }
+
+    let initial = { Document = None; Publication = Draft }
 
     type Command =
-        | CreateOrUpdate of Root * Username   // who's asking
-        | Approve
-        | Reject
-        | Hold
+        | CreateOrUpdate of Root
+        | Publish of slug: string
+        | ConfirmPublication
+        | RejectPublication
 
     type Event =
-        | CreateOrUpdateRequested of Root * Username
         | Updated of Root
-        | Errored of DocumentError
-        | ApprovedEvt of DocumentId
-        | RejectedEvt of DocumentId
-        | HeldForApproval of DocumentId
+        | PublicationRequested of DocumentId * slug: string
+        | Published of DocumentId * slug: string
+        | PublicationRejected of DocumentId * slug: string
 
-    type State = { Document: Root option; Approval: Approval }
-    let initial = { Document = None; Approval = Pending }
-
-    let decide (cmd: Command<_>) state =
-        match cmd.CommandDetails, state.Document with
-        | CreateOrUpdate(doc, owner), None -> CreateOrUpdateRequested(doc, owner) |> PersistEvent
-        | CreateOrUpdate(doc, _), Some existing when existing.Id = doc.Id -> Updated doc |> PersistEvent
-        | CreateOrUpdate _, _ -> Errored DocumentNotFound |> DeferEvent
-        // A repeated verdict replies again but does not store a duplicate event.
-        | Approve, Some doc ->
-            let e = ApprovedEvt doc.Id
-            if state.Approval = Approved then DeferEvent e else PersistEvent e
-        | Reject, Some doc ->
-            let e = RejectedEvt doc.Id
-            if state.Approval = Rejected then DeferEvent e else PersistEvent e
-        | Hold, Some doc ->
-            let e = HeldForApproval doc.Id
-            if state.Approval = AwaitingApproval then DeferEvent e else PersistEvent e
+    let decide (cmd: Command<Command>) state =
+        match cmd.CommandDetails, state.Document, state.Publication with
+        | CreateOrUpdate document, _, _ ->
+            Updated document |> PersistEvent
+        | Publish slug, Some document, Draft
+        | Publish slug, Some document, RejectedFor _ ->
+            PublicationRequested(document.Id, slug) |> PersistEvent
+        | Publish slug, Some document, ReservingSlug current when current = slug ->
+            PublicationRequested(document.Id, slug) |> DeferEvent
+        | ConfirmPublication, Some document, ReservingSlug slug ->
+            Published(document.Id, slug) |> PersistEvent
+        | ConfirmPublication, Some document, PublishedAs slug ->
+            Published(document.Id, slug) |> DeferEvent
+        | RejectPublication, Some document, ReservingSlug slug ->
+            PublicationRejected(document.Id, slug) |> PersistEvent
+        | RejectPublication, Some document, RejectedFor slug ->
+            PublicationRejected(document.Id, slug) |> DeferEvent
         | _ -> UnhandledEvent
 
-    let fold evt state =
-        match evt.EventDetails with
-        | CreateOrUpdateRequested(doc, _) -> { state with Document = Some doc; Approval = Pending }
-        | Updated doc -> { state with Document = Some doc }
-        | ApprovedEvt _ -> { state with Approval = Approved }
-        | RejectedEvt _ -> { state with Approval = Rejected }
-        | HeldForApproval _ -> { state with Approval = AwaitingApproval }
-        | Errored _ -> state
+    let fold (event: Event<Event>) state =
+        match event.EventDetails with
+        | Updated document -> { state with Document = Some document }
+        | PublicationRequested(_, slug) -> { state with Publication = ReservingSlug slug }
+        | Published(_, slug) -> { state with Publication = PublishedAs slug }
+        | PublicationRejected(_, slug) -> { state with Publication = RejectedFor slug }
 
 (**
-<div class="cs-alt"></div>
+`ConfirmPublication` and `RejectPublication` are retry-safe. Repeating the verdict returns the same
+outcome with `DeferEvent`, so recovery can reissue the saga command without storing another domain
+event.
 
-```csharp
-// C#: the extended Document aggregate. Approval is an enum; the verdict cases
-// guard on current state so a re-issued command defers instead of duplicating.
-public enum Approval { Pending, AwaitingApproval, Approved, Rejected }
+## Step 2: let each slug protect its own uniqueness
 
-public record DocumentState(Document? Document, Approval Approval = Approval.Pending)
-{
-    public static readonly DocumentState Initial = new(null);
-}
-
-public sealed class DocumentAggregate : Aggregate<DocumentState, DocumentCommand, DocumentEvent>
-{
-    public override DocumentState InitialState => DocumentState.Initial;
-    public override string EntityName => "Document";
-
-    public override EventAction<DocumentEvent> HandleCommand(
-        Command<DocumentCommand> cmd, DocumentState state) =>
-        (cmd.CommandDetails, state.Document) switch
-        {
-            (DocumentCommand.CreateOrUpdate c, null) =>
-                EventActions.Persist<DocumentEvent>(new DocumentEvent.CreateOrUpdateRequested(c.Document, c.Owner)),
-            (DocumentCommand.CreateOrUpdate c, { } existing) when existing.Id == c.Document.Id =>
-                EventActions.Persist<DocumentEvent>(new DocumentEvent.Updated(c.Document)),
-            (DocumentCommand.CreateOrUpdate, _) =>
-                EventActions.Defer<DocumentEvent>(new DocumentEvent.Error(new DocumentError.DocumentNotFound())),
-            (DocumentCommand.Approve, { } doc) =>
-                state.Approval == Approval.Approved
-                    ? EventActions.Defer<DocumentEvent>(new DocumentEvent.Approved(doc.Id))
-                    : EventActions.Persist<DocumentEvent>(new DocumentEvent.Approved(doc.Id)),
-            (DocumentCommand.Reject, { } doc) =>
-                state.Approval == Approval.Rejected
-                    ? EventActions.Defer<DocumentEvent>(new DocumentEvent.Rejected(doc.Id))
-                    : EventActions.Persist<DocumentEvent>(new DocumentEvent.Rejected(doc.Id)),
-            (DocumentCommand.Hold, { } doc) =>
-                state.Approval == Approval.AwaitingApproval
-                    ? EventActions.Defer<DocumentEvent>(new DocumentEvent.HeldForApproval(doc.Id))
-                    : EventActions.Persist<DocumentEvent>(new DocumentEvent.HeldForApproval(doc.Id)),
-            _ => EventActions.Ignore<DocumentEvent>()
-        };
-
-    public override DocumentState ApplyEvent(Event<DocumentEvent> evt, DocumentState state) =>
-        evt.EventDetails switch
-        {
-            DocumentEvent.CreateOrUpdateRequested e =>
-                state with { Document = e.Document, Approval = Approval.Pending },
-            DocumentEvent.Updated e => state with { Document = e.Document },
-            DocumentEvent.Approved => state with { Approval = Approval.Approved },
-            DocumentEvent.Rejected => state with { Approval = Approval.Rejected },
-            DocumentEvent.HeldForApproval => state with { Approval = Approval.AwaitingApproval },
-            _ => state
-        };
-}
-```
+The slug aggregate is addressed by the slug text. Its entire state is the document that owns the
+reservation, if any.
 *)
 
-(**
-The verdict commands are idempotent. If `Approve` is retried after the document is already approved,
-the aggregate defers the same reply. The saga receives confirmation, but the journal does not gain a
-duplicate approval. `UnhandledEvent` covers commands that do not make sense in the current state.
-
-## Step 2: let the user aggregate own the quota
-
-The user aggregate is keyed by username and stores the document slots granted during the last minute.
-It uses the document id to recognize a retried request.
-*)
-
-module User =
+module Slug =
     open Values
 
-    type Command = ConsumeQuota of DocumentId
+    type State = { ReservedFor: DocumentId option }
+    let initial = { ReservedFor = None }
+
+    type Command = Reserve of DocumentId
 
     type Event =
-        | QuotaApproved of DocumentId * DateTime
-        | QuotaRejected
+        | SlugReserved of DocumentId
+        | SlugUnavailable of DocumentId
 
-    type Consumption = { DocId: DocumentId; At: DateTime }
-    type State = { Consumed: Consumption list }
-    let initial = { Consumed = [] }
+    let decide (cmd: Command<Command>) state =
+        match cmd.CommandDetails, state.ReservedFor with
+        | Reserve documentId, None ->
+            SlugReserved documentId |> PersistEvent
+        | Reserve documentId, Some current when current = documentId ->
+            SlugReserved documentId |> DeferEvent
+        | Reserve documentId, Some _ ->
+            SlugUnavailable documentId |> DeferEvent
 
-    [<Literal>]
-    let Limit = 3
-    let Window = TimeSpan.FromMinutes 1.0
-
-    let private prune (reference: DateTime) slots =
-        let cutoff = reference - Window
-        slots |> List.filter (fun c -> c.At > cutoff)
-
-    let decide (cmd: Command<_>) state =
-        match cmd.CommandDetails with
-        | ConsumeQuota docId ->
-            match state.Consumed |> List.tryFind (fun c -> c.DocId = docId) with
-            // Re-delivery: reply with the existing grant without storing it again.
-            | Some existing -> QuotaApproved(docId, existing.At) |> DeferEvent
-            | None ->
-                if prune cmd.CreationDate state.Consumed |> List.length < Limit then
-                    QuotaApproved(docId, cmd.CreationDate) |> PersistEvent
-                else
-                    QuotaRejected |> DeferEvent
-
-    let fold evt state =
-        match evt.EventDetails with
-        | QuotaApproved(docId, _) when state.Consumed |> List.exists (fun c -> c.DocId = docId) -> state
-        | QuotaApproved(docId, at) -> { state with Consumed = prune at ({ DocId = docId; At = at } :: state.Consumed) }
-        | QuotaRejected -> state
+    let fold (event: Event<Event>) state =
+        match event.EventDetails with
+        | SlugReserved documentId -> { ReservedFor = Some documentId }
+        | SlugUnavailable _ -> state
 
 (**
-<div class="cs-alt"></div>
+The first reservation becomes durable. Repeating it for the same document returns the existing result.
+A different document receives `SlugUnavailable` without changing the owner. Both repeated paths are
+safe when a saga resumes after uncertain delivery.
 
-```csharp
-// C#: the User aggregate is idempotent by document id,
-// and time read from the command / folded only from the event.
-public readonly record struct Consumption(DocumentId DocId, DateTime At);
+## Step 3: write the saga as a table
 
-public record UserState(IReadOnlyList<Consumption> Consumed)
-{
-    public static readonly UserState Initial = new(Array.Empty<Consumption>());
-}
+Before writing the saga functions, write every accepted event and resulting command:
 
-public sealed class UserAggregate : Aggregate<UserState, UserCommand, UserEvent>
-{
-    public const int Limit = 3;
-    public static readonly TimeSpan Window = TimeSpan.FromMinutes(1);
+| Current state | Incoming event | Stored next state | Command after storage |
+|---|---|---|---|
+| not started | `PublicationRequested` | `ReservingSlug` | `Reserve` to slug |
+| `ReservingSlug` | `SlugReserved` | `ConfirmingPublication` | `ConfirmPublication` to document |
+| `ReservingSlug` | `SlugUnavailable` | `RejectingPublication` | `RejectPublication` to document |
+| `ConfirmingPublication` | `Published` | `Done` | stop |
+| `RejectingPublication` | `PublicationRejected` | `Done` | stop |
 
-    public override UserState InitialState => UserState.Initial;
-    public override string EntityName => "User";
+This table separates two questions:
 
-    static IReadOnlyList<Consumption> Prune(IEnumerable<Consumption> slots, DateTime reference) =>
-        slots.Where(c => c.At > reference - Window).ToArray();
-
-    public override EventAction<UserEvent> HandleCommand(Command<UserCommand> cmd, UserState state) =>
-        cmd.CommandDetails switch
-        {
-            UserCommand.ConsumeQuota c => Decide(state, c.DocId, cmd.CreationDate),
-            _ => EventActions.Ignore<UserEvent>()
-        };
-
-    static EventAction<UserEvent> Decide(UserState state, DocumentId docId, DateTime at)
-    {
-        var existing = state.Consumed.FirstOrDefault(c => c.DocId == docId);
-        if (state.Consumed.Any(c => c.DocId == docId))
-            return EventActions.Defer<UserEvent>(new UserEvent.QuotaApproved(docId, existing.At));
-        return Prune(state.Consumed, at).Count < Limit
-            ? EventActions.Persist<UserEvent>(new UserEvent.QuotaApproved(docId, at))
-            : EventActions.Defer<UserEvent>(new UserEvent.QuotaRejected());
-    }
-
-    public override UserState ApplyEvent(Event<UserEvent> evt, UserState state) =>
-        evt.EventDetails switch
-        {
-            UserEvent.QuotaApproved e when state.Consumed.Any(c => c.DocId == e.DocId) => state,
-            UserEvent.QuotaApproved e =>
-                state with { Consumed = Prune(state.Consumed.Append(new Consumption(e.DocId, e.ConsumedAt)), e.ConsumedAt) },
-            _ => state
-        };
-}
-```
+1. Given an event and current saga state, what state should be stored?
+2. Once that state is durable, which command should be sent?
 *)
 
-(**
-A repeated `ConsumeQuota` for the same document returns the original grant as a deferred reply, so it
-does not spend or store another slot.
-
-The decision reads `cmd.CreationDate` and stores that timestamp in `QuotaApproved`. The fold uses only
-the timestamp carried by the event. Calling `DateTime.UtcNow` inside the fold would prune a different set
-of slots each time the history was replayed.
-
-## The saga
-
-The quota saga starts when a document is requested. It asks the user aggregate to consume a slot, then
-tells the document to approve or hold. Its four states record which reply it is waiting for.
-*)
-
-module QuotaSaga =
+module PublicationSaga =
     open Values
 
     type State =
-        | CheckingQuota of Username * DocumentId
-        | Approving of DocumentId
-        | Holding of DocumentId
+        | ReservingSlug of DocumentId * string
+        | ConfirmingPublication
+        | RejectingPublication
         | Done
 
 (**
-A saga receives events from both aggregates as `obj`. The active patterns recover the typed event
-envelopes, allowing the handler to match the event and current saga state together. Each accepted event
-returns the next state with `StateChangedEvent`.
+### Function 1: event plus state becomes persisted progress
+
+Saga events arrive as `obj` because several aggregate event types share the same workflow. Active
+patterns recover their typed envelopes. The first domain event reaches user code with
+`sagaState.State = None`; no user-defined state exists until that event is accepted.
 *)
 
-    let private (|DocEvent|_|) (o: obj) =
-        match o with
-        | :? (Event<Document.Event>) as e -> Some e.EventDetails
+    let private (|DocumentEvent|_|) (message: obj) =
+        match message with
+        | :? Event<Document.Event> as event -> Some event.EventDetails
         | _ -> None
 
-    let private (|UserEvent|_|) (o: obj) =
-        match o with
-        | :? (Event<User.Event>) as e -> Some e.EventDetails
+    let private (|SlugEvent|_|) (message: obj) =
+        match message with
+        | :? Event<Slug.Event> as event -> Some event.EventDetails
         | _ -> None
 
-    let private handleEvent evt sagaState =
-        match evt, sagaState.State with
-        | DocEvent(Document.CreateOrUpdateRequested(doc, owner)), None ->
-            CheckingQuota(owner, doc.Id) |> StateChangedEvent
-        | UserEvent(User.QuotaApproved _), Some(CheckingQuota(_, docId)) ->
-            Approving docId |> StateChangedEvent
-        | UserEvent User.QuotaRejected, Some(CheckingQuota(_, docId)) ->
-            Holding docId |> StateChangedEvent
-        | DocEvent(Document.ApprovedEvt _), Some(Approving _) -> Done |> StateChangedEvent
-        | DocEvent(Document.HeldForApproval _), Some(Holding _) -> Done |> StateChangedEvent
+    let handleEvent message sagaState =
+        match message, sagaState.State with
+        | DocumentEvent(Document.PublicationRequested(documentId, slug)), None ->
+            ReservingSlug(documentId, slug) |> StateChangedEvent
+        | SlugEvent(Slug.SlugReserved documentId), Some(ReservingSlug(expected, _))
+            when documentId = expected ->
+            ConfirmingPublication |> StateChangedEvent
+        | SlugEvent(Slug.SlugUnavailable documentId), Some(ReservingSlug(expected, _))
+            when documentId = expected ->
+            RejectingPublication |> StateChangedEvent
+        | DocumentEvent(Document.Published _), Some ConfirmingPublication ->
+            Done |> StateChangedEvent
+        | DocumentEvent(Document.PublicationRejected _), Some RejectingPublication ->
+            Done |> StateChangedEvent
         | _ -> UnhandledEvent
 
 (**
-`handleEvent` selects the next state. `applySideEffects` maps that state to a transition and commands.
-`toAggregate` addresses the user by username. `toOriginator` addresses the document that started this
-saga.
+`StateChangedEvent next` is the saga counterpart to a persisted aggregate outcome: FCQRS stores the
+new workflow state. `UnhandledEvent` means the incoming event is not valid for the current state.
+
+### Function 2: persisted state becomes commands
+
+FCQRS calls `applySideEffects` only after a state change is stored. It calls the same function after
+recovery, with `recovering = true`.
 *)
 
-    let private applySideEffects documentFactory userFactory sagaState _recovering =
+    let applySideEffects documentFactory slugFactory sagaState _recovering =
         match sagaState.State with
-        | CheckingQuota(owner, docId) ->
-            Stay, [ toAggregate userFactory owner.Value (User.ConsumeQuota docId) ]
-        | Approving _ -> Stay, [ toOriginator documentFactory Document.Approve ]
-        | Holding _ -> Stay, [ toOriginator documentFactory Document.Hold ]
-        | Done -> StopSaga, []
+        | ReservingSlug(documentId, slug) ->
+            Stay, [ toAggregate slugFactory slug (Slug.Reserve documentId) ]
+        | ConfirmingPublication ->
+            Stay, [ toOriginator documentFactory Document.ConfirmPublication ]
+        | RejectingPublication ->
+            Stay, [ toOriginator documentFactory Document.RejectPublication ]
+        | Done ->
+            StopSaga, []
 
 (**
-The saga issues commands rather than calling an external API inside the state transition. External
-handlers still need idempotency and timeouts because a remote service cannot share the saga's journal
-transaction. During recovery, FCQRS calls this function with `recovering = true` to re-drive the current
-state. This quota saga returns the same commands because both target aggregates handle retries
-idempotently. A branch calling an external system can use the flag to choose a status check or another
-recovery-specific command, but suppressing every recovery command can leave the saga waiting forever.
+`Stay` keeps the stored state while the saga waits for a reply. `StopSaga` completes and passivates the
+saga. `NextState next` is the third available transition; it persists another state immediately when a
+step should advance without waiting for an event. This workflow does not need it.
 
-The `Saga` record connects the functions, originator factory, initial data, start predicate, and
-snapshot policy. `StartOn` selects the originator event that creates a saga instance.
+The state is always stored before its commands are issued:
+
+<pre>
+incoming event
+    -> handleEvent
+    -> persist StateChangedEvent
+    -> applySideEffects
+    -> send commands
+</pre>
+
+That ordering is what makes the next action recoverable.
+
+## Step 4: declare how the saga starts
+
+`StartOn` selects the originator event that creates one workflow instance. `Originator` identifies the
+aggregate family that produced it and lets `toOriginator` route back to the exact document.
 *)
 
-    let startsOn (e: Event<Document.Event>) =
-        match e.EventDetails with
-        | Document.CreateOrUpdateRequested _ -> true
+    let startsOn (event: Event<Document.Event>) =
+        match event.EventDetails with
+        | Document.PublicationRequested _ -> true
         | _ -> false
 
-    let definition documentFactory userFactory =
-        { Name = "QuotaSaga"
-          InitialData = ()                       // no cross-step data: progress lives in State
+    let definition documentFactory slugFactory =
+        { Name = "PublicationSaga"
+          InitialData = ()
           Originator = documentFactory
           HandleEvent = handleEvent
-          ApplySideEffects = applySideEffects documentFactory userFactory
+          ApplySideEffects = applySideEffects documentFactory slugFactory
           StartOn = startsOn
           Snapshots = Default }
 
 (**
-<div class="cs-alt"></div>
+The domain publishes `PublicationRequested`; application code does not create `SagaStartingEvent`.
+FCQRS wraps the matched event internally so the new saga remembers its originator, starting version,
+correlation context, and the event that created it.
+
+The safe-start sequence is:
+
+1. the document chooses `PublicationRequested`;
+2. `StartOn` says the event requires `PublicationSaga`;
+3. FCQRS creates and subscribes the saga;
+4. the saga stores its starting envelope;
+5. the document event is persisted and published;
+6. `handleEvent` stores `ReservingSlug`;
+7. only then does `applySideEffects` send `Reserve`.
+
+Without this handshake, the first event could be published before the new saga was listening.
+
+## C# saga
+
+The C# API keeps the same two functions. `HandleEvent` returns a persisted state action;
+`ApplySideEffects` returns commands and `Stay`, `NextState`, or `StopSaga`.
 
 ```csharp
-// C#: the whole saga is a class deriving Saga<OriginatorEvent, Data, State>.
-// HandleEvent matches events from both aggregates (state is None until the first
-// transition); ApplySideEffects returns the transition + commands. The "StartOn"
-// predicate isn't a member here. It is passed to AddSaga in the next block.
-public sealed class QuotaSaga : Saga<DocumentEvent, QuotaSagaData, QuotaState>
+public abstract record PublicationState
 {
-    readonly Func<string, IEntityRef<object>> _documents, _users;
-    public QuotaSaga(Func<string, IEntityRef<object>> documents, Func<string, IEntityRef<object>> users)
-        { _documents = documents; _users = users; }
+    public sealed record ReservingSlug(DocumentId DocumentId, string Slug) : PublicationState;
+    public sealed record ConfirmingPublication : PublicationState;
+    public sealed record RejectingPublication : PublicationState;
+    public sealed record Done : PublicationState;
+}
 
-    public override QuotaSagaData InitialData => new();
-    public override string SagaName => "QuotaSaga";
+public sealed record PublicationData;
+
+public sealed class PublicationSaga
+    : Saga<DocumentEvent, PublicationData, PublicationState>
+{
+    readonly Func<string, IEntityRef<object>> _documents;
+    readonly Func<string, IEntityRef<object>> _slugs;
+
+    public PublicationSaga(
+        Func<string, IEntityRef<object>> documents,
+        Func<string, IEntityRef<object>> slugs)
+    {
+        _documents = documents;
+        _slugs = slugs;
+    }
+
+    public override PublicationData InitialData => new();
+    public override string SagaName => "PublicationSaga";
     public override Func<string, IEntityRef<object>> Originator => _documents;
 
-    public override EventAction<QuotaState> HandleEvent(
-        object evt, SagaState<QuotaSagaData, FSharpOption<QuotaState>> sagaState) =>
-        (evt, sagaState.State?.Value) switch
+    public override EventAction<PublicationState> HandleEvent(
+        object message,
+        SagaState<PublicationData, FSharpOption<PublicationState>> sagaState) =>
+        (message, sagaState.State?.Value) switch
         {
-            (Event<DocumentEvent> { EventDetails: DocumentEvent.CreateOrUpdateRequested co }, null) =>
-                StateChanged(new QuotaState.CheckingQuota(co.Owner, co.Document.Id)),
-            (Event<UserEvent> { EventDetails: UserEvent.QuotaApproved }, QuotaState.CheckingQuota s) =>
-                StateChanged(new QuotaState.Approving(s.DocId)),
-            (Event<UserEvent> { EventDetails: UserEvent.QuotaRejected }, QuotaState.CheckingQuota s) =>
-                StateChanged(new QuotaState.Holding(s.DocId)),
-            (Event<DocumentEvent> { EventDetails: DocumentEvent.Approved }, QuotaState.Approving) =>
-                StateChanged(new QuotaState.Done()),
-            (Event<DocumentEvent> { EventDetails: DocumentEvent.HeldForApproval }, QuotaState.Holding) =>
-                StateChanged(new QuotaState.Done()),
+            (Event<DocumentEvent>
+                { EventDetails: DocumentEvent.PublicationRequested requested }, null) =>
+                StateChanged(new PublicationState.ReservingSlug(
+                    requested.DocumentId, requested.Slug)),
+            (Event<SlugEvent> { EventDetails: SlugEvent.SlugReserved },
+                PublicationState.ReservingSlug _) =>
+                StateChanged(new PublicationState.ConfirmingPublication()),
+            (Event<SlugEvent> { EventDetails: SlugEvent.SlugUnavailable },
+                PublicationState.ReservingSlug _) =>
+                StateChanged(new PublicationState.RejectingPublication()),
+            (Event<DocumentEvent> { EventDetails: DocumentEvent.Published },
+                PublicationState.ConfirmingPublication _) =>
+                StateChanged(new PublicationState.Done()),
+            (Event<DocumentEvent> { EventDetails: DocumentEvent.PublicationRejected },
+                PublicationState.RejectingPublication _) =>
+                StateChanged(new PublicationState.Done()),
             _ => Unhandled()
         };
 
-    public override SagaSideEffectResult<QuotaState> ApplySideEffects(
-        SagaState<QuotaSagaData, QuotaState> sagaState, bool recovering) =>
+    public override SagaSideEffectResult<PublicationState> ApplySideEffects(
+        SagaState<PublicationData, PublicationState> sagaState,
+        bool recovering) =>
         sagaState.State switch
         {
-            QuotaState.CheckingQuota s => new()
+            PublicationState.ReservingSlug s => new()
             {
                 Transition = Stay(),
-                Commands = [SagaCommands.ToAggregate(_users, s.Owner.ToString(), new UserCommand.ConsumeQuota(s.DocId))]
+                Commands = [SagaCommands.ToAggregate(
+                    _slugs, s.Slug, new SlugCommand.Reserve(s.DocumentId))]
             },
-            QuotaState.Approving => new() { Transition = Stay(), Commands = [SagaCommands.ToOriginator(_documents, new DocumentCommand.Approve())] },
-            QuotaState.Holding   => new() { Transition = Stay(), Commands = [SagaCommands.ToOriginator(_documents, new DocumentCommand.Hold())] },
-            QuotaState.Done      => new() { Transition = StopSaga(), Commands = [] },
+            PublicationState.ConfirmingPublication _ => new()
+            {
+                Transition = Stay(),
+                Commands = [SagaCommands.ToOriginator(
+                    _documents, new DocumentCommand.ConfirmPublication())]
+            },
+            PublicationState.RejectingPublication _ => new()
+            {
+                Transition = Stay(),
+                Commands = [SagaCommands.ToOriginator(
+                    _documents, new DocumentCommand.RejectPublication())]
+            },
+            PublicationState.Done _ => new()
+            {
+                Transition = StopSaga(),
+                Commands = []
+            },
             _ => new() { Transition = Stay(), Commands = [] }
         };
 }
 ```
-*)
 
-(**
-## Wiring it all up
+The document and slug aggregates use the same `HandleCommand` and `ApplyEvent` pattern taught in
+chapter 1. [Write a saga](../how-to/write-a-saga.html) includes the complete C# registration call.
 
-The composition root registers both aggregates, constructs the saga with their factories, and wires
-the [saga-start handshake](../concepts/sagas.html).
+## Wire the participants and starter
+
+Register both aggregates first, then construct the saga from their factories. The final call installs
+the start predicate and handshake.
 *)
 
 let wire (api: IActor) =
-    let documents = Fcqrs.aggregate api { Name = "Document"; Initial = Document.initial; Decide = Document.decide; Fold = Document.fold; Snapshots = Default }
-    let users     = Fcqrs.aggregate api { Name = "User";     Initial = User.initial;     Decide = User.decide;     Fold = User.fold; Snapshots = Default }
-    let quota = Fcqrs.saga api (QuotaSaga.definition documents.Factory users.Factory)
-    Fcqrs.wireSagaStarters api [ quota ]
+    let documents =
+        Fcqrs.aggregate api
+            { Name = "Document"
+              Initial = Document.initial
+              Decide = Document.decide
+              Fold = Document.fold
+              Snapshots = Default }
+
+    let slugs =
+        Fcqrs.aggregate api
+            { Name = "Slug"
+              Initial = Slug.initial
+              Decide = Slug.decide
+              Fold = Slug.fold
+              Snapshots = Default }
+
+    let publication =
+        Fcqrs.saga api (PublicationSaga.definition documents.Factory slugs.Factory)
+
+    Fcqrs.wireSagaStarters api [ publication ]
     documents
 
 (**
 <div class="cs-alt"></div>
 
 ```csharp
-// C#: register both aggregates and the saga via the DI host-builder. AddSaga's
-// startOn is the safe-start rule and the C# counterpart of StartOn.
 services
-    .AddFcqrs(connString, "FocumentCluster")
-    .AddAggregate<DocumentAggregate, DocumentState, DocumentCommand, DocumentEvent>()
-    .AddAggregate<UserAggregate, UserState, UserCommand, UserEvent>()
-    .AddSaga<QuotaSaga, DocumentEvent, QuotaSagaData, QuotaState>(
-        create: sp => new QuotaSaga(
+    .AddFcqrs(connectionString, "Documents")
+    .AddAggregate<DocumentAggregate>()
+    .AddAggregate<SlugAggregate>()
+    .AddSaga<PublicationSaga, DocumentEvent, PublicationData, PublicationState>(
+        create: sp => new PublicationSaga(
             sp.AggregateFactory<DocumentAggregate>(),
-            sp.AggregateFactory<UserAggregate>()),
-        startOn: e => e is Event<DocumentEvent> { EventDetails: DocumentEvent.CreateOrUpdateRequested });
+            sp.AggregateFactory<SlugAggregate>()),
+        startOn: e => e is Event<DocumentEvent>
+            { EventDetails: DocumentEvent.PublicationRequested });
 ```
-*)
 
-(**
-The start handshake prevents `CreateOrUpdateRequested` from being published before the new saga has
-subscribed. The application declares the start event; FCQRS enforces the creation and publication order.
+## How resumption works
 
-## Run the quota path
+Assume the saga has stored `ConfirmingPublication` and sent `ConfirmPublication`, then the process
+stops. On restart FCQRS:
 
-Send four creates for the same user (each a different document id) and the fourth crosses the line:
+1. loads the saga snapshot when one exists;
+2. replays later state changes;
+3. restores the starting-event context;
+4. subscribes the saga again;
+5. calls `applySideEffects` for `ConfirmingPublication` with `recovering = true`.
+
+The saga cannot know whether the earlier confirmation reached the document. It sends the command
+again. The document's idempotent decision returns `Published` without storing a duplicate if the first
+command already succeeded.
+
+This is resumability: recover durable progress and re-drive the next safe action. It is not rewinding
+the other aggregate, and it is not exactly-once delivery.
+
+## Run both outcomes
+
+Publish two documents under the same slug:
 
 <pre>
-create #1 (alice)  ->  ApprovedEvt       "saved"
-create #2 (alice)  ->  ApprovedEvt       "saved"
-create #3 (alice)  ->  ApprovedEvt       "saved"
-create #4 (alice)  ->  HeldForApproval   "over quota - awaiting approval"
+document A + guides/fcqrs
+  -> SlugReserved
+  -> Published
+
+document B + guides/fcqrs
+  -> SlugUnavailable
+  -> PublicationRejected
 </pre>
 
-The first three requests follow `CreateOrUpdateRequested -> ConsumeQuota -> QuotaApproved -> Approve ->
-ApprovedEvt`. The fourth receives `QuotaRejected`; the saga sends `Hold`, and the document reaches
-`AwaitingApproval`. After a minute, `prune` removes expired grants when the next quota command is
-decided.
-
-## What you now understand
-
-A user aggregate owns the quota and a document aggregate owns approval. The saga coordinates them by
-mapping events to states and states to commands. Retry safety comes from idempotent target commands, and
-replay safety comes from storing time in events instead of reading the clock in folds.
+The slug aggregate serializes both reservations and accepts only the first owner. Each publication
+saga stores its own progress and safely completes the matching document.
 
 ## Common mistakes
 
-- **Reading another aggregate from `decide`.** Move the cross-boundary process into a saga.
-- **Assuming exactly-once delivery.** Make repeated commands return the existing business result without
-  repeating the state change.
-- **Reading the clock in `fold`.** Carry the decision time in the stored event.
-- **Calling an external service from a transition.** Issue a command to a handler with explicit timeout,
-  retry, and idempotency behaviour.
-- **Using a saga for disposable work.** Use an ephemeral async effect when losing in-flight work during
-  restart is acceptable.
+- **Changing state inside `applySideEffects` without returning `NextState`.** Persist progress through
+  `StateChangedEvent` or `NextState`; mutable local state disappears on recovery.
+- **Sending commands from `handleEvent`.** Let FCQRS store the next state before side effects run.
+- **Matching too many events in `StartOn`.** Only the domain event that begins a new workflow should
+  create a saga instance.
+- **Constructing `SagaStartingEvent` in application code.** Declare `StartOn`; FCQRS owns the runtime
+  envelope and handshake.
+- **Suppressing commands whenever `recovering = true`.** Re-drive an idempotent command or reconcile
+  uncertain external work, otherwise the saga can remain stuck.
+- **Assuming `StopSaga` deletes history.** It completes and passivates the actor; persisted progress
+  remains available for diagnostics and storage policy.
 
 ## Understand it and use it
 
-- **Understand:** [Sagas](../concepts/sagas.html) develops the workflow from partial failure through
-  persisted states, safe startup, repeated delivery, timeouts, and compensation.
-  [Consistency and recovery](../concepts/consistency-and-recovery.html) explains what remains uncertain
-  across journal, actor, and external-service boundaries.
-- **Apply:** [Write a saga](../how-to/write-a-saga.html) is the durable workflow recipe.
-  [Dispatch async effects](../how-to/dispatch-async-effects.html) shows the best-effort alternative when
-  work may safely be lost.
+- **Understand:** [Sagas](../concepts/sagas.html) explains transitions, starting, resumption, uncertain
+  delivery, and compensation from first principles. [Consistency and
+  recovery](../concepts/consistency-and-recovery.html) compares the saga journal with other durable
+  boundaries.
+- **Apply:** [Write a saga](../how-to/write-a-saga.html) is the shorter F# and C# recipe.
+  [Dispatch async effects](../how-to/dispatch-async-effects.html) is the alternative when work may
+  safely be lost.
 
-## You've built the whole loop
-
-You now have the complete runtime flow: aggregates store facts, projections build query data, and a
-saga coordinates work across aggregate boundaries. Continue with [testing and
-evolution](4-testing-and-evolution.html) before preparing the application for production. The complete
-application is available in [`focument_fsharp`](https://github.com/OnurGumus/focument_fsharp).
+Next, [test the state machine and evolve its events](4-testing-and-evolution.html).
 *)

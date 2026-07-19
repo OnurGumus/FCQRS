@@ -37,7 +37,8 @@ reject it. An **event** records an outcome, such as `Updated` or `Rejected`. A s
 fact and is not edited when a later command arrives.
 
 Commands and events are different types because one request can have several outcomes. Keeping them
-separate also lets a future rule add a new rejection without pretending that every command succeeds.
+separate also lets the publication workflow in chapter 3 add a new outcome without pretending that
+every command succeeds.
 
 An **aggregate** owns the state and rules needed to make decisions about one entity. FCQRS runs each
 aggregate as an actor that handles one command at a time. Sequential handling eliminates races within
@@ -156,8 +157,8 @@ stored, the document is absent:
     let initial = { Document = None }
 
 (**
-The first model has one command and one event. In chapter 3, the same `CreateOrUpdate` request can
-produce several outcomes after a quota check. Defining separate types now leaves room for that change.
+The first model has one command and one event. Chapter 3 adds a separate `Publish` request with several
+possible outcomes. Defining commands and events separately now leaves room for that growth.
 *)
 
     type Command = CreateOrUpdate of Root

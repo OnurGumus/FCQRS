@@ -19,8 +19,8 @@
   </defs>
 
   <rect width="960" height="640" fill="#FFFFFF"/>
-  <text class="title" x="40" y="40">How a saga starts — the coordination handshake</text>
-  <text class="subtitle" x="40" y="63">Read top to bottom. Steps 2–5 are internal plumbing that guarantees the saga is listening before step 6.</text>
+  <text class="title" x="40" y="40">How a saga starts: the coordination handshake</text>
+  <text class="subtitle" x="40" y="63">Read top to bottom. Steps 2–5 guarantee the publication saga is listening before the start event is published.</text>
 
   <!-- legend -->
   <line class="edge-red" x1="586" y1="92" x2="612" y2="92"/><text class="leg" x="618" y="96" fill="#B4262A">command</text>
@@ -35,17 +35,17 @@
 
   <!-- headers -->
   <rect x="105" y="116" width="150" height="54" rx="10" fill="#F1F5F9" stroke="#334155" stroke-width="2"/>
-  <text class="hlbl" x="180" y="142" text-anchor="middle" fill="#0F172A">Aggregate</text>
-  <text class="hsub" x="180" y="159" text-anchor="middle" fill="#64748B">the originator</text>
+  <text class="hlbl" x="180" y="142" text-anchor="middle" fill="#0F172A">Document</text>
+  <text class="hsub" x="180" y="159" text-anchor="middle" fill="#64748B">originator aggregate</text>
   <rect x="345" y="116" width="150" height="54" rx="10" fill="#F8FAFC" stroke="#64748B" stroke-width="2"/>
   <text class="hlbl" x="420" y="142" text-anchor="middle" fill="#334155">Saga Starter</text>
   <text class="hsub" x="420" y="159" text-anchor="middle" fill="#64748B">internal coordinator</text>
   <rect x="575" y="116" width="150" height="54" rx="10" fill="#F3E8FF" stroke="#7C3AED" stroke-width="2"/>
-  <text class="hlbl" x="650" y="142" text-anchor="middle" fill="#581C87">Saga</text>
-  <text class="hsub" x="650" y="159" text-anchor="middle" fill="#6B21A8">process manager</text>
+  <text class="hlbl" x="650" y="142" text-anchor="middle" fill="#581C87">Publication saga</text>
+  <text class="hsub" x="650" y="159" text-anchor="middle" fill="#6B21A8">durable coordinator</text>
   <rect x="785" y="116" width="150" height="54" rx="10" fill="#FEF9C3" stroke="#CA8A04" stroke-width="2"/>
-  <text class="hlbl" x="860" y="142" text-anchor="middle" fill="#713F12">Mail sender</text>
-  <text class="hsub" x="860" y="159" text-anchor="middle" fill="#854D0E">outside world</text>
+  <text class="hlbl" x="860" y="142" text-anchor="middle" fill="#713F12">Slug aggregate</text>
+  <text class="hsub" x="860" y="159" text-anchor="middle" fill="#854D0E">uniqueness owner</text>
 
   <!-- aggregate pause/activation bar (blocked during 2..5) -->
   <rect x="174" y="214" width="12" height="142" fill="#FEE2E2" stroke="#E5484D" stroke-width="1.2"/>
@@ -53,12 +53,12 @@
 
   <!-- 1 command -->
   <circle cx="60" cy="200" r="10" fill="#E5484D"/><text class="badge" x="60" y="204" text-anchor="middle">1</text>
-  <text class="elbl" x="76" y="204" fill="#B4262A">command (Register)</text>
+  <text class="elbl" x="76" y="204" fill="#B4262A">command: RequestPublication</text>
   <path class="edge-red" d="M50,216 L176,216" marker-end="url(#q-red)"/>
 
   <!-- 2 starting event -->
   <circle cx="196" cy="248" r="10" fill="#2563EB"/><text class="badge" x="196" y="252" text-anchor="middle">2</text>
-  <text class="elbl" x="212" y="252" fill="#1D4ED8">starting event — Ask (pauses the aggregate)</text>
+  <text class="elbl" x="212" y="252" fill="#1D4ED8">PublicationRequested matches StartOn; document pauses</text>
   <path class="edge-blue" d="M180,264 L420,264" marker-end="url(#q-blue)"/>
 
   <!-- 3 start saga -->
@@ -81,17 +81,17 @@
   <text class="elbl" x="212" y="448" fill="#1D4ED8">event persisted &amp; published → saga finally receives it</text>
   <path class="edge-blue" d="M180,460 L650,460" marker-end="url(#q-blue)"/>
 
-  <!-- 7 send mail -->
+  <!-- 7 reserve slug -->
   <circle cx="666" cy="492" r="10" fill="#E5484D"/><text class="badge" x="666" y="496" text-anchor="middle">7</text>
-  <text class="elbl" x="682" y="496" fill="#B4262A">side effect: send mail</text>
+  <text class="elbl" x="682" y="496" fill="#B4262A">store ReservingSlug; send ReserveSlug</text>
   <path class="edge-red" d="M650,508 L860,508" marker-end="url(#q-red)"/>
 
-  <!-- 8 sent -->
+  <!-- 8 reservation result -->
   <circle cx="682" cy="538" r="10" fill="#94A3B8"/><text class="badge" x="682" y="542" text-anchor="middle">8</text>
-  <text class="elbl" x="698" y="542" fill="#64748B">sent</text>
+  <text class="elbl" x="698" y="542" fill="#64748B">SlugReserved or SlugUnavailable</text>
   <path class="edge-gray" d="M860,554 L650,554" marker-end="url(#q-gray)"/>
 
-  <!-- 9 completes -->
+  <!-- 9 continues -->
   <circle cx="666" cy="592" r="10" fill="#7C3AED"/><text class="badge" x="666" y="596" text-anchor="middle">9</text>
-  <text class="elbl" x="682" y="596" fill="#6B21A8">saga completes → passivates (stops)</text>
+  <text class="elbl" x="682" y="596" fill="#6B21A8">persist next state; tell the document the outcome</text>
 </svg>
