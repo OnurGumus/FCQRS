@@ -1,4 +1,4 @@
-﻿module FCQRS.SQLProvider.Query
+module FCQRS.SQLProvider.Query
 open FSharp.Data.Sql.Common
 open System.Linq
 open FCQRS.Model.Data
@@ -85,14 +85,17 @@ let private augment  eval filter orderby orderbydesc thenby thenbydesc (take:int
             @>
         | None -> db
 
-    let db =
-        match take with
-        | Some take -> <@ (%db).Take(take) @>
-        | None -> db
-
+    // Skip BEFORE Take: SQL OFFSET/FETCH and LINQ both paginate skip-then-take.
+    // Take(n).Skip(m) would return items m+1..n of the first n rows (and nothing
+    // when m >= n) — the inverted composition this used to have.
     let db =
         match skip with
         | Some skip -> <@ (%db).Skip(skip) @>
+        | None -> db
+
+    let db =
+        match take with
+        | Some take -> <@ (%db).Take(take) @>
         | None -> db
 
     query {

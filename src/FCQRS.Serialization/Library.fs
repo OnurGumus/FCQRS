@@ -149,7 +149,9 @@ module public Serialization =
                 //.WithUnionFieldNamesFromTypes()
                 .WithUnionUnwrapSingleCaseUnions(false)
                 .ToJsonSerializerOptions()
-        // Enable C# polymorphic serialization with [JsonDerivedType] attributes
+        // Enforce C# nullable annotations during (de)serialization: a null in a
+        // non-nullable property fails instead of silently materializing. Note
+        // this applies only to C#-shaped payloads (F# types use the F# converter).
         opts.RespectNullableAnnotations <- true
         // Enable C# 15 `union` round-tripping. Inserted ahead of the F#
         // converter so unions win converter resolution unambiguously.

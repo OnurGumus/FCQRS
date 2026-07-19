@@ -82,6 +82,7 @@ let private runSaga<'TEvent, 'SagaData, 'State when 'TEvent : not null and 'Stat
     innerStateDefaults
     (currentSagaActivityRef: (Activity | null) ref)
     (recoveredFromSnapshotRef: bool ref)
+    (recoveredRef: bool ref)
     (cleanupOnStop: unit -> unit)
     =
     let rec innerSet (startingEvent: option<SagaStarter.SagaStartingEvent<Event<'TEvent>>>, subscribed, subscriptionAcked) =
@@ -146,8 +147,11 @@ let private runSaga<'TEvent, 'SagaData, 'State when 'TEvent : not null and 'Stat
                 log.LogInformation("Saga RecoveryCompleted")
                 return! innerSet (startingEvent, subscribed, subscriptionAcked)
             | Recovering mailbox (:? SagaStartingEventWrapper<'TEvent> as SagaStartingEventWrapper event) ->
+                recoveredRef.Value <- true
                 return! innerSet (Some event, true, subscriptionAcked)
             | Recovering mailbox (:? SagaEvent<'State> as event) ->
+                recoveredRef.Value <- true
+
                 match event with
                 | StateChanged s ->
                     try
@@ -170,25 +174,39 @@ let private runSaga<'TEvent, 'SagaData, 'State when 'TEvent : not null and 'Stat
                 return! innerSet (startingEvent, subscribed, subscriptionAcked)
             | SnapshotOffer(snapState: obj) ->
                 recoveredFromSnapshotRef.Value <- true
+                recoveredRef.Value <- true
 
+                // subscribed = true in both branches: the wrapper is journal seq 1,
+                // so any snapshot postdates it — the starting event was journaled.
+                // Leaving it false made a snapshot-recovered resurrection drop the
+                // re-delivered SagaStartingEvent without signalling Continue, which
+                // deadlocked the originator's handshake into a process FailFast.
                 match snapState with
                 | :? SagaSnapshot<'SagaData, 'State, 'TEvent> as snap ->
                     // Restore the starting event alongside the state — the wrapper
                     // event predates the snapshot and will not be replayed.
-                    return! snap.Parent |> set (snap.StartingEvent, subscribed, subscriptionAcked)
+                    return! snap.Parent |> set (snap.StartingEvent, true, subscriptionAcked)
                 | _ ->
                     // Pre-SagaSnapshot shape (older journals): no starting event
                     // available. The recovery re-drive still runs (see the
                     // SubscriptionAcknowledged branch); re-issued commands just
                     // lose the starting event's metadata.
-                    return! snapState |> unbox<_> |> set innerSetValue
+                    return! snapState |> unbox<_> |> set (startingEvent, true, subscriptionAcked)
             | SubscriptionAcknowledged mailbox _ ->
                 // notify saga starter about the subscription completed
                 let nextInner = startingEvent, true, true
 
                 match startingEvent with
                 | Some _ ->
-                    let newState = applySideEffects state startingEvent true
+                    // recovering = whether this incarnation actually replayed state.
+                    // On a fresh start this ack arrives while the saga sits in
+                    // Started, and passing true here ran handleStartedState's
+                    // recovery re-drive: a spurious ContinueOrAbort that either
+                    // re-published the starting event (duplicate delivery to every
+                    // same-CID subscriber) or, if the originator had already moved
+                    // on, falsely aborted a live saga. The fresh-start Continue is
+                    // signalled by the (Stay, false) branch of applySideEffects.
+                    let newState = applySideEffects state startingEvent recoveredRef.Value
 
                     match newState with
                     | Some newState ->
@@ -220,7 +238,12 @@ let private runSaga<'TEvent, 'SagaData, 'State when 'TEvent : not null and 'Stat
                     let nextInner = Some e, true, subscriptionAcked
 
                     if startingEvent.IsNone then
-                        let newState = applySideEffects state (Some e) subscriptionAcked
+                        // A live wrapper persist is always a fresh start (replayed
+                        // wrappers arrive through the Recovering branch), so this is
+                        // never a recovery re-drive. Passing subscriptionAcked here
+                        // spuriously sent ContinueOrAbort when the mediator ack won
+                        // the race against the wrapper persist.
+                        let newState = applySideEffects state (Some e) false
 
                         match newState with
                         | Some newState ->
@@ -359,6 +382,10 @@ let private actorProp<'SagaData, 'State, 'TEvent when 'TEvent : not null and 'St
     // through a snapshot, starting event may be missing" from "fresh start,
     // starting event simply hasn't arrived yet" (which must NOT re-drive).
     let recoveredFromSnapshotRef: bool ref = ref false
+    // Set when this incarnation replayed ANY prior state (journal or snapshot).
+    // Gates the SubscriptionAcknowledged re-drive: only a genuinely recovered
+    // saga may send ContinueOrAbort; a fresh start must not.
+    let recoveredRef: bool ref = ref false
     // Cancelables for delayed commands the saga has scheduled, paired with the
     // wall-clock time at which the underlying schedule is guaranteed to have
     // fired (delay + buffer). Akka's ICancelable does not flip
@@ -369,19 +396,25 @@ let private actorProp<'SagaData, 'State, 'TEvent when 'TEvent : not null and 'St
     let pendingCancelablesRef: (Akka.Actor.ICancelable * DateTime) list ref = ref []
     let pendingExpiryBuffer = TimeSpan.FromSeconds(30.0)
 
-    let cleanupOnStop () =
+    let disposeCurrentActivity () =
         // Dispose the in-flight saga-state activity so span context doesn't leak.
         match currentSagaActivityRef.Value with
         | null -> ()
         | act ->
             act.Dispose()
             currentSagaActivityRef.Value <- null
-        // Cancel any scheduled delayed commands (fired ones are no-ops).
-        for (c, _) in pendingCancelablesRef.Value do
+
+    let cancelScheduled (entries: (Akka.Actor.ICancelable * DateTime) list) =
+        // Cancel scheduled delayed commands (fired ones are no-ops).
+        for (c, _) in entries do
             try
                 c.Cancel()
             with ex ->
                 log.Debug(ex, "Error cancelling pending saga command during cleanup")
+
+    let cleanupOnStop () =
+        disposeCurrentActivity ()
+        cancelScheduled pendingCancelablesRef.Value
         pendingCancelablesRef.Value <- []
 
     // Per-entity policy first; Default falls back to the global config key, then 30.
@@ -410,6 +443,14 @@ let private actorProp<'SagaData, 'State, 'TEvent when 'TEvent : not null and 'St
                 fatalFailFast currentSagaActivityRef.Value "Process terminated due to saga error" ex
 
                 failwith "Process terminated due to saga error" // This line will never execute but satisfies the compiler
+
+        // Capture before dispatching: on StopSaga only reminders scheduled by
+        // EARLIER states are cancelled — delayed commands returned alongside
+        // StopSaga are the saga's final commands and must still fire. The one
+        // exception is Self-targeted delayed commands (tracked below): a
+        // completed saga must not be resurrected by its own final message.
+        let pendingBefore = pendingCancelablesRef.Value
+        let selfDelayed = ResizeArray<Akka.Actor.ICancelable * DateTime>()
 
         for cmd in cmds do
             try
@@ -520,11 +561,25 @@ let private actorProp<'SagaData, 'State, 'TEvent when 'TEvent : not null and 'St
                 match cmd.DelayInMs with
                 | Some (delayValue, name) ->
                     let currentScheduler = mailbox.System.Scheduler
-                    let messageToSchedule = finalCommand
                     let scheduleAtDelay = System.TimeSpan.FromMilliseconds delayValue
 
+                    // IEntityRef.Tell wraps the message in a ShardEnvelope before
+                    // hitting the shard region. Scheduling a raw message to the
+                    // region (Underlying) bypasses that wrapper and the message
+                    // extractor rejects it, so wrap it here instead. Without this,
+                    // delayed commands to sharded aggregates are silently lost.
+                    let untypedReceiver, messageToSchedule =
+                        match targetActor with
+                        | :? (Akkling.Cluster.Sharding.IEntityRef<obj>) as entityRef ->
+                            entityRef.Underlying,
+                            box (
+                                { ShardId = entityRef.ShardId
+                                  EntityId = entityRef.EntityId
+                                  Message = finalCommand }: Akkling.Cluster.Sharding.ShardEnvelope
+                            )
+                        | other -> other.Underlying, finalCommand
+
                     let untypedSender = mailbox.Self.Underlying :?> Akka.Actor.IActorRef
-                    let untypedReceiver = targetActor.Underlying
 
                     let cancelable: Akka.Actor.ICancelable =
                         match currentScheduler with
@@ -544,6 +599,11 @@ let private actorProp<'SagaData, 'State, 'TEvent when 'TEvent : not null and 'St
                         pendingCancelablesRef.Value
                         |> List.filter (fun (_, exp) -> exp > now)
                     pendingCancelablesRef.Value <- (cancelable, expiresAt) :: liveEntries
+
+                    // Track Self-targeted ones: StopSaga cancels these (see below).
+                    match cmd.TargetActor with
+                    | Self -> selfDelayed.Add((cancelable, expiresAt))
+                    | _ -> ()
 
                 | None ->
                     targetActor <! finalCommand
@@ -569,7 +629,20 @@ let private actorProp<'SagaData, 'State, 'TEvent when 'TEvent : not null and 'St
         | NextState newState, _ -> 
             Some newState
         | StopSaga, _ ->
-            cleanupOnStop ()
+            disposeCurrentActivity ()
+
+            if selfDelayed.Count > 0 then
+                log.Warning(
+                    "Saga {0} returned StopSaga with {1} delayed Self command(s); cancelling them — a completed saga must not be resurrected by its own final message. Target another entity instead.",
+                    name,
+                    selfDelayed.Count)
+
+            // Cancel pending delayed commands from earlier states (the workflow is
+            // done — its reminders must not fire into a resurrected entity) and any
+            // Self-targeted ones just scheduled, but NOT the other commands returned
+            // with StopSaga: they are the saga's final act and must still be delivered.
+            cancelScheduled (pendingBefore @ List.ofSeq selfDelayed)
+            pendingCancelablesRef.Value <- []
             let poision = Cluster.Sharding.Passivate <| Actor.PoisonPill.Instance
             mailbox.Parent() <! poision
             log.Info("{0} Completed", name)
@@ -644,6 +717,7 @@ let private actorProp<'SagaData, 'State, 'TEvent when 'TEvent : not null and 'St
             innerStateDefaults
             currentSagaActivityRef
             recoveredFromSnapshotRef
+            recoveredRef
             cleanupOnStop
 
     set (None, false, false) initialState

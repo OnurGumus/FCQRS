@@ -109,6 +109,12 @@ type ISubscribe<'TDataEvent when 'TDataEvent :> IMessageWithCID> =
 type ISubscribe =
     inherit ISubscribe<IMessageWithCID>
 
+/// Internal: lets the facade discover the system-configured bound for a
+/// read-your-writes projection wait (akka.fcqrs.command-timeout) without
+/// widening the public ISubscribe surface.
+type internal IHasNotificationTimeout =
+    abstract Timeout: TimeSpan
+
 /// Adapt a generic ISubscribe&lt;IMessageWithCID&gt; to the non-generic ISubscribe
 /// (forwards every Subscribe overload to the inner subscription).
 let asDefaultSubscribe (inner: ISubscribe<IMessageWithCID>) : ISubscribe =
@@ -120,7 +126,13 @@ let asDefaultSubscribe (inner: ISubscribe<IMessageWithCID>) : ISubscribe =
         member _.Subscribe(cid: CID, take: int, ?callback: IMessageWithCID -> unit, ?cancellationToken: CancellationToken) : IAwaitableDisposable =
             inner.Subscribe(cid, take, ?callback = callback, ?cancellationToken = cancellationToken)
         member _.Subscribe(cid: CID, filter: IMessageWithCID -> bool, take: int, ?callback: IMessageWithCID -> unit, ?cancellationToken: CancellationToken) : IAwaitableDisposable =
-            inner.Subscribe(cid, filter, take, ?callback = callback, ?cancellationToken = cancellationToken) }
+            inner.Subscribe(cid, filter, take, ?callback = callback, ?cancellationToken = cancellationToken)
+
+      interface IHasNotificationTimeout with
+          member _.Timeout =
+              match box inner with
+              | :? IHasNotificationTimeout as t -> t.Timeout
+              | _ -> TimeSpan.FromSeconds 30.0 }
 
 /// Adapt a "single-event" projection handler — one that just updates the read
 /// model and returns unit — to the canonical list-returning shape: after the
@@ -168,17 +180,43 @@ module internal Internal =
         |> Source.toMat sink Keep.both
         |> Graph.run mat
 
-    let subscribeCmd<'TDataEvent> (source: Source<'TDataEvent, unit>) (actorApi: IActor) =
+    let subscribeCmd<'TDataEvent> (source: Source<'TDataEvent, unit>) (isolationBuffer: int) (actorApi: IActor) =
         fun (cb: 'TDataEvent -> unit) ->
             let sink = Sink.forEach (fun event -> cb event)
-            let ks, _ = subscribeToStream source actorApi.Materializer sink
+            // Per-consumer DropHead buffer: the BroadcastHub advances at the pace
+            // of its SLOWEST consumer, so without this a single blocking callback
+            // pinned the hub and silently starved every other subscriber. With it,
+            // a stalled consumer sheds its own backlog instead. The Async()
+            // boundary is load-bearing: without it the buffer fuses into the same
+            // island as the sink, and a blocking callback freezes the buffer too.
+            let source =
+                (source |> Source.buffer OverflowStrategy.DropHead isolationBuffer).Async()
+            let ks, completion = subscribeToStream source actorApi.Materializer sink
+
+            // The completion is the only place a callback exception surfaces;
+            // discarding it made the subscription die permanently and silently.
+            let logger = actorApi.LoggerFactory.CreateLogger "Query"
+
+            Async.Start(
+                async {
+                    try
+                        do! completion |> Async.Ignore
+                    with ex ->
+                        logger.LogError(
+                            ex,
+                            "Notification subscriber stream failed; this subscription is dead and will receive no further events")
+                })
+
             ks :> IKillSwitch
 
-    let subscribeCmdWithFilter<'TDataEvent> (source: Source<'TDataEvent, unit>) (actorApi: IActor) =
+    let subscribeCmdWithFilter<'TDataEvent> (source: Source<'TDataEvent, unit>) (isolationBuffer: int) (actorApi: IActor) =
         fun filter take cb ->
             // cb is now a required parameter (it will be provided as default if needed)
             let subscribeToStream source filter take mat (sink: Sink<'TDataEvent, _>) =
-                source
+                // Same slow-consumer isolation as subscribeCmd, including the
+                // fusion-breaking Async() boundary (see above).
+                (source |> Source.buffer OverflowStrategy.DropHead isolationBuffer)
+                    .Async()
                 |> Source.viaMat KillSwitch.single Keep.right
                 |> Source.filter filter
                 |> Source.take take
@@ -277,7 +315,16 @@ let init<'TDataEvent, 'TPredicate, 't when 'TDataEvent :> IMessageWithCID> (acto
                     null
 
             let res = handler offsetValue envelop.Event
-            res |> List.iter (fun x -> queue.OfferAsync(x).Wait())
+
+            // Notifications are ephemeral by contract; a failed offer (e.g. a
+            // StreamDetachedException when the notification queue stops first
+            // during actor-system shutdown) must not escalate to the projection
+            // FailFast below — the read-model update has already committed.
+            try
+                res |> List.iter (fun x -> queue.OfferAsync(x).Wait())
+            with offerEx ->
+                logger.LogWarning(offerEx, "Projection notification dropped (ephemeral by contract)")
+
             lastProcessedOffset <- offsetValue
         with ex ->
             logger.LogCritical(ex, "Error in query handler")
@@ -288,8 +335,13 @@ let init<'TDataEvent, 'TPredicate, 't when 'TDataEvent :> IMessageWithCID> (acto
             fatalFailFast null "Process terminated due to query projection error" ex)
     |> Async.Start
 
-    let subscribeCmd = subscribeCmd subRunnable actorApi
-    let subscribeCmdWithFilter = subscribeCmdWithFilter subRunnable actorApi
+    let subscribeCmd = subscribeCmd subRunnable hubBufferSize actorApi
+    let subscribeCmdWithFilter = subscribeCmdWithFilter subRunnable hubBufferSize actorApi
+
+    // Same key and unit rule as the command subscription bound; the facade's
+    // sendAwaiting reads it through IHasNotificationTimeout.
+    let notificationTimeout =
+        CommandHandler.Internal.resolveCommandTimeout actorApi.System.Settings.Config
 
     { new ISubscribe<'TDataEvent> with
         override _.Subscribe(callback, ?cancellationToken) =
@@ -300,9 +352,11 @@ let init<'TDataEvent, 'TPredicate, 't when 'TDataEvent :> IMessageWithCID> (acto
             { new IDisposable with
                 member __.Dispose() =
                     reg.Dispose()
-
-                    if not token.IsCancellationRequested then
-                        ks.Shutdown() }
+                    // Unconditional: Shutdown is idempotent, and gating it on
+                    // IsCancellationRequested raced a concurrent cancel whose
+                    // registration was disposed before it ran — neither side then
+                    // shut the stream down and the consumer leaked.
+                    ks.Shutdown() }
 
         override _.Subscribe(filter: 'TDataEvent -> bool, take: int, ?callback, ?cancellationToken) =
             let token = defaultArg cancellationToken CancellationToken.None
@@ -316,9 +370,8 @@ let init<'TDataEvent, 'TPredicate, 't when 'TDataEvent :> IMessageWithCID> (acto
 
                 member __.Dispose() =
                     reg.Dispose()
-
-                    if not token.IsCancellationRequested then
-                        ks.Shutdown() }
+                    // Unconditional for the same race as the callback overload above.
+                    ks.Shutdown() }
 
         override this.Subscribe(cid: CID, take: int, ?callback, ?cancellationToken) =
             this.Subscribe((fun e -> e.CID = cid), take, ?callback = callback, ?cancellationToken = cancellationToken)
@@ -326,4 +379,5 @@ let init<'TDataEvent, 'TPredicate, 't when 'TDataEvent :> IMessageWithCID> (acto
         override this.Subscribe(cid: CID, filter: 'TDataEvent -> bool, take: int, ?callback, ?cancellationToken) =
             this.Subscribe((fun e -> e.CID = cid && filter e), take, ?callback = callback, ?cancellationToken = cancellationToken)
 
-    }
+      interface IHasNotificationTimeout with
+          member _.Timeout = notificationTimeout }

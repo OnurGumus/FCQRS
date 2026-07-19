@@ -77,7 +77,7 @@ type SagaHandle =
 /// A read-model projection definition.
 type Projection =
     { /// Resume from this journal offset (e.g. the last committed offset).
-      LastOffset: int
+      LastOffset: int64
       /// Called per persisted event; returns the read-model events to publish
       /// to subscribers (empty list = nothing to notify).
       Handle: int64 -> obj -> IMessageWithCID list }
@@ -90,13 +90,13 @@ module Projection =
     /// publish (empty list = nothing). Use when notifications must be filtered
     /// or transformed, e.g. suppressing intermediate events so read-your-writes
     /// only wakes on the final one.
-    let multi (lastOffset: int) (handle: int64 -> obj -> IMessageWithCID list) : Projection =
+    let multi (lastOffset: int64) (handle: int64 -> obj -> IMessageWithCID list) : Projection =
         { LastOffset = lastOffset; Handle = handle }
 
     /// Single-event handler: just update the read model (returns unit); each
     /// aggregate event is then published to subscribers as-is. The common case
     /// when every event is worth notifying.
-    let single (lastOffset: int) (handle: int64 -> obj -> unit) : Projection =
+    let single (lastOffset: int64) (handle: int64 -> obj -> unit) : Projection =
         { LastOffset = lastOffset
           Handle = FCQRS.Query.autoPublish handle }
 
@@ -105,7 +105,7 @@ module Projection =
     /// middle rung between `single` (always publish) and `multi` (return an
     /// arbitrary notification list). Use it for the common "publish each
     /// event except the intermediate ones" case, without building a list.
-    let filtered (lastOffset: int) (handle: int64 -> obj -> Notify) : Projection =
+    let filtered (lastOffset: int64) (handle: int64 -> obj -> Notify) : Projection =
         { LastOffset = lastOffset
           Handle = FCQRS.Query.filterPublish handle }
 
@@ -317,6 +317,11 @@ module Fcqrs =
     /// (PersistAllEvents) caller should Subscribe with an explicit take
     /// instead. Envelopes without the delivery stamp (pre-stamp FCQRS) are
     /// treated as journaled.
+    ///
+    /// The projection wait is bounded by `akka.fcqrs.command-timeout` (default
+    /// 30s, bare number = seconds): a projection that suppresses or filters
+    /// out the matching notification raises TimeoutException instead of
+    /// hanging the caller forever.
     let sendAwaiting
         (subscription: FCQRS.Query.ISubscribe<FCQRS.Model.Data.IMessageWithCID>)
         (handle: AggregateHandle<'Command, 'Event>)
@@ -330,7 +335,21 @@ module Fcqrs =
             let! evt = handle.Send cid id command filter
 
             if evt.Journaled <> Some false then
-                do! awaiter.Task |> Async.AwaitTask
+                let timeout =
+                    match box subscription with
+                    | :? FCQRS.Query.IHasNotificationTimeout as t -> t.Timeout
+                    | _ -> System.TimeSpan.FromSeconds 30.0
+
+                let! winner =
+                    System.Threading.Tasks.Task.WhenAny(awaiter.Task, System.Threading.Tasks.Task.Delay timeout)
+                    |> Async.AwaitTask
+
+                if not (obj.ReferenceEquals(winner, awaiter.Task)) then
+                    raise (
+                        System.TimeoutException(
+                            "The command was journaled but its projection notification did not arrive within the command timeout (akka.fcqrs.command-timeout). A filtered/multi projection may be suppressing the matching event."
+                        )
+                    )
 
             return evt
         }

@@ -277,8 +277,10 @@ module Compose =
                 match get1 a with
                 | Some b -> set2 c b |> Result.bind (fun b' -> set1 b' a)
                 | None ->
-                    // Return an error indicating the path is invalid.
-                    Error(unbox<'e> "Invalid path")
+                    // Outer prism doesn't match: set is a no-op, succeed unchanged
+                    // (the old `unbox<'e> "Invalid path"` threw InvalidCastException
+                    // for any non-string error type 'e).
+                    Ok a
 
             (get, set)
 
@@ -297,8 +299,8 @@ module Compose =
                     let b' = set2 c b
                     set1 b' a
                 | None ->
-                    // Return an error indicating the path is invalid.
-                    Error(unbox<'e> "Invalid path")
+                    // Outer prism doesn't match: set is a no-op, succeed unchanged.
+                    Ok a
 
             (get, set)
 
@@ -315,8 +317,8 @@ module Compose =
                 match get1 a with
                 | Some b -> set2 c b |> Result.map (fun b' -> set1 b' a)
                 | None ->
-                    // Return an error indicating the path is invalid.
-                    Error(unbox<'e> "Invalid path")
+                    // Outer prism doesn't match: set is a no-op, succeed unchanged.
+                    Ok a
 
             (get, set)
 
@@ -347,8 +349,8 @@ module Compose =
                         | Error e1 -> Error(mapError1 e1)
                     | Error e2 -> Error(mapError2 e2)
                 | None ->
-                    // Return an error indicating the path is invalid.
-                    Error(unbox<'e> "Invalid path")
+                    // Outer prism doesn't match: set is a no-op, succeed unchanged.
+                    Ok a
 
             (get, set)
 
@@ -375,7 +377,9 @@ module Compose =
                         | Ok a' -> Ok a'
                         | Error e1 -> Error(mapError1 e1)
                     | Error e2 -> Error(mapError2 e2)
-                | None -> Error(unbox<'e> "Invalid path")
+                | None ->
+                    // Outer prism doesn't match: set is a no-op, succeed unchanged.
+                    Ok a
 
             (get, set)
 

@@ -139,7 +139,15 @@ next start, pass the committed offset instead of zero. See [Add a projection](ad
 ## 4. Send from an endpoint or application service
 
 Registration adds a typed `Handler<DocumentCommand, DocumentEvent>` to dependency injection. The
-handler waits for the matching aggregate reply. It does not by itself wait for a projection.
+handler waits for the matching aggregate reply. It does not by itself wait for a projection. If no
+matching reply arrives within `akka.fcqrs.command-timeout` (default 30s) — for example because the
+aggregate decided `UnhandledEvent` or the filter never matches — the handler raises
+`TimeoutException` instead of waiting forever.
+
+Handlers are keyed by command/event type pair. Two aggregates sharing the same `TCommand`/`TEvent`
+pair make the plain registration ambiguous; resolving it then throws with guidance. Resolve the
+aggregate you mean through the keyed registration instead, e.g.
+`services.GetKeyedService<Handler<C, E>>(typeof(MyShard))` or `[FromKeyedServices(typeof(MyShard))]`.
 
 ```csharp
 public sealed class DocumentService(

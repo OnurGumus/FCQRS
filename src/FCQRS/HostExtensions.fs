@@ -84,6 +84,13 @@ type FcqrsBuilder internal (services: IServiceCollection, connectionString: stri
     let mutable defaultSnapshotPolicy = SnapshotPolicy.Default
     // Akka-internal logging override (loglevel * also set stdout-loglevel).
     let mutable akkaLogging: (AkkaLogLevel * bool) option = None
+    // Maps each Handler/AggregateRefs type pair <TCommand,TEvent> to the shard
+    // types registered for it. Two aggregates sharing the same pair make the
+    // UNKEYED DI registration ambiguous: MS DI resolves the last registration,
+    // which would silently route commands to the wrong aggregate. The unkeyed
+    // factories check this map at resolution time and fail loudly instead;
+    // the keyed-by-shard registrations are always unambiguous.
+    let pairToShards = Dictionary<Type * Type, ResizeArray<Type>>()
 
     // Registers the ISubscribe resolver in DI exactly once, on the first
     // AddProjection call. The subscription itself is created at startup.
@@ -165,16 +172,60 @@ type FcqrsBuilder internal (services: IServiceCollection, connectionString: stri
             when 'TShard :> Aggregate<'TState, 'TCommand, 'TEvent>
             and 'TShard: not struct
             and 'TEvent: not null>() : FcqrsBuilder =
+        let shardType = typeof<'TShard>
+        let pair = (typeof<'TCommand>, typeof<'TEvent>)
+
+        let shards =
+            match pairToShards.TryGetValue pair with
+            | true, list -> list
+            | _ ->
+                let list = ResizeArray<Type>()
+                pairToShards.[pair] <- list
+                list
+
+        if not (shards.Contains shardType) then
+            shards.Add shardType
+
+        // Fails loudly when Handler<TCommand,TEvent> is ambiguous (see pairToShards).
+        let ambiguityError () =
+            let names =
+                pairToShards.[pair] |> Seq.map _.Name |> String.concat ", "
+
+            invalidOp (
+                $"AggregateRefs/Handler<{typeof<'TCommand>.Name}, {typeof<'TEvent>.Name}> is ambiguous: "
+                + $"aggregates [{names}] share the same command/event types. "
+                + "Resolve the keyed registration for the shard you mean, e.g. "
+                + "sp.GetKeyedService<Handler<...>>(typeof(MyShard)) or [FromKeyedServices(typeof(MyShard))]."
+            )
+
         aggregateSteps.Add(fun sp actor runtime ->
             let shard = ActivatorUtilities.CreateInstance(sp, typeof<'TShard>) :?> Aggregate<'TState, 'TCommand, 'TEvent>
             let refs = shard.Init(actor, this.EffectiveSnapshotPolicy shard.SnapshotPolicy)
-            runtime.Register(typeof<'TShard>, refs.Factory, refs :> obj))
+            runtime.Register(shardType, refs.Factory, refs :> obj))
+
         services.AddSingleton<AggregateRefs<'TCommand, 'TEvent>>(fun (sp: IServiceProvider) ->
-            sp.GetRequiredService<FcqrsRuntime>().Refs<'TCommand, 'TEvent>(typeof<'TShard>))
+            if pairToShards.[pair].Count > 1 then
+                ambiguityError ()
+
+            sp.GetRequiredService<FcqrsRuntime>().Refs<'TCommand, 'TEvent>(shardType))
         |> ignore
+
         services.AddSingleton<Handler<'TCommand, 'TEvent>>(fun (sp: IServiceProvider) ->
-            sp.GetRequiredService<AggregateRefs<'TCommand, 'TEvent>>().Handler)
+            if pairToShards.[pair].Count > 1 then
+                ambiguityError ()
+
+            sp.GetRequiredService<FcqrsRuntime>().Refs<'TCommand, 'TEvent>(shardType).Handler)
         |> ignore
+
+        // Keyed-by-shard registrations are always unambiguous.
+        services.AddKeyedSingleton<AggregateRefs<'TCommand, 'TEvent>>(shardType, fun (sp: IServiceProvider) (_: obj) ->
+            sp.GetRequiredService<FcqrsRuntime>().Refs<'TCommand, 'TEvent>(shardType))
+        |> ignore
+
+        services.AddKeyedSingleton<Handler<'TCommand, 'TEvent>>(shardType, fun (sp: IServiceProvider) (_: obj) ->
+            sp.GetRequiredService<FcqrsRuntime>().Refs<'TCommand, 'TEvent>(shardType).Handler)
+        |> ignore
+
         this
 
     /// Register a saga and the event that starts it. `create` builds the saga
@@ -192,10 +243,21 @@ type FcqrsBuilder internal (services: IServiceCollection, connectionString: stri
             sagaStarters.Add(fun evt -> if startOn.Invoke evt then Some sagaFactory else None))
         this
 
+    // Sets the projection step exactly once: a second AddProjection call would
+    // otherwise silently discard the first projection, leaving its read model
+    // stale with no error. Fail loudly instead.
+    member private this.SetProjectionStep(step: IServiceProvider -> IActor -> FCQRS.Query.ISubscribe) =
+        if projectionStep.IsSome then
+            invalidOp
+                "A projection is already registered. FCQRS supports one projection per host; \
+                 combine handlers into a single AddProjection call instead of registering twice."
+
+        projectionStep <- Some step
+
     /// Register the read-model projection, resuming from the given offset (default 0).
-    member this.AddProjection(handler: Func<int64, obj, IList<IMessageWithCID>>, [<Optional; DefaultParameterValue(0)>] lastOffset: int) : FcqrsBuilder =
+    member this.AddProjection(handler: Func<int64, obj, IList<IMessageWithCID>>, [<Optional; DefaultParameterValue(0L)>] lastOffset: int64) : FcqrsBuilder =
         this.RegisterSubscriptionResolver()
-        projectionStep <- Some(fun _sp actor -> QueryApi.Init(actor, lastOffset, handler))
+        this.SetProjectionStep(fun _sp actor -> QueryApi.Init(actor, lastOffset, handler))
         this
 
     /// Register the read-model projection with a single-event handler: the
@@ -203,9 +265,9 @@ type FcqrsBuilder internal (services: IServiceCollection, connectionString: stri
     /// is then published to subscribers as-is. Use the list-returning overload
     /// when notifications must be filtered — e.g. suppressing intermediate
     /// events so read-your-writes only wakes on the final one.
-    member this.AddProjection(handler: Action<int64, obj>, [<Optional; DefaultParameterValue(0)>] lastOffset: int) : FcqrsBuilder =
+    member this.AddProjection(handler: Action<int64, obj>, [<Optional; DefaultParameterValue(0L)>] lastOffset: int64) : FcqrsBuilder =
         this.RegisterSubscriptionResolver()
-        projectionStep <- Some(fun _sp actor -> QueryApi.Init(actor, lastOffset, handler))
+        this.SetProjectionStep(fun _sp actor -> QueryApi.Init(actor, lastOffset, handler))
         this
 
     /// Register the read-model projection with a filtered single-event handler:
@@ -213,9 +275,9 @@ type FcqrsBuilder internal (services: IServiceCollection, connectionString: stri
     /// to control whether it wakes subscribers. The middle ground between the void
     /// overload (publish all) and the list-returning one (full control) — e.g.
     /// suppress an intermediate event so read-your-writes wakes only on the final.
-    member this.AddProjection(handler: Func<int64, obj, Notify>, [<Optional; DefaultParameterValue(0)>] lastOffset: int) : FcqrsBuilder =
+    member this.AddProjection(handler: Func<int64, obj, Notify>, [<Optional; DefaultParameterValue(0L)>] lastOffset: int64) : FcqrsBuilder =
         this.RegisterSubscriptionResolver()
-        projectionStep <- Some(fun _sp actor -> QueryApi.Init(actor, lastOffset, handler))
+        this.SetProjectionStep(fun _sp actor -> QueryApi.Init(actor, lastOffset, handler))
         this
 
     /// Register the read-model projection, building the handler (and resuming offset)
@@ -223,25 +285,25 @@ type FcqrsBuilder internal (services: IServiceCollection, connectionString: stri
     /// ILoggerFactory — so it resolves them the same way the actor system does.
     member this.AddProjection(
             handler: Func<IServiceProvider, Func<int64, obj, IList<IMessageWithCID>>>,
-            lastOffset: Func<IServiceProvider, int>) : FcqrsBuilder =
+            lastOffset: Func<IServiceProvider, int64>) : FcqrsBuilder =
         this.RegisterSubscriptionResolver()
-        projectionStep <- Some(fun sp actor -> QueryApi.Init(actor, lastOffset.Invoke sp, handler.Invoke sp))
+        this.SetProjectionStep(fun sp actor -> QueryApi.Init(actor, lastOffset.Invoke sp, handler.Invoke sp))
         this
 
     /// DI variant of the single-event handler overload.
     member this.AddProjection(
             handler: Func<IServiceProvider, Action<int64, obj>>,
-            lastOffset: Func<IServiceProvider, int>) : FcqrsBuilder =
+            lastOffset: Func<IServiceProvider, int64>) : FcqrsBuilder =
         this.RegisterSubscriptionResolver()
-        projectionStep <- Some(fun sp actor -> QueryApi.Init(actor, lastOffset.Invoke sp, handler.Invoke sp))
+        this.SetProjectionStep(fun sp actor -> QueryApi.Init(actor, lastOffset.Invoke sp, handler.Invoke sp))
         this
 
     /// DI variant of the filtered single-event handler overload.
     member this.AddProjection(
             handler: Func<IServiceProvider, Func<int64, obj, Notify>>,
-            lastOffset: Func<IServiceProvider, int>) : FcqrsBuilder =
+            lastOffset: Func<IServiceProvider, int64>) : FcqrsBuilder =
         this.RegisterSubscriptionResolver()
-        projectionStep <- Some(fun sp actor -> QueryApi.Init(actor, lastOffset.Invoke sp, handler.Invoke sp))
+        this.SetProjectionStep(fun sp actor -> QueryApi.Init(actor, lastOffset.Invoke sp, handler.Invoke sp))
         this
 
 /// The single startup step: creates the actor system (via the IActor singleton),

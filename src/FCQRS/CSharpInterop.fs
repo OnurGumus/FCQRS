@@ -5,6 +5,7 @@ module FCQRS.CSharp
 open System
 open System.Threading.Tasks
 open System.Runtime.CompilerServices
+open Microsoft.Extensions.Logging
 open FCQRS.Model.Data
 open FCQRS.Common
 
@@ -248,7 +249,7 @@ type QueryApi =
     /// Initialize the query subscription (F# list version)
     static member Init(
         actorApi: IActor,
-        lastOffset: int,
+        lastOffset: int64,
         eventHandler: Func<int64, obj, IMessageWithCID list>) : FCQRS.Query.ISubscribe =
         let handler offset evt = eventHandler.Invoke(offset, evt)
         Query.init actorApi lastOffset handler |> Query.asDefaultSubscribe
@@ -257,7 +258,7 @@ type QueryApi =
     /// internally). An overload of Init, distinguished by the handler's return type.
     static member Init(
         actorApi: IActor,
-        lastOffset: int,
+        lastOffset: int64,
         eventHandler: Func<int64, obj, System.Collections.Generic.IList<IMessageWithCID>>) : FCQRS.Query.ISubscribe =
         let handler offset evt = eventHandler.Invoke(offset, evt) |> List.ofSeq
         Query.init actorApi lastOffset handler |> Query.asDefaultSubscribe
@@ -268,7 +269,7 @@ type QueryApi =
     /// when notifications must be filtered or transformed.
     static member Init(
         actorApi: IActor,
-        lastOffset: int,
+        lastOffset: int64,
         eventHandler: Action<int64, obj>) : FCQRS.Query.ISubscribe =
         let handler = Query.autoPublish (fun offset evt -> eventHandler.Invoke(offset, evt))
         Query.init actorApi lastOffset handler |> Query.asDefaultSubscribe
@@ -279,7 +280,7 @@ type QueryApi =
     /// (publish all) and the list-returning one (full control).
     static member Init(
         actorApi: IActor,
-        lastOffset: int,
+        lastOffset: int64,
         eventHandler: Func<int64, obj, Notify>) : FCQRS.Query.ISubscribe =
         let handler = Query.filterPublish (fun offset evt -> eventHandler.Invoke(offset, evt))
         Query.init actorApi lastOffset handler |> Query.asDefaultSubscribe
@@ -299,24 +300,51 @@ type ActorWiring =
     static member InitSagaStarterEmpty(actor: IActor) : unit =
         actor.InitializeSagaStarter(fun _ -> ([] : list<(string -> Akkling.Cluster.Sharding.IEntityRef<obj>) * PrefixConversion * obj>))
 
-    /// C#-friendly InitializeSagaStarter that accepts Func returning IList of SagaDefinition
+    /// C#-friendly InitializeSagaStarter that accepts Func returning IList of SagaDefinition.
+    /// A null list means "no sagas". Null Factory/StartingEvent members fail with a
+    /// named error: this handler runs inside the SagaStarter during the saga-start
+    /// handshake, where a bare NRE used to surface 30s later as a misleading
+    /// handshake-timeout FailFast.
     static member InitSagaStarter(
         actor: IActor,
         eventHandler: Func<obj, System.Collections.Generic.IList<SagaDefinition>>) : unit =
         let handler evt =
-            eventHandler.Invoke(evt)
-            |> Seq.map (fun def -> ((nonNull def.Factory).Invoke, def.PrefixConversion, nonNull def.StartingEvent))
-            |> List.ofSeq
+            match eventHandler.Invoke(evt) with
+            | null -> []
+            | defs ->
+                defs
+                |> Seq.map (fun def ->
+                    if isNull (box def) then
+                        invalidOp "InitSagaStarter handler returned a list containing a null SagaDefinition."
+
+                    if isNull (box def.Factory) then
+                        invalidOp $"SagaDefinition.Factory is null for starting event type {evt.GetType().Name}. Set Factory when constructing the SagaDefinition."
+
+                    if isNull (box def.StartingEvent) then
+                        invalidOp $"SagaDefinition.StartingEvent is null for starting event type {evt.GetType().Name}. Set StartingEvent when constructing the SagaDefinition."
+
+                    (def.Factory.Invoke, def.PrefixConversion, def.StartingEvent))
+                |> List.ofSeq
+
         actor.InitializeSagaStarter(handler)
 
-    /// C#-friendly simplified InitializeSagaStarter where you just return factories
+    /// C#-friendly simplified InitializeSagaStarter where you just return factories.
+    /// A null list means "no sagas"; a null factory fails with a named error.
     static member InitSagaStarterSimple(
         actor: IActor,
         eventHandler: Func<obj, System.Collections.Generic.IList<AggregateFactory>>) : unit =
         let handler evt =
-            eventHandler.Invoke(evt)
-            |> Seq.map (fun factory -> factory.Invoke)
-            |> List.ofSeq
+            match eventHandler.Invoke(evt) with
+            | null -> []
+            | factories ->
+                factories
+                |> Seq.map (fun factory ->
+                    if isNull (box factory) then
+                        invalidOp "InitSagaStarterSimple handler returned a list containing a null factory."
+
+                    factory.Invoke)
+                |> List.ofSeq
+
         actor.InitializeSagaStarter(handler)
 
     /// C#-friendly InitializeActor that accepts Func delegates instead of F# functions
@@ -671,6 +699,10 @@ type SagaApi =
     /// Initialize a saga with simplified signatures - no FSharpOption, typed events
     /// handleEvent: (event, data, currentState) -> EventAction
     /// applySideEffects: (data, state, recovering) -> SagaSideEffectResult
+    /// LIMITATION: the typed handler only receives the originator's Event&lt;'TEvent&gt;.
+    /// ToSelf/ToSelfAfter payloads and other aggregates' reply events cannot reach it
+    /// (they are logged and ignored) — sagas needing timeouts or multi-aggregate
+    /// orchestration must use the obj-based Init overloads.
     static member InitSimple<'TEvent, 'TSagaData, 'TSagaState when 'TSagaState : not null and 'TEvent : not null>(
         actorApi: IActor,
         sagaData: 'TSagaData,
@@ -680,13 +712,27 @@ type SagaApi =
         originatorFactory: AggregateFactory,
         sagaName: string) : EntityFac<obj> =
 
+        let logger = actorApi.LoggerFactory.CreateLogger sagaName
+
         // Wrap simplified handleEvent - unwrap FSharpOption and cast event
         let wrappedHandleEvent (evt: obj) (sagaState: SagaState<'TSagaData, 'TSagaState option>) =
             match evt with
             | :? Event<'TEvent> as typedEvent ->
                 let currentState = sagaState.State |> Option.defaultValue Unchecked.defaultof<'TSagaState>
                 handleEvent.Invoke(typedEvent, sagaState.Data, currentState)
-            | _ -> EventAction.UnhandledEvent
+            | other ->
+                // Loud, not silent: a ToSelfAfter timeout payload or another
+                // aggregate's reply landing here means the workflow depends on a
+                // message this typed adapter structurally cannot deliver.
+                logger.LogWarning(
+                    "Saga {Saga} (InitSimple) ignored a {MessageType}: the typed handler only accepts Event<{EventType}>. Use the obj-based Init overload for ToSelf timeouts or multi-aggregate sagas.",
+                    sagaName,
+                    (match other with
+                     | null -> "null"
+                     | o -> o.GetType().Name),
+                    typeof<'TEvent>.Name)
+
+                EventAction.UnhandledEvent
 
         // Wrap simplified applySideEffects
         let wrappedApplySideEffects (sagaState: SagaState<'TSagaData, 'TSagaState>) (recovering: bool) =
@@ -698,7 +744,10 @@ type SagaApi =
             Func<_, _, _>(wrappedApplySideEffects),
             apply, originatorFactory, sagaName)
 
-    /// Initialize a saga with simplified signatures and no apply
+    /// Initialize a saga with simplified signatures and no apply.
+    /// Same limitation as the other InitSimple overload: only the originator's
+    /// Event&lt;'TEvent&gt; reaches the typed handler; ToSelf timeouts and other
+    /// aggregates' replies require the obj-based Init overloads.
     static member InitSimple<'TEvent, 'TSagaData, 'TSagaState when 'TSagaState : not null and 'TEvent : not null>(
         actorApi: IActor,
         sagaData: 'TSagaData,

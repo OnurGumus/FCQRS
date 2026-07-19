@@ -18,13 +18,20 @@ type internal NamedCancelable
         cancelEventToTrigger: Event<string option * TimeSpan * (unit -> unit)>
     ) =
 
+    // 0 = not cancelled, 1 = cancelled-and-signalled. Guards the event trigger:
+    // two concurrent Cancel() calls must not fire the cancelled event twice.
+    let mutable cancelSignalled = 0
+
+    let cancelCore (cancel: unit -> unit) =
+        if Interlocked.CompareExchange(&cancelSignalled, 1, 0) = 0 then
+            cancel ()
+            cancelEventToTrigger.Trigger(name, taskInitialDelay, taskAction)
+
     interface ICancelable with
         member _.IsCancellationRequested = ctsToManage.IsCancellationRequested
 
         member _.Cancel() =
-            if not ctsToManage.IsCancellationRequested then
-                ctsToManage.Cancel()
-                cancelEventToTrigger.Trigger(name, taskInitialDelay, taskAction)
+            cancelCore (fun () -> ctsToManage.Cancel())
 
         member _.Token = ctsToManage.Token
 
@@ -36,9 +43,7 @@ type internal NamedCancelable
             ctsToManage.CancelAfter(millisecondsDelay)
 
         member _.Cancel(throwOnFirstException: bool) =
-            if not ctsToManage.IsCancellationRequested then
-                ctsToManage.Cancel(throwOnFirstException)
-                cancelEventToTrigger.Trigger(name, taskInitialDelay, taskAction)
+            cancelCore (fun () -> ctsToManage.Cancel(throwOnFirstException))
 
 /// Scheduler wrapper that exposes enqueue/cancel events with optional names
 type ObservingScheduler(config: Config, log: ILoggingAdapter) =
@@ -156,9 +161,15 @@ type ObservingScheduler(config: Config, log: ILoggingAdapter) =
         cancelable.Cancel()
         cancelledEvent.Trigger(name, TimeSpan.Zero, fun () -> ()) // Generic cancellation event
 
-    /// Drive the virtual clock forward
-    member _.Advance(d: TimeSpan) = inner.Advance(d)
-    member _.AdvanceTo(deadline: DateTimeOffset) = inner.AdvanceTo(deadline)
+    /// The virtual clock's current time.
+    member _.Now = inner.Now
+
+    /// Drive the virtual clock forward. TestScheduler.Advance is NOT thread-safe
+    /// (racy clock update + snapshot/execute/remove), and the controller agent
+    /// advances on its own thread — serialize all advances through this lock or
+    /// a due item can be delivered twice.
+    member _.Advance(d: TimeSpan) = lock inner (fun () -> inner.Advance(d))
+    member _.AdvanceTo(deadline: DateTimeOffset) = lock inner (fun () -> inner.AdvanceTo(deadline))
 
     // Essential interface implementations to replace TestScheduler
 

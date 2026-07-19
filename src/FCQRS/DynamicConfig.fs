@@ -8,38 +8,44 @@ open System.Collections.Generic
 
 [<AutoOpen>]
 module Internal =
-    let rec internal replaceWithArray
-        (parent: ExpandoObject | null)
-        (key: string | null)
-        (input: ExpandoObject option)
-        =
-        match input with
-        | None -> ()
-        | Some input ->
-            let dict = input :> IDictionary<_, _>
-            let keys = dict.Keys |> List.ofSeq
+    /// Recursively converts ExpandoObject nodes whose keys form a dense 0..n-1
+    /// integer run into arrays (HOCON's array shape). Sparse or duplicate
+    //  ("0" vs "00") numeric keys are left as objects: converting them would
+    //  crash or silently corrupt. Recurses into array elements so arrays nested
+    //  inside array elements (a:0:b:0 = x) convert too.
+    let rec internal convertNumericRuns (node: ExpandoObject) : obj =
+        let dict = node :> IDictionary<string, obj>
+        let keys = dict.Keys |> List.ofSeq
 
-            if keys |> Seq.forall (Int32.TryParse >> fst) then
-                let arr = keys.Length |> Array.zeroCreate
+        let parsed =
+            keys
+            |> List.choose (fun k ->
+                match Int32.TryParse k with
+                | true, v -> Some v
+                | _ -> None)
 
-                for kvp in dict do
-                    arr.[kvp.Key |> Int32.Parse] <- kvp.Value
+        let isDenseIntRun =
+            keys.Length > 0
+            && parsed.Length = keys.Length
+            && (parsed |> List.sort = [ 0 .. keys.Length - 1 ])
 
-                match parent, key with
-                | null, _
-                | _, null -> ()
-                | p, k ->
-                    let parentDict = p :> IDictionary<string, _>
-                    parentDict.Remove k |> ignore
-                    parentDict.Add(k, arr)
-            else
-                for childKey in keys do
-                    let newInput =
-                        match dict.[childKey] with
-                        | :? ExpandoObject as e -> Some e
-                        | _ -> None
+        if isDenseIntRun then
+            let arr: obj array = keys.Length |> Array.zeroCreate
 
-                    replaceWithArray input childKey newInput
+            for kvp in dict do
+                arr.[kvp.Key |> Int32.Parse] <-
+                    match kvp.Value with
+                    | :? ExpandoObject as e -> convertNumericRuns e
+                    | v -> v
+
+            box arr
+        else
+            for k in keys do
+                match dict.[k] with
+                | :? ExpandoObject as e -> dict.[k] <- convertNumericRuns e
+                | _ -> ()
+
+            box node
 
 let internal getSection (configs: KeyValuePair<string, _> seq) : obj =
     let result = ExpandoObject()
@@ -49,17 +55,23 @@ let internal getSection (configs: KeyValuePair<string, _> seq) : obj =
         let path = kvp.Key.Split(':')
         let mutable i = 0
 
+        // Descend, creating intermediate nodes. A key may legally have both a
+        // scalar value and children (env-var style config); overwriting on
+        // collision (last write wins) beats crashing on Add/downcast.
         while i < path.Length - 1 do
-            if parent.ContainsKey(path.[i]) |> not then
-                parent.Add(path.[i], ExpandoObject())
+            match parent.TryGetValue path.[i] with
+            | true, (:? ExpandoObject as child) -> parent <- child :> IDictionary<_, _>
+            | _ ->
+                let child = ExpandoObject()
+                parent.[path.[i]] <- child
+                parent <- child :> IDictionary<_, _>
 
-            parent <- downcast parent.[path.[i]]
             i <- i + 1
 
         if kvp.Value |> isNull |> not then
-            parent.Add(path.[i], kvp.Value)
+            parent.[path.[i]] <- kvp.Value
 
-    replaceWithArray null null (Some result)
+    convertNumericRuns result |> ignore
     upcast result
 
 [<Extension>]

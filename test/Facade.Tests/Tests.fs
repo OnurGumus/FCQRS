@@ -404,7 +404,26 @@ let private snapshotRecoveryTest =
         |> ignore
 
         Expect.isTrue (sawReset.Task.Wait(TimeSpan.FromSeconds 20.0)) "phase 1: the parked saga sent Reset once"
-        Threading.Thread.Sleep 3000 // let the async SaveSnapshot land before the kill
+
+        // The async SaveSnapshot must be durable before the kill — otherwise
+        // phase 2 recovers from journal replay and the test passes vacuously.
+        // Poll the snapshot table instead of sleeping a fixed 3s.
+        let sagaSnapshots () =
+            use conn = new Microsoft.Data.Sqlite.SqliteConnection(sprintf "Data Source=%s;" db)
+            conn.Open()
+            use cmd = conn.CreateCommand()
+            cmd.CommandText <- "SELECT COUNT(*) FROM snapshot WHERE persistence_id LIKE '%~Saga~%'"
+            cmd.ExecuteScalar() :?> int64
+
+        let mutable snapCount = 0L
+        let mutable snapAttempts = 0
+
+        while snapCount = 0L && snapAttempts < 40 do
+            snapAttempts <- snapAttempts + 1
+            Threading.Thread.Sleep 250
+            snapCount <- try sagaSnapshots () with _ -> 0L
+
+        Expect.isGreaterThanOrEqual snapCount 1L "phase 1: the saga snapshot is durable before the kill"
         api1.Stop().Wait(TimeSpan.FromSeconds 30.0) |> ignore
 
         // Phase 2: reboot on the same journal. remember-entities resurrects the
@@ -837,9 +856,572 @@ let private runAsyncTest =
             |> Async.RunSynchronously
         Expect.equal ev2.EventDetails Counter.WasReset "oracle failure became a command, not a crash"
 
+/// A capped counter: decide depends on recovered state, so a wrong replay is
+/// observable as a wrong decision (persist instead of reject).
+module Capped =
+    type Command = Add of int
+
+    type Event =
+        | Added of int
+        | Rejected
+
+    type State = { Total: int }
+    let initial = { Total = 0 }
+
+    let decide (cmd: Command<Command>) state =
+        match cmd.CommandDetails with
+        | Add n ->
+            if state.Total + n <= 10 then
+                Added n |> PersistEvent
+            else
+                Rejected |> DeferEvent
+
+    let fold (e: Event<Event>) state =
+        match e.EventDetails with
+        | Added n -> { Total = state.Total + n }
+        | Rejected -> state
+
+/// A saga whose terminal state returns StopSaga WITH a delayed command. The
+/// command is the saga's final act; it must still be delivered (the old
+/// cleanup-on-stop cancelled it together with the saga's reminders).
+module FinalPing =
+    type State = Finishing
+
+    let private handleEvent (evt: obj) (sagaState: SagaState<_, _>) =
+        match evt, sagaState.State with
+        | :? (Event<Counter.Event>) as e, None ->
+            match e.EventDetails with
+            | Counter.Incremented n when n >= 100 -> Finishing |> StateChangedEvent
+            | _ -> UnhandledEvent
+        | _ -> UnhandledEvent
+
+    let private applySideEffects counterFactory (sagaState: SagaState<_, _>) _recovering =
+        match sagaState.State with
+        | Finishing ->
+            StopSaga, [ toOriginatorAfter counterFactory 500L "final-reset" (Counter.Reset :> obj) ]
+
+    let private startsOn (e: Event<Counter.Event>) =
+        match e.EventDetails with
+        | Counter.Incremented n -> n >= 100
+        | _ -> false
+
+    let definition counterFactory =
+        { Name = "FinalPing"
+          InitialData = ()
+          Originator = counterFactory
+          HandleEvent = handleEvent
+          ApplySideEffects = applySideEffects counterFactory
+          StartOn = startsOn
+          Snapshots = Default }
+
+let private bootCapped (db: string) =
+    registerJournalTypes ()
+
+    let api =
+        Fcqrs.actor (ConfigurationBuilder().Build()) NullLoggerFactory.Instance
+            (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite (sprintf "Data Source=%s;" db))) "RecoverySmoke"
+
+    let capped =
+        Fcqrs.aggregate api { Name = "Capped"; Initial = Capped.initial; Decide = Capped.decide; Fold = Capped.fold; Snapshots = Default }
+
+    Fcqrs.wireSagaStarters api []
+    api, capped
+
+let private aggregateRecoveryTest =
+    testCase "facade: a rebooted aggregate rebuilds decision state from its journal"
+    <| fun _ ->
+        let db = Path.Combine(Path.GetTempPath(), sprintf "fcqrs_recovery_%s.db" (Guid.NewGuid().ToString("N")))
+
+        // Phase 1: Total becomes 8 (v1), then stop the system.
+        let api1, capped1 = bootCapped db
+
+        let ev1 =
+            capped1.Send (Fcqrs.newCid ()) (Fcqrs.aggregateId "cap") (Capped.Add 8)
+                (function Capped.Added _ -> true | _ -> false)
+            |> Async.RunSynchronously
+
+        Expect.equal ev1.EventDetails (Capped.Added 8) "phase 1: first add persisted"
+        api1.Stop().Wait(TimeSpan.FromSeconds 30.0) |> ignore
+
+        // Phase 2: reboot on the same journal. If replay rebuilds Total=8, then
+        // Add 8 exceeds the cap and is REJECTED; if state were lost (Total=0) it
+        // would persist instead — the decision itself proves the replay.
+        let api2, capped2 = bootCapped db
+
+        let rejected =
+            capped2.Send (Fcqrs.newCid ()) (Fcqrs.aggregateId "cap") (Capped.Add 8)
+                (function Capped.Rejected -> true | _ -> false)
+            |> Async.RunSynchronously
+
+        Expect.equal rejected.EventDetails Capped.Rejected "phase 2: recovered Total=8 rejects the over-cap add"
+
+        // The next persisted event continues at version 2 — replay count proof.
+        let added =
+            capped2.Send (Fcqrs.newCid ()) (Fcqrs.aggregateId "cap") (Capped.Add 1)
+                (function Capped.Added _ -> true | _ -> false)
+            |> Async.RunSynchronously
+
+        Expect.equal (added.Version |> ValueLens.Value) 2L "phase 2: replay left the aggregate at version 1, next is v2"
+        api2.Stop().Wait(TimeSpan.FromSeconds 30.0) |> ignore
+
+let private commandTimeoutTest =
+    testCase "facade: a command whose awaited event never arrives raises TimeoutException"
+    <| fun _ ->
+        let db = Path.Combine(Path.GetTempPath(), sprintf "fcqrs_cmdtimeout_%s.db" (Guid.NewGuid().ToString("N")))
+
+        let cfg =
+            ConfigurationBuilder()
+                .AddInMemoryCollection(
+                    [ Collections.Generic.KeyValuePair<string, string | null>(
+                          // bare number = SECONDS (same rule as saga-start-timeout)
+                          "config:akka:fcqrs:command-timeout", "2") ])
+                .Build()
+
+        let api =
+            Fcqrs.actor cfg NullLoggerFactory.Instance
+                (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite (sprintf "Data Source=%s;" db))) "CmdTimeoutSmoke"
+
+        let counter =
+            Fcqrs.aggregate api { Name = "Counter"; Initial = Counter.initial; Decide = Counter.decide; Fold = Counter.fold; Snapshots = Default }
+
+        Fcqrs.wireSagaStarters api []
+
+        // Poke produces Poked; the filter waits for Incremented — never matches.
+        // The old behavior hung here forever.
+        let sw = Stopwatch.StartNew()
+
+        Expect.throwsT<TimeoutException>
+            (fun () ->
+                counter.Send (Fcqrs.newCid ()) (Fcqrs.aggregateId "poke") Counter.Poke
+                    (function Counter.Incremented _ -> true | _ -> false)
+                |> Async.RunSynchronously
+                |> ignore)
+            "the subscription timed out instead of hanging forever"
+
+        sw.Stop()
+        Expect.isLessThan sw.Elapsed.TotalSeconds 15.0 "the configured 2s timeout applied (not the 30s default)"
+        api.Stop().Wait(TimeSpan.FromSeconds 30.0) |> ignore
+
+let private concurrencyTest =
+    testCase "facade: concurrent commands to one aggregate are serialized with sequential versions"
+    <| fun _ ->
+        let counter, _subs = boot ()
+
+        let versions =
+            [ for _ in 1..30 ->
+                counter.Send (Fcqrs.newCid ()) (Fcqrs.aggregateId "conc") (Counter.Increment 1)
+                    (function Counter.Incremented _ -> true | _ -> false) ]
+            |> Async.Parallel
+            |> Async.RunSynchronously
+            |> Array.map (fun e -> e.Version |> ValueLens.Value)
+
+        Expect.equal (versions |> Array.sort) [| 1L..30L |]
+            "30 concurrent commands produced unique, sequential versions 1..30"
+
+let private stopSagaDelayedTest =
+    testCase "facade: a delayed command returned with StopSaga is still delivered"
+    <| fun _ ->
+        let db = Path.Combine(Path.GetTempPath(), sprintf "fcqrs_finalping_%s.db" (Guid.NewGuid().ToString("N")))
+        registerJournalTypes ()
+
+        let api =
+            Fcqrs.actor (ConfigurationBuilder().Build()) NullLoggerFactory.Instance
+                (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite (sprintf "Data Source=%s;" db))) "FinalPingSmoke"
+
+        let counter =
+            Fcqrs.aggregate api { Name = "Counter"; Initial = Counter.initial; Decide = Counter.decide; Fold = Counter.fold; Snapshots = Default }
+
+        let saga = Fcqrs.saga api (FinalPing.definition counter.Factory)
+        Fcqrs.wireSagaStarters api [ saga ]
+        let subs = Fcqrs.projection api { LastOffset = 0; Handle = projection }
+        use sawReset = subs.Subscribe(isWasReset, 1)
+
+        counter.Send (Fcqrs.newCid ()) (Fcqrs.aggregateId "fin") (Counter.Increment 100)
+            (function Counter.Incremented _ -> true | _ -> false)
+        |> Async.RunSynchronously
+        |> ignore
+
+        Expect.isTrue (sawReset.Task.Wait(TimeSpan.FromSeconds 20.0))
+            "the saga's final delayed command fired after the saga stopped"
+
+        api.Stop().Wait(TimeSpan.FromSeconds 30.0) |> ignore
+
+let private timeProviderTest =
+    testCase "facade: TimeProvider timestamps are unit-consistent and an infinite due time never fires"
+    <| fun _ ->
+        let db = Path.Combine(Path.GetTempPath(), sprintf "fcqrs_time_%s.db" (Guid.NewGuid().ToString("N")))
+
+        let api =
+            Fcqrs.actor (ConfigurationBuilder().Build()) NullLoggerFactory.Instance
+                (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite (sprintf "Data Source=%s;" db))) "TimeSmoke"
+
+        Fcqrs.wireSagaStarters api []
+        let tp = api.TimeProvider
+
+        // Unit consistency: a real ~150ms sleep must measure in real milliseconds
+        // (the old Stopwatch.Frequency mismatch read ~100x too small off Windows).
+        let t0 = tp.GetTimestamp()
+        Threading.Thread.Sleep 150
+        let elapsed = tp.GetElapsedTime(t0)
+        Expect.isGreaterThan elapsed.TotalMilliseconds 50.0 "elapsed time is real milliseconds, not ~100x too small"
+        Expect.isLessThan elapsed.TotalMilliseconds 5000.0 "elapsed time is sane"
+
+        // BCL semantics: Threading.Timeout.InfiniteTimeSpan means the timer NEVER fires
+        // (the old clamp fired it immediately).
+        let fired = ref 0
+
+        use _timer =
+            tp.CreateTimer(Threading.TimerCallback(fun _ -> incr fired), box (), Threading.Timeout.InfiniteTimeSpan, Threading.Timeout.InfiniteTimeSpan)
+
+        Threading.Thread.Sleep 400
+        Expect.equal fired.Value 0 "an infinite due time never fires"
+
+        // A real one-shot fires exactly once.
+        use _t2 =
+            tp.CreateTimer(Threading.TimerCallback(fun _ -> incr fired), box (), TimeSpan.FromMilliseconds 50.0, Threading.Timeout.InfiniteTimeSpan)
+
+        let mutable attempts = 0
+
+        while fired.Value = 0 && attempts < 40 do
+            attempts <- attempts + 1
+            Threading.Thread.Sleep 100
+
+        Threading.Thread.Sleep 300 // give a hypothetical second fire a chance
+        Expect.equal fired.Value 1 "a one-shot timer fired exactly once"
+
+        api.Stop().Wait(TimeSpan.FromSeconds 30.0) |> ignore
+
+/// DynamicConfig: dense numeric runs become HOCON arrays; sparse numeric keys
+/// and scalar+children collisions (legal IConfiguration shapes, typical of
+/// env-var overrides) must not crash or corrupt.
+let private dynamicConfigTest =
+    testCase "dynamic config: dense runs become arrays; sparse keys and scalar+children do not crash"
+    <| fun _ ->
+        let kvp k v = Collections.Generic.KeyValuePair<string, string | null>(k, v)
+
+        let cfg =
+            ConfigurationBuilder()
+                .AddInMemoryCollection(
+                    [ kvp "config:akka:remote:seed-nodes:0" "akka.tcp://a@127.0.0.1:4053"
+                      kvp "config:akka:remote:seed-nodes:1" "akka.tcp://a@127.0.0.1:4054"
+                      // sparse numeric key: NOT a dense run — must stay an object
+                      // (the old code sized the array by key count and crashed)
+                      kvp "config:akka:sparse:1" "x"
+                      // one key with BOTH a value and children (env-var style)
+                      kvp "config:akka:collision" "scalar"
+                      kvp "config:akka:collision:child" "y" ])
+                .Build()
+
+        // This call itself crashed on the sparse key before the fix.
+        let dyn =
+            FCQRS.DynamicConfig.ConfigExtension.GetSectionAsDynamic(cfg, "config:akka")
+            :?> System.Dynamic.ExpandoObject
+
+        let hocon = Akka.Configuration.ConfigurationFactory.FromObject dyn
+
+        Expect.equal
+            (hocon.GetStringList("akka.remote.seed-nodes") |> List.ofSeq)
+            [ "akka.tcp://a@127.0.0.1:4053"; "akka.tcp://a@127.0.0.1:4054" ]
+            "a dense 0..n-1 run becomes a HOCON array"
+
+        Expect.equal (hocon.GetString("akka.sparse.1")) "x" "sparse numeric keys stay a plain object"
+
+/// A saga whose handleEvent keys ONLY on the event type — it never inspects
+/// its current state — and counts every delivery of its starting event. A
+/// fresh start that spuriously runs the recovery re-drive makes the originator
+/// re-publish the starting event, so this saga would observe it twice; the
+/// count makes the duplicate visible where state-keyed sagas mask it.
+module CountingSaga =
+    type State = Seen
+
+    let deliveries = ref 0
+
+    let private handleEvent (evt: obj) (_: SagaState<_, _>) =
+        match evt with
+        | :? (Event<Counter.Event>) as e ->
+            match e.EventDetails with
+            | Counter.Incremented n when n >= 100 ->
+                Threading.Interlocked.Increment deliveries |> ignore
+                Seen |> StateChangedEvent
+            | _ -> UnhandledEvent
+        | _ -> UnhandledEvent
+
+    let private applySideEffects (sagaState: SagaState<_, _>) _recovering =
+        match sagaState.State with
+        // Stay (not StopSaga): the saga must remain alive and subscribed so a
+        // duplicate re-published starting event would still reach it.
+        | Seen -> Stay, []
+
+    let private startsOn (e: Event<Counter.Event>) =
+        match e.EventDetails with
+        | Counter.Incremented n -> n >= 100
+        | _ -> false
+
+    let definition counterFactory =
+        { Name = "CountingSaga"
+          InitialData = ()
+          Originator = counterFactory
+          HandleEvent = handleEvent
+          ApplySideEffects = applySideEffects
+          StartOn = startsOn
+          Snapshots = Default }
+
+/// A saga that completes (StopSaga) immediately after starting, with a
+/// snapshot cadence that covers its whole journal (Started=v1, Done=v2 →
+/// snapshot at v2). A same-CID re-trigger after a reboot resurrects it through
+/// the SNAPSHOT — the recovery path that must still complete the saga-start
+/// handshake instead of dropping the re-delivered starting event.
+module OneShot =
+    type State = Done
+
+    let private handleEvent (evt: obj) (_: SagaState<_, _>) =
+        match evt with
+        | :? (Event<Counter.Event>) as e ->
+            match e.EventDetails with
+            | Counter.Incremented n when n >= 100 -> Done |> StateChangedEvent
+            | _ -> UnhandledEvent
+        | _ -> UnhandledEvent
+
+    let private applySideEffects (sagaState: SagaState<_, _>) _recovering =
+        match sagaState.State with
+        | Done -> StopSaga, []
+
+    let private startsOn (e: Event<Counter.Event>) =
+        match e.EventDetails with
+        | Counter.Incremented n -> n >= 100
+        | _ -> false
+
+    let definition counterFactory =
+        { Name = "OneShot"
+          InitialData = ()
+          Originator = counterFactory
+          HandleEvent = handleEvent
+          ApplySideEffects = applySideEffects
+          StartOn = startsOn
+          Snapshots = Every 2 }
+
+let private freshStartSingleDeliveryTest =
+    testCase "facade: a fresh saga start delivers the starting event exactly once"
+    <| fun _ ->
+        let db = Path.Combine(Path.GetTempPath(), sprintf "fcqrs_counting_%s.db" (Guid.NewGuid().ToString("N")))
+        registerJournalTypes ()
+
+        let api =
+            Fcqrs.actor (ConfigurationBuilder().Build()) NullLoggerFactory.Instance
+                (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite (sprintf "Data Source=%s;" db))) "CountingSmoke"
+
+        let counter =
+            Fcqrs.aggregate api { Name = "Counter"; Initial = Counter.initial; Decide = Counter.decide; Fold = Counter.fold; Snapshots = Default }
+
+        let saga = Fcqrs.saga api (CountingSaga.definition counter.Factory)
+        Fcqrs.wireSagaStarters api [ saga ]
+        CountingSaga.deliveries.Value <- 0
+
+        counter.Send (Fcqrs.newCid ()) (Fcqrs.aggregateId "count") (Counter.Increment 100)
+            (function Counter.Incremented _ -> true | _ -> false)
+        |> Async.RunSynchronously
+        |> ignore
+
+        let mutable attempts = 0
+
+        while CountingSaga.deliveries.Value = 0 && attempts < 50 do
+            attempts <- attempts + 1
+            Threading.Thread.Sleep 100
+
+        Expect.equal CountingSaga.deliveries.Value 1 "the saga saw its starting event"
+
+        // A spurious fresh-start re-drive re-publishes the starting event within
+        // milliseconds of the handshake; give a would-be duplicate ample time.
+        Threading.Thread.Sleep 2000
+        Expect.equal CountingSaga.deliveries.Value 1 "no duplicate delivery of the starting event"
+        api.Stop().Wait(TimeSpan.FromSeconds 30.0) |> ignore
+
+let private concurrentSagaStartTest =
+    testCase "facade: a saga start racing a concurrent command still completes its workflow"
+    <| fun _ ->
+        let counter, subs = boot ()
+        use sawReset = subs.Subscribe(isWasReset, 1)
+
+        // Before the fix, the fresh start's spurious ContinueOrAbort could lose
+        // the mailbox race to the second command, version-mismatch, and abort
+        // the saga mid-flight — its Reset then never arrived.
+        [ counter.Send (Fcqrs.newCid ()) (Fcqrs.aggregateId "race") (Counter.Increment 100)
+              (function Counter.Incremented _ -> true | _ -> false)
+          counter.Send (Fcqrs.newCid ()) (Fcqrs.aggregateId "race") (Counter.Increment 1)
+              (function Counter.Incremented _ -> true | _ -> false) ]
+        |> Async.Parallel
+        |> Async.RunSynchronously
+        |> ignore
+
+        Expect.isTrue (sawReset.Task.Wait(TimeSpan.FromSeconds 20.0))
+            "the saga completed despite a concurrent command advancing the originator"
+
+let private bootOneShot (db: string) (lmdb: string) =
+    registerJournalTypes ()
+
+    let cfg =
+        ConfigurationBuilder()
+            .AddInMemoryCollection(
+                [ Collections.Generic.KeyValuePair<string, string | null>(
+                      "config:akka:cluster:distributed-data:durable:lmdb", lmdb)
+                  // Short handshake bound so the pre-fix failure mode (FailFast
+                  // after the saga-start timeout) surfaces quickly, not at 30s.
+                  Collections.Generic.KeyValuePair<string, string | null>(
+                      "config:akka:fcqrs:saga-start-timeout", "5") ])
+            .Build()
+
+    let api =
+        Fcqrs.actor cfg NullLoggerFactory.Instance
+            (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite (sprintf "Data Source=%s;" db))) "OneShotSmoke"
+
+    let counter =
+        Fcqrs.aggregate api { Name = "Counter"; Initial = Counter.initial; Decide = Counter.decide; Fold = Counter.fold; Snapshots = Default }
+
+    let saga = Fcqrs.saga api (OneShot.definition counter.Factory)
+    Fcqrs.wireSagaStarters api [ saga ]
+    api, counter
+
+let private snapshotResurrectionTest =
+    testCase "facade: a same-CID re-trigger of a snapshot-covered completed saga completes the handshake"
+    <| fun _ ->
+        let db = Path.Combine(Path.GetTempPath(), sprintf "fcqrs_oneshot_%s.db" (Guid.NewGuid().ToString("N")))
+        let lmdb = Path.Combine(Path.GetTempPath(), sprintf "fcqrs_oneshot_lmdb_%s" (Guid.NewGuid().ToString("N")))
+
+        // Phase 1: start and complete the saga; its Every-2 cadence snapshots at
+        // Done (v2), covering the whole journal including the wrapper at seq 1.
+        let api1, counter1 = bootOneShot db lmdb
+        let cid = Fcqrs.newCid ()
+
+        counter1.Send cid (Fcqrs.aggregateId "snapres") (Counter.Increment 100)
+            (function Counter.Incremented _ -> true | _ -> false)
+        |> Async.RunSynchronously
+        |> ignore
+
+        // The snapshot must be durable before the reboot, or phase 2 recovers
+        // from the journal and the test proves nothing.
+        let sagaSnapshots () =
+            use conn = new Microsoft.Data.Sqlite.SqliteConnection(sprintf "Data Source=%s;" db)
+            conn.Open()
+            use cmd = conn.CreateCommand()
+            cmd.CommandText <- "SELECT COUNT(*) FROM snapshot WHERE persistence_id LIKE '%~Saga~%'"
+            cmd.ExecuteScalar() :?> int64
+
+        let mutable snapCount = 0L
+        let mutable snapAttempts = 0
+
+        while snapCount = 0L && snapAttempts < 40 do
+            snapAttempts <- snapAttempts + 1
+            Threading.Thread.Sleep 250
+            snapCount <- try sagaSnapshots () with _ -> 0L
+
+        Expect.isGreaterThanOrEqual snapCount 1L "phase 1: the saga snapshot is durable"
+        api1.Stop().Wait(TimeSpan.FromSeconds 30.0) |> ignore
+
+        // Phase 2: reboot on the same journal and re-trigger with the SAME
+        // correlation id: the saga resurrects through its snapshot and must
+        // still signal Continue (previously the re-delivered starting event was
+        // dropped and the originator FailFasted after the saga-start timeout).
+        let api2, counter2 = bootOneShot db lmdb
+
+        let ev =
+            counter2.Send cid (Fcqrs.aggregateId "snapres") (Counter.Increment 100)
+                (function Counter.Incremented _ -> true | _ -> false)
+            |> Async.RunSynchronously
+
+        Expect.equal ev.EventDetails (Counter.Incremented 100) "phase 2: the re-triggered command completed"
+        api2.Stop().Wait(TimeSpan.FromSeconds 30.0) |> ignore
+
+let private sendAwaitingTimeoutTest =
+    testCase "facade: sendAwaiting raises TimeoutException when the projection suppresses the notification"
+    <| fun _ ->
+        let db = Path.Combine(Path.GetTempPath(), sprintf "fcqrs_sat_%s.db" (Guid.NewGuid().ToString("N")))
+        registerJournalTypes ()
+
+        let cfg =
+            ConfigurationBuilder()
+                .AddInMemoryCollection(
+                    [ Collections.Generic.KeyValuePair<string, string | null>(
+                          "config:akka:fcqrs:command-timeout", "2") ])
+                .Build()
+
+        let api =
+            Fcqrs.actor cfg NullLoggerFactory.Instance
+                (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite (sprintf "Data Source=%s;" db))) "AwaitTimeoutSmoke"
+
+        let counter =
+            Fcqrs.aggregate api { Name = "Counter"; Initial = Counter.initial; Decide = Counter.decide; Fold = Counter.fold; Snapshots = Default }
+
+        Fcqrs.wireSagaStarters api []
+
+        // A multi handler that returns [] suppresses every notification — the
+        // exact shape whose awaited ack never arrives. Before the bound was
+        // added, this hung the caller forever (unrunnable as a failing test).
+        let subs = Fcqrs.projection api { LastOffset = 0; Handle = fun _ _ -> [] }
+
+        let sw = Stopwatch.StartNew()
+
+        Expect.throwsT<TimeoutException>
+            (fun () ->
+                Fcqrs.sendAwaiting subs counter (Fcqrs.newCid ()) (Fcqrs.aggregateId "sat") (Counter.Increment 1)
+                    (function Counter.Incremented _ -> true | _ -> false)
+                |> Async.RunSynchronously
+                |> ignore)
+            "the projection wait timed out instead of hanging"
+
+        sw.Stop()
+        Expect.isLessThan sw.Elapsed.TotalSeconds 15.0 "the configured 2s bound applied (not the 30s default)"
+        api.Stop().Wait(TimeSpan.FromSeconds 30.0) |> ignore
+
+let private slowSubscriberIsolationTest =
+    testCase "facade: a blocking subscriber does not starve a concurrent read-your-writes await"
+    <| fun _ ->
+        let db = Path.Combine(Path.GetTempPath(), sprintf "fcqrs_slow_%s.db" (Guid.NewGuid().ToString("N")))
+        registerJournalTypes ()
+
+        // Tiny notification buffer so a pinned BroadcastHub head is reachable
+        // with a handful of events instead of thousands.
+        let cfg =
+            ConfigurationBuilder()
+                .AddInMemoryCollection(
+                    [ Collections.Generic.KeyValuePair<string, string | null>(
+                          "config:akka:fcqrs:notification-buffer", "8") ])
+                .Build()
+
+        let api =
+            Fcqrs.actor cfg NullLoggerFactory.Instance
+                (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite (sprintf "Data Source=%s;" db))) "SlowSubSmoke"
+
+        let counter =
+            Fcqrs.aggregate api { Name = "Counter"; Initial = Counter.initial; Decide = Counter.decide; Fold = Counter.fold; Snapshots = Default }
+
+        Fcqrs.wireSagaStarters api []
+        let subs = Fcqrs.projection api { LastOffset = 0; Handle = projection }
+
+        // A standing subscriber that blocks hard on its first event. Without
+        // per-consumer isolation it pinned the shared hub: every later
+        // notification (including the awaiter's) was silently shed.
+        use _blocker = subs.Subscribe(fun (_: IMessageWithCID) -> Threading.Thread.Sleep 60000)
+
+        // Enough events to exhaust the 8-element hub/queue slack while the
+        // blocker is stuck.
+        for _ in 1..30 do
+            counter.Send (Fcqrs.newCid ()) (Fcqrs.aggregateId "slow") (Counter.Increment 1)
+                (function Counter.Incremented _ -> true | _ -> false)
+            |> Async.RunSynchronously
+            |> ignore
+
+        // The read-your-writes await must still complete.
+        let ev =
+            Fcqrs.sendAwaiting subs counter (Fcqrs.newCid ()) (Fcqrs.aggregateId "slow") (Counter.Increment 1)
+                (function Counter.Incremented _ -> true | _ -> false)
+            |> Async.RunSynchronously
+
+        Expect.equal ev.EventDetails (Counter.Incremented 1) "sendAwaiting completed despite the blocked subscriber"
+        api.Stop().Wait(TimeSpan.FromSeconds 30.0) |> ignore
+
 let tests =
     testSequenced (
-        testList "facade" [ manifestTest; roundTripTest; persistAllTest; manualSnapshotTest; telemetryTest; payloadSwitchTest; overflowTest; snapshotRecoveryTest; restartDetectionTest; filteredProjectionTest; persistIfTest; bridgeTest; pendingBridgeTest; focusShapeTest; journaledStampTest; runAsyncTest ]
+        testList "facade" [ manifestTest; roundTripTest; persistAllTest; manualSnapshotTest; telemetryTest; payloadSwitchTest; overflowTest; snapshotRecoveryTest; restartDetectionTest; filteredProjectionTest; persistIfTest; bridgeTest; pendingBridgeTest; focusShapeTest; journaledStampTest; runAsyncTest; aggregateRecoveryTest; commandTimeoutTest; concurrencyTest; stopSagaDelayedTest; timeProviderTest; dynamicConfigTest; freshStartSingleDeliveryTest; concurrentSagaStartTest; snapshotResurrectionTest; sendAwaitingTimeoutTest; slowSubscriberIsolationTest ]
     )
 
 [<EntryPoint>]

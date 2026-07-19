@@ -497,19 +497,27 @@ type JournalTypes private () =
         validateName name
         aliases |> Array.iter validateName
 
-        let put (n: string) =
+        // Check EVERY conflict before the first write: a rejected registration
+        // must leave the registry untouched. Writing name-by-name meant a late
+        // conflict left earlier names already pointing at the new type — a
+        // half-applied mapping invisible to the caller who saw the exception.
+        let checkName (n: string) =
             match byName.TryGetValue n with
             | true, existing when existing <> payloadType && not allowReplace ->
                 invalidOp $"Journal name '%s{n}' is already mapped to %s{existing.FullName}; use Remap to replace it deliberately"
-            | _ -> byName[n] <- payloadType
+            | _ -> ()
 
-        put name
-        aliases |> Array.iter put
+        checkName name
+        aliases |> Array.iter checkName
 
         match byType.TryGetValue payloadType with
         | true, existing when existing <> name && not allowReplace ->
             invalidOp $"%s{payloadType.FullName} is already mapped to '%s{existing}'; use Remap to replace it deliberately"
-        | _ -> byType[payloadType] <- name
+        | _ -> ()
+
+        byName[name] <- payloadType
+        aliases |> Array.iter (fun n -> byName[n] <- payloadType)
+        byType[payloadType] <- name
 
     /// Map a payload type to its stable journal name (plus optional read-side aliases).
     static member Map(payloadType: Type, name: string, [<ParamArray>] aliases: string[]) =
@@ -627,6 +635,10 @@ type IActor =
 
     /// Creates a command subscription to wait for a specific event from a target actor.
     /// Sends the command and asynchronously returns the first matching event received.
+    /// If no matching event arrives within `akka.fcqrs.command-timeout` (default
+    /// 30s) — e.g. the aggregate decided UnhandledEvent/IgnoreEvent or the filter
+    /// never matches — the returned Async raises TimeoutException instead of
+    /// hanging forever.
     /// <param name="factory">Entity factory function for the target actor type.</param>
     /// <param name="cid">Correlation ID for tracking.</param>
     /// <param name="id">Entity ID of the target actor.</param>
@@ -1163,9 +1175,40 @@ module CommandHandler =
             { CommandDetails: CommandDetails<'Command, 'Event>
               Sender: IActorRef } // The actor waiting for the response
 
+        /// Internal marker replied to the asker when the awaited event never arrives.
+        type internal CommandSubscriptionTimeout =
+            { EntityId: string
+              Cid: string }
+
+        // Upper bound for one command subscription: the aggregate's reply event
+        // (persist + publish) should arrive in milliseconds; if it never does
+        // (decide returned UnhandledEvent/IgnoreEvent, or the filter never
+        // matches) the caller must fail instead of hanging forever, and the
+        // temporary subscriber actor must not leak. Override with HOCON key
+        // `akka.fcqrs.command-timeout`: a bare number means SECONDS (same rule
+        // as `akka.fcqrs.saga-start-timeout`); HOCON durations ("500ms", "2s",
+        // "1m") are also accepted. NOTE: HOCON GetTimeSpan reads a bare number
+        // as MILLISECONDS, so never parse this key with GetTimeSpan alone.
+        let private defaultCommandTimeout = TimeSpan.FromSeconds 30.0
+        [<Literal>]
+        let private commandTimeoutKey = "akka.fcqrs.command-timeout"
+
+        let internal resolveCommandTimeout (cfg: Akka.Configuration.Config) =
+            try
+                if cfg.HasPath commandTimeoutKey then
+                    match cfg.GetString commandTimeoutKey |> Int32.TryParse with
+                    | true, seconds when seconds > 0 -> TimeSpan.FromSeconds(float seconds)
+                    | _ ->
+                        let t = cfg.GetTimeSpan(commandTimeoutKey, Nullable(defaultCommandTimeout))
+                        if t > TimeSpan.Zero then t else defaultCommandTimeout
+                else
+                    defaultCommandTimeout
+            with _ -> defaultCommandTimeout
+
         let subscribeForCommand<'Command, 'Event when 'Event : not null> system mediator (command: Command<'Command, 'Event>) =
             let actorProp mediator (mailbox: Actor<obj>) =
                 let log = mailbox.UntypedContext.GetLogger()
+                let commandTimeout = resolveCommandTimeout mailbox.System.Settings.Config
 
                 let rec set (state: State<'Command, 'Event> option) =
                     actor {
@@ -1198,11 +1241,37 @@ module CommandHandler =
 
                                     cd
 
+                            // Bounded wait: if no matching event ever arrives the
+                            // ReceiveTimeout branch below fails the asker instead
+                            // of hanging forever.
+                            mailbox.UntypedContext.SetReceiveTimeout(Nullable commandTimeout)
+
                             return!
                                 Some
                                     { CommandDetails = cd
                                       Sender = untyped sender }
                                 |> set
+                        // The awaited event never arrived: fail the asker and stop,
+                        // so an UnhandledEvent/IgnoreEvent decision or a filter that
+                        // never matches cannot hang the caller or leak this actor.
+                        | :? Akka.Actor.ReceiveTimeout ->
+                            match state with
+                            | Some s ->
+                                let cid = s.CommandDetails.Cmd.CorrelationId |> ValueLens.Value |> ValueLens.Value
+
+                                log.Warning(
+                                    "Command subscription timed out after {0} waiting for a matching event from entity {1} [cid: {2}]. The aggregate may have returned UnhandledEvent/IgnoreEvent, or the filter never matched.",
+                                    commandTimeout,
+                                    s.CommandDetails.EntityRef.EntityId,
+                                    cid)
+
+                                s.Sender.Tell(
+                                    { EntityId = s.CommandDetails.EntityRef.EntityId
+                                      Cid = cid },
+                                    untyped mailbox.Self)
+                            | None -> ()
+
+                            return! Stop
                         // When receiving an Event, check TraceId (CID may change due to span propagation)
                         | :? (Event<'Event>) as e when sameTrace e.CorrelationId state.Value.CommandDetails.Cmd.CorrelationId ->
                             if state.Value.CommandDetails.Filter e.EventDetails then
@@ -1221,7 +1290,16 @@ module CommandHandler =
             // Spawn the temporary actor and send it the initial Execute command
             async {
                 let! res = spawnAnonymous system (props (actorProp mediator)) <? box command
-                return box res |> nonNull :?> Event<'Event> // Return the awaited event
+
+                match box res with
+                | :? CommandSubscriptionTimeout as t ->
+                    return
+                        raise (
+                            TimeoutException(
+                                $"No matching event from entity '{t.EntityId}' [cid: {t.Cid}] within the command timeout (akka.fcqrs.command-timeout). The aggregate may have returned UnhandledEvent/IgnoreEvent, or the filter never matched."
+                            )
+                        )
+                | r -> return r |> nonNull :?> Event<'Event> // Return the awaited event
             }
 
 

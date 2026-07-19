@@ -101,7 +101,9 @@ The returned saga transition means:
 
 - `Stay`: keep waiting in the current state after sending commands;
 - `NextState next`: persist another state immediately and run its side effects;
-- `StopSaga`: send any returned commands, then complete and passivate.
+- `StopSaga`: send any returned commands, then complete and passivate. Delayed commands returned with
+  `StopSaga` are still delivered — except `toSelfAfter` ones, which are cancelled with a warning so a
+  completed saga cannot resurrect itself.
 
 ## Declare the start event
 
@@ -160,7 +162,10 @@ subscribes a new saga before the originator publishes its starting event.
 
 Derive from `Saga<TOriginatorEvent,TData,TState>`. `HandleEvent` returns persisted state actions;
 `ApplySideEffects` returns commands and a saga transition. The `startOn` predicate belongs in
-registration rather than on the class.
+registration rather than on the class. `HandleEvent` takes `object` deliberately: a saga also
+receives other aggregates' reply events and `ToSelf` timeout payloads. The typed
+`SagaApi.InitSimple` shortcut only delivers the originator's events, so it cannot express timeouts
+or multi-aggregate coordination; those sagas belong on this base class.
 
 ```csharp
 public abstract record PublicationState

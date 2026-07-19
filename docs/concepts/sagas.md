@@ -95,6 +95,11 @@ The two functions return different control values because they answer different 
 | `NextState next` | Persist another state immediately, without waiting for an incoming event |
 | `StopSaga` | Issue any returned commands, then complete and passivate the saga |
 
+Delayed commands returned with `StopSaga` are still delivered — they are the saga's final act. The
+exception is `Self`-targeted delayed commands, which FCQRS cancels with a warning: a completed saga
+must not be resurrected by its own final message (remember-entities would restart it, and recovery
+would re-drive the same state). Final delayed commands should target other entities.
+
 Most workflows use `StateChangedEvent` for business events and `Stay` while waiting for a reply.
 `NextState` is useful for an internal step that should advance immediately. Use it carefully: every
 automatically entered state runs `applySideEffects` again, so a cycle of `NextState` transitions can
