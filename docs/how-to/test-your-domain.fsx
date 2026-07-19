@@ -1,28 +1,83 @@
+(**
 ---
 title: Test your domain
 category: Apply
 categoryindex: 4
 index: 6
 ---
+*)
 
+(*** hide ***)
+#r "nuget: FCQRS, 6.0.0-rc1"
+#r "nuget: Expecto, 10.2.3"
+
+open System
+open Expecto
+open FCQRS.Common
+open FCQRS.Model.Data
+open FCQRS.FSharp
+
+module Document =
+    type Root =
+        { Id: Guid
+          Title: string
+          Content: string }
+
+        static member TryCreate(id, title, content) =
+            if String.IsNullOrWhiteSpace title then Error "Title is required"
+            elif String.IsNullOrWhiteSpace content then Error "Content is required"
+            else Ok { Id = id; Title = title; Content = content }
+
+    type PublicationResult =
+        | Published
+        | Rejected
+
+    type State =
+        | Editing of Root option
+        | Finished of Guid * slug: string * PublicationResult
+
+        member this.Document =
+            match this with
+            | Editing document -> document
+            | Finished _ -> None
+
+    let initial = Editing None
+
+    type Command =
+        | CreateOrUpdate of Root
+        | FinishPublication of PublicationResult
+
+    type Event =
+        | Updated of Root
+        | PublicationFinished of Guid * slug: string * PublicationResult
+
+    let decide (command: FCQRS.Common.Command<Command>) state =
+        match command.CommandDetails, state with
+        | CreateOrUpdate document, _ -> Updated document |> PersistEvent
+        | FinishPublication result, Finished(id, slug, current) when result = current ->
+            PublicationFinished(id, slug, result) |> DeferEvent
+        | _ -> UnhandledEvent
+
+    let fold (event: FCQRS.Common.Event<Event>) _state =
+        match event.EventDetails with
+        | Updated document -> Editing(Some document)
+        | PublicationFinished(id, slug, result) -> Finished(id, slug, result)
+
+(**
 # Test your domain
 
 Test the domain at four levels: individual decisions, individual folds, replayed histories, and repeated
 commands. These tests call pure functions directly and need no actor system or database.
 
 Use fixed envelope values so failures are reproducible:
-
-```fsharp
-open FCQRS.Common
-open FCQRS.Model.Data
-open FCQRS.FSharp
+*)
 
 let fixedTime = System.DateTime(2026, 1, 1, 12, 0, 0, System.DateTimeKind.Utc)
 
 let command details : Command<_> =
     { CommandDetails = details
       CreationDate = fixedTime
-      Id = None
+      Id = Guid.CreateVersion7().ToString() |> ValueLens.CreateAsResult |> Result.value
       Sender = None
       CorrelationId = Fcqrs.newCid ()
       Metadata = Map.empty }
@@ -30,13 +85,13 @@ let command details : Command<_> =
 let event version details : Event<_> =
     { EventDetails = details
       CreationDate = fixedTime
-      Id = None
+      Id = Guid.CreateVersion7().ToString() |> ValueLens.CreateAsResult |> Result.value
       Sender = None
       CorrelationId = Fcqrs.newCid ()
       Version = version |> ValueLens.TryCreate |> Result.value
       Metadata = Map.empty }
-```
 
+(**
 <div class="cs-alt"></div>
 
 ```csharp
@@ -63,8 +118,8 @@ test framework.
 
 These use the `Document` from the [tutorial](../tutorial/1-the-aggregate.html). `CreateOrUpdate`
 produces `Updated`.
+*)
 
-```fsharp
 let doc =
     Document.Root.TryCreate(System.Guid.NewGuid(), "Spec", "draft") |> Result.value
 
@@ -75,8 +130,8 @@ Expect.equal
     action
     (PersistEvent (Document.Updated doc))
     "creating a document stores Updated"
-```
 
+(**
 <div class="cs-alt"></div>
 
 ```csharp
@@ -94,8 +149,8 @@ Assert.Equal(
 
 For an idempotent verdict, such as publication confirmation in
 [chapter 3](../tutorial/3-adding-a-saga.html), assert the deferred event the same way:
+*)
 
-```fsharp
 let publishedState =
     Document.Finished(doc.Id, "guides/fcqrs", Document.Published)
 
@@ -110,8 +165,8 @@ Expect.equal
     (DeferEvent(
         Document.PublicationFinished(doc.Id, "guides/fcqrs", Document.Published)))
     "repeating the result defers the existing publication outcome"
-```
 
+(**
 <div class="cs-alt"></div>
 
 ```csharp
@@ -136,12 +191,12 @@ ignored or unhandled.
 ## Test one fold
 
 `fold` takes an event envelope and produces the next state:
+*)
 
-```fsharp
 let state = Document.fold (event 1L (Document.Updated doc)) Document.initial
 Expect.equal state.Document (Some doc) "Updated becomes the current document"
-```
 
+(**
 <div class="cs-alt"></div>
 
 ```csharp
@@ -158,9 +213,9 @@ a separate version concept with different meaning.
 ## Test replay
 
 Fold a complete history to verify recovery:
+*)
 
-```fsharp
-let edited = { doc with Content = newContent }
+let edited = { doc with Content = "revised" }
 
 let recovered =
     [ event 1L (Document.Updated doc)
@@ -168,12 +223,12 @@ let recovered =
     |> List.fold (fun state stored -> Document.fold stored state) Document.initial
 
 Expect.equal recovered.Document (Some edited) "replay recovers the latest document"
-```
 
+(**
 <div class="cs-alt"></div>
 
 ```csharp
-var edited = doc! with { Content = newContent };
+var edited = doc! with { Content = "revised" };
 var history = new DocumentEvent[]
 {
     new DocumentEvent.Updated(doc),
@@ -215,3 +270,4 @@ across an actual process restart. Pure domain tests do not prove those infrastru
 
 See [Aggregates](../concepts/aggregates.html) and
 [Testing and evolution](../tutorial/4-testing-and-evolution.html).
+*)
