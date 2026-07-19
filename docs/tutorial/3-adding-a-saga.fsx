@@ -67,6 +67,16 @@ module Values =
         override this.ToString() = let (DocumentId value) = this in value.ToString()
 
 (**
+<div class="cs-alt"></div>
+
+```csharp
+public readonly record struct DocumentId(Guid Value)
+{
+    public static DocumentId OfGuid(Guid value) => new(value);
+    public override string ToString() => Value.ToString();
+}
+```
+
 ## Step 1: let the document request publication
 
 The document stores `PublicationRequested` before any reservation begins. Its state records the
@@ -126,7 +136,6 @@ combination that does not belong to this workflow.
 <div class="cs-alt"></div>
 
 ```csharp
-public readonly record struct DocumentId(Guid Value);
 public enum PublicationResult { Published, Rejected }
 
 public abstract record PublicationDocumentState
@@ -307,6 +316,19 @@ module PublicationSaga =
         | Done
 
 (**
+<div class="cs-alt"></div>
+
+```csharp
+public abstract record PublicationState
+{
+    public sealed record ReservingSlug(DocumentId DocumentId, string Slug) : PublicationState;
+    public sealed record ReportingResult(PublicationResult Result) : PublicationState;
+    public sealed record Done : PublicationState;
+}
+
+public sealed record PublicationData;
+```
+
 ### Function 1: event plus state becomes persisted progress
 
 Saga events arrive as `obj` because several aggregate event types share the same workflow. Active
@@ -340,6 +362,39 @@ patterns recover their typed envelopes. The first domain event reaches user code
         | _ -> UnhandledEvent
 
 (**
+<div class="cs-alt"></div>
+
+```csharp
+public override EventAction<PublicationState> HandleEvent(
+    object message,
+    SagaState<PublicationData, FSharpOption<PublicationState>> sagaState) =>
+    (message, sagaState.State?.Value) switch
+    {
+        (Event<DocumentEvent>
+            { EventDetails: DocumentEvent.PublicationRequested requested }, null) =>
+            StateChanged(new PublicationState.ReservingSlug(
+                requested.DocumentId, requested.Slug)),
+        (Event<SlugEvent>
+            { EventDetails: SlugEvent.SlugReserved reserved },
+            PublicationState.ReservingSlug expected)
+            when reserved.DocumentId == expected.DocumentId =>
+            StateChanged(new PublicationState.ReportingResult(
+                PublicationResult.Published)),
+        (Event<SlugEvent>
+            { EventDetails: SlugEvent.SlugUnavailable unavailable },
+            PublicationState.ReservingSlug expected)
+            when unavailable.DocumentId == expected.DocumentId =>
+            StateChanged(new PublicationState.ReportingResult(
+                PublicationResult.Rejected)),
+        (Event<DocumentEvent>
+            { EventDetails: DocumentEvent.PublicationFinished finished },
+            PublicationState.ReportingResult reporting)
+            when finished.Result == reporting.Result =>
+            StateChanged(new PublicationState.Done()),
+        _ => Unhandled()
+    };
+```
+
 `StateChangedEvent next` is the saga counterpart to a persisted aggregate outcome: FCQRS stores the
 new workflow state. `UnhandledEvent` means the incoming event is not valid for the current state.
 
@@ -359,6 +414,39 @@ recovery, with `recovering = true`.
             StopSaga, []
 
 (**
+<div class="cs-alt"></div>
+
+```csharp
+public override SagaSideEffectResult<PublicationState> ApplySideEffects(
+    SagaState<PublicationData, PublicationState> sagaState,
+    bool _recovering) =>
+    sagaState.State switch
+    {
+        PublicationState.ReservingSlug state => new()
+        {
+            Transition = Stay(),
+            Commands = [SagaCommands.ToAggregate(
+                _slugs, state.Slug, new SlugCommand.Reserve(state.DocumentId))]
+        },
+        PublicationState.ReportingResult state => new()
+        {
+            Transition = Stay(),
+            Commands = [SagaCommands.ToOriginator(
+                _documents, new DocumentCommand.FinishPublication(state.Result))]
+        },
+        PublicationState.Done => new()
+        {
+            Transition = StopSaga(),
+            Commands = []
+        },
+        _ => new() { Transition = Stay(), Commands = [] }
+    };
+```
+
+The C# constructor in Step 4 supplies `_documents` and `_slugs`. As in F#, the method receives the
+recovery flag even though this retry-safe workflow sends the same command during live processing and
+recovery.
+
 `Stay` keeps the stored state while the saga waits for a reply. `StopSaga` completes and passivates the
 saga. `NextState next` is the third available transition; it persists another state immediately when a
 step should advance without waiting for an event. This workflow does not need it.
@@ -399,37 +487,9 @@ aggregate family that produced it and lets `toOriginator` route back to the exac
           Snapshots = Default }
 
 (**
-The domain publishes `PublicationRequested`; application code does not create `SagaStartingEvent`.
-FCQRS wraps the matched event internally so the new saga remembers its originator, starting version,
-correlation context, and the event that created it.
-
-The safe-start sequence is:
-
-1. the document chooses `PublicationRequested`;
-2. `StartOn` says the event requires `PublicationSaga`;
-3. FCQRS creates and subscribes the saga;
-4. the saga stores its starting envelope;
-5. the document event is persisted and published;
-6. `handleEvent` stores `ReservingSlug`;
-7. only then does `applySideEffects` send `Reserve`.
-
-Without this handshake, the first event could be published before the new saga was listening.
-
-## C# saga
-
-The C# API keeps the same two functions. `HandleEvent` returns a persisted state action;
-`ApplySideEffects` returns commands and `Stay`, `NextState`, or `StopSaga`.
+<div class="cs-alt"></div>
 
 ```csharp
-public abstract record PublicationState
-{
-    public sealed record ReservingSlug(DocumentId DocumentId, string Slug) : PublicationState;
-    public sealed record ReportingResult(PublicationResult Result) : PublicationState;
-    public sealed record Done : PublicationState;
-}
-
-public sealed record PublicationData;
-
 public sealed class PublicationSaga
     : Saga<DocumentEvent, PublicationData, PublicationState>
 {
@@ -448,60 +508,33 @@ public sealed class PublicationSaga
     public override string SagaName => "PublicationSaga";
     public override Func<string, IEntityRef<object>> Originator => _documents;
 
-    public override EventAction<PublicationState> HandleEvent(
-        object message,
-        SagaState<PublicationData, FSharpOption<PublicationState>> sagaState) =>
-        (message, sagaState.State?.Value) switch
-        {
-            (Event<DocumentEvent>
-                { EventDetails: DocumentEvent.PublicationRequested requested }, null) =>
-                StateChanged(new PublicationState.ReservingSlug(
-                    requested.DocumentId, requested.Slug)),
-            (Event<SlugEvent> { EventDetails: SlugEvent.SlugReserved },
-                PublicationState.ReservingSlug _) =>
-                StateChanged(new PublicationState.ReportingResult(
-                    PublicationResult.Published)),
-            (Event<SlugEvent> { EventDetails: SlugEvent.SlugUnavailable },
-                PublicationState.ReservingSlug _) =>
-                StateChanged(new PublicationState.ReportingResult(
-                    PublicationResult.Rejected)),
-            (Event<DocumentEvent>
-                { EventDetails: DocumentEvent.PublicationFinished finished },
-                PublicationState.ReportingResult reporting)
-                when finished.Result == reporting.Result =>
-                StateChanged(new PublicationState.Done()),
-            _ => Unhandled()
-        };
+    public static bool StartsOn(object message) =>
+        message is Event<DocumentEvent>
+            { EventDetails: DocumentEvent.PublicationRequested };
 
-    public override SagaSideEffectResult<PublicationState> ApplySideEffects(
-        SagaState<PublicationData, PublicationState> sagaState,
-        bool recovering) =>
-        sagaState.State switch
-        {
-            PublicationState.ReservingSlug s => new()
-            {
-                Transition = Stay(),
-                Commands = [SagaCommands.ToAggregate(
-                    _slugs, s.Slug, new SlugCommand.Reserve(s.DocumentId))]
-            },
-            PublicationState.ReportingResult s => new()
-            {
-                Transition = Stay(),
-                Commands = [SagaCommands.ToOriginator(
-                    _documents, new DocumentCommand.FinishPublication(s.Result))]
-            },
-            PublicationState.Done _ => new()
-            {
-                Transition = StopSaga(),
-                Commands = []
-            },
-            _ => new() { Transition = Stay(), Commands = [] }
-        };
+    // HandleEvent and ApplySideEffects are the methods shown in Step 3.
 }
 ```
 
-The document and slug aggregates use the same `HandleCommand` and `ApplyEvent` pattern taught in
-chapter 1. [Write a saga](../how-to/write-a-saga.html) includes the complete C# registration call.
+The domain publishes `PublicationRequested`; application code does not create `SagaStartingEvent`.
+FCQRS wraps the matched event internally so the new saga remembers its originator, starting version,
+correlation context, and the event that created it.
+
+The safe-start sequence is:
+
+1. the document chooses `PublicationRequested`;
+2. `StartOn` says the event requires `PublicationSaga`;
+3. FCQRS creates and subscribes the saga;
+4. the saga stores its starting envelope;
+5. the document event is persisted and published;
+6. `handleEvent` stores `ReservingSlug`;
+7. only then does `applySideEffects` send `Reserve`.
+
+Without this handshake, the first event could be published before the new saga was listening.
+
+The C# API uses the same two-function split shown beside the F# code. `HandleEvent` stores progress;
+`ApplySideEffects` returns commands and `Stay`, `NextState`, or `StopSaga`. The document and slug
+aggregates use the `HandleCommand` and `ApplyEvent` pattern taught in chapter 1.
 
 ## Wire the participants and starter
 
@@ -544,8 +577,7 @@ services
         create: sp => new PublicationSaga(
             sp.AggregateFactory<PublicationDocumentAggregate>(),
             sp.AggregateFactory<SlugAggregate>()),
-        startOn: e => e is Event<DocumentEvent>
-            { EventDetails: DocumentEvent.PublicationRequested });
+        startOn: PublicationSaga.StartsOn);
 ```
 
 ## How resumption works

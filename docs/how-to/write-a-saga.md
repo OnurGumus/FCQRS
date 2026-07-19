@@ -200,13 +200,17 @@ public sealed class PublicationSaga
                 StateChanged(new PublicationState.ReservingSlug(
                     requested.DocumentId, requested.Slug)),
 
-            (Event<SlugEvent> { EventDetails: SlugEvent.SlugReserved },
-                PublicationState.ReservingSlug _) =>
+            (Event<SlugEvent>
+                { EventDetails: SlugEvent.SlugReserved reserved },
+                PublicationState.ReservingSlug expected)
+                when reserved.DocumentId == expected.DocumentId =>
                 StateChanged(new PublicationState.ReportingResult(
                     PublicationResult.Published)),
 
-            (Event<SlugEvent> { EventDetails: SlugEvent.SlugUnavailable },
-                PublicationState.ReservingSlug _) =>
+            (Event<SlugEvent>
+                { EventDetails: SlugEvent.SlugUnavailable unavailable },
+                PublicationState.ReservingSlug expected)
+                when unavailable.DocumentId == expected.DocumentId =>
                 StateChanged(new PublicationState.ReportingResult(
                     PublicationResult.Rejected)),
 
