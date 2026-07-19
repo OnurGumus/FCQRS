@@ -10,6 +10,7 @@ index: 3
 (*** hide ***)
 #r "nuget: FCQRS, 6.0.0-rc1"
 open System
+open System.Collections.Concurrent
 open Microsoft.Extensions.Configuration
 open Microsoft.Extensions.Logging
 open FCQRS.Common
@@ -46,8 +47,8 @@ module Document =
             | Ok t, Ok c -> Ok { Id = DocumentId.OfGuid guid; Title = t; Content = c }
             | Error e, _ -> Error e
             | _, Error e -> Error e
-    type State = { Document: Root option; Version: int64 }
-    let initial = { Document = None; Version = 0L }
+    type State = { Document: Root option }
+    let initial = { Document = None }
     type Command = CreateOrUpdate of Root
     type Event = Updated of Root
     let decide (cmd: Command<Command>) state =
@@ -55,19 +56,18 @@ module Document =
         | CreateOrUpdate doc -> Updated doc |> PersistEvent
     let fold (event: Event<Event>) state =
         match event.EventDetails with
-        | Updated doc -> { state with Document = Some doc; Version = state.Version + 1L }
+        | Updated doc -> { Document = Some doc }
 
 (**
 # 2. Wiring and running it
 
-Right now our [`Document`](1-the-aggregate.html) is a pair of pure functions with nowhere to live. They
-can't remember anything between calls, and nobody can send them a command. This chapter fixes both, and
-ends with a tiny demo that makes event sourcing *visible*: you'll run the program, run it again, and
-watch a number go up because the past was waiting on disk. Keep adding to `Program.fs`.
+Chapter 1 produced a document aggregate as pure functions. This chapter registers those functions with
+FCQRS, stores their events in SQLite, projects the events into query data, and sends a command through
+the complete path. Continue in the same `Program.fs`.
 
 ## Two paths, on purpose: writing and reading
 
-Here's the shape of the thing we're about to build:
+The application has two paths:
 
 <pre>
                 decide / fold
@@ -80,21 +80,13 @@ Here's the shape of the thing we're about to build:
                                   read model   (a derived view; disposable)
 </pre>
 
-The letters CQRS just mean: the path that **writes** and the path that **reads** are separate on
-purpose. Writes flow through the aggregate and land in the **journal**, an append-only log of events
-that is the single source of truth. Reads come from a **read model** *derived* from that log.
-
-> 💡 **Mental model.** Treat the journal like a bank's transaction ledger and the read model like the
-> balance shown in your banking app. The ledger is authoritative and never edited; the balance is just a
-> convenient running total computed from it. Lose the displayed balance and you recompute it from the
-> ledger — you've lost nothing. Lose the ledger and you've lost everything. That asymmetry is the whole
-> design: **the read model is disposable; the journal is not.**
+Commands flow through the aggregate and append events to the journal. Projections consume those events
+and update read models. Application queries use the read model, not the aggregate state or journal.
 
 ## Create the actor system
 
-`Fcqrs.actor` builds the entire Akka.NET system from plain values. The only thing you're *required* to
-hand it is a database connection (via `Fcqrs.connect`). Everything else — serializers, sharding,
-snapshots, a one-node cluster that joins itself — comes from defaults baked into the package.
+`Fcqrs.actor` builds the Akka.NET system. The connection configures the journal, query journal, and
+snapshot store. The embedded defaults configure serialization, sharding, and a one-node cluster.
 *)
 
 let buildApi () : IActor =
@@ -118,56 +110,54 @@ builder.Services
 *)
 
 (**
-Notice the config is an *empty* `ConfigurationBuilder().Build()`. If you've used Akka.NET before, this
-is the part to do a double-take at:
+The empty `IConfiguration` accepts every embedded default. User configuration is merged over those
+defaults when an application needs different Akka.NET settings. `tutorial.db` outlives the process, so
+the next run can recover the aggregate and replay the projection. See
+[Configure the database](../how-to/configure-the-database.html) for other providers.
 
-> 🤔 **Did you know?** Akka.NET is normally configured with HOCON — often pages of it for persistence,
-> serialization, and sharding. FCQRS ships those defaults embedded and merges anything you supply over
-> them, so the *minimum* is no HOCON file at all. (When you eventually need to override a knob, you can —
-> see [Configuration](../configuration.html). The default is "nothing," not "you can't.")
+## Build the query side
 
-That `tutorial.db` file **is** the journal, and the fact that it's a real file on disk is exactly what
-makes the demo at the end work — it outlives the process. (Swapping `DBType.Sqlite` for Postgres or SQL
-Server is a one-line change; the rest of your code doesn't notice. See
-[Configure the database](../how-to/configure-the-database.html).)
-
-## A read side to listen on
-
-A **projection** is a function run once per event, in order. A real one folds each event into a SQL
-table you can query; ours does the smallest thing possible — nothing — because we need no read model
-yet. FCQRS still publishes each aggregate event to subscribers, which is what the next step waits on:
+This tutorial uses an in-memory dictionary for query data. The projection starts at offset zero and
+replays all stored `Updated` events on every run. A production projection persists its read model and
+offset in one transaction; the in-memory version keeps the event-to-query transformation visible.
 *)
 
-let handle (_offset: int64) (_event: obj) = ()   // no read model yet — events auto-publish
+let readModel = ConcurrentDictionary<string, Document.Root>()
+
+let handle (_offset: int64) (message: obj) =
+    match message with
+    | :? Event<Document.Event> as event ->
+        match event.EventDetails with
+        | Document.Updated document -> readModel[document.Id.ToString()] <- document
+    | _ -> ()
 
 (**
 <div class="cs-alt"></div>
 
 ```csharp
-// C#: a projection handler is just void — update the read model; FCQRS publishes
-// each aggregate event to subscribers for you.
-public static void Handle(long offset, object ev) { /* no read model yet */ }
+// C#: the same in-memory read model and projection.
+var readModel = new ConcurrentDictionary<string, Document>();
+
+void Handle(long offset, object message)
+{
+    if (message is Event<DocumentEvent> { EventDetails: DocumentEvent.Updated updated })
+        readModel[updated.Document.Id.ToString()] = updated.Document;
+}
 
 builder.Services.AddProjection((offset, ev) => Handle(offset, ev));
 ```
 *)
 
 (**
-Why does an empty handler still work? Because with `Projection.single`, FCQRS **re-publishes each
-aggregate event to subscribers** after your handler runs — and that re-publish is what lets a caller
-know its write reached the read side. That's the mechanism behind the next step. (A production
-projection writes to a table and tracks its offset — its own how-to:
-[Add a projection](../how-to/add-a-projection.html).)
+`Projection.single` publishes an aggregate event to subscribers after `handle` returns. A caller can
+therefore wait until this projection has applied a specific command's event. See
+[Add a projection](../how-to/add-a-projection.html) for transactional offset storage.
 
-## Send a command — and read your own write
+## Send a command and read your own write
 
-Now the subtle part, and the reason well-built CQRS systems feel solid instead of flaky. Writes are
-asynchronous: the command is handled, the event is journaled, and *then* it propagates to the read side
-a beat later. So the naïve "save, then immediately query" can read **stale data** — the classic bug
-where you create something, redirect to its page, and it's not there yet.
-
-You might reach for a `Thread.Sleep` or a retry loop. Don't — there's an exact signal. FCQRS threads a
-**correlation id (CID)** through the whole round trip, and the move is:
+The aggregate acknowledges its stored event before the projection necessarily updates the read model.
+A query sent immediately after the command can therefore return the previous view. FCQRS carries a
+**correlation id (CID)** through the command, event, and projection notification:
 
 <pre>
   mint a CID
@@ -179,13 +169,9 @@ You might reach for a `Thread.Sleep` or a retry loop. Don't — there's an exact
   send command  -->  aggregate  -->  journal  -->  projection re-publishes  -->  your wait wakes
 </pre>
 
-> 🎯 **Key principle.** Subscribe *before* you send. If you subscribed afterward, the event could be
-> processed in the gap and you'd wait forever for a notification that already fired. Subscribe-then-send
-> closes that window by construction — the same reason you start recording before the rocket launches,
-> not after.
-
-`Fcqrs.aggregate` registers the aggregate and returns a handle whose `.Send` ties it together: you give
-it the CID, the aggregate id, the command, and a predicate for the event you're waiting on.
+Subscribe before sending. Subscribing afterward creates a race in which the projection can publish the
+notification before the subscription exists. `.Send` accepts the CID, aggregate id, command, and a
+predicate selecting the aggregate reply.
 *)
 
 let run () =
@@ -200,13 +186,11 @@ let run () =
                   Fold = Document.fold
                   Snapshots = Default }
 
-        // No sagas yet — the saga-starter still has to be wired, with none. (Ch. 3 adds one.)
         Fcqrs.wireSagaStarters api []
 
         let subs = Fcqrs.projection api (Projection.single 0 handle)
 
         let cid = Fcqrs.newCid ()
-        // A FIXED id, so every run addresses the SAME document — that's what lets the version climb.
         let id = Fcqrs.aggregateId "11111111-1111-1111-1111-111111111111"
 
         // Subscribe to this CID *before* sending so the confirmation can't be missed.
@@ -221,8 +205,9 @@ let run () =
                         match e with
                         | Document.Updated _ -> true)
 
-            do! awaiter.Task |> Async.AwaitTask // read side is now up to date
-            printfn "saved %A at version %A" event.EventDetails event.Version
+            do! awaiter.Task |> Async.AwaitTask
+            let projected = readModel[doc.Id.ToString()]
+            printfn "saved version %A; query returned '%s'" event.Version projected.Title.Value
     }
 
 (**
@@ -244,8 +229,8 @@ if (Document.TryCreate(Guid.Parse("11111111-1111-1111-1111-111111111111"), "Welc
     var ev = await documents(
         e => e is DocumentEvent.Updated,
         cid, id, new DocumentCommand.CreateOrUpdate(doc));
-    await awaiter.Task;                             // read side is now up to date
-    Console.WriteLine($"saved {ev.EventDetails} at version {ev.Version}");
+    await awaiter.Task;
+    Console.WriteLine($"saved version {ev.Version}; query returned '{readModel[doc.Id.ToString()].Title}'");
 }
 ```
 *)
@@ -262,60 +247,45 @@ let main _ =
 
 ## Run it, then run it again
 
-This is the moment the whole tutorial has been building toward, so do it for real:
+Run the program twice without deleting `tutorial.db`:
 
 ```bash
 dotnet run
-# saved Updated ... at version 1
+# saved version 1; query returned 'Welcome'
 
 dotnet run
-# saved Updated ... at version 2
+# saved version 2; query returned 'Welcome'
 ```
 
-Sit with what just happened. Between the two runs the process **exited completely** — every byte of
-in-memory state was thrown away. Yet the second run reports version `2`. Nobody wrote "load the
-document" code, because there isn't any to write. On startup FCQRS found the document's one stored event,
-replayed it through your `fold` (`0 → 1`), and *then* applied the new write (`1 → 2`). The number climbs
-because the journal persisted across the restart and `fold` is pure enough to reconstruct the exact same
-state every time.
+The second process starts with empty memory. FCQRS replays the first `Updated` event through `fold`, then
+handles the new command and stores version 2. The projection also starts with an empty dictionary and
+replays from offset zero before applying the new event.
 
-> 💡 **Try this.** Delete `tutorial.db*` and run again — you're back to version `1`. That's the asymmetry
-> from the start of the chapter made tangible: erase the derived state and it rebuilds from the log;
-> there's nothing else to lose because the log *was* the truth.
-
-⚠️ And the honest counterweight: for one document with one field, this is a lot of moving parts to print
-a number. You wouldn't reach for it here. What you just watched scales, though — to thousands of
-entities that must stay consistent under concurrent edits, each with a perfect audit trail and free
-rebuildable views. You got all three without writing the persistence, the loading, or the concurrency
-control. *That's* the trade you're actually evaluating, not the line count of a hello-world.
+Delete `tutorial.db*` and run again to start a new event history at version 1. In production, deleting a
+read model and resetting its offset is a rebuild operation; deleting the journal discards the source of
+truth.
 
 ## What you now understand
 
-A command doesn't change anything by itself — it produces an event, the event lands in a durable log,
-and everything else (current state, read models, the answer to your caller) is *derived* from that log.
-You also met the one piece of discipline that makes async writes feel synchronous to a caller:
-subscribe to a correlation id, then send, then wait.
+A command produced a stored event. The aggregate recovered its state by replaying stored events, and a
+separate projection rebuilt query data from the same history. Subscribing to the CID before sending
+coordinated the query with that projection.
 
 ## Common mistakes
 
-- **Querying right after sending, without waiting on the CID.** Intermittent "it's not there yet" bugs
-  that only show under load. Subscribe-then-send-then-await is the fix.
-- **Subscribing *after* sending.** The event can fire in the gap; your wait never completes. Always
-  subscribe first.
-- **Treating the read model as precious.** It's rebuildable from the journal — back up the journal, not
-  the read model.
-- **Forgetting `Fcqrs.wireSagaStarters`.** Even with zero sagas the starter must be wired (with `[]`);
-  chapter 3 is where it earns a real argument.
+- **Querying without waiting for the required projection.** The read model may still contain the old
+  view.
+- **Subscribing after sending.** The notification can pass before the subscription exists.
+- **Starting a durable projection at offset zero on every run.** Persist the offset with the read-model
+  update instead.
+- **Forgetting `Fcqrs.wireSagaStarters`.** Wire an empty list when the application has no sagas.
 
 ## Further study
 
-- [The read side](../concepts/read-models.html) — projections, offsets, and why a read model can always
-  be thrown away and rebuilt.
-- [Consistency and recovery](../concepts/consistency-and-recovery.html) — correlation ids,
-  read-your-writes, snapshots, and what happens across a restart.
-- [Configure the database](../how-to/configure-the-database.html) — point the journal at Postgres or SQL
-  Server with a one-line change.
+- [The read side](../concepts/read-models.html): projections, offsets, and rebuilds.
+- [Consistency and recovery](../concepts/consistency-and-recovery.html): correlation ids, snapshots,
+  and restarts.
+- [Configure the database](../how-to/configure-the-database.html): supported persistence providers.
 
-Next, a rule a single aggregate structurally *cannot* enforce — a per-user quota — and the
-[saga](3-adding-a-saga.html) that coordinates the two aggregates it takes.
+Next, add a [saga](3-adding-a-saga.html) for a rule that spans a document and its owner.
 *)

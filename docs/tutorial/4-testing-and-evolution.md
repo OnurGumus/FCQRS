@@ -1,0 +1,131 @@
+---
+title: 4. Testing and evolution
+category: Tutorial
+categoryindex: 3
+index: 5
+---
+
+# 4. Testing and evolution
+
+The running application now has two aggregates and a saga. Before adding infrastructure, make the
+domain safe to change. Event-sourced code has four behaviours worth testing separately:
+
+1. a command and state produce the expected action;
+2. an event and state produce the expected next state;
+3. replaying an event history produces the expected recovered state;
+4. retrying a command does not repeat a business effect.
+
+None of these tests requires Akka.NET or a database.
+
+## Test decisions as a table
+
+The important cases for the document aggregate are states and commands, not methods and mocks. Write
+the cases down before writing the assertions:
+
+| Existing document | Command | Expected action |
+|---|---|---|
+| none | `CreateOrUpdate` | persist `CreateOrUpdateRequested` |
+| same document | `CreateOrUpdate` | persist `Updated` |
+| different document | `CreateOrUpdate` | defer `DocumentNotFound` |
+| pending | `Approve` | persist `ApprovedEvt` |
+| approved | `Approve` again | defer `ApprovedEvt` |
+
+The last row is a retry case. The reply still tells the saga that the document is approved, but the
+aggregate does not store a second approval.
+
+Use a command envelope helper and call `decide` directly:
+
+```fsharp
+let command details : Command<_> =
+    { CommandDetails = details
+      CreationDate = DateTime(2026, 1, 1, 12, 0, 0, DateTimeKind.Utc)
+      Id = None
+      Sender = None
+      CorrelationId = Fcqrs.newCid ()
+      Metadata = Map.empty }
+
+let action = Document.decide (command Document.Approve) approvedState
+test <@ action = DeferEvent (Document.ApprovedEvt documentId) @>
+```
+
+Use fixed timestamps in tests. A fixed time makes a failure reproducible and lets you test the user
+quota at the exact edge of its one-minute window.
+
+## Test folds with histories
+
+A single fold assertion verifies one transition. A replay test verifies that the transitions compose:
+
+```fsharp
+let recovered =
+    [ Document.CreateOrUpdateRequested(document, owner)
+      Document.ApprovedEvt document.Id
+      Document.Updated editedDocument ]
+    |> List.mapi (fun index details -> event (int64 index + 1L) details)
+    |> List.fold (fun state stored -> Document.fold stored state) Document.initial
+
+test <@ recovered.Document = Some editedDocument @>
+test <@ recovered.Approval = Document.Approved @>
+```
+
+This test is the executable definition of recovery. If a fold reads the clock, generates an id, or
+performs I/O, the same history can produce a different result on another run. Put those values in the
+command or event instead.
+
+## Test the saga at each state
+
+Test a saga in two layers:
+
+- `handleEvent` maps an incoming event and current saga state to a transition;
+- `applySideEffects` maps the resulting state to commands.
+
+For `CheckingQuota(owner, documentId)`, assert that the saga sends one `ConsumeQuota` command to the
+user aggregate identified by `owner`. For `Approving documentId`, assert that it sends `Approve` to the
+originating document. Call `applySideEffects` with `recovering = true` and verify that it returns a
+command safe for re-delivery or a recovery-specific status check. Do not assume the original command
+was either delivered or lost when the process stopped.
+
+## Treat persisted events as contracts
+
+An event outlives the process and often outlives the code version that wrote it. Renaming a type,
+removing a union case, changing a field's meaning, or changing its serialized representation can make
+old journal rows unreadable or change the state produced by replay.
+
+Use these rules when events evolve:
+
+- Add a new event case for a new fact. Do not reinterpret an old case to mean something different.
+- Keep old cases readable until every stored instance has an explicit migration path.
+- Prefer adding optional data or a new versioned event over changing the meaning of a required field.
+- Test recovery from a history written by the previous release.
+- Deploy readers that understand the new shape before deploying writers that produce it when versions
+  overlap during a rolling deployment.
+
+Register stable journal names so moving a CLR type does not change the stored manifest:
+
+```fsharp
+Fcqrs.journalTypes [ journalType<Document.Event> "document.event" ]
+```
+
+```csharp
+builder.WithJournalTypes(types => types.Type<DocumentEvent>("document.event"));
+```
+
+Stable names solve type location changes. They do not migrate the fields inside an event. Field and
+meaning changes still need compatibility code and replay tests.
+
+## Rebuild a projection deliberately
+
+A projection is derived from the journal. To verify a projection change:
+
+1. stop the projection;
+2. create a fresh read model or clear the old one;
+3. reset that projection's offset to the beginning;
+4. replay the journal with the new handler;
+5. compare counts and representative records before switching queries to the rebuilt model.
+
+Do not delete or edit journal rows to repair a projection. Correct the projection and rebuild its
+output.
+
+## Continue
+
+The focused examples in [Test your domain](../how-to/test-your-domain.html) provide envelope helpers for
+F# and C#. Next, [prepare the system for production](5-production.html).

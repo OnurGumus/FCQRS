@@ -7,63 +7,54 @@ index: 3
 
 # Aggregates and the write side
 
-An **aggregate** is the write side's unit of consistency. In FCQRS it is an Akka.NET actor: there is
-exactly one live instance per entity — one `User`, one `Order` — and it processes its messages one at
-a time. That single fact removes a whole category of bugs. Because only one command is ever in flight
-inside a given aggregate, there are no locks to take and no races to lose, yet different entities run
-fully in parallel across the cluster.
+An **aggregate** owns the rules and state needed to make decisions about one entity. In FCQRS, each
+aggregate is an Akka.NET actor. Commands for order 123 go to the actor for order 123 and are handled one
+at a time. Commands for other orders can run at the same time on other actors.
+
+Sequential command processing eliminates race conditions within the aggregate. Rules involving
+several aggregates still require coordination, which is the job of a [saga](sagas.html).
 
 ## Command in, events out
 
-The shape of an aggregate is always the same. A **command** arrives — a *request*, in the imperative:
-`Register`, `Withdraw`, `CreateOrUpdate`. The aggregate looks at the command and at its own current
-state, makes a decision, and emits zero or more **events** — *facts*, in the past tense:
-`Registered`, `Withdrawn`, `InsufficientFunds`. The command is a wish; the event is what actually
-happened. They are deliberately not the same set: a single `Register` command might produce either a
-`Registered` fact or an `AlreadyRegistered` one.
+Suppose the aggregate receives `CancelOrder`. It checks the current state and returns an event such as
+`OrderCancelled`, or a rejection such as `OrderAlreadyShipped`. The command expresses what the caller
+wants. The event records the outcome.
 
-You express this as a pure function, `handleCommand : Command -> State -> EventAction`. It returns an
-**action**, and three cover almost everything you write:
+You express this as a pure function, `handleCommand : Command -> State -> EventAction`. Three common
+actions are:
 
-- **Persist** — the normal, happy path. The event is appended to the journal, the aggregate's version
+- **Persist:** the event is appended to the journal, the aggregate's version
   increments, the event is applied to produce the new state, and the event is published to the read
-  side and any sagas. Return this when something genuinely happened.
-- **Defer** — emit an event *without storing it*. The state and version do not move, nothing is
-  written to the journal, but the event is still published so a waiting caller gets an answer. This
-  is exactly right for rejections: `AlreadyRegistered` is something the caller needs to hear, but it
-  is not a fact that changed the entity, so it should not pollute the history.
-- **Ignore** — do nothing at all: no event, no state change, no reply.
+  side and any sagas. Use it when the aggregate's state changes.
+- **Defer:** publish and fold an event *without storing it* or incrementing the persisted version. This
+  fits a rejection such as `OrderAlreadyShipped`, whose fold returns the existing order unchanged. A
+  state change made only by a deferred event disappears on recovery because the journal cannot replay
+  that event.
+- **Ignore:** produce no event, state change, or reply.
 
 <img src="../img/write-path.svg" alt="The path a command takes through an aggregate" width="900"/>
 
 ## State is folded, never stored
 
-The aggregate's state is *not* the source of truth and is *not* what gets persisted. It is a
-convenience held in memory and rebuilt from events by a second pure function,
-`applyEvent : Event -> State -> State`. That function is deliberately dull — it only folds an event
-into the state — because it runs in two situations that must produce identical results: once when a
-new event is persisted, and many times when old events are replayed to reconstruct state after a
-restart. Keeping the fold pure is what makes replay trustworthy. ([Recovery](consistency-and-recovery.html)
-covers replay and snapshots in detail.)
+The aggregate state is held in memory and rebuilt by a second pure function,
+`applyEvent : Event -> State -> State`. FCQRS calls this function after storing a new event and while
+replaying old events after recovery. The same event sequence must produce the same state in both cases,
+so `applyEvent` should contain no I/O or other side effects. [Consistency and
+recovery](consistency-and-recovery.html) covers replay and snapshots.
 
-## Why an aggregate may not do anything else
+## Keep recovery free of side effects
 
-The discipline that makes all this safe is what the aggregate is *forbidden* to do: it does not send
-e-mail, call an HTTP API, or write to a database. It only decides and emits events. Two reasons. A
-pure decision can be retried and replayed safely, because running it again produces the same events
-and no duplicate side effects — there were none. And because events are the only output, replaying
-them rebuilds the state exactly. Side effects belong to [sagas](sagas.html), which is precisely why
-they exist.
+Keep e-mail, HTTP calls, and writes to other databases outside the aggregate's decision and fold
+functions. Replaying an event must rebuild state without repeating an external action. Work that must
+continue across aggregate or service boundaries belongs in a [saga](sagas.html). FCQRS also supports
+ephemeral asynchronous effects for work that may safely be lost on restart.
 
-## Why an actor, underneath
+## Actor lifecycle and location
 
-Riding on Akka.NET gives the design its properties almost for free. One-message-at-a-time processing
-is a clean transaction boundary with no locking. Cluster **sharding** lets the same logical aggregate
-live on any node and move between them, so the system scales horizontally without you addressing
-machines by hand. **Passivation** puts idle entities to sleep and recovers them on demand, so a
-million entities cost only as much memory as the active ones. FCQRS hides that machinery behind the
-two functions you write.
+Akka.NET cluster **sharding** routes an aggregate id to its current actor, wherever that actor is
+running. **Passivation** stops an idle actor and recovers it from stored events when the next command
+arrives. Application code addresses the aggregate by id rather than by server location.
 
-Both functions are ordinary, pure F# (or C#) with no dependency on Akka.NET, so they are trivially
-unit-testable in isolation. The [tutorial](../tutorial/index.html) builds one from scratch; the
-[how-to guide](../how-to/define-an-aggregate.html) is the quick recipe.
+The decision and fold functions have no dependency on Akka.NET. The
+[tutorial](../tutorial/index.html) builds an aggregate from scratch, and
+[Define an aggregate](../how-to/define-an-aggregate.html) provides the shorter recipe.

@@ -3,7 +3,7 @@
 /// Gives F# consumers the same one-call ergonomics the C# host-builder
 /// (HostExtensions.fs) gives C#, but with F# idioms: records-of-functions for the
 /// definitions, typed handles for the results, an explicit wiring pipeline, and
-/// plain helpers for saga side effects. It is a *pure addition* — it wraps only the
+/// plain helpers for saga side effects. It is a *pure addition* that wraps only the
 /// existing primitives (IActor.InitializeActor / SagaBuilder.initSimple / Query.init
 /// / InitializeSagaStarter / CreateCommandSubscription / Actor.api) and changes
 /// nothing in the C# interop layer or the core.
@@ -16,7 +16,7 @@
 ///     Fcqrs.wireSagaStarters api [ quota ]
 ///     let subs      = Fcqrs.projection api (Projection.single 0 updateReadModel)
 ///     // (Projection.multi when you must control which notifications publish)
-///     // send a command and await the resulting event (read-your-writes):
+///     // send a command and await the matching aggregate reply:
 ///     let! ev = documents.Send (Fcqrs.newCid()) (Fcqrs.aggregateId id) cmd (fun e -> ...)
 module FCQRS.FSharp
 
@@ -47,9 +47,9 @@ type Aggregate<'State, 'Command, 'Event when 'Event: not null> =
 
 /// What you get back after registering an aggregate.
 type AggregateHandle<'Command, 'Event when 'Event: not null> =
-    { /// Entity-ref factory (DEFAULT_SHARD applied) — hand this to a saga to target it.
+    { /// Entity-ref factory (DEFAULT_SHARD applied). Hand this to a saga to target it.
       Factory: AggregateFactory
-      /// Send a command and await the first matching event (read-your-writes).
+      /// Send a command and await the first matching aggregate event.
       Send: CID -> AggregateId -> 'Command -> ('Event -> bool) -> Async<Event<'Event>> }
 
 /// A pure saga definition. HandleEvent is obj-based so a single saga can match
@@ -63,7 +63,7 @@ type Saga<'Data, 'State, 'OriginatorEvent when 'State: not null and 'OriginatorE
       HandleEvent: obj -> SagaState<'Data, 'State option> -> EventAction<'State>
       ApplySideEffects: SagaState<'Data, 'State> -> bool -> SagaTransition<'State> * ExecuteCommand list
       /// Which originator events spawn an instance of this saga. Typed to the
-      /// originator's event so 'OriginatorEvent is inferred from the definition —
+      /// originator's event so 'OriginatorEvent is inferred from the definition;
       /// there is no type argument to remember (or to get silently wrong).
       StartOn: Event<'OriginatorEvent> -> bool
       /// Snapshot cadence: Default (config / 30), NoSnapshots, or Every n.
@@ -86,7 +86,7 @@ type Projection =
 [<CompilationRepresentation(CompilationRepresentationFlags.ModuleSuffix)>]
 module Projection =
 
-    /// Multi-event handler: full control — return exactly the notifications to
+    /// Multi-event handler with full control. Return exactly the notifications to
     /// publish (empty list = nothing). Use when notifications must be filtered
     /// or transformed, e.g. suppressing intermediate events so read-your-writes
     /// only wakes on the final one.
@@ -103,7 +103,7 @@ module Projection =
     /// Filtered single-event handler: update the read model, then return
     /// Publish/Suppress to decide whether *this* event wakes subscribers. The
     /// middle rung between `single` (always publish) and `multi` (return an
-    /// arbitrary notification list) — reach for it in the common "publish each
+    /// arbitrary notification list). Use it for the common "publish each
     /// event except the intermediate ones" case, without building a list.
     let filtered (lastOffset: int) (handle: int64 -> obj -> Notify) : Projection =
         { LastOffset = lastOffset
@@ -129,7 +129,7 @@ let toAggregate (factory: AggregateFactory) (id: string) (command: obj) : Execut
 let toActor (actorRef: Akkling.ActorRefs.IActorRef<obj>) (command: obj) : ExecuteCommand =
     { TargetActor = ActorRef actorRef; Command = command; DelayInMs = None }
 
-/// Send a command to the saga itself (raw, lands in HandleEvent) — e.g. timeouts.
+/// Send a command to the saga itself (raw, lands in HandleEvent), for example a timeout.
 let toSelf (command: obj) : ExecuteCommand =
     { TargetActor = Self; Command = command; DelayInMs = None }
 
@@ -151,7 +151,7 @@ let toActorAfter (actorRef: Akkling.ActorRefs.IActorRef<obj>) (delayMs: int64) (
       Command = command
       DelayInMs = Some(delayMs, taskName) }
 
-/// Schedule a message to the saga itself after a delay — the idiomatic saga
+/// Schedule a message to the saga itself after a delay, the idiomatic saga
 /// timeout: enter a state, toSelfAfter a reminder, and HandleEvent decides
 /// whether it still matters when it arrives.
 let toSelfAfter (delayMs: int64) (taskName: string) (command: obj) : ExecuteCommand =
@@ -171,16 +171,18 @@ let persist (event: 'e) : EventAction<'e> = PersistEvent event
 let persistAll (events: 'e list) : EventAction<'e> = PersistAllEvents events
 let persistAndSnapshot (event: 'e) : EventAction<'e> = PersistAndSnapshot event
 let defer (event: 'e) : EventAction<'e> = DeferEvent event
-/// Persist the event when `shouldPersist`, else defer it (returned but not
-/// journalled) — the idempotent "emit this verdict, write it only once" shape.
+/// Persist the event when `shouldPersist`, else defer it (published and folded
+/// but not journalled). The deferred fold should preserve state, because it
+/// cannot be replayed. This is the idempotent "emit this verdict, write it only
+/// once" shape.
 let persistIf (shouldPersist: bool) (event: 'e) : EventAction<'e> =
     if shouldPersist then PersistEvent event else DeferEvent event
 let transitionTo (state: 'state) : EventAction<'state> = StateChangedEvent state
 
 /// Dispatch an async side effect (a "mini saga" without persistence) by its
-/// DATA description. `decide` stays pure and inspectable —
+/// DATA description. `decide` stays pure and inspectable;
 /// `decide cmd state = dispatch (ClusterThemes texts)` holds by structural
-/// equality — and the oracle lives in the runner registered at
+/// equality, and the oracle lives in the runner registered at
 /// `Fcqrs.aggregateWithEffects`. EPHEMERAL: the in-flight work is not
 /// journaled; use a saga when the result must survive a crash. See
 /// `EventAction.RunAsync`.
@@ -240,7 +242,7 @@ module Fcqrs =
 
     /// Register an aggregate whose `decide` uses `dispatch` (the RunAsync
     /// effect), supplying the runner that turns an effect DESCRIPTION into a
-    /// command sent back to the aggregate. `decide` stays pure — the oracle /
+    /// command sent back to the aggregate. `decide` stays pure; the oracle or
     /// side effect lives only here. The runner MUST be total (wrap it with
     /// `total` so an oracle error becomes a command, never an escaping
     /// exception). See `EventAction.RunAsync` for the ephemeral contract.
@@ -307,7 +309,7 @@ module Fcqrs =
         FCQRS.Query.init api p.LastOffset p.Handle |> FCQRS.Query.asDefaultSubscribe
 
     /// Read-your-writes in one call: subscribe on the CID BEFORE sending, send,
-    /// then await the projection ONLY if the delivered ack was journaled — a
+    /// then await the projection ONLY if the delivered ack was journaled. A
     /// deferred (rejection-style) ack never reaches the journal, so a naive
     /// await would hang until timeout. The subscribe-before-send ordering is
     /// what makes the wait race-free; owning it here means callers cannot get

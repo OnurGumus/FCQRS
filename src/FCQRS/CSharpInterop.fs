@@ -110,13 +110,16 @@ type EventActions =
     static member Persist<'TEvent when 'TEvent: not null>(event: 'TEvent) : EventAction<'TEvent> =
         EventAction.PersistEvent event
 
-    /// Create a DeferEvent action (event is returned but not persisted - for errors/rejections)
+    /// Create a DeferEvent action. The event is published and folded but not
+    /// persisted. Rejection and idempotent-reply folds should preserve state,
+    /// because recovery cannot replay a deferred event.
     static member Defer<'TEvent when 'TEvent: not null>(event: 'TEvent) : EventAction<'TEvent> =
         EventAction.DeferEvent event
 
     /// Persist the event when `shouldPersist` is true; otherwise Defer it - the
-    /// event is still returned to the caller (so read-your-writes observes it) but
-    /// not written to the journal. The idempotent "emit this verdict, but only
+    /// event is still published and folded but is not written to the journal or
+    /// sent through a projection. Its fold should preserve the current state.
+    /// The idempotent "emit this verdict, but only
     /// write it once" shape, e.g. re-approving an already-approved aggregate:
     /// `PersistConditionally(state.Approval != Approved, new Approved(id))`.
     static member PersistConditionally<'TEvent when 'TEvent: not null>(shouldPersist: bool, event: 'TEvent) : EventAction<'TEvent> =
@@ -140,7 +143,7 @@ type EventActions =
     /// Create a RunAsync effect (a "mini saga" without persistence) from an
     /// INSPECTABLE description object. The runner registered via
     /// `InitAggregateWithEffects` executes it and self-dispatches the resulting
-    /// command. EPHEMERAL (not journaled — a crash mid-flight loses it) and
+    /// command. EPHEMERAL (not journaled, so a crash mid-flight loses it) and
     /// TOTAL (the runner must map failure to a command). See EventAction.RunAsync.
     static member Dispatch<'TEvent when 'TEvent: not null>(description: obj) : EventAction<'TEvent> =
         EventAction.RunAsync description
@@ -148,7 +151,7 @@ type EventActions =
 /// Diagnostics helper: a short, readable case name for logging. Unwraps a
 /// Command&lt;_&gt;/Event&lt;_&gt; envelope to its payload (via IEnvelope), then a
 /// C# `union` to its active case (its generated `.Value`), and falls back to the
-/// type name — so F# DUs and plain payloads work too. Reflection-based; meant for
+/// type name, so F# DUs and plain payloads work too. Reflection-based; meant for
 /// logs, not hot paths.
 type Describe =
     /// A short case name, e.g. "CreateOrUpdate" for a DocumentCommand.CreateOrUpdate
@@ -173,7 +176,7 @@ type Describe =
 /// handleCommand/applyEvent functions expect. Intended for unit tests: the
 /// envelope's plumbing fields (a fresh MessageId/CID, a UTC timestamp, no
 /// sender, empty metadata) are filled in for you, so a test supplies only the
-/// payload — and, for events, the aggregate version. The framework builds these
+/// payload and, for events, the aggregate version. The framework builds these
 /// envelopes itself at runtime; tests are the one place you build them by hand.
 type TestEnvelope =
     /// Wrap a command payload in a Command envelope, stamping CreationDate from
@@ -342,7 +345,7 @@ type ActorWiring =
     /// One-call aggregate wiring: registers the aggregate (sharding region) and
     /// returns its Factory + Handler. Collapses the Init/Factory/Handler trio an
     /// aggregate would otherwise hand-roll. Call it for EVERY aggregate you want
-    /// live — registration is the act of calling this, not a side effect.
+    /// live. Registration is the act of calling this, not a side effect.
     static member InitAggregate<'TState, 'TCommand, 'TEvent when 'TEvent: not null>(
         actor: IActor,
         initialState: 'TState,
@@ -369,7 +372,7 @@ type ActorWiring =
     /// InitActor whose decide can return `EventActions.Dispatch(...)` (the
     /// RunAsync effect). `runner` maps a boxed effect description to a Task of
     /// the boxed command self-dispatched back to the aggregate. It MUST be total
-    /// — catch every failure into a command (try/catch in the Task); an escaping
+    /// catch every failure into a command (try/catch in the Task); an escaping
     /// exception fail-fasts the process, like a throwing fold. The in-flight work
     /// is NOT journaled (ephemeral). See EventAction.RunAsync.
     static member InitActorWithRunner<'TState, 'TCommand, 'TEvent when 'TEvent: not null>(
@@ -385,7 +388,7 @@ type ActorWiring =
         let boxedRunner: obj -> Async<obj> = fun description -> runner.Invoke description |> Async.AwaitTask
         actor.InitializeActorWithRunner initialState entityName cmdHandler evtApplier snapshotPolicy (Some boxedRunner)
 
-    /// InitAggregate whose decide can return `EventActions.Dispatch(...)` — see
+    /// InitAggregate whose decide can return `EventActions.Dispatch(...)`. See
     /// InitActorWithRunner. Returns Factory + Handler like InitAggregate.
     static member InitAggregateWithEffects<'TState, 'TCommand, 'TEvent when 'TEvent: not null>(
         actor: IActor,
@@ -511,7 +514,7 @@ type SagaCommands =
           Command = command
           DelayInMs = None }
 
-    /// Create a command to the saga itself (raw; lands in HandleEvent) — e.g. timeouts.
+    /// Create a command to the saga itself (raw; lands in HandleEvent), for example a timeout.
     static member ToSelf(command: obj) : ExecuteCommand =
         { TargetActor = Self; Command = command; DelayInMs = None }
 
@@ -536,7 +539,7 @@ type SagaCommands =
           Command = command
           DelayInMs = Some (delayMs, taskName) }
 
-    /// Schedule a message to the saga itself after a delay — the idiomatic saga timeout.
+    /// Schedule a message to the saga itself after a delay, the idiomatic saga timeout.
     static member ToSelfAfter(
         command: obj,
         delayMs: int64,
@@ -757,7 +760,7 @@ type Saga<'TEvent, 'TSagaData, 'TState when 'TEvent: not null and 'TState: not n
     abstract member HandleEvent: obj * SagaState<'TSagaData, 'TState option> -> EventAction<'TState>
     abstract member ApplySideEffects: SagaState<'TSagaData, 'TState> * bool -> SagaSideEffectResult<'TState>
 
-    /// Transition / event DSL — over TState.
+    /// Transition and event DSL over TState.
     static member StateChanged(next: 'TState) : EventAction<'TState> = SagaEventActions.StateChanged<'TState>(next)
     static member Unhandled() : EventAction<'TState> = SagaEventActions.Unhandled<'TState>()
     static member Stay() : SagaTransition<'TState> = SagaTransitions.Stay<'TState>()

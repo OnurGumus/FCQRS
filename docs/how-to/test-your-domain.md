@@ -2,34 +2,47 @@
 title: Test your domain
 category: How-to
 categoryindex: 5
-index: 6
+index: 3
 ---
 
 # Test your domain
 
-The valuable logic — `decide` and `fold` — is pure and has no dependency on Akka.NET, so you test it
-with plain function calls. No actor system, no database, no async, no facade.
+Test the domain at four levels: individual decisions, individual folds, replayed histories, and repeated
+commands. These tests call pure functions directly and need no actor system or database.
 
-You only need to wrap your command payload in the `Command<_>` envelope the handler expects. A couple
-of tiny helpers keep tests readable; `Fcqrs.newCid` mints the correlation id for you.
+Use fixed envelope values so failures are reproducible:
 
 ```fsharp
 open FCQRS.Common
 open FCQRS.Model.Data
 open FCQRS.FSharp
 
-let cmd details : Command<_> =
+let fixedTime = System.DateTime(2026, 1, 1, 12, 0, 0, System.DateTimeKind.Utc)
+
+let command details : Command<_> =
     { CommandDetails = details
-      CreationDate = System.DateTime.UtcNow
+      CreationDate = fixedTime
       Id = None
       Sender = None
       CorrelationId = Fcqrs.newCid ()
       Metadata = Map.empty }
+
+let event version details : Event<_> =
+    { EventDetails = details
+      CreationDate = fixedTime
+      Id = None
+      Sender = None
+      CorrelationId = Fcqrs.newCid ()
+      Version = version |> ValueLens.TryCreate |> Result.value
+      Metadata = Map.empty }
 ```
 
-## Test a decision
+The examples below use `Expect.equal` from Expecto. Use the equivalent equality assertion in another
+test framework.
 
-These use the `Document` from the [tutorial](../tutorial/1-the-aggregate.html) — `CreateOrUpdate`
+## Test the decision table
+
+These use the `Document` from the [tutorial](../tutorial/1-the-aggregate.html). `CreateOrUpdate`
 produces `Updated`.
 
 ```fsharp
@@ -37,38 +50,69 @@ let doc =
     Document.Root.TryCreate(System.Guid.NewGuid(), "Spec", "draft") |> Result.value
 
 // a write persists Updated
-let action = Document.decide (cmd (Document.CreateOrUpdate doc)) Document.initial
-test <@ action = PersistEvent (Document.Updated doc) @>
+let action = Document.decide (command (Document.CreateOrUpdate doc)) Document.initial
+
+Expect.equal
+    action
+    (PersistEvent (Document.Updated doc))
+    "creating a document stores Updated"
 ```
 
-For an aggregate with rejections — like the extended `Document` from
-[chapter 3](../tutorial/3-adding-a-saga.html), which adds `Approve`/`Errored` — assert the deferred
+For an aggregate with rejections, such as the extended `Document` from
+[chapter 3](../tutorial/3-adding-a-saga.html), which adds `Approve`/`Errored`, assert the deferred
 event the same way:
 
 ```fsharp
 // approving a document that doesn't exist yet is a deferred rejection
-let action2 = Document.decide (cmd Document.Approve) Document.initial
-test <@ action2 = DeferEvent (Document.Errored Document.DocumentNotFound) @>
+let action2 = Document.decide (command Document.Approve) Document.initial
+
+Expect.equal
+    action2
+    (DeferEvent (Document.Errored Document.DocumentNotFound))
+    "approving a missing document returns a deferred rejection"
 ```
 
-## Test the fold
+Write one case for every meaningful command and state combination, including commands that should be
+ignored or unhandled.
 
-`fold` takes the `Event<_>` envelope; build one (or fold a list to assert the end state):
+## Test one fold
+
+`fold` takes an event envelope and produces the next state:
 
 ```fsharp
-let evt details : Event<_> =
-    { EventDetails = details
-      CreationDate = System.DateTime.UtcNow
-      Id = None
-      Sender = None
-      CorrelationId = Fcqrs.newCid ()
-      Version = 1L |> ValueLens.TryCreate |> Result.value
-      Metadata = Map.empty }
-
-let state = Document.fold (evt (Document.Updated doc)) Document.initial
-test <@ state.Document = Some doc @>
-test <@ state.Version = 1L @>
+let state = Document.fold (event 1L (Document.Updated doc)) Document.initial
+Expect.equal state.Document (Some doc) "Updated becomes the current document"
 ```
+
+The envelope version is maintained by FCQRS. Do not duplicate it in domain state unless the domain has
+a separate version concept with different meaning.
+
+## Test replay
+
+Fold a complete history to verify recovery:
+
+```fsharp
+let edited = { doc with Content = newContent }
+
+let recovered =
+    [ event 1L (Document.Updated doc)
+      event 2L (Document.Updated edited) ]
+    |> List.fold (fun state stored -> Document.fold stored state) Document.initial
+
+Expect.equal recovered.Document (Some edited) "replay recovers the latest document"
+```
+
+Use fixed events captured from an older release as compatibility fixtures. A replay test should fail if
+a changed fold can no longer reproduce the historical state.
+
+## Test retry behaviour
+
+Call the same command against the state produced by its first event. A repeated command should not
+repeat a business effect. For the chapter 3 document, approving an already-approved document returns a
+deferred `ApprovedEvt` instead of persisting another approval.
+
+Also test boundary times and generated ids. Put the chosen value in the command or event; never let a
+fold read the live clock or random generator.
 
 In C#, `decide`/`fold` are the aggregate's `HandleCommand`/`ApplyEvent` methods, and `TestEnvelope`
 wraps the payload (pass a `FakeTimeProvider` to test time-dependent logic deterministically):
@@ -76,7 +120,7 @@ wraps the payload (pass a `FakeTimeProvider` to test time-dependent logic determ
 <div class="cs-alt"></div>
 
 ```csharp
-// No actor system, no DI — construct the aggregate and call the methods directly.
+// No actor system or DI: construct the aggregate and call it directly.
 using static FCQRS.CSharp;   // TestEnvelope, EventActions
 using Xunit;
 
@@ -87,13 +131,20 @@ var cmd = TestEnvelope.Command(new DocumentCommand.CreateOrUpdate(doc), TimeProv
 var action = agg.HandleCommand(cmd, DocumentState.Initial);
 Assert.Equal(EventActions.Persist<DocumentEvent>(new DocumentEvent.Updated(doc)), action);
 
-// the fold advances the version
+// the fold changes domain state; the envelope carries the persistence version
 var evt = TestEnvelope.Event(new DocumentEvent.Updated(doc), version: 1, TimeProvider.System);
 var state = agg.ApplyEvent(evt, DocumentState.Initial);
-Assert.Equal(1, state.Version);
+Assert.Equal(doc, state.Document);
 ```
 
-That is the payoff of keeping the write side pure (see
-[Aggregates](../concepts/aggregates.html)): your core business rules are testable in isolation, fast,
-and deterministic. Saga `handleEvent`/`applySideEffects` functions are pure in the same way and test
-the same way.
+## Test sagas in two layers
+
+Test `handleEvent` by asserting the next saga state for each event and current state. Test
+`applySideEffects` separately by asserting its transition, target aggregate id, command payload, and
+delay. Include recovery cases for branches that treat `recovering = true` differently.
+
+Use integration tests for actor routing, persistence plugins, projection transactions, and recovery
+across an actual process restart. Pure domain tests do not prove those infrastructure paths.
+
+See [Aggregates](../concepts/aggregates.html) and
+[Testing and evolution](../tutorial/4-testing-and-evolution.html).

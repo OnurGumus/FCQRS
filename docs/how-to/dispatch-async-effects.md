@@ -1,26 +1,34 @@
 ---
-title: Dispatch async effects (mini saga)
+title: Dispatch a best-effort async effect
 category: How-to
 categoryindex: 5
-index: 8
+index: 9
 ---
 
-# Dispatch async effects without a saga
+# Dispatch a best-effort async effect
 
-Sometimes an aggregate needs a *short read* from the outside world — summarize some text with an AI, look
-up a rate, call a service — and then act on the answer. A full [saga](write-a-saga.html) can do this, but
-it is a lot of ceremony when the result is best-effort. The `RunAsync` effect is the middle tier: a
-**"mini saga"** that runs an async side effect off the aggregate's mailbox and feeds the result back as a
-command — with **no persistence ceremony**.
+Use `RunAsync` when a command needs a short asynchronous result and losing that in-flight work during a
+restart is acceptable. Examples include a cache lookup, optional enrichment, or a suggestion that the
+caller can request again.
 
-The key property: `decide` stays a **pure, inspectable function**. It returns a *data description* of the
-effect, not a closure — so you unit-test it by structural equality, with no runtime and no service in sight.
-The service lives only in a **runner** you register alongside the aggregate.
+Use a [saga](write-a-saga.html) when the work must resume after a restart, needs durable retries, or
+crosses aggregate boundaries as a business process.
+
+| Requirement | `RunAsync` | Saga |
+|---|---:|---:|
+| `decide` returns an effect description | yes | no |
+| In-flight intent is persisted | no | yes |
+| Result returns as a command | yes | yes |
+| Survives process stop or shard movement | no | yes |
+| Suitable for required external business action | no | yes, with an idempotent handler |
+
+`decide` returns data describing the effect, not a closure that performs it. A separately registered
+runner executes the description and returns a command.
 
 ## The shape
 
-Take a `Note` aggregate: a command asks an AI to summarize the note's text. Describe the effect as data and
-`dispatch` it from `decide` (commands are imperative instructions; events are past-tense facts):
+A note aggregate accepts `Summarize`, then records either a summary or an unavailable result. The effect
+description contains the input required by the runner:
 
 ```fsharp
 type NoteEffect = SummarizeText of string    // the effect, described as data
@@ -32,12 +40,11 @@ let decide (cmd: Command<NoteCommand>) state =
     | GiveUp          -> SummaryUnavailable |> PersistEvent
 ```
 
-`Summarize` returns the *description* and nothing else — no AI client in sight — so `decide` stays pure.
+No service client appears in `decide`, so the returned action can be compared directly in a unit test.
 
 ## Register the runner
 
-The runner is the only place the service appears. It maps the description to a command; wrap the outside
-call so that **every** failure becomes a command rather than an escaping exception:
+The runner maps every outcome to a command. Catch service failures and timeouts at this boundary:
 
 ```fsharp
 let notes =
@@ -45,20 +52,23 @@ let notes =
         { Name = "Note"; Initial = Note.initial; Decide = decide; Fold = fold; Snapshots = Default }
         (fun (SummarizeText text) -> async {
             try
-                let! summary = ai.Summarize text     // the actual AI/HTTP call
-                return RecordSummary summary          // success -> a command
+                let! summary = ai.Summarize text
+                return RecordSummary summary
             with _ ->
-                return GiveUp })                      // any failure -> a command, never an exception
+                return GiveUp })
 ```
 
-At runtime: `Summarize` returns the `SummarizeText` description; the runner turns it into a command off the
-mailbox (the aggregate keeps handling other commands); FCQRS self-dispatches that command back — reusing the
-originating correlation id — so it re-enters `decide` **re-validated against current state**.
+The runner executes away from the aggregate mailbox, so the aggregate can process other commands while
+the call is in flight. FCQRS sends the result command back to the same aggregate with the original
+correlation id. The result re-enters `decide` against the state that exists when it arrives, not the
+state that existed when the request began.
 
-> The `try/with` that maps failure to a command *is* the totality contract. If you prefer,
-> `Fcqrs.total (fun _ex -> GiveUp) (async { ... })` is a one-liner for exactly this shape.
+Several effects can complete out of order. Include a request id or expected state in the description and
+result command when an older result must not overwrite newer work.
 
-## It stays pure — test it without Akka
+`Fcqrs.total (fun _exception -> GiveUp) (async { ... })` provides the same exception-to-command mapping.
+
+## Test it without Akka.NET
 
 Because the effect is data, `decide` is testable like any other decision:
 
@@ -69,32 +79,31 @@ Expect.equal
     "Summarize dispatches a summarization effect"
 ```
 
-## Two rules you must respect
+## Failure contract
 
-- **Ephemeral.** The in-flight work is process state — it is **not journaled**. A crash, restart, or shard
-  rebalance while it runs loses it *silently*; nothing re-issues it. Use `RunAsync` only when that loss is
-  tolerable. When the result **must** survive a crash, use a [saga](write-a-saga.html), which persists its
-  intent.
-- **Total.** The runner must map *every* outcome to a command — that is what the `try/with` above is for.
-  An exception that escapes the runner **fail-fasts the process**, exactly like a throwing `fold`. Model a
-  service error or timeout as a domain command (`GiveUp`, `Retry`), never as an exception.
+- **The work is ephemeral.** A process stop, actor restart, or shard move loses the in-flight operation.
+  FCQRS does not reissue it.
+- **The runner must be total.** An escaping exception terminates the process because FCQRS cannot turn an
+  unknown runner failure into a valid domain command. Model timeout, rejection, and retry exhaustion as
+  explicit result commands.
+- **The result may be stale.** Validate the result command against current aggregate state before
+  persisting it.
 
 ## Observability
 
-The runner runs off the mailbox, so FCQRS spans it for you: a low-cardinality `Dispatch:<CaseName>` span
-(here `Dispatch:SummarizeText`), parented onto the originating command's trace, covering the runner's
-execution. The *domain* outcome shows in the child command span it produces (`Command:RecordSummary` or
-`Command:GiveUp`). See [Observe your system](observability.html).
+FCQRS creates a `Dispatch:<CaseName>` span for the runner and parents it to the originating command's
+trace. The result appears as a later command span such as `Command:RecordSummary` or `Command:GiveUp`.
+See [Observe your system](observability.html).
 
 ## From C#
 
 The same mechanism, Task-based:
 
 ```csharp
-// decide returns a description:
+// decide returns a description
 EventActions.Dispatch<NoteEvent>(new SummarizeText(state.Body));
 
-// register with the runner (must be total — catch into a command):
+// register with a total runner
 var refs = ActorWiring.InitAggregateWithEffects(
     actor, Note.Initial, "Note", Decide, Fold,
     runner: async description =>

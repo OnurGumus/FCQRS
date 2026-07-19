@@ -12,138 +12,110 @@ index: 1
 
 <figure style="margin: 1.5rem 0;">
   <img src="img/two-models.png" alt="On the left, one tangled Entity Framework object graph where every entity references every other; on the right, the same domain split into small command-side aggregates that each enforce their own invariants, plus flat query-side read models shaped for fast queries." style="width: 100%; height: auto; border: 1px solid var(--line, #d7e1ef); border-radius: 12px;"/>
-  <figcaption style="margin-top: .6rem; font-size: .9rem; color: var(--muted, #4d5f7d); text-align: center;">Why CQRS, in one picture: a single tangled model on the left, the two-model split on the right.</figcaption>
+  <figcaption style="margin-top: .6rem; font-size: .9rem; color: var(--muted, #4d5f7d); text-align: center;">The same domain represented by one shared model and by separate write and read models.</figcaption>
 </figure>
 
 ## Why two models?
 
-Developers trust one kind of change above all others: adding code. New code cannot break what already
-works. The worst it can do is not work yet. Changing existing code is the dangerous kind, because
-something you have forgotten about was relying on the old behaviour. That is where most regressions
-come from. It is the whole idea behind the Open/Closed Principle, and most of SOLID with it: shape your
-code so that new features are things you add, not things you edit.
+The information you need to make a decision is usually not the same information you want to show on a
+screen.
 
-A single, all-purpose data model works against that. Everything reads and writes the same shared,
-mutable object graph. So every new requirement means changing that graph. You alter the schema, then
-hunt down every query and every write that touched it. The one thing everyone depends on is the one
-thing you keep editing, and every edit is a chance to break something that already worked.
+Take an order cancellation. To decide whether an order can be cancelled, the system may only need to
+know whether it has been paid, shipped, or cancelled already.
 
-CQRS stands for Command Query Responsibility Segregation. It splits the model in two, so that new work
-lands on the safe side.
+The order page needs something different. It may show the customer's name, the products they bought,
+prices, delivery details, payment status, and a timeline of everything that happened.
 
-The write side stores **events**: facts about what happened. It only ever appends. You never rewrite a
-fact, you add a new one. Mutating shared state, the most dangerous thing in software, becomes an
-append, the safest.
+These are two different jobs. One model helps the system make correct decisions. The other helps people
+find and understand information.
 
-The read side is built from **projections**: views derived from those events and shaped for the screens
-and reports you actually serve. A new feature is usually a new projection over events you already have.
-You add a reader instead of editing the writer.
+You can force both jobs into one model. Many systems begin that way because it looks simpler. Over time,
+every new screen and every new rule pulls that model in a different direction. Queries become tangled
+with business rules, and changing one side risks breaking the other.
 
-You still change code sometimes. What matters is where. When you do, you change the read side, and that
-is safe because a read model is derived, not the source of truth. Get a projection wrong and you have
-lost nothing. Fix the code, replay the events, and the view is correct again. Your business rules, on
-the write side, never move. That is the real promise. Change happens where it is cheap and reversible,
-and the code you cannot afford to break is left alone.
+CQRS separates them.
+
+The **write model** handles decisions and protects the rules of the system. The **read model** presents
+the information people and applications need. Each can then stay simple in its own way.
 
 ## What FCQRS is
 
-FCQRS is a small F# framework that does this split for you. It runs on Akka.NET and works from both F#
-and C#. The interesting part is where it keeps the truth.
+FCQRS is an F# framework for building the two models with Akka.NET actors and event sourcing. Its APIs
+are also available from C#.
 
-Each aggregate, an `Order` or a `Customer`, is a **clustered, sharded actor**. Picture a single object
-that lives in memory and has the final say over its own entity. Two guarantees make that real.
+Every command for an order goes to one **actor** identified by that order's id. The actor handles one
+command at a time. If two cancellation requests arrive together,
+one is decided first and changes the order's state before the second is considered. The cancellation
+rule therefore has one place to run and one current state to inspect. Other orders are handled by other
+actors and can proceed at the same time, on the same server or elsewhere in the cluster.
 
-First, there is only one of it across the whole cluster. There is exactly one `Order #123` no matter
-how many nodes you run. Every command for that order goes to that one instance, which handles them one
-at a time. So it decides alone, with no locks and no two nodes ever disagreeing. The contention a
-database fights with row locks never happens, because there is only ever one of it.
+The decision is an ordinary function. It receives the command and the current state, then returns an
+event such as `OrderCancelled` or a rejection such as `OrderAlreadyShipped`. A second function folds a
+stored event into the state. These functions contain the business rules but no database or actor code,
+so they can be tested on their own.
 
-Second, it is always there. You address it by id and it exists. When it goes idle it may drop out of
-memory, and when the cluster rebalances it may move to another node, but your code never sees any of
-that. To you it never dies and never moves.
+Stored events form the order's history. If its actor has been passivated or the process restarts, FCQRS
+replays those events to recover the current state. The state held by the actor is derived from the
+events; it is not a row that the actor overwrites.
 
-The event log is not the truth. It is the ingredients. When the actor needs to come back into memory,
-after a restart, after a rebalance, or on the first request following an idle spell, it replays its
-events and folds them into its current state. The facts live on disk. The living object is rebuilt from
-them when it is needed.
+The same events feed **projections** on the read side. One projection can maintain the order page while
+another maintains a customer history or a reporting table. A projection chooses the data structure
+that fits its query. It does not have to copy the shape of the write model.
 
-Those same events also feed your **read models**, so the query side always reflects what actually
-happened. **Sagas** turn events into follow-up commands across aggregates. A **correlation id** follows
-each request, so the caller knows when the read side has caught up.
+A **saga** coordinates work that crosses actor boundaries. For example, an `OrderPlaced` event can
+start a process that sends commands to reserve stock and take payment. The saga stores its progress so
+the process can continue after a restart.
 
-You write two functions. `decide` takes the current state and a command and returns what happened.
-`fold` takes the state and an event and returns the new state. Both are pure. FCQRS handles the actors,
-the sharding, the persistence, the replay, and keeping the two models in sync. You never write an actor
-or take a lock. The same code reads almost the same in C#, using C# 15 `union` types, which FCQRS
-serializes natively.
+Every command and event carries a **correlation id**. A client can subscribe to that id before sending
+a command and wait until the projection publishes the matching event. The signal tells the client when
+the new data is available to query, without polling or an arbitrary delay.
+
+FCQRS supplies the actor lifecycle, cluster sharding, event storage and replay, saga coordination,
+projection stream, and correlation subscriptions around the functions that define the domain.
 
 <img src="img/architecture.svg" alt="How FCQRS fits together" width="900"/>
 
-## What you get
+## What FCQRS handles
 
-You write your business rules. FCQRS delivers the guarantees.
-
-* ✅ **You never lose data** — every change is recorded permanently and can't be quietly overwritten.
-* ✅ **A complete, trustworthy history of everything that happened** — a full audit trail by default,
-  not something you bolt on later.
-* ✅ **Rebuild any report or view from history** — fix a mistake by replaying the past, never by
-  patching production data.
-* ✅ **No race conditions to hunt down** — correct under concurrency by design; nothing to lock,
-  nothing to tune.
-* ✅ **You always read your own writes** — no stale data, no arbitrary waits, no guessing when it's
-  ready.
-* ✅ **You write rules, not infrastructure** — storage, recovery, and coordination are handled for you.
-* ✅ **Test your logic instantly** — verify your decisions with no database and no running system.
-* ✅ **The same product in F# and C#** — first-class in both languages; neither is an afterthought.
-* ✅ **Fast, query-ready views kept up to date for you** — read models that are always current, without
-  extra work.
-* ✅ **Long-running processes that survive restarts** — multi-step work resumes exactly where it left
-  off after a crash.
-* ✅ **Reach outside services without extra machinery** — call an AI or a lookup and act on the answer,
-  no ceremony.
-* ✅ **See any workflow end to end** — built-in tracing and clear logs from day one.
-* ✅ **Scale from a laptop to a cluster** — the same code grows with you; no rewrite when traffic does.
-* ✅ **Up and running in minutes** — one line of setup and a connection string.
+* **One command at a time per aggregate.** Decisions about the same entity do not run concurrently
+  inside the aggregate, eliminating race conditions within that boundary.
+* **An append-only event history.** Persisted changes can be replayed to recover state or build a new
+  read model.
+* **Independent read models.** Each projection can store data in the shape its queries need.
+* **Read-your-writes coordination.** Correlation subscriptions provide a signal when a projection has
+  handled a command's event.
+* **Durable workflows.** Sagas record their progress while coordinating commands across aggregates.
+* **Isolated domain tests.** Decision and fold functions can be tested without starting the actor
+  system or a database.
+* **Local and clustered operation.** The same aggregate code runs in a single-node or multi-node Akka.NET
+  cluster.
+* **F# and C# APIs.** Both languages can define aggregates, projections, sagas, and subscriptions.
 
 ## Find your path
 
 This documentation is organized by what you are trying to do:
 
-* **[Get started](get-started.html)** — install the package and run a complete write-and-read loop in
-  a few minutes. Start here if you just want to see it work.
-* **[Tutorial](tutorial/index.html)** — build a small application step by step: an aggregate, a read
-  model, a query, and a saga, wired together and running. Start here if you learn by doing.
-* **[Concepts](concepts/index.html)** — the ideas behind the framework explained properly: why CQRS
-  and event sourcing, what aggregates and sagas really are, how consistency and recovery work. Start
-  here if you want to understand *why*, not just *how*.
-* **[How-to guides](how-to/index.html)** — short, focused recipes for specific tasks: add a
-  projection, write a saga, configure the database, consume FCQRS from C#, test your domain.
-* **Reference** — the generated API documentation and the
-  [configuration reference](configuration.html).
+* **[Get started](get-started.html):** install the package and run one complete write-and-read loop.
+* **[Tutorial](tutorial/index.html):** progress from one aggregate through read models, sagas, event
+  evolution, failure testing, and production operation.
+* **[Concepts](concepts/index.html):** understand CQRS, event sourcing, aggregates, projections,
+  consistency, recovery, and sagas.
+* **[How-to guides](how-to/index.html):** find focused instructions for a specific task.
+* **Reference:** use the generated API documentation and the
+  [configuration reference](configuration.html) while writing code.
 
-## When FCQRS is a good fit — and when it isn't
+## When FCQRS is a good fit, and when it isn't
 
-The honest answer is: more often than you would expect. FCQRS pays off wherever consistency, a full
-audit trail, and reliable side effects matter. That covers business applications, financial systems,
-multi-user systems, and anything where what happened, and in what order, is part of the value. You can
-rebuild any read model by replaying the log, and fix a reporting bug by correcting a projection instead
-of patching production data.
+FCQRS is useful when the system must protect business rules, preserve the order of changes, or keep a
+history that may be queried again later. It also fits when several users or processes can issue
+commands for the same entity, or when one action starts a workflow that must survive a restart.
 
-Two things pull far more projects into that group than developers admit.
+The cost is an event journal, separate read models, asynchronous projections, and an actor system to
+operate. That cost has little return for data with no behaviour beyond create, read, update, and delete.
+A small internal directory or a table maintained by one user may be clearer as a conventional database
+application.
 
-The first is concurrency. It is real, and most code under-handles it. The moment two users touch the
-same thing at once, something has to arbitrate, and hand-rolled locking is where the subtle bugs that
-only show up in production live. The single-writer actor does that arbitration for you, from the first
-day, not the day it finally bites.
-
-The second is that "it will stay simple" rarely survives contact with a real business. Logic creeps
-in. A project that started as a few forms grows rules, and if those rules have nowhere to live you end
-up with an anemic domain model: bags of data wrapped in ever-fatter service classes. FCQRS gives the
-rules a home, the aggregate, before that drift starts.
-
-Where it is genuinely not worth it: a plain tabular app, the kind of thing a spreadsheet would do.
-CRUD over rows, no real decisions to protect, no concurrency to speak of, no history worth keeping.
-There the journal and the cluster are ceremony that will not pay you back. Everywhere else, the split
-tends to earn its keep. The [concepts](concepts/index.html) section is honest about the trade-offs,
-including the failure modes you still have to design around.
+The choice depends on the rules and failure modes in the application, not its current number of users.
+The [concepts](concepts/index.html) section explains the guarantees and the responsibilities that remain
+with the application.
 *)

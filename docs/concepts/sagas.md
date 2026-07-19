@@ -7,59 +7,50 @@ index: 5
 
 # Sagas
 
-An [aggregate](aggregates.html) is forbidden from doing anything but decide and emit events. So who
-sends the verification e-mail, requests the approval, charges the card? A **saga** does. A saga is the
-mirror image of an aggregate: an aggregate turns commands into events; a saga turns events into
-commands.
+An order actor can decide that an order was placed, but it does not own stock or payments. Reserving
+stock and taking payment require commands to other actors or services. A **saga** stores and coordinates
+that sequence. An aggregate turns commands into events; a saga reacts to events by issuing commands.
 
 ## A small, durable state machine
 
 <img src="../img/saga-lifecycle.svg" alt="A saga as a state machine: events in, commands out" width="760"/>
 
-A saga wakes in response to an event, walks through a sequence of states, and along the way issues
-commands to other actors — "generate a code," "send the mail," "approve" — until it stops. It is
-itself a persistent, sharded actor, so it survives restarts and resumes where it left off.
+A saga starts from an event, moves through a sequence of states, and issues commands along the way. An
+order saga might send `ReserveStock`, wait for `StockReserved`, then send `TakePayment`. Its state is
+persistent, so FCQRS can recover the saga after a process restart.
 
-The crucial design point is that a saga issues **commands** rather than performing effects inline.
-That is what makes "send an e-mail" reliable rather than fire-and-forget: the command flows through
-the same persist-and-recover machinery as everything else, can be retried, can be delayed (which is
-how you build retry-with-backoff), and leaves a trail. Side effects become first-class, recoverable
-steps instead of hidden calls.
+The saga records progress before moving to the next step. Commands can be delayed to implement retry
+backoff. External operations still need idempotency because a process can fail after the external
+service accepts a request but before the application records the result.
 
-You write a saga as three functions: one that maps an incoming event to the next state, one that — on
-entering a state — decides which commands to issue and whether to stay, advance, or stop, and a small
-one that folds cross-step data forward. The [tutorial](../tutorial/index.html) builds one; the
-[how-to guide](../how-to/write-a-saga.html) is the recipe.
+A saga definition provides functions that handle incoming events, choose commands and transitions,
+and carry data between steps. The [tutorial](../tutorial/index.html) builds one, and
+[Write a saga](../how-to/write-a-saga.html) lists the API.
 
 ## Starting a saga safely
 
-There is one subtlety worth understanding, because it explains a piece of machinery you would
-otherwise wonder about. When an aggregate emits an event that is supposed to *start* a saga, there is
-a chicken-and-egg problem: the event must not be published to the world until the saga that cares
-about it exists and is subscribed — otherwise the saga could miss the very event meant to bring it to
-life.
-
-FCQRS solves this with a brief handshake coordinated by an internal **saga starter**. Before the
-aggregate publishes the triggering event, it pauses just long enough for the framework to confirm the
-relevant saga is alive and listening; only then does the event go out. You never write that dance —
-you simply declare "this event starts that saga," and the ordering is guaranteed. The upshot: sagas
-start safely, by construction.
+The event that starts a saga must not be published before the saga subscribes to it. FCQRS uses an
+internal **saga starter** to enforce that order. The aggregate sends the event to the starter, the
+starter creates and subscribes the saga, and the aggregate then persists and publishes the event. The
+application declares which event starts the saga; the framework performs the handshake.
 
 <img src="../img/saga-starter.svg" alt="The handshake that starts a saga safely" width="940"/>
 
-## Recovery without duplicate effects
+## Recovery and repeated commands
 
-Because a saga's state is reconstructed by replaying its events, naïvely re-running its
-command-issuing logic on every replayed state would re-fire every command after a restart — a second
-approval, a duplicate e-mail. The framework hands your logic a `recovering` flag so it can suppress
-those re-emissions, and it separately uses [version checks](consistency-and-recovery.html) to detect
-when an aggregate has restarted underneath a saga and abort rather than act on stale information.
-Between the two, restarts stop being a source of duplicate or contradictory side effects.
+After replay, FCQRS calls the side-effect function with `recovering = true` to re-drive the saga's
+current state. The process may have stopped before or after the previous command was delivered, so the
+target must handle a repeated command safely. The flag allows recovery-specific behaviour, such as
+querying an external operation by idempotency key before retrying it. Returning no command for every
+recovered state can leave a saga waiting forever.
+
+Version checks also detect when an aggregate has restarted during a saga conversation. External
+handlers still need idempotency because their operation and the saga journal cannot share one
+transaction.
 
 ## Where sagas fit
 
-Reach for a saga whenever an event should trigger work that lives *outside* the deciding aggregate:
-calling another aggregate, talking to the outside world, or orchestrating a multi-step workflow. Keep
-the orchestration simple and avoid circular dependencies between sagas — the
-[reliability notes](consistency-and-recovery.html) discuss the failure modes that careless
-orchestration can still produce.
+Use a saga when an event starts work across aggregates or external services and that progress must
+survive a restart. Keep the dependency graph one-directional and add timeouts for events that may never
+arrive. [Consistency and recovery](consistency-and-recovery.html) describes the remaining failure
+modes.

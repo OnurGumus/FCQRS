@@ -2,64 +2,69 @@
 title: Observe your system
 category: How-to
 categoryindex: 5
-index: 8
+index: 11
 ---
 
 # Observe your system
 
-FCQRS gives you the command → event → saga story two ways out of the box: a plain-text **message-flow
-log** that needs no setup, and **distributed traces** that plug into OpenTelemetry. Both are on the
-standard .NET abstractions (`ILogger`, `ActivitySource`), so they flow through whatever you already
-use. This guide covers what you get, how to tune it, and how to keep sensitive data out.
+FCQRS reports command, event, saga, dispatch, and projection activity through `ILogger` and
+`ActivitySource`. Configure both before production so one correlation id can be followed across the
+complete workflow.
 
-## The message-flow log (on by default)
+## Message-flow logs
 
-FCQRS narrates every message at `Information` level — no tracing pipeline required. Each aggregate
-command logs the effect it yielded, each persisted event logs its new version, and sagas log every
-event they pick up, every state transition, and every command they send (with target and delay).
-Every line carries the correlation ID, so grepping one CID replays a whole workflow:
+At `Information` level, the `FCQRS.MessageFlow` category records aggregate decisions, persisted event
+versions, saga transitions, and commands issued by sagas. Every line contains the correlation id:
 
 ```text
 info: FCQRS.MessageFlow
-      Command Register ("alice", "pw") to aggregate alice (v0) yielded PersistEvent (VerificationRequested ...) [cid: 00-...]
+      Command CreateOrUpdate (...) to aggregate doc-42 (v0) yielded PersistEvent (CreateOrUpdateRequested ...) [cid: ...]
 info: FCQRS.MessageFlow
-      Aggregate alice persisted event VerificationRequested ("alice", "pw") (v1) [cid: 00-...]
+      Aggregate doc-42 persisted event CreateOrUpdateRequested (...) (v1) [cid: ...]
 info: FCQRS.MessageFlow
-      Saga alice~Saga~00-... received VerificationRequested ("alice", "pw"), decided StateChangedEvent (UserDefined GeneratingCode) [cid: 00-...]
+      Saga doc-42~QuotaSaga~... changed state to CheckingQuota [cid: ...]
 info: FCQRS.MessageFlow
-      Saga alice~Saga~00-... changed state to GeneratingCode [cid: 00-...]
-info: FCQRS.MessageFlow
-      Saga alice~Saga~00-... sent command SetVerificationCode "327470" to alice [cid: 00-...]
+      Saga doc-42~QuotaSaga~... sent command ConsumeQuota (...) to alice [cid: ...]
 ```
 
-These are your application's messages, not FCQRS internals, so the switch lives in FCQRS — turn it
-off process-wide with `FCQRS.Common.Telemetry.MessageFlowLogging <- false`, or from the C# hosting
-builder with `builder.WithMessageFlowLogging(false)`. Every line goes to the dedicated
-**`FCQRS.MessageFlow`** logger category, so standard log filtering also works — e.g.
-`"Logging:LogLevel:FCQRS.MessageFlow": "None"` in `appsettings.json`. When the category is filtered
-out (or the switch is off) the lines are never even formatted, so it costs nothing.
+Disable the process-wide narrative with
+`FCQRS.Common.Telemetry.MessageFlowLogging <- false` or
+`builder.WithMessageFlowLogging(false)`. Standard logger filtering also applies:
+
+```json
+{
+  "Logging": {
+    "LogLevel": {
+      "FCQRS.MessageFlow": "None"
+    }
+  }
+}
+```
+
+When the category is disabled, FCQRS skips formatting the message payload.
 
 ## Distributed traces
 
-Aggregates, sagas, and the projection each emit through an `ActivitySource`, and spans parent onto
-whatever trace was current when the command was created (the W3C `traceparent` rides the command's
-metadata through the whole flow). Register all three sources with your OpenTelemetry pipeline in one
-call:
+Aggregates, sagas, and projections use three activity sources. A W3C `traceparent` is copied into
+command metadata and carried through later events and saga commands. Register all three sources:
 
 ```csharp
 tracing.AddSource(FCQRS.Common.Telemetry.AllActivitySources); // "FCQRS", "FCQRS.Saga", "FCQRS.Query"
 ```
 
-Spans cost nothing until a listener is attached, so leaving this unwired is free. Restart-detection
-aborts and fatal errors light up as `Error`-status spans, so failed flows are findable without tag
-filters.
+`ActivitySource` avoids creating activities when no listener is attached. Restart-detection aborts and
+fatal errors set span status to `Error`.
+
+Start an activity at the application boundary before constructing the first command. The resulting
+trace should contain the initial command, stored event, saga states, follow-up commands, and projection
+handler. The CID remains a domain correlation value; trace context travels beside it in metadata.
 
 ### Span names are low-cardinality
 
-Span names are the **case name only** — `Command:Register`, `Event:Registered`,
-`Saga:GeneratingCode`, `Abort:VerificationRequested` — never the payload values. That is deliberate:
-it lets trace viewers group and compute latency by operation, and on .NET 11 it lets the rule-based
-`AddTracing` API enable or disable a specific FCQRS operation from configuration, no redeploy:
+Span names contain the case name, such as `Command:Register`, `Event:Registered`,
+`Saga:GeneratingCode`, or `Abort:VerificationRequested`. Payload values do not appear in the span name,
+so trace backends can group operations without creating one name per entity. On .NET 11, tracing rules
+can select a source and operation:
 
 ```csharp
 builder.Services.AddTracing(tracing =>
@@ -69,29 +74,25 @@ builder.Services.AddTracing(tracing =>
 });
 ```
 
-It also means no payload value is ever written into an indexed span name.
+Payload detail may still appear in tags and logs as described below.
 
 ## Keep payloads out of diagnostics
 
-The full rendered payload rides in the span **tags** (`command.type` / `event.type`) and in the
-message-flow log lines, and is **on by default** — the detail that makes the flow log useful in
-development. For sensitive domains, turn it off:
+Rendered payloads appear in span tags and message-flow logs by default. Disable them before processing
+sensitive values when detailed payload diagnostics are not acceptable:
 
 ```fsharp
 FCQRS.Common.Telemetry.IncludePayloads <- false   // or builder.WithPayloadDiagnostics(false)
 ```
 
-Tags and log lines then carry the case name only, matching the span name. Span **names** are
-low-cardinality regardless of this switch, so tracing rules and grouping are unaffected either way.
-(Best practice still applies: don't put secrets in command/event fields — an event journal keeps them
-forever. This switch protects the diagnostics surface, not the journal.)
+Tags and log lines then contain the case name only. This switch affects diagnostics, not persisted
+events. A secret stored in an event remains in the journal regardless of the diagnostics setting.
 
 ## Flush telemetry on a fatal exit
 
-On an unrecoverable inconsistency (a fold or handler that throws) FCQRS fail-fasts the process to
-avoid silent state divergence — which skips finalizers, so anything still buffered in a batch span
-exporter or log sink is lost, including the fatal flow's own span. Give it a flush hook to drain your
-pipeline first:
+FCQRS terminates the process when a fold, aggregate handler, saga handler, effect runner, or projection
+handler fails in a way that could leave state processing inconsistent. Fail-fast skips normal finalizer
+and process-exit flushing. Register a bounded flush hook for buffered telemetry:
 
 ```fsharp
 FCQRS.Common.Telemetry.FatalFlush <- System.Action(fun () ->
@@ -99,11 +100,26 @@ FCQRS.Common.Telemetry.FatalFlush <- System.Action(fun () ->
     loggerProvider.ForceFlush(3000) |> ignore) // or Serilog's Log.CloseAndFlush()
 ```
 
-It runs on a background thread with a 5-second cap, so a hung exporter can't block the kill.
+The hook runs on a background thread with a five-second cap.
+
+## Alerts to add
+
+At minimum, alert on:
+
+- process fail-fast and repeated restarts;
+- projection handler failure and growing projection lag;
+- a saga remaining in one state beyond its domain timeout;
+- unreachable cluster members and shard movement that does not settle;
+- journal or snapshot storage latency and errors;
+- exhausted retries or workflows sent to manual intervention.
+
+FCQRS supplies the message and trace context. Domain timeouts, projection-lag metrics, and
+manual-intervention counters belong to the application because only it knows the expected duration and
+business impact.
 
 ## Akka's own logging
 
-Akka.NET's internal logging ships **off** (it is chatty); FCQRS's own logs go through your
-`ILoggerFactory` regardless. To see Akka internals, use `builder.WithAkkaLogging(AkkaLogLevel.Info)`
+Akka.NET internal logging defaults to `OFF`; FCQRS logs still use the application's `ILoggerFactory`.
+Enable Akka.NET internals with `builder.WithAkkaLogging(AkkaLogLevel.Info)`
 from the hosting builder, or set `config:akka:loglevel` in configuration. See
 [Configuration](../configuration.html) for the config-key details.

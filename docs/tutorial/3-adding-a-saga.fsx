@@ -17,8 +17,8 @@ open FCQRS.FSharp
 (**
 # 3. Adding a saga
 
-We'll reuse the validated values from [chapter 1](1-the-aggregate.html) — `Title`/`Content` wrap
-FCQRS's `ShortString`/`LongString`, plus a `Username` (which doubles as the User aggregate's id):
+This chapter adds a user quota to the document application. It reuses the validated values from
+[chapter 1](1-the-aggregate.html) and adds `Username`, which also identifies the user aggregate.
 *)
 
 module Values =
@@ -50,34 +50,20 @@ module Values =
         member this.Value = let (Username s) = this in ValueLens.Value s
 
 (**
-Here's a rule that sounds trivial and turns out to be impossible with what we've built: *each user may
-create at most three documents per minute.* Go ahead and try to put it in `Document.decide`. You can't —
-a document only knows about itself. It has no idea how many *other* documents the same person created in
-the last sixty seconds, and it would be a layering disaster if it did. The limit isn't a fact about one
-document; it's a fact about a *user*, spanning many documents.
-
-That's the shape of problem a **saga** exists for. This chapter introduces a second aggregate (a `User`
-that owns the quota) and the saga that coordinates the two. It's the most involved chapter — and the one
-where the framework finally does something you'd genuinely dread writing by hand.
+The rule is: each user may create at most three documents per minute. A document aggregate cannot
+enforce it because its state contains one document. The user aggregate can own the quota because its
+state covers one user's recent document creations. A **saga** coordinates the request between the two
+aggregates.
 
 ## Why an aggregate can't reach across the boundary
 
-Recall from [chapter 1](1-the-aggregate.html) that an aggregate is a *consistency boundary*: one entity,
-deciding alone, one command at a time. That isolation is precisely what gives you no-locks, no-races
-correctness. The price is that an aggregate cannot reach into another aggregate to check or change it —
-if it could, you'd be right back to shared mutable state and the races we escaped.
+An aggregate serializes decisions about its own state. Reading another aggregate's state inside that
+decision would create a consistency boundary that neither actor owns. Instead, the document records a
+request. The saga reacts to that event, sends a command to the user, and sends the user's result back to
+the document.
 
-> 🎯 **Key principle.** Aggregates turn commands into events. A **saga** is the mirror image: it turns
-> events into commands. When something true happens in one aggregate (a document was requested) and it
-> should *cause* something in another (consume a quota slot), the saga is the only thing allowed to carry
-> that intent across the boundary. It is a process manager — a small, durable state machine that listens
-> for events and issues commands.
-
-> 💡 **Mental model.** Think of a travel booking. The "flight" service and the "hotel" service each guard
-> their own data; neither reaches into the other. A *booking coordinator* watches for "flight reserved,"
-> then tells the hotel "reserve a room," and if that fails, tells the flight "cancel." The coordinator
-> holds no flight or hotel data of its own — it only watches and issues orders. That coordinator is a
-> saga.
+Aggregates turn commands into events. Sagas react to events by issuing commands. A saga also stores its
+state, allowing the coordination to continue after recovery.
 
 Here's the flow we're about to build, end to end:
 
@@ -102,21 +88,15 @@ Here's the flow we're about to build, end to end:
    Document: ApprovedEvt        Document: HeldForApproval
 </pre>
 
-⚠️ Before we write it: a saga is real added complexity — a second persistent actor, an extra hop, more
-states to reason about. Don't reach for one to send a welcome email you could fire inline. Reach for one
-when the work genuinely **spans aggregates** or must be **reliably retried/compensated**. Our quota is
-the first kind: two aggregates, so a saga isn't a style choice, it's structurally required.
+This design adds a persistent coordinator and asynchronous steps. Use it when work crosses aggregate
+boundaries or must retain progress across restarts. A short best-effort lookup can use an
+[ephemeral async effect](../how-to/dispatch-async-effects.html) instead.
 
-## Step 1 — teach the Document about approval
+## Step 1: record a pending document request
 
-The first write can no longer just succeed, because whether it's allowed now depends on the user's
-quota — which the document can't see. So a creation becomes a *pending request* (`CreateOrUpdateRequested`)
-that records the document and **starts the saga**; the saga later tells the document `Approve` or `Hold`.
-An edit of a document we already hold still skips all of it — editing isn't gated.
-
-This is where the command/event split from chapter 1 pays off: `CreateOrUpdate` now fans out into
-several possible events, and because we kept them separate types from the start, nothing about the
-caller's command has to change.
+Creating a document now stores `CreateOrUpdateRequested`. That event starts the saga. The saga later
+sends `Approve` or `Hold` to the same document. Editing an existing document remains a direct update
+because the quota applies only to creation.
 *)
 
 module Document =
@@ -147,18 +127,15 @@ module Document =
         | RejectedEvt of DocumentId
         | HeldForApproval of DocumentId
 
-    type State = { Document: Root option; Version: int64; Approval: Approval }
-    let initial = { Document = None; Version = 0L; Approval = Pending }
+    type State = { Document: Root option; Approval: Approval }
+    let initial = { Document = None; Approval = Pending }
 
     let decide (cmd: Command<_>) state =
         match cmd.CommandDetails, state.Document with
-        // First write — no document yet. A pending request that starts the quota saga.
         | CreateOrUpdate(doc, owner), None -> CreateOrUpdateRequested(doc, owner) |> PersistEvent
-        // Edit of the document we already hold — no saga, no quota.
         | CreateOrUpdate(doc, _), Some existing when existing.Id = doc.Id -> Updated doc |> PersistEvent
         | CreateOrUpdate _, _ -> Errored DocumentNotFound |> DeferEvent
-        // Verdicts — idempotent: if already in the target state, defer (still
-        // published so a re-issuing saga sees it) rather than persist a duplicate.
+        // A repeated verdict replies again but does not store a duplicate event.
         | Approve, Some doc ->
             let e = ApprovedEvt doc.Id
             if state.Approval = Approved then DeferEvent e else PersistEvent e
@@ -172,8 +149,8 @@ module Document =
 
     let fold evt state =
         match evt.EventDetails with
-        | CreateOrUpdateRequested(doc, _) -> { state with Document = Some doc; Version = state.Version + 1L; Approval = Pending }
-        | Updated doc -> { state with Document = Some doc; Version = state.Version + 1L }
+        | CreateOrUpdateRequested(doc, _) -> { state with Document = Some doc; Approval = Pending }
+        | Updated doc -> { state with Document = Some doc }
         | ApprovedEvt _ -> { state with Approval = Approved }
         | RejectedEvt _ -> { state with Approval = Rejected }
         | HeldForApproval _ -> { state with Approval = AwaitingApproval }
@@ -187,9 +164,9 @@ module Document =
 // guard on current state so a re-issued command defers instead of duplicating.
 public enum Approval { Pending, AwaitingApproval, Approved, Rejected }
 
-public record DocumentState(Document? Document, long Version, Approval Approval = Approval.Pending)
+public record DocumentState(Document? Document, Approval Approval = Approval.Pending)
 {
-    public static readonly DocumentState Initial = new(null, 0L);
+    public static readonly DocumentState Initial = new(null);
 }
 
 public sealed class DocumentAggregate : Aggregate<DocumentState, DocumentCommand, DocumentEvent>
@@ -226,8 +203,8 @@ public sealed class DocumentAggregate : Aggregate<DocumentState, DocumentCommand
         evt.EventDetails switch
         {
             DocumentEvent.CreateOrUpdateRequested e =>
-                state with { Document = e.Document, Version = state.Version + 1L, Approval = Approval.Pending },
-            DocumentEvent.Updated e => state with { Document = e.Document, Version = state.Version + 1L },
+                state with { Document = e.Document, Approval = Approval.Pending },
+            DocumentEvent.Updated e => state with { Document = e.Document },
             DocumentEvent.Approved => state with { Approval = Approval.Approved },
             DocumentEvent.Rejected => state with { Approval = Approval.Rejected },
             DocumentEvent.HeldForApproval => state with { Approval = Approval.AwaitingApproval },
@@ -238,22 +215,14 @@ public sealed class DocumentAggregate : Aggregate<DocumentState, DocumentCommand
 *)
 
 (**
-Look closely at the verdict cases — they're a small but important lesson:
+The verdict commands are idempotent. If `Approve` is retried after the document is already approved,
+the aggregate defers the same reply. The saga receives confirmation, but the journal does not gain a
+duplicate approval. `UnhandledEvent` covers commands that do not make sense in the current state.
 
-> ⚠️ **Common mistake.** Assuming each command is delivered exactly once. Across restarts and retries a
-> saga may re-issue `Approve` for a document that's *already* approved. If you blindly `PersistEvent`
-> every time, you log duplicate approvals and inflate the version on no-ops. The guard here checks "am I
-> already in that state?" and downgrades the repeat to a `DeferEvent` — published so the saga still hears
-> "yes," but not re-recorded. Designing for **at-least-once** delivery, not exactly-once, is the rule,
-> not the exception, in any distributed system.
+## Step 2: let the user aggregate own the quota
 
-Notice `UnhandledEvent` finally appears: it's how `decide` says "that command makes no sense in this
-state" — distinct from `IgnoreEvent` ("valid, but do nothing").
-
-## Step 2 — the User aggregate owns the quota
-
-The second aggregate is keyed by username and remembers the slots a user consumed in the last minute.
-Two design choices make it safe under a saga's retries, and both are worth pausing on.
+The user aggregate is keyed by username and stores the document slots granted during the last minute.
+It uses the document id to recognize a retried request.
 *)
 
 module User =
@@ -281,8 +250,8 @@ module User =
         match cmd.CommandDetails with
         | ConsumeQuota docId ->
             match state.Consumed |> List.tryFind (fun c -> c.DocId = docId) with
-            // Re-delivery: this document already holds a slot — re-grant the SAME slot.
-            | Some existing -> QuotaApproved(docId, existing.At) |> PersistEvent
+            // Re-delivery: reply with the existing grant without storing it again.
+            | Some existing -> QuotaApproved(docId, existing.At) |> DeferEvent
             | None ->
                 if prune cmd.CreationDate state.Consumed |> List.length < Limit then
                     QuotaApproved(docId, cmd.CreationDate) |> PersistEvent
@@ -299,7 +268,7 @@ module User =
 <div class="cs-alt"></div>
 
 ```csharp
-// C#: the User aggregate. Same two safety choices — idempotent by document id,
+// C#: the User aggregate is idempotent by document id,
 // and time read from the command / folded only from the event.
 public readonly record struct Consumption(DocumentId DocId, DateTime At);
 
@@ -329,8 +298,8 @@ public sealed class UserAggregate : Aggregate<UserState, UserCommand, UserEvent>
     static EventAction<UserEvent> Decide(UserState state, DocumentId docId, DateTime at)
     {
         var existing = state.Consumed.FirstOrDefault(c => c.DocId == docId);
-        if (state.Consumed.Any(c => c.DocId == docId))           // re-grant the SAME slot
-            return EventActions.Persist<UserEvent>(new UserEvent.QuotaApproved(docId, existing.At));
+        if (state.Consumed.Any(c => c.DocId == docId))
+            return EventActions.Defer<UserEvent>(new UserEvent.QuotaApproved(docId, existing.At));
         return Prune(state.Consumed, at).Count < Limit
             ? EventActions.Persist<UserEvent>(new UserEvent.QuotaApproved(docId, at))
             : EventActions.Defer<UserEvent>(new UserEvent.QuotaRejected());
@@ -349,23 +318,17 @@ public sealed class UserAggregate : Aggregate<UserState, UserCommand, UserEvent>
 *)
 
 (**
-First, **idempotency by document id**: if a slot was already granted for this document, `decide`
-re-grants the *same* slot instead of spending a new one, so a retried `ConsumeQuota` can't double-charge.
+A repeated `ConsumeQuota` for the same document returns the original grant as a deferred reply, so it
+does not spend or store another slot.
 
-Second — and this is the one people get wrong — look at where time comes from:
-
-> 🎯 **Key principle.** `decide` reads `cmd.CreationDate` (the moment captured when the command was
-> issued), and `fold` only ever uses the timestamp the event *carries* (`QuotaApproved(_, at)`). Neither
-> calls `DateTime.UtcNow`. This is the chapter-1 purity rule with teeth: if `fold` read the wall clock,
-> replaying the log a minute later would prune different slots and reconstruct a *different* quota state.
-> Capture time in the command, carry it in the event, fold only what the event holds — and replay stays
-> deterministic forever.
+The decision reads `cmd.CreationDate` and stores that timestamp in `QuotaApproved`. The fold uses only
+the timestamp carried by the event. Calling `DateTime.UtcNow` inside the fold would prune a different set
+of slots each time the history was replayed.
 
 ## The saga
 
-A saga is a tiny state machine. It begins when a document is requested, asks the user to consume a
-slot, then routes the document to approval or hold. The framework supplies the "not started yet"
-preamble (the `None` you'll see below); these four states are ours, and the rest is two functions.
+The quota saga starts when a document is requested. It asks the user aggregate to consume a slot, then
+tells the document to approve or hold. Its four states record which reply it is waiting for.
 *)
 
 module QuotaSaga =
@@ -378,10 +341,9 @@ module QuotaSaga =
         | Done
 
 (**
-A saga sees its events as `obj`, because they arrive from **both** aggregates — `Document` events *and*
-`User` events flow into the same handler. Two small active patterns recover the typed payload so the
-handler can match on event-and-state together in one flat, readable pass. Each arm returns the next
-state with `StateChangedEvent`.
+A saga receives events from both aggregates as `obj`. The active patterns recover the typed event
+envelopes, allowing the handler to match the event and current saga state together. Each accepted event
+returns the next state with `StateChangedEvent`.
 *)
 
     let private (|DocEvent|_|) (o: obj) =
@@ -407,11 +369,9 @@ state with `StateChangedEvent`.
         | _ -> UnhandledEvent
 
 (**
-`handleEvent` decides *what state we're in*; `applySideEffects` decides *what to do on entering it* — the
-transition (`Stay`, `NextState`, `StopSaga`) and the commands to send. This is where the saga turns
-events back into commands, and the facade keeps it to one line each with two helpers: `toAggregate`
-addresses a *specific* aggregate instance by id (the `User` keyed by owner name), `toOriginator` replies
-to whichever document started this saga.
+`handleEvent` selects the next state. `applySideEffects` maps that state to a transition and commands.
+`toAggregate` addresses the user by username. `toOriginator` addresses the document that started this
+saga.
 *)
 
     let private applySideEffects documentFactory userFactory sagaState _recovering =
@@ -423,15 +383,15 @@ to whichever document started this saga.
         | Done -> StopSaga, []
 
 (**
-> ⚠️ **Common mistake.** Performing the side effect *inside* the saga — sending the email, calling the
-> API — right here. Don't. A saga's job is to *issue a command*; the receiving actor performs the effect
-> through the same persist-and-recover machinery as everything else, so it can be retried and audited.
-> That's also what the `_recovering` flag is for: when a saga rebuilds itself after a restart it replays
-> its states, and you use that flag to avoid re-firing real-world effects you already fired. (Our quota
-> only issues commands to other aggregates, which are themselves idempotent, so we can ignore it here.)
+The saga issues commands rather than calling an external API inside the state transition. External
+handlers still need idempotency and timeouts because a remote service cannot share the saga's journal
+transaction. During recovery, FCQRS calls this function with `recovering = true` to re-drive the current
+state. This quota saga returns the same commands because both target aggregates handle retries
+idempotently. A branch calling an external system can use the flag to choose a status check or another
+recovery-specific command, but suppressing every recovery command can leave the saga waiting forever.
 
-Finally, bundle it into a `Saga` record. `StartOn` is typed to the *originator's* event, so the
-framework **infers** the originator-event type — there's no type argument to remember or get wrong.
+The `Saga` record connects the functions, originator factory, initial data, start predicate, and
+snapshot policy. `StartOn` selects the originator event that creates a saga instance.
 *)
 
     let startsOn (e: Event<Document.Event>) =
@@ -455,7 +415,7 @@ framework **infers** the originator-event type — there's no type argument to r
 // C#: the whole saga is a class deriving Saga<OriginatorEvent, Data, State>.
 // HandleEvent matches events from both aggregates (state is None until the first
 // transition); ApplySideEffects returns the transition + commands. The "StartOn"
-// predicate isn't a member here — it's passed to AddSaga (next block).
+// predicate isn't a member here. It is passed to AddSaga in the next block.
 public sealed class QuotaSaga : Saga<DocumentEvent, QuotaSagaData, QuotaState>
 {
     readonly Func<string, IEntityRef<object>> _documents, _users;
@@ -504,9 +464,8 @@ public sealed class QuotaSaga : Saga<DocumentEvent, QuotaSagaData, QuotaState>
 (**
 ## Wiring it all up
 
-The composition root registers both aggregates, builds the saga from the factories they return, and
-wires the saga-starter — the declaration that fires the safe
-[start-up handshake](../concepts/sagas.html).
+The composition root registers both aggregates, constructs the saga with their factories, and wires
+the [saga-start handshake](../concepts/sagas.html).
 *)
 
 let wire (api: IActor) =
@@ -521,7 +480,7 @@ let wire (api: IActor) =
 
 ```csharp
 // C#: register both aggregates and the saga via the DI host-builder. AddSaga's
-// startOn predicate is the safe-start rule — the C# counterpart of StartOn.
+// startOn is the safe-start rule and the C# counterpart of StartOn.
 services
     .AddFcqrs(connString, "FocumentCluster")
     .AddAggregate<DocumentAggregate, DocumentState, DocumentCommand, DocumentEvent>()
@@ -535,13 +494,10 @@ services
 *)
 
 (**
-> 🤔 **Did you know?** There's a quiet race lurking in "an event starts a saga": if the document
-> published `CreateOrUpdateRequested` *before* the saga was listening, the saga would miss the very event
-> meant to create it. `wireSagaStarters` is what lets FCQRS run a brief handshake — hold the event until
-> the saga is subscribed, *then* publish — so the start is safe by construction. You declare the rule;
-> the framework guarantees the ordering. ([The handshake, in detail](../concepts/sagas.html).)
+The start handshake prevents `CreateOrUpdateRequested` from being published before the new saga has
+subscribed. The application declares the start event; FCQRS enforces the creation and publication order.
 
-## Run it — watch the quota bite
+## Run the quota path
 
 Send four creates for the same user (each a different document id) and the fourth crosses the line:
 
@@ -552,49 +508,39 @@ create #3 (alice)  ->  ApprovedEvt       "saved"
 create #4 (alice)  ->  HeldForApproval   "over quota - awaiting approval"
 </pre>
 
-The first three each ride the path `CreateOrUpdateRequested -> ConsumeQuota -> QuotaApproved -> Approve
--> ApprovedEvt`. On the fourth, the `User` aggregate's sliding window is full, so it answers
-`QuotaRejected`, the saga swings to `Holding`, and the document ends up `AwaitingApproval` instead of
-approved. Wait a minute for the window to slide and the next create is approved again — because `prune`
-drops the now-expired slots. You implemented a cross-entity, time-windowed rule without a single lock or
-shared variable.
+The first three requests follow `CreateOrUpdateRequested -> ConsumeQuota -> QuotaApproved -> Approve ->
+ApprovedEvt`. The fourth receives `QuotaRejected`; the saga sends `Hold`, and the document reaches
+`AwaitingApproval`. After a minute, `prune` removes expired grants when the next quota command is
+decided.
 
 ## What you now understand
 
-An aggregate is sealed inside its own boundary on purpose, so when a rule spans entities you need a
-different tool: a saga, which listens to events from several aggregates and issues commands back. You
-saw the three pieces — `handleEvent` (event → next state), `applySideEffects` (state → commands), and
-`StartOn` (which event spawns it) — and the two distributed-systems reflexes that keep it honest:
-idempotent commands and time captured in events, never read in folds.
+A user aggregate owns the quota and a document aggregate owns approval. The saga coordinates them by
+mapping events to states and states to commands. Retry safety comes from idempotent target commands, and
+replay safety comes from storing time in events instead of reading the clock in folds.
 
 ## Common mistakes
 
-- **Trying to enforce a cross-entity rule inside one aggregate.** It can't see the others; that's the
-  whole reason sagas exist.
-- **Assuming exactly-once delivery.** Make commands idempotent — re-grant the same slot, downgrade a
-  repeat verdict to `DeferEvent` — so retries are harmless.
-- **Reading the clock in `decide`/`fold` instead of carrying time in the event.** Replay then drifts and
-  reconstructs the wrong state.
-- **Doing the side effect inside the saga.** Issue a command and let the target actor perform it, so the
-  effect is retryable and recoverable; use `_recovering` to avoid re-firing on replay.
-- **Reaching for a saga when a plain function call would do.** Sagas pay off for cross-aggregate or
-  must-be-reliable work — not for everything that happens "after" an event.
+- **Reading another aggregate from `decide`.** Move the cross-boundary process into a saga.
+- **Assuming exactly-once delivery.** Make repeated commands return the existing business result without
+  repeating the state change.
+- **Reading the clock in `fold`.** Carry the decision time in the stored event.
+- **Calling an external service from a transition.** Issue a command to a handler with explicit timeout,
+  retry, and idempotency behaviour.
+- **Using a saga for disposable work.** Use an ephemeral async effect when losing in-flight work during
+  restart is acceptable.
 
 ## Further study
 
-- [Sagas](../concepts/sagas.html) — process managers, the safe start-up handshake, and how they make
-  side effects reliable.
-- [Consistency and recovery](../concepts/consistency-and-recovery.html) — version checks, restarts, and
-  avoiding duplicate effects.
-- [Write a saga](../how-to/write-a-saga.html) — the same pattern as a focused recipe, with all the
-  command builders.
+- [Sagas](../concepts/sagas.html): state, startup, and recovery.
+- [Consistency and recovery](../concepts/consistency-and-recovery.html): version checks and failure
+  boundaries.
+- [Write a saga](../how-to/write-a-saga.html): the focused API recipe.
 
 ## You've built the whole loop
 
-Across three chapters you defined an aggregate from two pure functions, gave it a running home and
-watched event sourcing reconstruct state across a restart, then added a second aggregate and a saga that
-coordinates both to enforce a rule neither could alone — the entire FCQRS model. The complete, runnable
-version of exactly this app is [`focument_fsharp`](https://github.com/OnurGumus/focument_fsharp). From
-here, the [How-to guides](../how-to/index.html) are task-focused recipes, and
-[Concepts](../concepts/index.html) goes deeper on anything you want to understand more fully.
+You now have the complete runtime flow: aggregates store facts, projections build query data, and a
+saga coordinates work across aggregate boundaries. Continue with [testing and
+evolution](4-testing-and-evolution.html) before preparing the application for production. The complete
+application is available in [`focument_fsharp`](https://github.com/OnurGumus/focument_fsharp).
 *)

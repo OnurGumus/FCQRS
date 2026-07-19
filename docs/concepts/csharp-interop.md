@@ -7,19 +7,20 @@ index: 7
 
 # C# interop and serialization
 
-FCQRS is written in F#, but the model it asks you to build — closed sets of commands and events, an
-immutable state folded from events — is expressible just as cleanly in modern C#. This page explains
-how, and how messages are serialized underneath.
+FCQRS represents commands and events as closed sets of values and rebuilds immutable state by folding
+events. F# provides records and discriminated unions for this model. C# 15 provides union types, and
+FCQRS exposes C# APIs for aggregates, sagas, projections, and subscriptions.
 
 ## C# 15 discriminated unions as messages
 
-The natural way to model a command or event type is a *closed set of alternatives*: a `Register` or a
-`Login`, never a third unnamed thing. F# has discriminated unions for exactly this. C# 15 adds the
-`union` keyword, and FCQRS treats those unions as first-class message types. Note that `union` is
-still a **preview language feature** (`<LangVersion>preview</LangVersion>` on `net10.0`+) until C# 15
-ships — it affects only compilation, not the runtime. Teams that cannot enable a preview
-`LangVersion` should express the domain in a small F# project instead (see
-[Use FCQRS from C#](../how-to/use-from-csharp.html)):
+`UserCommand` may contain `Register` or `Login` and no unnamed third case. C# 15 expresses that closed
+set with the `union` keyword. FCQRS treats the cases as first-class message types.
+
+The compiler support is currently a preview feature. Use a .NET 11 preview SDK with
+`<LangVersion>preview</LangVersion>`. FCQRS itself ships `net10.0` assets that run on a .NET 11 host.
+Teams that cannot enable a preview compiler can place the domain types in a small F# project and keep
+the host, endpoints, and projections in C#. [Use FCQRS from C#](../how-to/use-from-csharp.html) lists
+the current compiler requirements.
 
 ```csharp
 public union UserCommand(UserCommand.Register, UserCommand.Login)
@@ -37,34 +38,29 @@ public union UserEvent(
 }
 ```
 
-Your aggregate is then a `handleCommand` that switches on `(command, state)` and an `applyEvent` that
-switches on the event — the same two pure functions as in F#, written as C# `switch` expressions. The
-state is an ordinary `record`, and the interop layer (`EventActions.Persist/Defer/Ignore`,
-`IActorExtensions.InitActor`, `SagaBuilderCSharp`, `QueryApi`, `ISubscribe`) gives you typed,
-idiomatic entry points so you never touch an F# function value directly. The
-[how-to guide](../how-to/use-from-csharp.html) shows the full surface, and the `focument-csharp`
-sample app is a complete, real example.
+An aggregate switches on the command and current state to choose an `EventAction`, then switches on a
+stored event to produce the next state. The state can be an ordinary C# `record`. The interop layer
+provides `EventActions`, aggregate initialization, saga builders, projection APIs, and subscriptions,
+so application code does not need to construct F# function values. The
+[C# how-to](../how-to/use-from-csharp.html) shows the complete API, and the
+[`focument-csharp`](https://github.com/onurgumus/focument) sample contains a running application.
 
-A nested case record **implicitly converts to its union**, and the framework relies on this in a few
-places (for instance, when a saga issues a command typed as the union). Keep that in mind when a
-method wants the union type rather than the bare case.
+A nested case record implicitly converts to its union. Methods that accept the union can therefore
+receive a case value directly.
 
 ## How messages are serialized
 
-Commands and events are persisted to the journal and sent across the cluster, so they must serialize.
-FCQRS registers a System.Text.Json–based serializer for any message implementing its internal
-serializable marker, alongside Akka's default for everything else. For F# records and unions this is
-handled by the F#-aware JSON support; for **C# 15 unions** the framework includes a dedicated
-converter that round-trips them as `{ "$case": …, "$value": … }`, because System.Text.Json cannot
-otherwise pick a case on read.
+Commands and events are stored in the journal and sent between cluster nodes, so their serialized
+shape becomes part of the application's persistent data. FCQRS registers a System.Text.Json serializer
+for its messages. F# support handles F# records and unions. A dedicated C# union converter writes
+`{ "$case": ..., "$value": ... }`, preserving the case name even when two cases have the same value
+shape.
 
-You rarely interact with serialization directly. The two things worth knowing: message types should
-be stable, serializable shapes (records and unions are ideal), and the serializer is configured for
-you when you create the actor system — there is nothing to wire up by hand.
+Keep persisted message types stable and plan explicit migrations for incompatible changes. Serializer
+registration happens when the actor system is created.
 
 ## When to reach for C#
 
-Use whichever language fits your team. The F# side is the most concise, and the [tutorial](../tutorial/index.html)
-and most [concepts](index.html) examples are in F#. The C# side exists so a C#-first team can adopt
-FCQRS without leaving their language, and so a mixed solution can share a domain. The
-[get-started](../get-started.html) page and tutorial focus on F#; the C# how-to translates each step.
+The [get-started](../get-started.html) page and tutorial use F#. C# applications use the same domain
+model and runtime through the interop APIs. A mixed solution can also define the domain in F# and use
+it from a C# host.

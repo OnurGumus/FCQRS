@@ -2,15 +2,28 @@
 title: Write a saga
 category: How-to
 categoryindex: 5
-index: 4
+index: 8
 ---
 
 # Write a saga
 
-A saga reacts to events and issues commands. With the `FCQRS.FSharp` facade you write two functions, a
-`StartOn` predicate, and bundle them into a `Saga` record. This example mirrors the quota saga from the
-[tutorial](../tutorial/3-adding-a-saga.html): it starts from a `Document` request, asks a `User`
-aggregate to consume a quota slot, then tells the document to approve or hold.
+A saga coordinates work that crosses aggregate boundaries and keeps its progress across restarts. This
+example starts when a document is requested, asks the owning user aggregate for a quota slot, and sends
+the result back to the document.
+
+Write the workflow as a state table before writing code:
+
+| Current state | Incoming event | Next state | Command issued |
+|---|---|---|---|
+| not started | `CreateOrUpdateRequested` | `CheckingQuota` | `ConsumeQuota` to user |
+| `CheckingQuota` | `QuotaApproved` | `Approving` | `Approve` to document |
+| `CheckingQuota` | `QuotaRejected` | `Holding` | `Hold` to document |
+| `Approving` | `ApprovedEvt` | `Done` | none; stop saga |
+| `Holding` | `HeldForApproval` | `Done` | none; stop saga |
+
+The code has one function for the first three columns and one for the last column.
+
+## Handle events and change state
 
 ```fsharp
 open FCQRS.Common
@@ -22,7 +35,7 @@ type State =
     | Holding of DocumentId
     | Done
 
-// A saga sees events as obj — they come from BOTH aggregates. Active patterns
+// A saga sees events as obj because they come from both aggregates. Active patterns
 // recover the typed payload so the handler matches event + state in one pass.
 let private (|DocEvent|_|) (o: obj) =
     match o with
@@ -34,7 +47,7 @@ let private (|UserEvent|_|) (o: obj) =
     | :? (Event<User.Event>) as e -> Some e.EventDetails
     | _ -> None
 
-// 1. react to events -> next state
+// Map an event and current state to the next stored saga state.
 let private handleEvent evt sagaState =
     match evt, sagaState.State with
     | DocEvent(Document.CreateOrUpdateRequested(doc, owner)), None ->
@@ -47,7 +60,7 @@ let private handleEvent evt sagaState =
     | DocEvent(Document.HeldForApproval _), Some(Holding _) -> Done |> StateChangedEvent
     | _ -> UnhandledEvent
 
-// 2. on entering a state, choose a transition and issue commands
+// Map the current state to a transition and commands.
 let private applySideEffects documentFactory userFactory sagaState _recovering =
     match sagaState.State with
     // cross-aggregate command: a specific User instance, by id
@@ -58,8 +71,7 @@ let private applySideEffects documentFactory userFactory sagaState _recovering =
     | Holding _ -> Stay, [ toOriginator documentFactory Document.Hold ]
     | Done -> StopSaga, []
 
-// Which originator events spawn an instance. Typed to the originator's event, so
-// the originator-event type is inferred — there is no type argument to get wrong.
+// Select the originator events that create a saga instance.
 let startsOn (e: Event<Document.Event>) =
     match e.EventDetails with
     | Document.CreateOrUpdateRequested _ -> true
@@ -67,20 +79,18 @@ let startsOn (e: Event<Document.Event>) =
 
 let definition documentFactory userFactory =
     { Name = "QuotaSaga"
-      InitialData = ()               // no cross-step data: progress lives in State
+      InitialData = ()
       Originator = documentFactory
       HandleEvent = handleEvent
       ApplySideEffects = applySideEffects documentFactory userFactory
       StartOn = startsOn
-      Snapshots = Default }        // snapshot cadence: Default | NoSnapshots | Every n
+      Snapshots = Default }
 ```
 
 <div class="cs-alt"></div>
 
 ```csharp
-// In C# a saga is a class deriving Saga<OriginatorEvent, Data, State>. It sees
-// events as object (from BOTH aggregates), so HandleEvent matches the event type;
-// ApplySideEffects returns the transition plus the commands to dispatch.
+// C#: HandleEvent selects a state; ApplySideEffects selects commands.
 using Akkling.Cluster.Sharding;
 using Microsoft.FSharp.Core;
 using static FCQRS.Common;
@@ -103,7 +113,7 @@ public sealed class QuotaSaga : Saga<DocumentEvent, QuotaSagaData, QuotaState>
     public override string SagaName => "QuotaSaga";
     public override Func<string, IEntityRef<object>> Originator => _documents;
 
-    // 1. react to events -> next state (state is None until the first transition)
+    // State is None until the first transition.
     public override EventAction<QuotaState> HandleEvent(
         object evt, SagaState<QuotaSagaData, FSharpOption<QuotaState>> sagaState) =>
         (evt, sagaState.State?.Value) switch
@@ -121,7 +131,6 @@ public sealed class QuotaSaga : Saga<DocumentEvent, QuotaSagaData, QuotaState>
             _ => Unhandled()
         };
 
-    // 2. on entering a state -> transition + commands (ToAggregate / ToOriginator)
     public override SagaSideEffectResult<QuotaState> ApplySideEffects(
         SagaState<QuotaSagaData, QuotaState> sagaState, bool recovering) =>
         sagaState.State switch
@@ -147,8 +156,10 @@ public sealed class QuotaSaga : Saga<DocumentEvent, QuotaSagaData, QuotaState>
 }
 ```
 
-Register it from your composition root, after the aggregates it references — this is what fires the
-safe [start-up handshake](../concepts/sagas.html):
+## Register the saga
+
+Register the aggregates first so the saga factory can address them. `wireSagaStarters` combines the
+start predicates and enables the [startup handshake](../concepts/sagas.html):
 
 ```fsharp
 let documents = Fcqrs.aggregate api { Name = "Document"; Initial = Document.initial; Decide = Document.decide; Fold = Document.fold; Snapshots = Default }
@@ -161,9 +172,7 @@ Fcqrs.wireSagaStarters api [ quota ]
 <div class="cs-alt"></div>
 
 ```csharp
-// C#: register both aggregates and the saga via the DI host-builder. AddSaga takes
-// a factory (it receives the aggregates' already-registered factories) and the
-// predicate for which originator event starts it.
+// C#: create the saga with registered aggregate factories and select its start event.
 services
     .AddFcqrs(connString, "FocumentCluster")
     .AddAggregate<DocumentAggregate, DocumentState, DocumentCommand, DocumentEvent>()
@@ -175,15 +184,27 @@ services
         startOn: e => e is Event<DocumentEvent> { EventDetails: DocumentEvent.CreateOrUpdateRequested });
 ```
 
-**Command builders.** The facade turns side-effect commands into one-liners instead of hand-rolled
-`TargetActor` records:
+## Choose command targets
 
-- `toOriginator factory cmd` — to the aggregate that started the saga.
-- `toAggregate factory id cmd` — to a specific aggregate instance, by id (cross-aggregate).
-- `toActor actorRef cmd` — to an arbitrary actor ref.
-- `toOriginatorAfter factory delayMs taskName cmd` — a delayed command, which is how you build
+- `toOriginator factory command`: the aggregate that started the saga.
+- `toAggregate factory id command`: a specific aggregate instance.
+- `toActor actorRef command`: an arbitrary actor reference.
+- `toOriginatorAfter factory delayMs taskName command`: a delayed command used for
   retry-with-backoff.
 
-**Recovery:** use the `recovering` flag (the last argument to `applySideEffects`) to avoid re-issuing
-real-world effects when the saga replays after a restart. A complete runnable example is
-[`focument_fsharp`](https://github.com/OnurGumus/focument_fsharp). Concept: [Sagas](../concepts/sagas.html).
+## Make recovery commands retry-safe
+
+After replaying saga state, FCQRS invokes `applySideEffects` with `recovering = true`. The process may
+have stopped just before or just after the previous command was delivered. Return an idempotent command
+that safely re-drives the state, or use the flag to return a recovery-specific status check. Returning
+no commands for every recovered state can strand a workflow whose original command was never delivered.
+
+Aggregate targets should return the existing business result when they receive a repeated command.
+External targets should accept an idempotency key and expose a way to check an uncertain result. Add a
+timeout for every event the saga waits to receive.
+
+Delayed commands implement retry backoff, but the saga must also have a terminal state for exhausted
+retries and any required human intervention.
+
+A complete runnable example is
+[`focument_fsharp`](https://github.com/OnurGumus/focument_fsharp). Background: [Sagas](../concepts/sagas.html).

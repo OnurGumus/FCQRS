@@ -13,30 +13,31 @@ index: 1
 (**
 # Get started
 
-This page builds a complete FCQRS write-and-read loop — a `Document` you can create and edit — in a
-single file, using only the **`FCQRS`** package and its idiomatic-F# facade, `FCQRS.FSharp`. No HOCON
-file, no configuration ceremony: the framework ships with sensible Akka.NET defaults, and you tell it
-just one thing — which database to use.
+This page builds one complete FCQRS path in a single file. A command creates a document, the aggregate
+stores an event, a projection updates a read model, and the program queries that model after receiving
+the projection's confirmation.
 
-Want the *why* behind each piece first? Read [Concepts](concepts/index.html). Want to build it up
-gradually, all the way to a quota saga, with explanation at each step? Follow the
-[Tutorial](tutorial/index.html). This page is the five-minute version; the full worked application is
-[`focument_fsharp`](https://github.com/OnurGumus/focument_fsharp).
+The read model is kept in memory so the example needs only the `FCQRS` package. It is rebuilt by
+replaying the journal from offset zero whenever the program starts. A production projection stores its
+data and offset transactionally; [Add a projection](how-to/add-a-projection.html) shows that version.
 
-Every code block below is compiled against the pinned `FCQRS` package as part of building this site,
-so it cannot quietly drift out of date.
+Read [Concepts](concepts/index.html) first if CQRS and event sourcing are new to you. Follow the
+[Tutorial](tutorial/index.html) for the complete course from domain modelling through production.
 
-## Install
+## Create the project
 
-```
+```text
 dotnet new console -lang F# -n MyApp
 cd MyApp
 dotnet add package FCQRS --prerelease
 ```
+
+Replace `Program.fs` with the code from the following sections.
 *)
 
 (*** hide ***)
 open System
+open System.Collections.Concurrent
 open Microsoft.Extensions.Configuration
 open Microsoft.Extensions.Logging
 open FCQRS.Common
@@ -44,123 +45,153 @@ open FCQRS.Model.Data
 open FCQRS.FSharp
 
 (**
-## 1. The aggregate
+## 1. Define the aggregate
 
-An aggregate takes **commands** and emits **events**; its state is folded from those events and is
-never stored directly. The whole `Document` is two types, a piece of state, and two pure functions —
-`decide` (the `handleCommand`) and `fold` (the `applyEvent`):
+An aggregate receives commands and produces events. Its current state is rebuilt by folding its stored
+events. This document aggregate accepts `Create` and `Edit` commands. A command that cannot change the
+document produces a deferred reply instead of a stored event.
 *)
 
 module Document =
-    type State = { Title: string option; Content: string option; Version: int64 }
+    type Root =
+        { Id: string
+          Title: string
+          Content: string }
+
+    type State = { Document: Root option }
 
     type Command =
-        | Create of title: string * content: string
-        | Edit of content: string
+        | Create of Root
+        | Edit of id: string * content: string
 
     type Event =
-        | Created of string * string
-        | Edited of string
+        | Created of Root
+        | Edited of id: string * content: string
         | AlreadyExists
         | NoSuchDocument
 
-    let initial = { Title = None; Content = None; Version = 0L }
+    let initial = { Document = None }
 
-    /// decide: command + current state -> what happened
-    let decide (cmd: Command<Command>) state =
-        match cmd.CommandDetails, state with
-        | Create(t, c), { Title = None } -> Created(t, c) |> PersistEvent
-        | Create _, { Title = Some _ } -> AlreadyExists |> DeferEvent
-        | Edit c, { Title = Some _ } -> Edited c |> PersistEvent
-        | Edit _, { Title = None } -> NoSuchDocument |> DeferEvent
+    let decide (command: Command<Command>) state =
+        match command.CommandDetails, state with
+        | Create document, { Document = None } -> Created document |> PersistEvent
+        | Create _, { Document = Some _ } -> AlreadyExists |> DeferEvent
+        | Edit(id, content), { Document = Some document } when document.Id = id ->
+            Edited(id, content) |> PersistEvent
+        | Edit _, _ -> NoSuchDocument |> DeferEvent
 
-    /// fold: apply one event to the state
     let fold (event: Event<Event>) state =
         match event.EventDetails with
-        | Created(t, c) -> { state with Title = Some t; Content = Some c; Version = state.Version + 1L }
-        | Edited c -> { state with Content = Some c; Version = state.Version + 1L }
+        | Created document -> { Document = Some document }
+        | Edited(id, content) ->
+            match state.Document with
+            | Some document when document.Id = id ->
+                { Document = Some { document with Content = content } }
+            | _ -> state
         | AlreadyExists
         | NoSuchDocument -> state
 
 (**
+`PersistEvent` appends the event to the journal, folds it into state, and publishes it. `DeferEvent`
+publishes and folds a reply without storing it or changing the persisted aggregate version. The
+deferred `AlreadyExists` and `NoSuchDocument` cases above deliberately leave state unchanged in
+`fold`; otherwise their state change would disappear on recovery. The decision and fold are pure
+functions, so they can be tested without Akka.NET or a database.
+
 <div class="cs-alt"></div>
 
 ```csharp
-// The same aggregate in C#: commands/events are C# 15 unions, state is a record,
-// and the two functions are switch expressions on an Aggregate<> subclass.
-using static FCQRS.Common;   // Command<>, Event<>, EventAction<>
-using static FCQRS.CSharp;    // Aggregate<>, EventActions
+public record Document(string Id, string Title, string Content);
 
 public union DocumentCommand(DocumentCommand.Create, DocumentCommand.Edit)
 {
-    public record Create(string Title, string Content);
-    public record Edit(string Content);
+    public record Create(Document Document);
+    public record Edit(string Id, string Content);
 }
 
 public union DocumentEvent(
     DocumentEvent.Created, DocumentEvent.Edited,
     DocumentEvent.AlreadyExists, DocumentEvent.NoSuchDocument)
 {
-    public record Created(string Title, string Content);
-    public record Edited(string Content);
+    public record Created(Document Document);
+    public record Edited(string Id, string Content);
     public record AlreadyExists;
     public record NoSuchDocument;
 }
 
-public record DocumentState(string? Title = null, string? Content = null, long Version = 0)
+public record DocumentState(Document? Document = null)
 {
     public static readonly DocumentState Initial = new();
 }
 
-public sealed class DocumentAggregate : Aggregate<DocumentState, DocumentCommand, DocumentEvent>
+public sealed class DocumentAggregate
+    : Aggregate<DocumentState, DocumentCommand, DocumentEvent>
 {
     public override DocumentState InitialState => DocumentState.Initial;
     public override string EntityName => "Document";
 
-    // decide
     public override EventAction<DocumentEvent> HandleCommand(
-        Command<DocumentCommand> cmd, DocumentState state) =>
-        (cmd.CommandDetails, state) switch
+        Command<DocumentCommand> command, DocumentState state) =>
+        (command.CommandDetails, state.Document) switch
         {
-            (DocumentCommand.Create c, { Title: null }) =>
-                EventActions.Persist<DocumentEvent>(new DocumentEvent.Created(c.Title, c.Content)),
+            (DocumentCommand.Create create, null) =>
+                EventActions.Persist<DocumentEvent>(new DocumentEvent.Created(create.Document)),
             (DocumentCommand.Create, _) =>
                 EventActions.Defer<DocumentEvent>(new DocumentEvent.AlreadyExists()),
-            (DocumentCommand.Edit e, { Title: not null }) =>
-                EventActions.Persist<DocumentEvent>(new DocumentEvent.Edited(e.Content)),
+            (DocumentCommand.Edit edit, { } document) when document.Id == edit.Id =>
+                EventActions.Persist<DocumentEvent>(new DocumentEvent.Edited(edit.Id, edit.Content)),
             _ => EventActions.Defer<DocumentEvent>(new DocumentEvent.NoSuchDocument())
         };
 
-    // fold
-    public override DocumentState ApplyEvent(Event<DocumentEvent> evt, DocumentState state) =>
-        evt.EventDetails switch
+    public override DocumentState ApplyEvent(
+        Event<DocumentEvent> eventEnvelope, DocumentState state) =>
+        eventEnvelope.EventDetails switch
         {
-            DocumentEvent.Created e => state with { Title = e.Title, Content = e.Content, Version = state.Version + 1 },
-            DocumentEvent.Edited e => state with { Content = e.Content, Version = state.Version + 1 },
+            DocumentEvent.Created created => state with { Document = created.Document },
+            DocumentEvent.Edited edited when state.Document is { } document && document.Id == edited.Id =>
+                state with { Document = document with { Content = edited.Content } },
             _ => state
         };
 }
 ```
+
+See [Aggregates and the write side](concepts/aggregates.html) for the model behind these functions.
+
+## 2. Build a read model
+
+The query side below is a concurrent dictionary indexed by document id. The projection receives each
+stored event in order and updates the dictionary. Throwing on `Edited` without a preceding `Created`
+makes a broken event history visible instead of silently producing an incorrect view.
 *)
 
+let readModel = ConcurrentDictionary<string, Document.Root>()
+
+let handleProjection (_offset: int64) (message: obj) =
+    match message with
+    | :? Event<Document.Event> as event ->
+        match event.EventDetails with
+        | Document.Created document -> readModel[document.Id] <- document
+        | Document.Edited(id, content) ->
+            match readModel.TryGetValue id with
+            | true, document -> readModel[id] <- { document with Content = content }
+            | false, _ -> failwith $"Projection received Edited before Created for {id}"
+        | Document.AlreadyExists
+        | Document.NoSuchDocument -> ()
+    | _ -> ()
+
 (**
-`PersistEvent` stores the event, applies it, and publishes it. `DeferEvent` publishes a rejection
-*without* storing it. Both functions are pure and Akka-free, so they are trivially testable. (Concept:
-[Aggregates and the write side](concepts/aggregates.html).)
+This projection starts at offset zero, so it rebuilds the dictionary from all stored events on every
+run. A durable read model stores its last offset with each update and resumes from there.
 
-## 2. Wiring — no HOCON required
+## 3. Create the actor system
 
-`Fcqrs.actor` builds the actor system. You only supply a database `Connection` (here via
-`Fcqrs.connect`); the rest of the Akka configuration comes from built-in defaults, and an empty
-`IConfiguration` is fine. A `.hocon` file is *optional* — see [Configuration](configuration.html).
+`Fcqrs.actor` combines the embedded Akka.NET defaults with the supplied configuration and database
+connection. SQLite stores the journal and snapshots in `getstarted.db`.
 *)
 
 let buildApi () : IActor =
     let config = ConfigurationBuilder().Build()
-    // No logging providers, to keep this to the FCQRS package alone. For
-    // console logs add the Microsoft.Extensions.Logging.Console package.
     let loggerFactory = LoggerFactory.Create(fun _ -> ())
-
     let connection =
         Fcqrs.connect FCQRS.Actor.DBType.Sqlite "Data Source=getstarted.db;"
 
@@ -170,121 +201,100 @@ let buildApi () : IActor =
 <div class="cs-alt"></div>
 
 ```csharp
-// C# declares the system and aggregate through the DI host-builder; FCQRS owns
-// the startup ordering. (Aggregates are registered as the classes above.)
-var builder = WebApplication.CreateBuilder(args);
+var builder = Host.CreateApplicationBuilder(args);
+var readModel = new ConcurrentDictionary<string, Document>();
+
+void HandleProjection(long offset, object message)
+{
+    if (message is not Event<DocumentEvent> eventEnvelope) return;
+
+    switch (eventEnvelope.EventDetails)
+    {
+        case DocumentEvent.Created created:
+            readModel[created.Document.Id] = created.Document;
+            break;
+        case DocumentEvent.Edited edited when readModel.TryGetValue(edited.Id, out var document):
+            readModel[edited.Id] = document with { Content = edited.Content };
+            break;
+    }
+}
+
 builder.Services
     .AddFcqrs("Data Source=getstarted.db;", "getstarted")
-    .AddAggregate<DocumentAggregate, DocumentState, DocumentCommand, DocumentEvent>();
+    .AddAggregate<DocumentAggregate>()
+    .AddProjection(HandleProjection, lastOffset: 0);
 ```
-*)
 
-(**
-## 3. A minimal read side
+## 4. Send, wait, and query
 
-A projection is called once per event, in order — it updates a read model, and FCQRS publishes each
-aggregate event to subscribers so a caller can be told when the read side has caught up. This
-five-minute demo keeps no read model, so the handler does nothing; `Projection.single` wires it and
-lets the events auto-publish. (Concept: [The read side](concepts/read-models.html).)
-*)
-
-let handle (_offset: int64) (_event: obj) = ()   // no read model here — events auto-publish
-
-(**
-<div class="cs-alt"></div>
-
-```csharp
-// C#: a projection handler is just void — update the read model; FCQRS publishes
-// each aggregate event for you.
-public static void Handle(long offset, object ev) { /* no read model in this demo */ }
-
-builder.Services.AddProjection((offset, ev) => Handle(offset, ev));
-```
-*)
-
-(**
-## 4. Send a command and read your write
-
-Registering an aggregate with `Fcqrs.aggregate` returns a typed handle with a `.Send` that mints
-nothing for you to remember: pass a correlation id, the aggregate id, the command, and a predicate
-that says which event you are waiting for. **Subscribe to the correlation id before sending**, and by
-the time the wait returns the read side has processed the event. (Concept:
-[Consistency and recovery](concepts/consistency-and-recovery.html).)
+The aggregate and projection are registered before commands are sent. Subscribe to the correlation id
+before sending, then wait for the projection after the aggregate returns its stored event. The new
+aggregate id in this example guarantees that `Create` stores an event rather than returning a deferred
+`AlreadyExists` reply.
 *)
 
 let run () =
     async {
         let api = buildApi ()
 
-        // Registering the aggregate IS the registration — it returns the handle.
         let documents =
             Fcqrs.aggregate api
                 { Name = "Document"
                   Initial = Document.initial
                   Decide = Document.decide
                   Fold = Document.fold
-                  Snapshots = Default }        // snapshot cadence: Default | NoSnapshots | Every n
+                  Snapshots = Default }
 
-        // No sagas yet, but the saga-starter still has to be wired (with none).
         Fcqrs.wireSagaStarters api []
+        let subscriptions = Fcqrs.projection api (Projection.single 0 handleProjection)
 
-        let subs = Fcqrs.projection api (Projection.single 0 handle)
+        let documentId = Guid.NewGuid().ToString("N")
+        let aggregateId = Fcqrs.aggregateId documentId
+        let correlationId = Fcqrs.newCid ()
+        let document: Document.Root =
+            { Id = documentId
+              Title = "FCQRS notes"
+              Content = "first event" }
 
-        let cid = Fcqrs.newCid ()
-        let id = Fcqrs.aggregateId "readme"
+        use projectedEvent = subscriptions.Subscribe(correlationId, 1)
 
-        // Subscribe to this CID *before* sending, so it can't be missed.
-        use awaiter = subs.Subscribe(cid, 1)
-
-        let! event =
-            documents.Send cid id (Document.Create("README", "hello"))
-                (fun e ->
-                    match e with
-                    | Document.Created _
-                    | Document.AlreadyExists -> true
+        let! stored =
+            documents.Send
+                correlationId
+                aggregateId
+                (Document.Create document)
+                (function
+                    | Document.Created _ -> true
                     | _ -> false)
 
-        do! awaiter.Task |> Async.AwaitTask // read side is now up to date
-        printfn "saved %A at version %A" event.EventDetails event.Version
+        do! projectedEvent.Task |> Async.AwaitTask
+        let projected = readModel[documentId]
+        printfn "stored version %A; query returned '%s'" stored.Version projected.Content
     }
 
 (**
-<div class="cs-alt"></div>
+Add the entry point and run the program:
 
-```csharp
-// C#: resolve the command handler + subscription from DI, then the same
-// subscribe-before-send, read-your-writes flow.
-var app = builder.Build();
-var documents = app.Services.GetRequiredService<Handler<DocumentCommand, DocumentEvent>>();
-var subs = app.Services.GetRequiredService<ISubscribe>();
-
-var cid = Values.NewCID();
-var id = Values.CreateAggregateId("readme");
-
-using var awaiter = subs.SubscribeForFirst(cid);   // subscribe BEFORE sending
-var ev = await documents(
-    e => e is DocumentEvent.Created or DocumentEvent.AlreadyExists,
-    cid, id, new DocumentCommand.Create("README", "hello"));
-await awaiter.Task;                                // read side is now up to date
-Console.WriteLine($"saved {ev.EventDetails} at version {ev.Version}");
-```
-*)
-
-(**
-Call it from your program's entry point:
-
-```
+```fsharp
 [<EntryPoint>]
 let main _ =
     run () |> Async.RunSynchronously
     0
 ```
 
-## Next steps
+```text
+dotnet run
+stored version 1; query returned 'first event'
+```
 
-- **Build it up with explanation** — the [Tutorial](tutorial/index.html) takes this `Document` all the
-  way to a cross-aggregate quota saga.
-- **Understand the model** — [Concepts](concepts/index.html).
-- **Do specific tasks** — the [How-to guides](how-to/index.html).
-- **From C#** — [Use FCQRS from C#](how-to/use-from-csharp.html).
+The aggregate id is new on each run, so each command creates a different document. The projection still
+replays previous documents before handling the new event.
+
+## What to learn next
+
+- Follow the [Tutorial](tutorial/index.html) to build the model one decision at a time and continue
+  through sagas, testing, event evolution, and production.
+- Read [Concepts](concepts/index.html) for the reasoning behind each part.
+- Use the [How-to guides](how-to/index.html) while implementing a specific task.
+- See [Use FCQRS from C#](how-to/use-from-csharp.html) for the complete C# host setup.
 *)

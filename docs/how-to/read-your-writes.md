@@ -2,21 +2,19 @@
 title: Read your writes
 category: How-to
 categoryindex: 5
-index: 9
+index: 6
 ---
 
 # Read your writes
 
-After you send a command you often want to *read the result back* — render the page that shows the thing you
-just created. But the read model is updated by a [projection](add-a-projection.html) that runs slightly
-after the command is acknowledged, so a naive "send, then read" can read a stale model. Read-your-writes
-means: **wait until the projection has processed your event, then read.**
+An aggregate can store an event before a projection updates its read model. If a request sends a command
+and immediately queries, it may receive the previous view. Read-your-writes waits for the required
+projection before performing that query.
 
-## One call
+## Use the combined F# helper
 
-`Fcqrs.sendAwaiting` does the whole dance safely: it subscribes on the correlation id *before* sending
-(the ordering that makes the wait race-free), sends, and awaits the projection — **only if** the ack was
-journaled:
+`Fcqrs.sendAwaiting` subscribes before sending, sends the command, and waits for one projection
+notification when the aggregate reply was journaled:
 
 ```fsharp
 let subs = Fcqrs.projection api (Projection.single 0 handle)   // the ISubscribe stream
@@ -25,20 +23,68 @@ let! ack =
     Fcqrs.sendAwaiting subs documents cid id (CreateOrUpdate doc) (function
         | Document.Updated _ -> true
         | _ -> false)
-// on return, the read model already reflects the write — read it now
+// On return, this projection has published the matching event. Query its model now.
 ```
+
+The helper waits for one notification. If a command persists a batch and the projection publishes
+several events for the same CID, either filter notifications so only the final required update is
+published or compose a subscription with the correct `take` count.
 
 ## Why "only if journaled"
 
-An aggregate can answer a command two ways: it can **persist** an event (which flows to the journal and
-then the projection), or it can **defer** one — a rejection, or an idempotent no-op — which is delivered to
-you but *never journaled*, so the projection will never see it. Both arrive as the same `Event` shape, so a
-caller cannot tell them apart by looking at the payload.
+An aggregate can persist an event or defer a reply. A deferred rejection or idempotent response is
+returned to the caller but never enters the journal, so no projection will receive it.
 
-FCQRS stamps the delivered envelope with `Event.Journaled : bool option` — `Some true` for a journaled ack,
-`Some false` for a deferred one, `None` for an envelope that never passed aggregate delivery. `sendAwaiting`
-reads it and skips the wait on a deferred ack, so a rejection returns immediately instead of hanging on a
-projection event that will never arrive.
+FCQRS stamps the delivered envelope with `Event.Journaled : bool option`:
 
-If you are composing the wait by hand, subscribe **before** you send, and gate the await on
-`ack.Journaled <> Some false`.
+- `Some true`: the event was stored and can reach a projection;
+- `Some false`: the reply was deferred or publish-only and will not reach a projection;
+- `None`: the envelope predates or bypassed the delivery stamp.
+
+`sendAwaiting` skips the projection wait for `Some false`.
+
+## Compose the sequence manually
+
+Use the explicit form when waiting for several notifications, adding cancellation, or applying a
+notification filter:
+
+```fsharp
+use awaiter = subscriptions.Subscribe(cid, 1, cancellationToken = cancellationToken)
+
+let! reply = documents.Send cid documentId command isExpectedReply
+
+if reply.Journaled <> Some false then
+    do! awaiter.Task |> Async.AwaitTask
+
+// Query the model maintained by subscriptions.
+```
+
+The ordering is part of correctness. Subscribing after `.Send` creates a race in which the projection
+can publish before the subscription exists.
+
+<div class="cs-alt"></div>
+
+```csharp
+using var awaiter = subscriptions.SubscribeForFirst(cid);
+
+var reply = await documents(
+    isExpectedReply,
+    cid,
+    documentId,
+    command);
+
+if (reply.Journaled is not { Value: false })
+    await awaiter.Task;
+
+// Query the model maintained by subscriptions.
+```
+
+## Wait for the right projection
+
+A notification means that the projection publishing it has completed its handler. It says nothing
+about another projection with a different offset or deployment. If a response depends on several read
+models, wait for a completion signal representing all of them.
+
+Subscriptions are in-memory rendezvous points, not durable messages for disconnected clients. Create
+the subscription as part of the active request, use a timeout or cancellation token, and decide how the
+API reports a projection that does not catch up in time.

@@ -5,46 +5,59 @@ categoryindex: 3
 index: 1
 ---
 
-# Tutorial
+# Tutorial: from first command to production
 
-The [Get started](../get-started.html) page drops a working loop in your lap at once. This tutorial is
-the slow version: you build the same kind of application by hand, and at each step we separate the
-**idea** (a CQRS/event-sourcing principle that's true in any language) from the **mechanism** (how
-FCQRS happens to implement it). Where the machinery is overkill for a given app, we'll say so — the
-point is judgment, not selling a framework.
+This course builds one application in stages. You begin with a pure function that decides whether a
+document may change. You finish with two aggregates, a read model, a saga, recovery tests, and a
+production checklist.
 
-What you'll build is a small **document store**, the same domain as the worked example
-[`focument_fsharp`](https://github.com/OnurGumus/focument_fsharp): you create and edit versioned documents, a read
-model tracks them, and — by the end — a quota saga gates new documents across a second aggregate.
+The application is a document store. A document can be created and edited. A user aggregate owns a
+creation quota, and a saga coordinates the document and user when a new document is requested. The
+same domain is available as a complete application in
+[`focument_fsharp`](https://github.com/OnurGumus/focument_fsharp).
+
+By the end, you will be able to:
+
+- choose an aggregate boundary and explain which races it eliminates;
+- model commands, persisted events, deferred replies, and derived state;
+- build a projection and use its offset correctly;
+- wait for a specific projection before querying it;
+- coordinate aggregates without sharing their state;
+- make commands safe under retries and keep replay deterministic;
+- evolve persisted message types without treating events like ordinary DTOs;
+- configure storage, snapshots, diagnostics, and cluster deployment.
 
 ## What you need
 
-- The **.NET 10 SDK** (`dotnet --version` should print `10.*`).
-- A scratch project. Create one now; every chapter adds to its `Program.fs`:
+- The **.NET 10 SDK**. `dotnet --version` should print `10.*`.
+- A scratch project. Each practical chapter adds to its `Program.fs`:
 
 ```bash
 dotnet new console -lang F# -n DocStore
 cd DocStore
-dotnet add package FCQRS --prerelease   # the F# facade ships in the 6.0 previews
+dotnet add package FCQRS --prerelease
 ```
 
-Run it at any point with `dotnet run`. The first run creates a SQLite file next to the binary (the
-**journal** — your event log); delete `*.db*` if you ever want a clean slate.
+Run the project at any point with `dotnet run`. The first running chapter creates `tutorial.db`, which
+contains the event journal and snapshots. Delete `tutorial.db*` only when you intentionally want to
+discard the tutorial history and begin again.
 
-> Each chapter's code uses the idiomatic-F# facade `FCQRS.FSharp`, and chapters 1–2 are compiled
-> against the pinned package as part of building this site, so what you read here is what the compiler
-> accepts.
+The F# code in the executable chapters is checked while this documentation site is built. C# versions
+of the important types and functions appear beside the F# examples.
 
-## The three chapters
+## The five stages
 
-1. **[The aggregate](1-the-aggregate.html)** — the write side. What a command and an event really are,
-   why they're *different* sets, and the two pure functions (`decide`, `fold`) that are the whole of
-   your domain logic. No actors yet — just types you can unit-test.
-2. **[Wiring and running it](2-running-it.html)** — turn those functions into a running, persistent
-   actor with no HOCON, add a read model, send a command, and *watch the version climb across
-   restarts* — your first real taste of event sourcing.
-3. **[Adding a saga](3-adding-a-saga.html)** — a rule that spans two entities (a per-user quota) that an
-   aggregate structurally *cannot* enforce alone, and the process manager that can.
+1. **[Model the aggregate](1-the-aggregate.html):** separate requests from recorded facts, define
+   validated domain values, and write the `decide` and `fold` functions.
+2. **[Run the write and read paths](2-running-it.html):** host the aggregate, store events, project them
+   into query data, and wait for the projection before reading.
+3. **[Coordinate with a saga](3-adding-a-saga.html):** enforce a user quota across document and user
+   aggregates while keeping each consistency boundary independent.
+4. **[Test and evolve the system](4-testing-and-evolution.html):** test decisions, replay, retry
+   behaviour, and changes to persisted event contracts.
+5. **[Prepare for production](5-production.html):** configure durable storage, failure handling,
+   observability, snapshots, backups, and cluster deployment.
 
-Each chapter links into [Concepts](../concepts/index.html) when you want the long-form reasoning behind
-a piece.
+Read the stages in order the first time. The [concept pages](../concepts/index.html) explain each model
+in more depth, while the [how-to guides](../how-to/index.html) are shorter references for use after the
+course.

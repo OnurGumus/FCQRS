@@ -3,11 +3,11 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <meta name="description" content="FCQRS — write pure business rules while the framework handles event-sourced reliability." />
+  <meta name="description" content="Learn FCQRS from aggregates and event sourcing through projections, sagas, recovery, and production operation." />
   <meta name="theme-color" content="#071d46" />
-  <title>FCQRS — You write the rules</title>
+  <title>FCQRS | Event-sourced CQRS for F# and C#</title>
   <style>
-    /* Self-hosted Inter (variable, Latin subset) — no runtime CDN dependency. SIL OFL 1.1, see fonts/LICENSE. */
+    /* Self-hosted Inter (variable, Latin subset). No runtime CDN dependency. SIL OFL 1.1, see fonts/LICENSE. */
     @font-face {
       font-family: 'Inter';
       font-style: normal;
@@ -694,12 +694,12 @@
         <div>
           <div class="eyebrow" aria-hidden="true"></div>
           <h1>
-            You write the rules.
-            <span class="secondary">FCQRS <span class="green">delivers everything else.</span></span>
+            Model decisions as events.
+            <span class="secondary">Build <span class="green">reliable, queryable workflows.</span></span>
           </h1>
           <div class="hero-copy">
-            <p>Event-sourced reliability from day one — the journal, the sagas, the read models, and read-your-writes.</p>
-            <p>Two pure functions are yours; the distributed-systems weight is the framework’s.</p>
+            <p>FCQRS combines event-sourced aggregates, projections, sagas, and correlation-based read-your-writes.</p>
+            <p>Start with two pure domain functions, then learn where storage, recovery, and distributed boundaries matter.</p>
           </div>
           <div class="language-support" aria-label="First-class support for C sharp and F sharp">
             <span>First-class support for C# and F#</span>
@@ -708,11 +708,11 @@
               <svg class="language-logo" viewBox="0 0 64 64"><defs><linearGradient id="fs" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#378BBA"/><stop offset="1" stop-color="#2b6d93"/></linearGradient></defs><path d="M32 3 61 32 32 61 3 32Z" fill="url(#fs)"/><text x="32" y="40" text-anchor="middle" fill="white" font-family="system-ui,sans-serif" font-size="25" font-weight="900">F#</text></svg>
             </span>
           </div>
-          <div class="quickstart" aria-label="Install FCQRS from NuGet"><span class="prompt" aria-hidden="true">›</span><code>dotnet add package FCQRS</code><button class="copy-btn" type="button" data-copy="dotnet add package FCQRS">Copy</button><span class="hint">— running in minutes</span></div>
+          <div class="quickstart" aria-label="Install FCQRS from NuGet"><span class="prompt" aria-hidden="true">›</span><code>dotnet add package FCQRS</code><button class="copy-btn" type="button" data-copy="dotnet add package FCQRS">Copy</button><span class="hint">then follow Get started</span></div>
         </div>
 
         <article class="code-card" aria-label="The two functions you write">
-          <div class="code-card-title">The only code you write</div>
+          <div class="code-card-title">The core domain functions</div>
           <div class="function">
             <div class="function-head"><span class="step-number">1</span><span class="function-name">decide</span></div>
             <pre class="code"><code>let <span class="keyword">decide</span> cmd state : EventAction&lt;Event&gt;</code></pre>
@@ -720,7 +720,7 @@
           </div>
           <div class="function">
             <div class="function-head"><span class="step-number">2</span><span class="function-name">fold</span></div>
-            <pre class="code"><code>let <span class="keyword">fold</span> state event : State</code></pre>
+            <pre class="code"><code>let <span class="keyword">fold</span> event state : State</code></pre>
             <p>Evolve state from events.</p>
           </div>
         </article>
@@ -739,18 +739,18 @@
 
     <section class="section" id="how">
       <div class="container">
-        <h2 class="section-title">How it works <span>(simple by design)</span></h2>
+        <h2 class="section-title">How a request becomes a query result</h2>
         <div class="flow">
           <article class="flow-card">
             <svg aria-hidden="true"><use href="#i-command"/></svg>
             <h3>Command</h3>
-            <p>A user action or external event.</p>
+            <p>A request to change one aggregate.</p>
           </article>
           <article class="flow-card core">
             <span class="step-number mini-step">1</span>
             <svg aria-hidden="true"><use href="#i-code"/></svg>
             <h3><code>decide</code></h3>
-            <p>You decide what happened.</p>
+            <p>Choose an event from the command and current state.</p>
           </article>
           <article class="flow-card">
             <svg aria-hidden="true"><use href="#i-events"/></svg>
@@ -761,7 +761,7 @@
             <span class="step-number mini-step">2</span>
             <svg aria-hidden="true"><use href="#i-code"/></svg>
             <h3><code>fold</code></h3>
-            <p>You transform events into new state.</p>
+            <p>Apply stored events to reconstruct state.</p>
           </article>
           <article class="flow-card">
             <svg aria-hidden="true"><use href="#i-table"/></svg>
@@ -774,12 +774,12 @@
 
     <section class="section" id="reliability">
       <div class="container">
-        <h2 class="section-title green-title">FCQRS handles reliability</h2>
+        <h2 class="section-title green-title">Runtime responsibilities</h2>
         <div class="reliability-grid">
-          <article class="reliability-card"><svg aria-hidden="true"><use href="#i-journal"/></svg><h3>Durable journal</h3><p>Every event is persisted and never lost.</p></article>
-          <article class="reliability-card"><svg aria-hidden="true"><use href="#i-cycle"/></svg><h3>Sagas</h3><p>Long-running flows persist intent and resume.</p></article>
-          <article class="reliability-card"><svg aria-hidden="true"><use href="#i-shield"/></svg><h3>Crash recovery</h3><p>Restart exactly where the work left off.</p></article>
-          <article class="reliability-card"><svg aria-hidden="true"><use href="#i-check"/></svg><h3>Read-your-writes</h3><p>See the outcome of what you just wrote.</p></article>
+          <article class="reliability-card"><svg aria-hidden="true"><use href="#i-journal"/></svg><h3>Durable journal</h3><p>Persisted events rebuild aggregate state after restart.</p></article>
+          <article class="reliability-card"><svg aria-hidden="true"><use href="#i-cycle"/></svg><h3>Sagas</h3><p>Stored workflow state coordinates commands across aggregates.</p></article>
+          <article class="reliability-card"><svg aria-hidden="true"><use href="#i-shield"/></svg><h3>Recovery</h3><p>Aggregates and sagas replay stored history before processing.</p></article>
+          <article class="reliability-card"><svg aria-hidden="true"><use href="#i-check"/></svg><h3>Read-your-writes</h3><p>Wait for a selected projection before querying its view.</p></article>
           <article class="reliability-card"><svg aria-hidden="true"><use href="#i-camera"/></svg><h3>Snapshots</h3><p>Capture state for faster replay and recovery.</p></article>
         </div>
         <p class="reliability-extra">
@@ -798,31 +798,31 @@
           <article class="benefit-card reliable">
             <div class="benefit-head"><span class="benefit-icon"><svg aria-hidden="true"><use href="#i-shield"/></svg></span><h3>Reliable by default</h3></div>
             <ul>
-              <li>You never lose an event</li>
-              <li>No locks. No isolation levels.</li>
-              <li>Crashes don’t lose work</li>
-              <li>Read-your-writes built in</li>
-              <li>Snapshots keep recovery fast</li>
+              <li>Commands are serialized per aggregate</li>
+              <li>Stored events are replayable history</li>
+              <li>Saga progress survives process restart</li>
+              <li>Projection completion can be awaited</li>
+              <li>Snapshots shorten aggregate replay</li>
             </ul>
           </article>
           <article class="benefit-card grow">
             <div class="benefit-head"><span class="benefit-icon"><svg aria-hidden="true"><use href="#i-trend"/></svg></span><h3>Ready when you grow</h3></div>
             <ul>
-              <li>Projections scale independently</li>
-              <li>Add nodes without changing domain code</li>
+              <li>Read models are shaped per query</li>
+              <li>Cluster sharding routes aggregate ids</li>
               <li>Built on Akka.NET</li>
-              <li>Handles load and spikes gracefully</li>
-              <li>Scales across a cluster as you grow</li>
+              <li>Aggregates can run across cluster nodes</li>
+              <li>Storage and projections remain explicit choices</li>
             </ul>
           </article>
           <article class="benefit-card domain">
             <div class="benefit-head"><span class="benefit-icon"><svg aria-hidden="true"><use href="#i-code"/></svg></span><h3>Focus on your domain</h3></div>
             <ul>
-              <li>You write only <code>decide</code> and <code>fold</code></li>
-              <li>Textbook DDD aggregates</li>
+              <li>Business decisions live in <code>decide</code></li>
+              <li>Recovery logic lives in <code>fold</code></li>
               <li>Testable without a runtime</li>
-              <li>Easy to use and set up</li>
-              <li>The framework handles the hard parts</li>
+              <li>Commands and events document outcomes</li>
+              <li>Infrastructure boundaries stay visible</li>
             </ul>
           </article>
         </div>
@@ -832,12 +832,12 @@
             <svg viewBox="0 0 100 76" aria-hidden="true"><path d="M25 68 57 8 97 68Z" fill="#29abe2"/><path d="M4 68 24 34 44 68Z" fill="#1076bd" stroke="#fff" stroke-width="3" stroke-linejoin="round"/></svg>
             <div><small>BUILT ON</small><strong>Akka.NET</strong></div>
           </div>
-          <p>FCQRS uses Akka.NET under the hood when you need it — but keeps the actor model out of your way.</p>
+          <p>FCQRS uses Akka.NET persistence and cluster sharding while exposing aggregates, sagas, projections, and typed handlers.</p>
           <div class="trust" aria-label="Project qualities">
-            <span><svg aria-hidden="true"><use href="#i-shield"/></svg>Reliable</span>
-            <span><svg aria-hidden="true"><use href="#i-award"/></svg>Mature</span>
-            <span><svg aria-hidden="true"><use href="#i-tools"/></svg>Battle-tested</span>
-            <span><svg aria-hidden="true"><use href="#i-bank"/></svg>Enterprise-proven</span>
+            <span><svg aria-hidden="true"><use href="#i-shield"/></svg>Event sourced</span>
+            <span><svg aria-hidden="true"><use href="#i-award"/></svg>Typed</span>
+            <span><svg aria-hidden="true"><use href="#i-tools"/></svg>Testable</span>
+            <span><svg aria-hidden="true"><use href="#i-bank"/></svg>Cluster aware</span>
           </div>
         </aside>
       </div>
@@ -847,13 +847,13 @@
   <footer class="site-footer" id="resources">
     <div class="footer-grid">
       <div class="footer-message">
-        <p class="small">Stop writing plumbing.</p>
-        <p class="big">Write your <span class="green">domain.</span></p>
-        <p class="sub">FCQRS makes event sourcing simple and reliable.</p>
+        <p class="small">Begin with one aggregate.</p>
+        <p class="big">Learn the complete <span class="green">flow.</span></p>
+        <p class="sub">Continue from the first command through production recovery.</p>
       </div>
       <a class="resource" href="overview.html">
         <span class="resource-icon" style="color: var(--red-600)"><svg aria-hidden="true"><use href="#i-document"/></svg></span>
-        <span><strong>Docs</strong><small>Read the guide</small></span><span class="arrow">›</span>
+        <span><strong>Docs</strong><small>Choose a learning path</small></span><span class="arrow">›</span>
       </a>
       <a class="resource" href="https://www.nuget.org/packages/FCQRS" target="_blank" rel="noreferrer">
         <span class="resource-icon" style="color: var(--green-700)"><svg aria-hidden="true"><use href="#i-package"/></svg></span>

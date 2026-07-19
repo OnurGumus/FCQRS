@@ -2,16 +2,39 @@
 title: Add a projection
 category: How-to
 categoryindex: 5
-index: 3
+index: 5
 ---
 
 # Add a projection
 
-A projection is a function called once per event, in order. Fold each event into your read model and
-record the offset **in the same transaction**, so processing is exactly-once across a crash. With the
-`FCQRS.FSharp` facade the common shape is `int64 -> obj -> unit` (`Projection.single`): you just update
-the read model, and FCQRS publishes each aggregate event to subscribers for you — which is what wakes a
-read-your-writes wait.
+A projection receives journal events in order and updates data designed for queries. It also records an
+offset identifying the last event it committed. When the read-model update and offset share one
+database transaction, a crash commits both or neither. Retrying the uncommitted event then gives
+exactly-once updates within that transaction.
+
+Create the read model and one offset row for this projection:
+
+```sql
+create table if not exists Documents (
+    Id text primary key,
+    Title text not null,
+    Body text not null
+);
+
+create table if not exists Offsets (
+    OffsetName text primary key,
+    OffsetCount integer not null
+);
+
+insert or ignore into Offsets (OffsetName, OffsetCount)
+values ('DocumentProjection', 0);
+```
+
+## Handle every event transactionally
+
+The handler receives the journal offset and an `obj` because the stream contains events from every
+aggregate and saga. Match the envelope types this projection needs. Advance the offset for every event,
+including event types that do not change this read model.
 
 ```fsharp
 open FCQRS.Common
@@ -33,7 +56,7 @@ let handle (connString: string) (offset: int64) (event: obj) : unit =
         | _ -> ()
     | _ -> ()
 
-    // advance the offset in the SAME transaction as the writes
+    // Advance for every event, in the same transaction as the read-model write.
     conn.Execute(
         "update Offsets set OffsetCount = @n where OffsetName = 'DocumentProjection'",
         {| n = offset |}, tx)
@@ -44,7 +67,7 @@ let handle (connString: string) (offset: int64) (event: obj) : unit =
 <div class="cs-alt"></div>
 
 ```csharp
-// C#: the same projection as a void method — just update the read model.
+// C#: the same projection as a void method.
 using static FCQRS.Common;   // Event<>
 using Dapper;
 using Microsoft.Data.Sqlite;
@@ -60,7 +83,7 @@ public static void HandleEventWrapper(string connString, long offset, object eve
             "insert or replace into Documents (Id, Title, Body) values (@Id, @Title, @Body)",
             new { Id = u.Document.Id.ToString(), Title = u.Document.Title.ToString(), Body = u.Document.Content.ToString() }, tx);
 
-    // advance the offset in the SAME transaction as the writes
+    // Advance for every event, in the same transaction as the read-model write.
     conn.Execute(
         "update Offsets set OffsetCount = @n where OffsetName = 'DocumentProjection'",
         new { n = offset }, tx);
@@ -68,7 +91,9 @@ public static void HandleEventWrapper(string connString, long offset, object eve
 }
 ```
 
-Register it from your composition root, resuming from the stored offset:
+## Resume from the stored offset
+
+Read `DocumentProjection` from `Offsets` during startup and pass that value to the projection:
 
 ```fsharp
 let subscriptions =
@@ -79,23 +104,41 @@ let subscriptions =
 <div class="cs-alt"></div>
 
 ```csharp
-// C#: register via the DI host-builder, resuming from the stored offset.
+// C#: resolve both the handler and last offset from application services.
 services.AddProjection(
     handler: sp => (offset, evt) => HandleEventWrapper(connString, offset, evt),
     lastOffset: _ => (int)ServerQuery.GetLastOffset(connString));
 ```
 
-`Fcqrs.projection` returns an `ISubscribe` — the same subscription stream `.Send` and the
-read-your-writes wait use. (`subscriptions.Subscribe(cid, 1)` waits for one event with a given
-correlation id.)
+`Fcqrs.projection` returns an `ISubscribe`. A client can subscribe to a correlation id and wait until
+this handler commits the matching event. Aggregate `.Send` waits only for the aggregate reply; the
+projection subscription is the separate read-side confirmation.
 
-> **Filtering which events wake subscribers.** `Projection.single` publishes *every* aggregate event.
-> To wake read-your-writes on only some events — e.g. suppress an intermediate event so the caller
-> unblocks on the final one — use `Projection.filtered` (return `Publish` / `Suppress` per event) or
-> `Projection.multi` (return the exact `IMessageWithCID list` to publish). In C#, the `Notify`-returning
-> and `IList<IMessageWithCID>`-returning `.AddProjection` overloads do the same.
+The C# host builder has one `AddProjection` slot per FCQRS runtime. A handler may update several read
+models in the same process. Independently deployed projection consumers should keep independent
+offsets.
 
-Two things matter most. **Track the offset in the same transaction as your writes** — that's what makes
-processing exactly-once across a crash. And **rebuild freely**: to fix a projection bug, correct this
-function, delete the read model, reset the offset to 0, and replay — the journal is untouched.
-Background: [The read side](../concepts/read-models.html).
+## Choose which events notify callers
+
+| F# helper | C# handler result | Subscription behaviour |
+|---|---|---|
+| `Projection.single` | `void` | publish every aggregate event after handling |
+| `Projection.filtered` | `Notify` | publish or suppress the handled aggregate event |
+| `Projection.multi` | `IMessageWithCID list` | publish the exact notification list returned |
+
+Use filtering when one command produces several events but a caller should wake only after the event
+that completes all required read-model updates. The notification must be published only after those
+updates commit.
+
+## Handle failures visibly
+
+Do not catch a storage exception and advance the offset. Let the handler fail. FCQRS terminates the
+process when a projection handler fails so the stream cannot stop silently while the host appears
+healthy. The process supervisor can restart it from the last committed offset after the storage problem
+or handler bug is corrected.
+
+A projection writing to several stores cannot use one local transaction for all updates. Make each
+destination idempotent and record enough progress to retry safely.
+
+To correct derived data, follow [Rebuild a read model](rebuild-a-read-model.html). Do not edit the event
+journal to repair a projection. Background: [The read side](../concepts/read-models.html).
