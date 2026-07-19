@@ -18,6 +18,9 @@ or visible at different times:
 
 Understanding recovery means putting those boundaries on one timeline.
 
+> **Motivation:** “The system is consistent” hides the question that matters during failure. Name the
+> last boundary that became durable, then reason about everything that may have happened after it.
+
 ## One command has several observable moments
 
 For a successful command, the sequence is approximately:

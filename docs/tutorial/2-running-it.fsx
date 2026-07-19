@@ -88,6 +88,9 @@ The application has two paths:
 Commands flow through the aggregate and append events to the journal. Projections consume those events
 and update read models. Application queries use the read model, not the aggregate state or journal.
 
+> **Motivation:** Two paths let query shapes evolve without widening the aggregate, and let business
+> rules evolve without redesigning every query. The stored events are the stable handoff between them.
+
 ## Create the actor system
 
 `Fcqrs.actor` builds the Akka.NET system. The connection configures the journal, query journal, and

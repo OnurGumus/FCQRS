@@ -37,6 +37,10 @@ with business rules, and changing one side risks breaking the other.
 
 CQRS separates them.
 
+> **Motivation:** The extra path is worthwhile when decision rules and query needs change for different
+> reasons. Separating them lets each model stay small instead of making every screen and rule negotiate
+> one shared shape.
+
 The **write model** handles decisions and protects the rules of the system. The **read model** presents
 the information people and applications need. Each can then stay simple in its own way.
 

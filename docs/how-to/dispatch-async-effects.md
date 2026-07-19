@@ -22,6 +22,9 @@ crosses aggregate boundaries as a business process.
 | Survives process stop or shard movement | no | yes |
 | Suitable for required external business action | no | yes, with an idempotent handler |
 
+> **Motivation:** `RunAsync` keeps the decision function pure without pretending the in-flight work is
+> durable. Choose it only when repeating the original request is an acceptable recovery strategy.
+
 `decide` returns data describing the effect, not a closure that performs it. A separately registered
 runner executes the description and returns a command.
 

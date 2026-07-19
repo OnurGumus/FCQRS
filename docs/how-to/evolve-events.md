@@ -11,6 +11,10 @@ Persisted events are data contracts. A deployment may read events written months
 deployment may exchange messages between two application versions. Change event types with that
 lifetime in mind.
 
+> **Motivation:** Source code can be replaced in one deployment, but journal data remains. Treat an
+> event change as a data-compatibility decision because recovery and rebuilds still execute against the
+> old representation.
+
 ## Register stable journal names
 
 Without a stable mapping, a journal manifest can depend on the CLR assembly and type name. Register a

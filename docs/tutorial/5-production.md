@@ -46,6 +46,10 @@ See [Add a projection](../how-to/add-a-projection.html) and
 An external service and the saga journal do not share a transaction. The service may accept a request
 just before the process loses its connection or stops. Retrying can therefore repeat the request.
 
+> **Motivation:** Durable state solves only the part of a failure that happened before the last commit.
+> Production design must make the uncertain work after that boundary observable, repeatable, or safe to
+> resolve manually.
+
 For every external command, decide:
 
 - the timeout;

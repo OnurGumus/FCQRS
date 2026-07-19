@@ -12,6 +12,9 @@ offset identifying the last event it committed. When the read-model update and o
 database transaction, a crash commits both or neither. Retrying the uncommitted event then gives
 exactly-once updates within that transaction.
 
+> **Motivation:** Storing data and offset together removes ambiguity after a restart. The projection
+> either committed the event and moves past it, or committed neither and can safely try it again.
+
 Create the read model and one offset row for this projection:
 
 ```sql

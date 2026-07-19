@@ -16,6 +16,10 @@ page request would make queries slow and couple the user interface to write-side
 
 The read side exists to turn stored facts into useful answers ahead of time.
 
+> **Motivation:** A projection pays the transformation cost once as events arrive. Queries can then
+> read the shape they need directly instead of rebuilding histories and joining write-side state on
+> every request.
+
 ## Projection and read model are different things
 
 A **projection** is the event-handling process. A **read model** is the data it produces.

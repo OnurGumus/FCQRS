@@ -49,6 +49,10 @@ command -> aggregate -> journal -> projection -> read model
 
 This is expected CQRS behaviour. The write side is current before the read side catches up.
 
+> **Motivation:** Most requests can tolerate that short delay, so FCQRS does not make every write wait
+> for every projection. Read-your-writes adds coordination only to the interaction that needs an
+> immediately current view.
+
 When the caller must read its own write, FCQRS uses the CID as a request-scoped rendezvous:
 
 1. Create a CID.

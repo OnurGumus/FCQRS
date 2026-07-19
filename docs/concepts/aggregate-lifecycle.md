@@ -31,6 +31,10 @@ It helps to distinguish three layers:
 The actor's state is a working copy. A snapshot is an optimization. The journal is the history that
 explains how the aggregate reached its state.
 
+> **Motivation:** Treating these layers as interchangeable creates recovery bugs. Memory may disappear,
+> and snapshots may be missing or old; persisted events remain the evidence from which correct state
+> must be reproducible.
+
 ## Deferring returns an outcome without recording it
 
 A command does not always create a new fact. Cancelling an already shipped order may need to return

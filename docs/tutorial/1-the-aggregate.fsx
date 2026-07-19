@@ -40,6 +40,10 @@ Commands and events are different types because one request can have several out
 separate also lets the publication workflow in chapter 3 add a new outcome without pretending that
 every command succeeds.
 
+> **Motivation:** A command records intent; an event records what the domain decided. Keeping those
+> moments separate makes rejection explicit and prevents an unaccepted request from entering history
+> as though it were a fact.
+
 An **aggregate** owns the state and rules needed to make decisions about one entity. FCQRS runs each
 aggregate as an actor that handles one command at a time. Sequential handling eliminates races within
 that aggregate. Rules spanning several aggregates require coordination, which chapter 3 introduces.

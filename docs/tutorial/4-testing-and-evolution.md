@@ -36,6 +36,10 @@ the cases down before writing the assertions:
 The last row is a retry case. The reply still tells the saga that the document is published, but the
 aggregate does not store a second publication.
 
+> **Motivation:** These tests protect the recovery contract, not an implementation detail. If the same
+> inputs always select the same action and rebuild the same state, runtime restarts can safely reuse
+> the domain logic you tested.
+
 Use a command envelope helper and call `decide` directly:
 
 ```fsharp

@@ -13,6 +13,9 @@ has commands, events, immutable state, a decision function, a fold, projections,
 The important interop question is not “how do I call an F# method?” It is “how do I preserve the same
 closed message model and durable serialized contracts in C#?”
 
+> **Motivation:** Language interop should change the surface syntax, not weaken the domain model. Closed
+> cases and stable event representations protect the same decisions and histories in either language.
+
 ## Start from the language-independent model
 
 Suppose a document supports two requests and four outcomes:

@@ -11,6 +11,9 @@ An aggregate can store an event before a projection updates its read model. If a
 and immediately queries, it may receive the previous view. Read-your-writes waits for the required
 projection before performing that query.
 
+> **Motivation:** Keep projections asynchronous for throughput and independence, then pay the waiting
+> cost only for a request whose response must include its own change.
+
 Read [Correlation IDs and read-your-writes](../concepts/correlation-ids.html) first if you need the
 mental model behind the sequence, projection boundary, and ephemeral notification.
 

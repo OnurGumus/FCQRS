@@ -14,6 +14,9 @@ product, payment, and delivery joins to render a page.
 That design is often the right place to begin. It becomes difficult when the model used to make
 decisions and the model used to answer questions are pulled in different directions.
 
+> **Motivation:** CQRS is a response to incompatible change pressures, not a goal by itself. Separate
+> the models when keeping them together makes either business decisions or queries harder to express.
+
 ## One model is doing two jobs
 
 Consider cancelling an order.

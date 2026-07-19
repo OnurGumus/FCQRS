@@ -17,6 +17,10 @@ This page builds one complete FCQRS path in a single file. A command creates a d
 stores an event, a projection updates a read model, and the program queries that model after receiving
 the projection's confirmation.
 
+> **Motivation:** Build one complete vertical slice first. An aggregate alone hides the asynchronous
+> handoff to projections, while a full command-to-query loop exposes the architecture you will use in
+> a real application.
+
 The read model is kept in memory so the example needs only the `FCQRS` package. It is rebuilt by
 replaying the journal from offset zero whenever the program starts. A production projection stores its
 data and offset transactionally; [Add a projection](how-to/add-a-projection.html) shows that version.

@@ -12,6 +12,10 @@ before writing the types: every rule that must be decided atomically needs to fi
 one aggregate instance. FCQRS processes its commands sequentially, eliminating races within that
 boundary.
 
+> **Motivation:** Choose the boundary before the code because sequential handling can protect only the
+> facts inside it. No handler implementation can make an invariant atomic after its required state has
+> been split across independent aggregates.
+
 The implementation has three domain types and two pure functions:
 
 ```fsharp
