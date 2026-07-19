@@ -10,6 +10,8 @@ index: 1
 (**
 # FCQRS
 
+A functional CQRS and event-sourcing framework built on Akka.NET, with first-class F# and C# APIs.
+
 <figure style="margin: 1.5rem 0;">
   <img src="img/two-models.png" alt="On the left, one tangled Entity Framework object graph where every entity references every other; on the right, the same domain split into small command-side aggregates that each enforce their own invariants, plus flat query-side read models shaped for fast queries." style="width: 100%; height: auto; border: 1px solid var(--line, #d7e1ef); border-radius: 12px;"/>
   <figcaption style="margin-top: .6rem; font-size: .9rem; color: var(--muted, #4d5f7d); text-align: center;">The same domain represented by one shared model and by separate write and read models.</figcaption>
