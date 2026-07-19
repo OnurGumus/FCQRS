@@ -25,7 +25,10 @@ Publishing a document under `/guides/fcqrs` takes several steps:
 4. the saga tells the document to confirm or reject publication.
 
 The process can stop after any step. A node may restart after the slug is reserved but before the
-document is confirmed. The saga therefore needs durable progress, not a chain of in-memory callbacks.
+document is confirmed.
+
+> **Motivation:** A chain of in-memory callbacks forgets where it was when the process stops. A saga
+> stores that progress so the conversation can continue from its last durable step.
 
 ## A saga is a state machine
 
@@ -72,6 +75,9 @@ incoming event
 ```
 
 The state is stored first, so a restart has a durable answer to “what should happen next?”
+
+> **Motivation:** Keeping state selection separate from command emission makes the next action
+> recoverable. The journal records the saga's intent before delivery introduces uncertainty.
 
 ## `StateChangedEvent` and `SagaTransition` are different
 
@@ -127,6 +133,9 @@ event in that internal envelope so the saga can retain:
 The distinction matters: `PublicationRequested` is the domain fact; `SagaStartingEvent` is FCQRS
 runtime evidence about how this saga instance began.
 
+> **Motivation:** `StartOn` is more than an event filter. It marks the creation boundary FCQRS needs to
+> install the new saga before releasing the event that gives it work.
+
 ## Starting is itself a race
 
 The first event must create the saga and also reach it. Publishing before the new saga subscribes can
@@ -170,6 +179,10 @@ The `recovering` flag can select that status-check path when repeating the norma
 Returning no commands for every recovered state is usually wrong. It strands a saga when the original
 command was never delivered. Resumability comes from durable state plus safe re-delivery, not from
 exactly-once messaging.
+
+> **Motivation:** At a crash boundary, the sender cannot prove whether its last command arrived.
+> Persisting the intended step and making that command safe to repeat turns this uncertainty into a
+> workflow that can resume.
 
 ## The starting event also protects resumption
 

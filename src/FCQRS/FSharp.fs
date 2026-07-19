@@ -11,9 +11,9 @@
 ///     open FCQRS.FSharp
 ///     let api       = Fcqrs.actor config loggerFactory (Some (Fcqrs.connect DBType.Sqlite conn)) "Cluster"
 ///     let documents = Fcqrs.aggregate api { Name="Document"; Initial=...; Decide=...; Fold=... }
-///     let users     = Fcqrs.aggregate api { Name="User"; ... }
-///     let quota     = Fcqrs.saga api (quotaDef documents.Factory users.Factory)
-///     Fcqrs.wireSagaStarters api [ quota ]
+///     let slugs     = Fcqrs.aggregate api { Name="Slug"; Initial=...; Decide=...; Fold=... }
+///     let publication = Fcqrs.saga api (publicationDef documents.Factory slugs.Factory)
+///     Fcqrs.wireSagaStarters api [ publication ]
 ///     let subs      = Fcqrs.projection api (Projection.single 0 updateReadModel)
 ///     // (Projection.multi when you must control which notifications publish)
 ///     // send a command and await the matching aggregate reply:

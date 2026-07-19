@@ -51,6 +51,9 @@ Document                  Publication saga                 Slug[guides/fcqrs]
 The target aggregates still own every business decision. The saga owns only the progress of this
 conversation.
 
+> **Motivation:** Keeping each rule with its owner prevents the saga from becoming a second, stale copy
+> of document and slug state. The saga coordinates answers; it does not invent them.
+
 ## Keep the domain types small
 
 Chapter 1 covered validated titles and content. This chapter uses strings for those already-understood
@@ -188,6 +191,9 @@ This table separates two questions:
 
 1. Given an event and current saga state, what state should be stored?
 2. Once that state is durable, which command should be sent?
+
+> **Motivation:** The split ensures FCQRS can store what the saga intends to do before it sends a
+> command that may be delivered just as the process fails.
 *)
 
 module PublicationSaga =
@@ -275,6 +281,9 @@ That ordering is what makes the next action recoverable.
 
 `StartOn` selects the originator event that creates one workflow instance. `Originator` identifies the
 aggregate family that produced it and lets `toOriginator` route back to the exact document.
+
+> **Motivation:** A saga cannot subscribe before it exists. Declaring the exact start event gives FCQRS
+> a safe point to create and subscribe the saga before that event is released.
 *)
 
     let startsOn (event: Event<Document.Event>) =
@@ -464,6 +473,9 @@ command already succeeded.
 
 This is resumability: recover durable progress and re-drive the next safe action. It is not rewinding
 the other aggregate, and it is not exactly-once delivery.
+
+> **Motivation:** Restarting the workflow from its first command could repeat already completed work.
+> Re-driving only the action implied by the last stored state limits repetition to one retry-safe step.
 
 ## Run both outcomes
 

@@ -14,6 +14,9 @@ the originating document whether publication can complete.
 Read [Sagas](../concepts/sagas.html) first if you need the ground-up explanation of transitions,
 `SagaStartingEvent`, the starter handshake, and recovery re-drive.
 
+> **Motivation:** Use a saga here because the publication rule crosses two independent owners and the
+> conversation must survive a process restart.
+
 ## Write the state table first
 
 | Current state | Incoming event | Next state | Command issued |
@@ -25,6 +28,9 @@ Read [Sagas](../concepts/sagas.html) first if you need the ground-up explanation
 | `RejectingPublication` | `PublicationRejected` | `Done` | none; stop saga |
 
 The implementation has one function for the first three columns and another for the last column.
+
+> **Motivation:** Writing the table first exposes missing outcomes and accidental loops before routing,
+> persistence, or language syntax can hide them.
 
 ## Map incoming events to persisted states
 
@@ -129,6 +135,9 @@ the state-machine cases; use `unit` when no additional fixed data is needed.
 
 Do not construct `SagaStartingEvent` yourself. FCQRS creates and stores that runtime envelope from the
 event accepted by `StartOn`.
+
+> **Motivation:** The start rule lets FCQRS subscribe the saga before the originator publishes the one
+> event that begins the workflow. Without that handshake, the new saga could miss its first event.
 
 ## Register the saga and starter rules
 
@@ -273,6 +282,9 @@ the previous command is uncertain, so each waiting state must do one of the foll
 - query an external operation by a stable idempotency key;
 - issue a recovery-specific reconciliation command;
 - move to an explicit failed or manual-resolution path.
+
+> **Motivation:** Recovery repeats the next intended action because the journal can prove the stored
+> state, but it cannot prove whether an outgoing message crossed the process boundary before failure.
 
 In this example, reserving the same slug for the same document returns the existing reservation, and
 confirming an already published document returns the existing verdict without storing a duplicate.

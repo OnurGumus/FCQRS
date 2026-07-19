@@ -9,12 +9,11 @@ namespace FCQRS
 //     builder.Services
 //         .AddFcqrs(connectionString, "MyCluster")
 //         .AddAggregate<DocumentShard>()
-//         .AddAggregate<UserShard>()
+//         .AddAggregate<SlugShard>()
 //         .AddSaga(
-//             create:  sp => new QuotaSaga(sp.AggregateFactory<DocumentShard>(),
-//                                          sp.AggregateFactory<UserShard>(),
-//                                          sp.GetRequiredService<ILogger<QuotaSaga>>()),
-//             startOn: e => e is Event<DocumentEvent> { EventDetails: DocumentEvent.CreateOrUpdateRequested })
+//             create:  sp => new PublicationSaga(sp.AggregateFactory<DocumentShard>(),
+//                                                sp.AggregateFactory<SlugShard>()),
+//             startOn: e => e is Event<DocumentEvent> { EventDetails: DocumentEvent.PublicationRequested })
 //
 // (TState/TCommand/TEvent come off the class's Aggregate<,,>/Saga<,,> base — see
 // FcqrsBuilderExtensions at the bottom; the explicit four-type-argument overloads
@@ -347,7 +346,7 @@ module private BaseTypeArgs =
 /// base, so registration repeats none of them:
 ///
 ///     .AddAggregate<DocumentShard>()
-///     .AddSaga(create: sp => new QuotaSaga(...), startOn: e => ...)   // TSaga inferred
+///     .AddSaga(create: sp => new PublicationSaga(...), startOn: e => ...)   // TSaga inferred
 ///
 /// Reflection runs once per registration, while the host is being composed —
 /// nothing on the message path. The four-type-argument instance overloads remain
