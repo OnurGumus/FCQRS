@@ -276,3 +276,234 @@ window.Clipboard_CopyTo = Clipboard_CopyTo;
         init();
     }
 })();
+
+// ---------------------------------------------------------------------------
+// Course navigation and learning aids. This runs on authored and generated API
+// pages, keeping the whole documentation site consistent without duplicating
+// presentation markup in every source page.
+// ---------------------------------------------------------------------------
+(function () {
+    const lessons = {
+        "overview.html": ["See why command decisions and screen queries need different models", "Place aggregates, projections, sagas, and correlation ids in one system", "Decide whether FCQRS fits the rules and failure modes of your application"],
+        "get-started.html": ["Send a command to one aggregate and persist its event", "Project that event into query-shaped data", "Wait for the projection before reading the result"],
+        "tutorial/1-the-aggregate.html": ["Model validated domain values, commands, events, and state", "Write pure decision and fold functions", "Explain which consistency boundary the aggregate protects"],
+        "tutorial/2-running-it.html": ["Host an aggregate and projection in one actor system", "Follow one correlation id through write and read paths", "Run the application twice and observe recovery"],
+        "tutorial/3-adding-a-saga.html": ["Split rules between two independent aggregates", "Coordinate them with a durable saga", "Make repeated commands safe during recovery"],
+        "tutorial/4-testing-and-evolution.html": ["Test decisions, folds, histories, and saga states", "Change persisted contracts without losing old events", "Rebuild derived data deliberately"],
+        "tutorial/5-production.html": ["Choose durable storage and restart-safe projections", "Prepare diagnostics, backups, and failure rehearsals", "Know when a single node is ready to become a cluster"],
+        "concepts/cqrs-and-event-sourcing.html": ["Separate the model that decides from the model that answers queries", "Explain why events, rather than current state, are the source of truth", "Trace what crosses the write and read boundary"],
+        "concepts/aggregates.html": ["Explain how an aggregate serializes decisions for one entity", "Distinguish persisted, deferred, and ignored outcomes", "Keep event replay deterministic"],
+        "concepts/read-models.html": ["Turn journal events into query-shaped data", "Keep projection data and offsets in one transaction", "Explain why read models are disposable"],
+        "concepts/sagas.html": ["Recognize work that crosses aggregate boundaries", "Model a saga as a durable state machine", "Design repeated commands and recovery safely"],
+        "concepts/consistency-and-recovery.html": ["Use correlation ids for read-your-writes coordination", "Distinguish journal versions, offsets, and snapshots", "Reason about restarts and eventual consistency"],
+        "concepts/csharp-interop.html": ["Represent FCQRS messages with C# union types", "Understand how F# and C# messages are serialized", "Choose the language boundary deliberately"],
+        "how-to/define-an-aggregate.html": ["Choose an aggregate boundary and its domain types", "Implement the decision and fold functions", "Select the correct event action and snapshot policy"],
+        "how-to/test-your-domain.html": ["Test a decision table without Akka.NET", "Verify folds against complete histories", "Cover replay and retry behaviour"],
+        "how-to/evolve-events.html": ["Keep existing journal entries readable", "Choose an event-change strategy", "Prove compatibility before deployment"],
+        "how-to/add-a-projection.html": ["Apply events and advance the offset atomically", "Resume from the last committed position", "Expose projection failures instead of hiding them"],
+        "how-to/read-your-writes.html": ["Subscribe before sending a command", "Wait for the projection that serves the next query", "Avoid treating notification delivery as durable messaging"],
+        "how-to/rebuild-a-read-model.html": ["Prepare the journal and schema for replay", "Choose an in-place or side-by-side rebuild", "Detect and recover from replay failure"],
+        "how-to/write-a-saga.html": ["Define saga state, reactions, and command targets", "Register a durable cross-aggregate workflow", "Make recovery commands retry-safe"],
+        "how-to/dispatch-async-effects.html": ["Dispatch best-effort work outside event replay", "Register and test the effect runner", "Choose this only when work may safely be lost"],
+        "how-to/configure-the-database.html": ["Select a supported persistence provider", "Configure journal, query journal, and snapshots together", "Verify the connection before handling traffic"],
+        "how-to/observability.html": ["Follow a correlation id through logs and traces", "Keep span names low-cardinality and payloads private", "Add alerts for the failure boundaries FCQRS cannot hide"],
+        "how-to/use-from-csharp.html": ["Define aggregates with C# union types", "Register FCQRS through the hosting APIs", "Send commands and test the domain without starting the host"],
+        "configuration.html": ["Understand what the embedded defaults configure", "Override persistence, diagnostics, and snapshot settings", "Prepare consistent configuration for multiple nodes"]
+    };
+
+    const tutorialSteps = [
+        ["1-the-aggregate.html", "Model"],
+        ["2-running-it.html", "Run"],
+        ["3-adding-a-saga.html", "Coordinate"],
+        ["4-testing-and-evolution.html", "Test"],
+        ["5-production.html", "Operate"]
+    ];
+
+    function pageKey() {
+        let path = location.pathname.replace(/^.*?\/FCQRS\//, "").replace(/^\//, "");
+        return path || "index.html";
+    }
+
+    function pageKind(key) {
+        if (/^tutorial\/\d-/.test(key)) return "Tutorial chapter";
+        if (key === "tutorial/index.html") return "Guided course";
+        if (/^concepts\//.test(key)) return key.endsWith("index.html") ? "Concept map" : "Concept";
+        if (/^how-to\//.test(key)) return key.endsWith("index.html") ? "Task library" : "How-to guide";
+        if (key === "get-started.html") return "Start here";
+        if (key === "overview.html") return "Orientation";
+        if (key === "configuration.html") return "Reference";
+        if (/reference\//.test(key)) return "API reference";
+        return "Documentation";
+    }
+
+    function readingMinutes(root) {
+        const copy = root.cloneNode(true);
+        copy.querySelectorAll("pre, table.pre, script, .fsdocs-tip, .learning-outcomes").forEach(function (el) { el.remove(); });
+        const words = (copy.textContent || "").trim().split(/\s+/).filter(Boolean).length;
+        return Math.max(2, Math.ceil(words / 220));
+    }
+
+    function addMeta(root, key) {
+        const isApi = key.indexOf("reference/") >= 0;
+        const h1 = root.querySelector("h1") || (isApi ? root.querySelector("h2") : null);
+        if (!h1) return;
+        if (isApi && h1.tagName === "H2") h1.classList.add("api-page-title");
+        const meta = document.createElement("div");
+        meta.className = "learning-meta";
+        meta.innerHTML = '<span class="page-kind">' + pageKind(key) + '</span><span>' + readingMinutes(root) + ' min read</span>';
+        h1.parentNode.insertBefore(meta, h1);
+
+        let lead = h1.nextElementSibling;
+        while (lead && lead.tagName !== "P" && lead.tagName !== "H2") lead = lead.nextElementSibling;
+        if (lead && lead.tagName === "P") lead.classList.add("page-lead");
+    }
+
+    function addOutcomes(root, key) {
+        const items = lessons[key];
+        if (!items) return;
+        const h1 = root.querySelector("h1");
+        if (!h1) return;
+        const panel = document.createElement("section");
+        panel.className = "learning-outcomes";
+        panel.setAttribute("aria-labelledby", "learning-outcomes-title");
+        const verb = key.indexOf("how-to/") === 0 ? "You will be able to" : key.indexOf("concepts/") === 0 ? "You will understand" : "By the end";
+        panel.innerHTML = '<h2 id="learning-outcomes-title">' + verb + '</h2><ul>' + items.map(function (item) { return "<li>" + item + "</li>"; }).join("") + "</ul>";
+
+        const firstH2 = root.querySelector("h2");
+        if (firstH2) root.insertBefore(panel, firstH2);
+        else root.appendChild(panel);
+    }
+
+    function addTutorialProgress(root, key) {
+        const match = key.match(/^tutorial\/(\d)-/);
+        if (!match) return;
+        const current = Number(match[1]);
+        const nav = document.createElement("nav");
+        nav.className = "tutorial-progress";
+        nav.setAttribute("aria-label", "Tutorial progress");
+        tutorialSteps.forEach(function (step, index) {
+            const a = document.createElement("a");
+            a.href = step[0];
+            a.dataset.step = String(index + 1);
+            a.textContent = step[1];
+            if (index + 1 === current) a.setAttribute("aria-current", "step");
+            nav.appendChild(a);
+        });
+        const panel = root.querySelector(".learning-outcomes");
+        if (panel) panel.parentNode.insertBefore(nav, panel);
+    }
+
+    function turnListsIntoCards(root, key) {
+        const headings = key === "overview.html"
+            ? ["Find your path"]
+            : key === "tutorial/index.html"
+                ? ["The five stages"]
+                : key === "concepts/index.html"
+                    ? ["The pages"]
+                    : key === "how-to/index.html"
+                        ? ["Model the write side", "Build the read side", "Coordinate work", "Configure and operate"]
+                        : [];
+        if (!headings.length) return;
+        root.classList.add("learning-index");
+        root.querySelectorAll("h2").forEach(function (h2) {
+            if (headings.indexOf(h2.textContent.trim()) < 0) return;
+            let list = h2.nextElementSibling;
+            while (list && list.tagName !== "UL" && list.tagName !== "OL" && list.tagName !== "H2") list = list.nextElementSibling;
+            if (list && (list.tagName === "UL" || list.tagName === "OL")) list.classList.add("learning-card-list");
+        });
+    }
+
+    function addCodeCopy(root) {
+        root.querySelectorAll("pre.fssnip, table.pre").forEach(function (block) {
+            if (block.querySelector(":scope > .copy-code")) return;
+            const code = block.querySelector("code") || block;
+            const button = document.createElement("button");
+            button.type = "button";
+            button.className = "copy-code";
+            button.textContent = "Copy";
+            button.setAttribute("aria-label", "Copy code");
+            button.addEventListener("click", function () {
+                const value = code.textContent || "";
+                const done = function () {
+                    button.textContent = "Copied";
+                    button.classList.add("copied");
+                    window.setTimeout(function () { button.textContent = "Copy"; button.classList.remove("copied"); }, 1600);
+                };
+                if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(value).then(done);
+                else { Clipboard_CopyTo(value); done(); }
+            });
+            block.appendChild(button);
+        });
+    }
+
+    function addLessonNav(root) {
+        const links = Array.prototype.slice.call(document.querySelectorAll("#fsdocs-main-menu a[href]"));
+        const unique = [];
+        links.forEach(function (a) {
+            const url = new URL(a.href, location.href);
+            if (url.origin !== location.origin) return;
+            const path = url.pathname;
+            if (!unique.some(function (item) { return item.path === path; })) unique.push({ path: path, link: a });
+        });
+        const at = unique.findIndex(function (item) { return item.path === location.pathname; });
+        if (at < 0) return;
+        const previous = unique[at - 1];
+        const next = unique[at + 1];
+        if (!previous && !next) return;
+        const nav = document.createElement("nav");
+        nav.className = "lesson-nav";
+        nav.setAttribute("aria-label", "Continue learning");
+        function link(item, label) {
+            if (!item) return;
+            const a = document.createElement("a");
+            a.href = item.link.href;
+            a.innerHTML = "<small>" + label + "</small><strong>" + item.link.textContent.trim() + "</strong>";
+            nav.appendChild(a);
+        }
+        link(previous, "Previous");
+        link(next, "Continue");
+        root.appendChild(nav);
+    }
+
+    function addReadingProgress() {
+        const bar = document.createElement("div");
+        bar.className = "reading-progress";
+        bar.setAttribute("aria-hidden", "true");
+        document.body.appendChild(bar);
+        function update() {
+            const range = document.documentElement.scrollHeight - window.innerHeight;
+            const value = range > 0 ? Math.min(100, Math.max(0, window.scrollY / range * 100)) : 100;
+            bar.style.setProperty("--reading-progress", value + "%");
+        }
+        update();
+        window.addEventListener("scroll", update, { passive: true });
+        window.addEventListener("resize", update);
+    }
+
+    function initLearningExperience() {
+        const root = document.getElementById("content");
+        if (!root) return;
+        const key = pageKey();
+        document.body.classList.add("page-" + pageKind(key).toLowerCase().replace(/[^a-z0-9]+/g, "-"));
+        addMeta(root, key);
+        addOutcomes(root, key);
+        addTutorialProgress(root, key);
+        turnListsIntoCards(root, key);
+        addCodeCopy(root);
+        addLessonNav(root);
+        addReadingProgress();
+
+        // The additions above change the page height before deep-linked
+        // sections. Restore the requested anchor after the layout settles.
+        if (location.hash) {
+            window.requestAnimationFrame(function () {
+                const name = decodeURIComponent(location.hash.slice(1));
+                const target = document.getElementById(name) || document.getElementsByName(name)[0];
+                if (target) target.scrollIntoView();
+            });
+        }
+    }
+
+    if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", initLearningExperience);
+    else initLearningExperience();
+})();

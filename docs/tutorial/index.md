@@ -47,15 +47,15 @@ of the important types and functions appear beside the F# examples.
 
 ## The five stages
 
-1. **[Model the aggregate](1-the-aggregate.html):** separate requests from recorded facts, define
+1. [Model the aggregate](1-the-aggregate.html): separate requests from recorded facts, define
    validated domain values, and write the `decide` and `fold` functions.
-2. **[Run the write and read paths](2-running-it.html):** host the aggregate, store events, project them
+2. [Run the write and read paths](2-running-it.html): host the aggregate, store events, project them
    into query data, and wait for the projection before reading.
-3. **[Coordinate with a saga](3-adding-a-saga.html):** enforce a user quota across document and user
+3. [Coordinate with a saga](3-adding-a-saga.html): enforce a user quota across document and user
    aggregates while keeping each consistency boundary independent.
-4. **[Test and evolve the system](4-testing-and-evolution.html):** test decisions, replay, retry
+4. [Test and evolve the system](4-testing-and-evolution.html): test decisions, replay, retry
    behaviour, and changes to persisted event contracts.
-5. **[Prepare for production](5-production.html):** configure durable storage, failure handling,
+5. [Prepare for production](5-production.html): configure durable storage, failure handling,
    observability, snapshots, backups, and cluster deployment.
 
 Read the stages in order the first time. The [concept pages](../concepts/index.html) explain each model

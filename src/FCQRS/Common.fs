@@ -230,7 +230,7 @@ type EventAction<'T when 'T : not null> =
     /// Persist the event and, once it is durable and folded, immediately save a
     /// snapshot — a manual checkpoint, independent of the SnapshotPolicy cadence.
     | PersistAndSnapshot of 'T
-    /// Defer the event. It will be stashed and processed later, potentially after other events.
+    /// Publish and fold the event in the live actor without storing it or incrementing the persisted version.
     | DeferEvent of 'T
     /// Publish the event immediately to the mediator without persisting it. The actor's state is not updated.
     | PublishEvent of Event<'T>

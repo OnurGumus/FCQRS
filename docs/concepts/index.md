@@ -28,12 +28,12 @@ the [tutorial](../tutorial/index.html) or choose a task from the [how-to guides]
 
 ## The pages
 
-1. **[CQRS and event sourcing](cqrs-and-event-sourcing.html):** why decisions and queries use different
+1. [CQRS and event sourcing](cqrs-and-event-sourcing.html): why decisions and queries use different
    models, and why FCQRS stores events instead of overwriting state.
-2. **[Aggregates and the write side](aggregates.html):** how a command becomes a stored event.
-3. **[The read side](read-models.html):** how projections, read models, and offsets work together.
-4. **[Sagas](sagas.html):** how one event starts durable work across aggregate boundaries.
-5. **[Consistency and recovery](consistency-and-recovery.html):** correlation ids, read-your-writes,
+2. [Aggregates and the write side](aggregates.html): how a command becomes a stored event.
+3. [The read side](read-models.html): how projections, read models, and offsets work together.
+4. [Sagas](sagas.html): how one event starts durable work across aggregate boundaries.
+5. [Consistency and recovery](consistency-and-recovery.html): correlation ids, read-your-writes,
    versions, snapshots, and restarts.
-6. **[C# interop and serialization](csharp-interop.html):** how C# unions become FCQRS messages and how
+6. [C# interop and serialization](csharp-interop.html): how C# unions become FCQRS messages and how
    those messages are serialized.

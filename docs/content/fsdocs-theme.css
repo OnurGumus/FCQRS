@@ -248,3 +248,382 @@ ul.menu, #fsdocs-main-menu, #fsdocs-page-menu {
     font-size: var(--font-100);    /* 14px — Starlight leaf-link size */
     line-height: 1.5;
 }
+
+/* ======================================================================
+   Learning experience
+
+   The prose is the curriculum. These styles make its structure visible:
+   page purpose, outcomes, course progress, code actions, and continuation.
+   ====================================================================== */
+
+body.content {
+    background:
+        radial-gradient(circle at 72% -12%, rgba(10, 138, 56, 0.08), transparent 28rem),
+        var(--background);
+}
+
+.reading-progress {
+    position: fixed;
+    z-index: 1000;
+    inset: 0 0 auto;
+    height: 3px;
+    pointer-events: none;
+    background: linear-gradient(90deg, #08752f, #35bd6b) no-repeat;
+    background-size: var(--reading-progress, 0%) 100%;
+}
+
+#content {
+    max-width: 790px;
+    padding-bottom: 2rem;
+}
+
+#content > h1 {
+    max-width: 760px;
+    margin-top: 0.35rem;
+    margin-bottom: 1rem;
+    font-size: clamp(2.25rem, 4.5vw, 3.65rem);
+    line-height: 1.02;
+}
+
+#content > h2.api-page-title {
+    margin-top: 0.35rem;
+    margin-bottom: 1rem;
+    padding-top: 0;
+    border-top: 0;
+    font-size: clamp(2rem, 4vw, 3.1rem);
+    line-height: 1.08;
+}
+
+#content > h2.api-page-title::after {
+    content: "";
+    display: block;
+    width: 3.1rem;
+    height: 4px;
+    margin-top: 1.2rem;
+    border-radius: 999px;
+    background: linear-gradient(90deg, #08752f, #56d181);
+}
+
+#content > h1::after {
+    content: "";
+    display: block;
+    width: 3.1rem;
+    height: 4px;
+    margin-top: 1.2rem;
+    border-radius: 999px;
+    background: linear-gradient(90deg, #08752f, #56d181);
+}
+
+#content > h2 {
+    margin-top: 3.3rem;
+    padding-top: 0.8rem;
+    border-top: 1px solid var(--nav-item-border-color);
+    font-size: clamp(1.55rem, 2.5vw, 2rem);
+}
+
+#content > h3 { margin-top: 2.25rem; }
+
+#content p,
+#content li {
+    line-height: 1.72;
+}
+
+#content > p.page-lead {
+    max-width: 720px;
+    margin: 0 0 1.4rem;
+    color: var(--text-color);
+    font-size: 1.08rem;
+    line-height: 1.72;
+}
+
+.learning-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.55rem;
+    margin: 0.5rem 0 0.85rem;
+    color: var(--nav-category);
+    font-size: 0.78rem;
+    font-weight: 750;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+}
+
+.learning-meta span {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    min-height: 1.85rem;
+    padding: 0.2rem 0.7rem;
+    border: 1px solid var(--nav-item-border-color);
+    border-radius: 999px;
+    background: var(--aside-background);
+}
+
+.learning-meta .page-kind {
+    color: var(--link-color);
+    border-color: color-mix(in srgb, var(--link-color) 25%, transparent);
+    background: color-mix(in srgb, var(--link-color) 8%, var(--background));
+}
+
+.learning-outcomes {
+    position: relative;
+    margin: 2rem 0 2.5rem;
+    padding: 1.25rem 1.45rem 1.15rem 1.65rem;
+    overflow: hidden;
+    border: 1px solid color-mix(in srgb, var(--link-color) 24%, var(--nav-item-border-color));
+    border-radius: 15px;
+    background: linear-gradient(135deg,
+        color-mix(in srgb, var(--link-color) 8%, var(--background)),
+        var(--aside-background));
+}
+
+.learning-outcomes::before {
+    content: "";
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: 4px;
+    background: var(--link-color);
+}
+
+.learning-outcomes h2 {
+    margin: 0 0 0.65rem;
+    padding: 0;
+    border: 0;
+    color: var(--heading-color);
+    font-size: 1rem;
+    letter-spacing: -0.01em;
+}
+
+.learning-outcomes ul {
+    display: grid;
+    gap: 0.38rem;
+    margin: 0;
+    padding-left: 1.15rem;
+}
+
+.learning-outcomes li { line-height: 1.5; }
+.learning-outcomes li::marker { color: var(--link-color); }
+
+.tutorial-progress {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 0.38rem;
+    margin: 1.8rem 0 2.25rem;
+}
+
+.tutorial-progress a {
+    position: relative;
+    min-width: 0;
+    padding: 0.68rem 0.55rem 0.62rem;
+    border: 1px solid var(--nav-item-border-color);
+    border-radius: 10px;
+    color: var(--menu-color);
+    background: var(--aside-background);
+    font-size: 0.72rem;
+    line-height: 1.25;
+    text-align: center;
+    text-decoration: none;
+}
+
+.tutorial-progress a::before {
+    content: attr(data-step);
+    display: grid;
+    width: 1.55rem;
+    height: 1.55rem;
+    margin: 0 auto 0.4rem;
+    place-items: center;
+    border: 1px solid var(--nav-item-border-color);
+    border-radius: 50%;
+    background: var(--background);
+    font-weight: 800;
+}
+
+.tutorial-progress a:hover,
+.tutorial-progress a[aria-current="step"] {
+    color: var(--link-color);
+    border-color: color-mix(in srgb, var(--link-color) 40%, var(--nav-item-border-color));
+    background: color-mix(in srgb, var(--link-color) 9%, var(--background));
+}
+
+.tutorial-progress a[aria-current="step"]::before {
+    color: white;
+    border-color: var(--link-color);
+    background: var(--link-color);
+}
+
+/* Entry pages become maps, not ordinary link lists. */
+.learning-card-list {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.85rem;
+    margin: 1.1rem 0 2rem;
+    padding: 0;
+    list-style: none;
+    counter-reset: learning-card;
+}
+
+.learning-card-list > li {
+    position: relative;
+    min-width: 0;
+    padding: 1.05rem 1.1rem 1rem;
+    border: 1px solid var(--nav-item-border-color);
+    border-radius: 13px;
+    background: var(--background);
+    box-shadow: 0 5px 18px rgba(7, 29, 70, 0.05);
+    transition: transform 150ms ease, border-color 150ms ease, box-shadow 150ms ease;
+}
+
+.learning-card-list > li:hover {
+    transform: translateY(-2px);
+    border-color: color-mix(in srgb, var(--link-color) 35%, var(--nav-item-border-color));
+    box-shadow: 0 10px 28px rgba(7, 29, 70, 0.09);
+}
+
+.learning-card-list > li > a:first-child,
+.learning-card-list > li strong:first-child a,
+.learning-card-list > li > strong:first-child {
+    color: var(--heading-color);
+    font-weight: 800;
+    text-decoration: none;
+}
+
+.learning-card-list > li a::after {
+    content: " \2192";
+    color: var(--link-color);
+}
+
+#content table:not(.pre) {
+    width: 100%;
+    margin: 1.4rem 0 2rem;
+    overflow: hidden;
+    border: 1px solid var(--nav-item-border-color);
+    border-radius: 12px;
+    border-collapse: separate;
+    border-spacing: 0;
+}
+
+#content table:not(.pre) th {
+    color: var(--heading-color);
+    background: var(--aside-background);
+    font-size: 0.82rem;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+}
+
+#content table:not(.pre) th,
+#content table:not(.pre) td {
+    padding: 0.75rem 0.85rem;
+    border-color: var(--nav-item-border-color);
+}
+
+#content img:not(.icon) {
+    height: auto;
+    border-radius: 14px;
+}
+
+#content blockquote {
+    margin: 1.7rem 0;
+    padding: 1rem 1.2rem;
+    border-left: 4px solid var(--link-color);
+    border-radius: 0 10px 10px 0;
+}
+
+pre.fssnip,
+table.pre {
+    position: relative;
+    box-shadow: inset 0 1px rgba(255, 255, 255, 0.035), 0 7px 20px rgba(3, 13, 32, 0.08);
+}
+
+.copy-code {
+    position: absolute;
+    z-index: 3;
+    top: 0.55rem;
+    right: 0.55rem;
+    min-width: 3.6rem;
+    padding: 0.32rem 0.55rem;
+    cursor: pointer;
+    border: 1px solid rgba(148, 163, 184, 0.3);
+    border-radius: 7px;
+    color: #cbd5e1;
+    background: rgba(6, 18, 42, 0.82);
+    font: 700 0.7rem/1.2 var(--system-font);
+    opacity: 0;
+    transition: opacity 130ms ease, background 130ms ease;
+}
+
+pre.fssnip:hover .copy-code,
+table.pre:hover .copy-code,
+.copy-code:focus-visible { opacity: 1; }
+.copy-code:hover { background: #0b2750; }
+.copy-code.copied { color: #8fecac; opacity: 1; }
+
+.lesson-nav {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.85rem;
+    margin: 4rem 0 1rem;
+    padding-top: 1.5rem;
+    border-top: 1px solid var(--nav-item-border-color);
+}
+
+.lesson-nav a {
+    display: flex;
+    min-height: 5.2rem;
+    flex-direction: column;
+    justify-content: center;
+    padding: 0.9rem 1rem;
+    border: 1px solid var(--nav-item-border-color);
+    border-radius: 12px;
+    color: var(--heading-color);
+    background: var(--aside-background);
+    text-decoration: none;
+}
+
+.lesson-nav a:last-child { text-align: right; }
+.lesson-nav a:only-child:last-child { grid-column: 2; }
+.lesson-nav a:hover { border-color: var(--link-color); }
+.lesson-nav small {
+    margin-bottom: 0.2rem;
+    color: var(--nav-category);
+    font-size: 0.72rem;
+    font-weight: 750;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+}
+.lesson-nav strong { font-size: 0.95rem; }
+
+#fsdocs-page-menu > #on-this-page {
+    display: block;
+    margin: 0 0 0.7rem 0.75rem;
+    color: var(--heading-color);
+    font-size: 0.75rem;
+    font-weight: 800;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+}
+
+#content .anchor { scroll-margin-top: 5rem; }
+#content .anchor:target {
+    outline: none;
+    background: linear-gradient(transparent 72%, color-mix(in srgb, var(--link-color) 22%, transparent) 72%);
+}
+
+@media (max-width: 900px) {
+    #content { max-width: none; }
+    .tutorial-progress { grid-template-columns: repeat(5, 5.2rem); overflow-x: auto; padding-bottom: 0.35rem; }
+}
+
+@media (max-width: 640px) {
+    #content > h1 { font-size: clamp(2.05rem, 11vw, 2.75rem); }
+    #content > h2 { margin-top: 2.65rem; }
+    .learning-card-list,
+    .lesson-nav { grid-template-columns: 1fr; }
+    .lesson-nav a:only-child:last-child { grid-column: 1; }
+    .lesson-nav a:last-child { text-align: left; }
+    .learning-outcomes { padding-inline: 1.25rem 1rem; }
+    .copy-code { opacity: 0.82; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .learning-card-list > li { transition: none; }
+}

@@ -95,12 +95,12 @@ projection stream, and correlation subscriptions around the functions that defin
 
 This documentation is organized by what you are trying to do:
 
-* **[Get started](get-started.html):** install the package and run one complete write-and-read loop.
-* **[Tutorial](tutorial/index.html):** progress from one aggregate through read models, sagas, event
+* [Get started](get-started.html): install the package and run one complete write-and-read loop.
+* [Tutorial](tutorial/index.html): progress from one aggregate through read models, sagas, event
   evolution, failure testing, and production operation.
-* **[Concepts](concepts/index.html):** understand CQRS, event sourcing, aggregates, projections,
+* [Concepts](concepts/index.html): understand CQRS, event sourcing, aggregates, projections,
   consistency, recovery, and sagas.
-* **[How-to guides](how-to/index.html):** find focused instructions for a specific task.
+* [How-to guides](how-to/index.html): find focused instructions for a specific task.
 * **Reference:** use the generated API documentation and the
   [configuration reference](configuration.html) while writing code.
 
