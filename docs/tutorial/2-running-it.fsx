@@ -1,9 +1,9 @@
 (**
 ---
 title: 2. Wiring and running it
-category: Tutorial
-categoryindex: 3
-index: 3
+category: Learn FCQRS
+categoryindex: 2
+index: 4
 ---
 *)
 
@@ -65,10 +65,9 @@ Chapter 1 produced a document aggregate as pure functions. This chapter register
 FCQRS, stores their events in SQLite, projects the events into query data, and sends a command through
 the complete path. Continue in the same `Program.fs`.
 
-> **Learn alongside this chapter:** read [The read side](../concepts/read-models.html) to understand
-> projections and offsets before wiring them. Use [Correlation IDs and
-> read-your-writes](../concepts/correlation-ids.html) when the chapter connects a command to its query,
-> then [Add a projection](../how-to/add-a-projection.html) as the production-oriented recipe.
+> **Course position:** chapter 1 defined a pure aggregate. This chapter runs it and follows one stored
+> event into a query model. By the end you will understand the journal, projection offset,
+> correlation id, and subscribe-before-send ordering from one working request.
 
 ## Two paths, on purpose: writing and reading
 
@@ -294,16 +293,12 @@ coordinated the query with that projection.
   update instead.
 - **Forgetting `Fcqrs.wireSagaStarters`.** Wire an empty list when the application has no sagas.
 
-## Understand it and use it
-
-- **Understand:** [The read side](../concepts/read-models.html) follows facts through projections,
-  offsets, transactions, queries, and rebuilds. [Correlation IDs and
-  read-your-writes](../concepts/correlation-ids.html) explains the request-scoped coordination, while
-  [Consistency and recovery](../concepts/consistency-and-recovery.html) places the wider timing and
-  failure boundaries on one timeline.
-- **Apply:** use [Add a projection](../how-to/add-a-projection.html),
-  [Read your writes](../how-to/read-your-writes.html), and
-  [Configure the database](../how-to/configure-the-database.html) in your application.
+## Continue the learning path
 
 Next, add a [saga](3-adding-a-saga.html) for a publication rule that spans a document and its URL slug.
+The next chapter assumes you understand the two paths and the projection timing shown here.
+
+For optional depth after chapter 3, [The read side](../concepts/read-models.html) explains transactional
+offsets and rebuilds, while [Add a projection](../how-to/add-a-projection.html) is the short production
+recipe.
 *)

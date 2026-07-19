@@ -1,7 +1,7 @@
 ---
 title: Observe your system
-category: How-to
-categoryindex: 5
+category: Apply
+categoryindex: 4
 index: 11
 ---
 

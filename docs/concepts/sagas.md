@@ -1,8 +1,8 @@
 ---
 title: Sagas
-category: Concepts
-categoryindex: 4
-index: 5
+category: Understand
+categoryindex: 3
+index: 6
 ---
 
 # Sagas: durable coordination

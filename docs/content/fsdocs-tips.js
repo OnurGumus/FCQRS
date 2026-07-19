@@ -312,11 +312,12 @@ window.Clipboard_CopyTo = Clipboard_CopyTo;
     };
 
     const tutorialSteps = [
-        ["1-the-aggregate.html", "Model"],
-        ["2-running-it.html", "Run"],
-        ["3-adding-a-saga.html", "Coordinate"],
-        ["4-testing-and-evolution.html", "Test"],
-        ["5-production.html", "Operate"]
+        ["get-started.html", "Quickstart"],
+        ["tutorial/1-the-aggregate.html", "Model"],
+        ["tutorial/2-running-it.html", "Run"],
+        ["tutorial/3-adding-a-saga.html", "Coordinate"],
+        ["tutorial/4-testing-and-evolution.html", "Test"],
+        ["tutorial/5-production.html", "Operate"]
     ];
 
     function pageKey() {
@@ -326,10 +327,10 @@ window.Clipboard_CopyTo = Clipboard_CopyTo;
 
     function pageKind(key) {
         if (/^tutorial\/\d-/.test(key)) return "Tutorial chapter";
-        if (key === "tutorial/index.html") return "Guided course";
+        if (key === "tutorial/index.html") return "Learning path";
         if (/^concepts\//.test(key)) return key.endsWith("index.html") ? "Concept map" : "Concept";
         if (/^how-to\//.test(key)) return key.endsWith("index.html") ? "Task library" : "How-to guide";
-        if (key === "get-started.html") return "Start here";
+        if (key === "get-started.html") return "Course stage 0";
         if (key === "overview.html") return "Orientation";
         if (key === "configuration.html") return "Reference";
         if (/reference\//.test(key)) return "API reference";
@@ -375,18 +376,20 @@ window.Clipboard_CopyTo = Clipboard_CopyTo;
     }
 
     function addTutorialProgress(root, key) {
-        const match = key.match(/^tutorial\/(\d)-/);
-        if (!match) return;
-        const current = Number(match[1]);
+        const current = tutorialSteps.findIndex(function (step) { return step[0] === key; });
+        if (current < 0) return;
+        const inTutorialDirectory = key.indexOf("tutorial/") === 0;
         const nav = document.createElement("nav");
         nav.className = "tutorial-progress";
         nav.setAttribute("aria-label", "Tutorial progress");
         tutorialSteps.forEach(function (step, index) {
             const a = document.createElement("a");
-            a.href = step[0];
-            a.dataset.step = String(index + 1);
+            a.href = inTutorialDirectory
+                ? (step[0] === "get-started.html" ? "../get-started.html" : step[0].replace("tutorial/", ""))
+                : step[0];
+            a.dataset.step = String(index);
             a.textContent = step[1];
-            if (index + 1 === current) a.setAttribute("aria-current", "step");
+            if (index === current) a.setAttribute("aria-current", "step");
             nav.appendChild(a);
         });
         const panel = root.querySelector(".learning-outcomes");
@@ -465,6 +468,24 @@ window.Clipboard_CopyTo = Clipboard_CopyTo;
         root.appendChild(nav);
     }
 
+    function linkSectionIndexes() {
+        const sections = {
+            "Learn FCQRS": "/FCQRS/tutorial/index.html",
+            "Understand": "/FCQRS/concepts/index.html",
+            "Apply": "/FCQRS/how-to/index.html"
+        };
+        document.querySelectorAll("#fsdocs-main-menu .nav-header").forEach(function (header) {
+            const href = sections[header.textContent.trim()];
+            if (!href || header.querySelector("a")) return;
+            const link = document.createElement("a");
+            link.className = "section-index-link";
+            link.href = href;
+            link.textContent = header.textContent.trim();
+            header.textContent = "";
+            header.appendChild(link);
+        });
+    }
+
     function addReadingProgress() {
         const bar = document.createElement("div");
         bar.className = "reading-progress";
@@ -490,6 +511,7 @@ window.Clipboard_CopyTo = Clipboard_CopyTo;
         addTutorialProgress(root, key);
         turnListsIntoCards(root, key);
         addCodeCopy(root);
+        linkSectionIndexes();
         addLessonNav(root);
         addReadingProgress();
 

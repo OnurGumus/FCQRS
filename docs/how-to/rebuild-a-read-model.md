@@ -1,8 +1,8 @@
 ---
 title: Rebuild a read model
-category: How-to
-categoryindex: 5
-index: 7
+category: Apply
+categoryindex: 4
+index: 8
 ---
 
 # Rebuild a read model

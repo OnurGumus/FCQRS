@@ -1,8 +1,8 @@
 ---
 title: 5. Preparing for production
-category: Tutorial
-categoryindex: 3
-index: 6
+category: Learn FCQRS
+categoryindex: 2
+index: 7
 ---
 
 # 5. Preparing for production
@@ -11,10 +11,9 @@ The domain model does not change when the application moves from a laptop to pro
 environment does. Production readiness means deciding what happens when storage is slow, a projection
 fails, an external service accepts a request twice, or a node stops during a workflow.
 
-> **Learn alongside this chapter:** use [Consistency and recovery](../concepts/consistency-and-recovery.html)
-> as the failure model, then keep [Observe your system](../how-to/observability.html) and the
-> [configuration reference](../configuration.html) open while turning the checklist into deployment
-> settings and alerts.
+> **Course position:** the earlier chapters established the domain and its recovery rules. This final
+> stage turns those rules into operational decisions. Complete the checklist once without leaving the
+> course, then use Apply and Reference while configuring a real deployment.
 
 ## 1. Put the journal on durable storage
 
@@ -120,15 +119,15 @@ You are ready to use FCQRS effectively when you can answer these questions for y
 - How are the journal, snapshots, and read models backed up and restored?
 - Which logs, traces, and alerts reveal a stuck saga or failed projection?
 
-## Continue learning while operating
+## You have completed the learning path
 
-- **Understand:** return to [The read side](../concepts/read-models.html),
-  [Sagas](../concepts/sagas.html), and
-  [Consistency and recovery](../concepts/consistency-and-recovery.html) when a production symptom crosses
-  more than one durability boundary.
-- **Apply:** the [how-to guides](../how-to/index.html) are the working reference after this course.
-  Start with [Configure the database](../how-to/configure-the-database.html),
-  [Observe your system](../how-to/observability.html), and
-  [Rebuild a read model](../how-to/rebuild-a-read-model.html). The
-  [configuration reference](../configuration.html) lists the FCQRS and Akka.NET settings used by the
-  runtime.
+You can now move through the rest of the documentation without following another fixed order:
+
+- Use [Understand](../concepts/index.html) when you need to reason more deeply about a guarantee,
+  recovery boundary, or design choice.
+- Use [Apply](../how-to/index.html) when implementing a specific task in your own application.
+- Use the [configuration reference](../configuration.html) when choosing exact runtime settings.
+
+For a first real deployment, begin with [Configure the database](../how-to/configure-the-database.html)
+and [Observe your system](../how-to/observability.html), then return to this completion checklist before
+release.

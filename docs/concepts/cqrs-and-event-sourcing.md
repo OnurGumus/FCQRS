@@ -1,7 +1,7 @@
 ---
 title: CQRS and event sourcing
-category: Concepts
-categoryindex: 4
+category: Understand
+categoryindex: 3
 index: 2
 ---
 

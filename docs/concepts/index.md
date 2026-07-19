@@ -1,19 +1,16 @@
 ---
 title: Concepts
-category: Concepts
-categoryindex: 4
+category: Understand
+categoryindex: 3
 index: 1
 ---
 
 # Concepts: build the mental model
 
-This section explains FCQRS from the ground up. It begins with the problem a conventional application
-model runs into, then introduces one new idea at a time. You do not need prior knowledge of actors,
-CQRS, event sourcing, projections, or sagas.
-
-Use the concepts to understand *why* the framework works as it does. Use the
-[tutorial](../tutorial/index.html) to learn by building, and the [how-to guides](../how-to/index.html)
-when you already know the model and need to complete one task.
+This section deepens topics introduced by the numbered [learning path](../tutorial/index.html). If you
+are new to FCQRS, finish the matching course stage before opening its concept page. The course already
+contains the reasoning required to continue; these pages are for questions that need a wider design or
+failure model.
 
 <img src="../img/architecture.svg" alt="A command enters an aggregate, stored events flow through the journal to projections and sagas, and queries read a purpose-built read model" width="900"/>
 
@@ -52,31 +49,21 @@ their state.
 These terms describe different responsibilities. In particular, aggregate state, stored events, and
 read-model rows are not three names for the same data.
 
-## Read in this order
+## Choose by the question you are asking
 
-1. [CQRS and event sourcing](cqrs-and-event-sourcing.html): begin with an ordinary update-and-query
-   application, then separate decisions from queries and replace overwritten state with recorded
-   facts.
-2. [Aggregates and the write side](aggregates.html): find a consistency boundary, model a command
-   decision, fold events into state, and understand what actor serialization guarantees.
-3. [The read side](read-models.html): turn the journal into query-shaped data, manage projection
-   offsets, rebuild safely, and coordinate read-your-writes.
-4. [Sagas](sagas.html): coordinate several independent owners as a durable state machine, including
-   retries, timeouts, and partial failure.
-5. [Correlation IDs and read-your-writes](correlation-ids.html): follow one request through commands,
-   events, projections, logs, and the signal that makes an immediate query safe.
-6. [Deferring, snapshots, and passivation](aggregate-lifecycle.html): distinguish transient replies,
-   durable recovery checkpoints, and the lifetime of an in-memory actor.
-7. [Consistency and recovery](consistency-and-recovery.html): put aggregate decisions, journal writes,
-   projection commits, saga progress, and external effects on one timeline.
-8. [C# interop and serialization](csharp-interop.html): map the same model to C#, understand the
-   compiler options, and treat serialized messages as durable contracts.
+| Question | Read | Course prerequisite |
+|---|---|---|
+| Why separate decisions, history, and queries? | [CQRS and event sourcing](cqrs-and-event-sourcing.html) | Quickstart |
+| Where should one business rule live? | [Aggregates and the write side](aggregates.html) | Chapter 1 |
+| How do projections, offsets, and query models differ? | [The read side](read-models.html) | Chapter 2 |
+| How does one request wait for the correct projection? | [Correlation IDs and read-your-writes](correlation-ids.html) | Chapter 2 |
+| How do independent owners coordinate after failures? | [Sagas](sagas.html) | Chapter 3 |
+| What do defer, snapshot, and passivation each do? | [Deferring, snapshots, and passivation](aggregate-lifecycle.html) | Chapter 1 |
+| What is durable at each point in the complete flow? | [Consistency and recovery](consistency-and-recovery.html) | Chapter 3 |
+| How should C# messages cross the persistence boundary? | [C# interop and serialization](csharp-interop.html) | Quickstart |
 
-## A useful learning loop
+## How to use a concept page
 
-For each page, try to explain the idea without FCQRS terminology first. For example: “all cancellation
-requests for one order must inspect and change the same current state, one at a time.” Then attach the
-term: that consistency boundary is an aggregate.
-
-After reading a concept, follow its tutorial and how-to links. The tutorial shows the idea growing
-inside one application. The how-to guide reduces it to a repeatable implementation recipe.
+Start with a concrete question from your application. Read the matching page, identify the guarantee
+and its boundary, then return to your design. Use [Apply](../how-to/index.html) only when you are ready
+to turn that decision into code or configuration.

@@ -1,7 +1,7 @@
 ---
 title: Consistency and recovery
-category: Concepts
-categoryindex: 4
+category: Understand
+categoryindex: 3
 index: 8
 ---
 

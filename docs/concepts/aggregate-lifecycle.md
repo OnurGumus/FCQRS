@@ -1,7 +1,7 @@
 ---
 title: Deferring, snapshots, and passivation
-category: Concepts
-categoryindex: 4
+category: Understand
+categoryindex: 3
 index: 7
 ---
 

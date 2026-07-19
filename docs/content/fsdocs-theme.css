@@ -244,6 +244,17 @@ ul.menu, #fsdocs-main-menu, #fsdocs-page-menu {
     letter-spacing: 0;
 }
 
+.menu .nav-header .section-index-link {
+    color: inherit;
+    text-decoration: none;
+}
+
+.menu .nav-header .section-index-link:hover,
+.menu .nav-header .section-index-link:focus-visible {
+    color: var(--link-color);
+    text-decoration: underline;
+}
+
 .menu .nav-item a {
     font-size: var(--font-100);    /* 14px — Starlight leaf-link size */
     line-height: 1.5;
@@ -406,7 +417,7 @@ body.content {
 
 .tutorial-progress {
     display: grid;
-    grid-template-columns: repeat(5, minmax(0, 1fr));
+    grid-template-columns: repeat(6, minmax(0, 1fr));
     gap: 0.38rem;
     margin: 1.8rem 0 2.25rem;
 }
@@ -620,7 +631,7 @@ table.pre:hover .copy-code,
 
 @media (max-width: 900px) {
     #content { max-width: none; }
-    .tutorial-progress { grid-template-columns: repeat(5, 5.2rem); overflow-x: auto; padding-bottom: 0.35rem; }
+    .tutorial-progress { grid-template-columns: repeat(6, 5.2rem); overflow-x: auto; padding-bottom: 0.35rem; }
 }
 
 @media (max-width: 640px) {

@@ -1,9 +1,9 @@
 (**
 ---
 title: 1. The aggregate
-category: Tutorial
-categoryindex: 3
-index: 2
+category: Learn FCQRS
+categoryindex: 2
+index: 3
 ---
 *)
 
@@ -25,10 +25,9 @@ This chapter models that write side. It uses no actor system or database yet. Yo
 domain values, separate requests from recorded outcomes, and write the two pure functions FCQRS runs
 inside an aggregate.
 
-> **Learn alongside this chapter:** read [CQRS and event sourcing](../concepts/cqrs-and-event-sourcing.html)
-> for the ground-up mental model. When this chapter introduces deferred replies and snapshot policy,
-> use [Deferring, snapshots, and passivation](../concepts/aggregate-lifecycle.html), then keep
-> [Define an aggregate](../how-to/define-an-aggregate.html) nearby as the shorter implementation recipe.
+> **Course position:** the quickstart showed the whole request path. This chapter isolates its first
+> part, the aggregate decision. By the end you will be able to explain and test command, event, state,
+> `decide`, and `fold` without running Akka.NET.
 
 ## Commands and events are not the same thing
 
@@ -381,15 +380,12 @@ Assert.Equal(
 - **Passing raw strings through the domain.** Parse them into domain values at the application edge.
 - **Treating aggregate state as stored data.** It is derived from the event history during recovery.
 
-## Understand it and use it
+## Continue the learning path
 
-- **Understand:** [CQRS and event sourcing](../concepts/cqrs-and-event-sourcing.html) explains why the
-  write and query models separate. [Aggregates and the write side](../concepts/aggregates.html) develops
-  the consistency boundary, decision, and fold. [Deferring, snapshots, and
-  passivation](../concepts/aggregate-lifecycle.html) develops the recovery lifecycle.
-- **Apply:** [Define an aggregate](../how-to/define-an-aggregate.html) is the focused recipe.
-  [Test your domain](../how-to/test-your-domain.html) provides command and event envelope helpers and
-  replay-test patterns.
+Next, [run the aggregate and project its events](2-running-it.html). Chapter 2 uses the domain model
+you just built and introduces the runtime, journal, projection, and query path.
 
-Next, [run the aggregate and project its events](2-running-it.html).
+After completing chapter 2, use [Aggregates and the write side](../concepts/aggregates.html) for a
+deeper boundary-design discussion or [Define an aggregate](../how-to/define-an-aggregate.html) as the
+short implementation recipe. Neither is required before continuing.
 *)

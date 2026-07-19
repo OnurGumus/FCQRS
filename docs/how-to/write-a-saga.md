@@ -1,8 +1,8 @@
 ---
 title: Write a saga
-category: How-to
-categoryindex: 5
-index: 8
+category: Apply
+categoryindex: 4
+index: 5
 ---
 
 # Write a saga

@@ -1,35 +1,53 @@
 ---
-title: Tutorial
-category: Tutorial
-categoryindex: 3
+title: Learning path
+category: Learn FCQRS
+categoryindex: 2
 index: 1
 ---
 
-# Tutorial: from first command to production
+# Learn FCQRS: one path from zero to production
 
-This course builds one application in stages. You begin with a pure function that decides whether a
-document may change. You finish with a document aggregate, a slug aggregate, a read model, a
-publication saga, recovery tests, and a production checklist.
+This is the beginner path. Stay inside these numbered pages on the first pass. Each stage introduces
+the vocabulary and reasoning it needs, builds on the previous stage, and ends with one clear next
+step. You do not need to open a concept page or how-to guide to complete the course.
 
-The application is a document store. A document can be created and edited. Publishing requires a
-unique URL slug, so a saga coordinates the document with the aggregate that owns that slug. The rule
-is deliberately small enough to keep state transitions, safe startup, and recovery visible.
+The course builds one document application. Documents can be created and edited. Publishing requires
+a unique URL slug, so the application eventually adds a second aggregate and a resumable saga. The
+domain is intentionally small so state, events, projection progress, retries, and recovery remain
+visible.
 
-By the end, you will be able to:
+<pre>
+0. See one complete request
+        |
+1. Model one decision
+        |
+2. Persist, project, and query
+        |
+3. Coordinate two owners
+        |
+4. Prove replay and compatibility
+        |
+5. Prepare the system for failure
+</pre>
 
-- choose an aggregate boundary and explain which races it eliminates;
-- model commands, persisted events, deferred replies, and derived state;
-- build a projection and use its offset correctly;
-- wait for a specific projection before querying it;
-- coordinate aggregates without sharing their state;
-- make commands safe under retries and keep replay deterministic;
-- evolve persisted message types without treating events like ordinary DTOs;
-- configure storage, snapshots, diagnostics, and cluster deployment.
+## Follow the stages in order
+
+| Stage | Question answered | What you build |
+|---:|---|---|
+| [0. Quickstart](../get-started.html) | What does one FCQRS request do end to end? | One command, stored event, projection, and query |
+| [1. The aggregate](1-the-aggregate.html) | Where does a business decision live? | Validated values, command, event, `decide`, and `fold` |
+| [2. Wiring and running it](2-running-it.html) | How does durable state become query data? | SQLite journal, actor runtime, projection, and read-your-writes |
+| [3. Adding a saga](3-adding-a-saga.html) | How do independent owners coordinate safely? | Slug aggregate and resumable publication workflow |
+| [4. Testing and evolution](4-testing-and-evolution.html) | How can this system change without breaking history? | Decision, replay, retry, and compatibility tests |
+| [5. Preparing for production](5-production.html) | What must survive or become visible in production? | Storage, recovery, diagnostics, backup, and deployment checklist |
+
+Start at stage 0 even if you know CQRS. It gives the names used throughout the rest of the course. If
+you already ran one of the repository samples, stage 0 will be a short review.
 
 ## What you need
 
 - The **.NET 10 SDK**. `dotnet --version` should print `10.*`.
-- A scratch project. Each practical chapter adds to its `Program.fs`:
+- A scratch F# project for the executable course:
 
 ```bash
 dotnet new console -lang F# -n DocStore
@@ -37,45 +55,24 @@ cd DocStore
 dotnet add package FCQRS --prerelease
 ```
 
-Run the project at any point with `dotnet run`. The first running chapter creates `tutorial.db`, which
-contains the event journal and snapshots. Delete `tutorial.db*` only when you intentionally want to
-discard the tutorial history and begin again.
+Run the project at any point with `dotnet run`. Chapter 2 creates `tutorial.db`, which contains the
+event journal and snapshots. Delete `tutorial.db*` only when you intentionally want to discard that
+history and begin again.
 
-The F# code in the executable chapters is checked while this documentation site is built. Every
-public-API teaching example has a C# counterpart beside it or a complete C# implementation in the same
-section. Examples using C# discriminated unions require a .NET 11 preview SDK and
-`<LangVersion>preview</LangVersion>`; [C# interop and
-serialization](../concepts/csharp-interop.html) explains that compiler and persistence boundary. The
-[stable .NET 10 C# sample](https://github.com/OnurGumus/FCQRS/tree/main/samples/getting-started-csharp)
-uses one concrete command and event type and needs no preview syntax.
+Every teaching block has an adjacent F# and C# tab. The executable F# is checked during the docs build.
+The fuller C# examples use preview discriminated unions; the stable .NET 10
+[C# sample](https://github.com/OnurGumus/FCQRS/tree/main/samples/getting-started-csharp) uses ordinary
+concrete message types. The course explains the architectural model identically in both languages.
 
-## Learn in three layers
+## Use the other sections after the course introduces a topic
 
-Each chapter links three kinds of material. Use them together rather than treating the tutorial as an
-isolated code walkthrough:
+- **Understand** explains guarantees and failure boundaries in greater depth. These pages are optional
+  during the first pass.
+- **Apply** contains short task recipes for work in your own application. Use it after the matching
+  course stage.
+- **Reference** lists configuration keys and API details. Consult it when choosing exact options.
 
-| Layer | Purpose | When to use it |
-|---|---|---|
-| Tutorial | Build one application in a deliberate sequence | First encounter with the framework |
-| Concept | Understand the problem, guarantee, and limitation | Before or after the matching chapter |
-| How-to | Repeat one implementation task quickly | While building your own application |
+This separation is deliberate: the learning path teaches in dependency order; the other sections help
+you deepen or reuse something you have already encountered.
 
-Every chapter begins with suggested concept and how-to companions, and ends by pointing to the next
-useful references.
-
-## The five stages
-
-1. [Model the aggregate](1-the-aggregate.html): separate requests from recorded facts, define
-   validated domain values, and write the `decide` and `fold` functions.
-2. [Run the write and read paths](2-running-it.html): host the aggregate, store events, project them
-   into query data, and wait for the projection before reading.
-3. [Coordinate with a saga](3-adding-a-saga.html): reserve a unique URL slug and publish the document
-   while keeping both consistency boundaries independent.
-4. [Test and evolve the system](4-testing-and-evolution.html): test decisions, replay, retry
-   behaviour, and changes to persisted event contracts.
-5. [Prepare for production](5-production.html): configure durable storage, failure handling,
-   observability, snapshots, backups, and cluster deployment.
-
-Read the stages in order the first time. The [concept pages](../concepts/index.html) explain each model
-in more depth, while the [how-to guides](../how-to/index.html) are shorter references for use after the
-course.
+Continue to [0. Quickstart](../get-started.html).

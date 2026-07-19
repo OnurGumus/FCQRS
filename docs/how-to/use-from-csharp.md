@@ -1,7 +1,7 @@
 ---
 title: Use FCQRS from C#
-category: How-to
-categoryindex: 5
+category: Apply
+categoryindex: 4
 index: 12
 ---
 

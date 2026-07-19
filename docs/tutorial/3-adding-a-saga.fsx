@@ -1,9 +1,9 @@
 (**
 ---
 title: 3. Adding a saga
-category: Tutorial
-categoryindex: 3
-index: 4
+category: Learn FCQRS
+categoryindex: 2
+index: 5
 ---
 *)
 
@@ -24,9 +24,10 @@ reserves it for that document.
 This example is intentionally small. The only new problem is durable coordination, so the saga
 mechanics remain visible.
 
-> **Learn alongside this chapter:** read [Sagas](../concepts/sagas.html) for transitions,
-> `SagaStartingEvent`, safe startup, and resumption. Use [Write a
-> saga](../how-to/write-a-saga.html) as the compact API reference.
+> **Course position:** chapter 2 completed work owned by one aggregate and projected its event. This
+> chapter handles one rule with two independent owners. By the end you will be able to derive saga
+> state from events, issue commands only after progress is stored, and explain safe startup and
+> resumption.
 
 ## The rule belongs to two owners
 
@@ -632,15 +633,11 @@ saga stores its own progress and safely completes the matching document.
 - **Assuming `StopSaga` deletes history.** It completes and passivates the actor; persisted progress
   remains available for diagnostics and storage policy.
 
-## Understand it and use it
+## Continue the learning path
 
-- **Understand:** [Sagas](../concepts/sagas.html) explains transitions, starting, resumption, uncertain
-  delivery, and compensation from first principles. [Consistency and
-  recovery](../concepts/consistency-and-recovery.html) compares the saga journal with other durable
-  boundaries.
-- **Apply:** [Write a saga](../how-to/write-a-saga.html) is the shorter F# and C# recipe.
-  [Dispatch async effects](../how-to/dispatch-async-effects.html) is the alternative when work may
-  safely be lost.
+Next, [test the state machine and evolve its events](4-testing-and-evolution.html). Chapter 4 turns the
+decisions, folds, retries, and stored contracts from the first three chapters into executable checks.
 
-Next, [test the state machine and evolve its events](4-testing-and-evolution.html).
+After chapter 4, use [Sagas](../concepts/sagas.html) for deeper treatment of uncertain delivery and
+compensation, or [Write a saga](../how-to/write-a-saga.html) as the compact implementation recipe.
 *)

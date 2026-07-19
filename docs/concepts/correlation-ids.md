@@ -1,8 +1,8 @@
 ---
 title: Correlation IDs and read-your-writes
-category: Concepts
-categoryindex: 4
-index: 6
+category: Understand
+categoryindex: 3
+index: 5
 ---
 
 # Correlation IDs and read-your-writes

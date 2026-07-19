@@ -1,9 +1,9 @@
 (**
 ---
-title: Get started
-category: Get started
+title: 0. Quickstart
+category: Learn FCQRS
 categoryindex: 2
-index: 1
+index: 2
 ---
 *)
 
@@ -11,22 +11,22 @@ index: 1
 #r "nuget: FCQRS, 6.0.0-rc1"
 
 (**
-# Get started
+# 0. Quickstart: follow one request end to end
 
 This page builds one complete FCQRS path in a single file. A command creates a document, the aggregate
 stores an event, a projection updates a read model, and the program queries that model after receiving
 the projection's confirmation.
+
+> **Course position:** this is the first practical stage. It assumes only basic F# or C# and introduces
+> the runtime vocabulary used by chapters 1 through 5.
 
 > **Motivation:** Build one complete vertical slice first. An aggregate alone hides the asynchronous
 > handoff to projections, while a full command-to-query loop exposes the architecture you will use in
 > a real application.
 
 The read model is kept in memory so the example needs only the `FCQRS` package. It is rebuilt by
-replaying the journal from offset zero whenever the program starts. A production projection stores its
-data and offset transactionally; [Add a projection](how-to/add-a-projection.html) shows that version.
-
-Read [Concepts](concepts/index.html) first if CQRS and event sourcing are new to you. Follow the
-[Tutorial](tutorial/index.html) for the complete course from domain modelling through production.
+replaying the journal from offset zero whenever the program starts. Later stages explain why this works
+and replace the teaching shortcuts with production decisions.
 
 ## Run a complete sample
 
@@ -369,11 +369,13 @@ stored version 1; query returned 'first event'
 The aggregate id is new on each run, so each command creates a different document. The projection still
 replays previous documents before handling the new event.
 
-## What to learn next
+## Continue the learning path
 
-- Follow the [Tutorial](tutorial/index.html) to build the model one decision at a time and continue
-  through sagas, testing, event evolution, and production.
-- Read [Concepts](concepts/index.html) for the reasoning behind each part.
-- Use the [How-to guides](how-to/index.html) while implementing a specific task.
-- See [Use FCQRS from C#](how-to/use-from-csharp.html) for the complete C# host setup.
+You have seen the entire route once: command, aggregate decision, stored event, projection, then query.
+The next chapter slows down at the first step and explains how to design that decision correctly.
+
+Continue to [1. The aggregate](tutorial/1-the-aggregate.html).
+
+After chapter 1 introduces the domain model, its optional deep dives point to the relevant Understand
+and Apply pages. You do not need those pages before continuing.
 *)

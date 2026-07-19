@@ -102,16 +102,18 @@ projection stream, and correlation subscriptions around the functions that defin
 
 ## Find your path
 
-This documentation is organized by what you are trying to do:
+Choose one path based on what you need now:
 
-* [Get started](get-started.html): install the package and run one complete write-and-read loop.
-* [Tutorial](tutorial/index.html): progress from one aggregate through read models, sagas, event
-  evolution, failure testing, and production operation.
-* [Concepts](concepts/index.html): understand CQRS, event sourcing, aggregates, projections,
-  correlation, lifecycle, recovery, and sagas.
-* [How-to guides](how-to/index.html): find focused instructions for a specific task.
-* **Reference:** use the generated API documentation and the
-  [configuration reference](configuration.html) while writing code.
+| Your situation | Start here | Stay there until |
+|---|---|---|
+| You are learning FCQRS | [Learn FCQRS](tutorial/index.html) | you finish the numbered course |
+| You finished the course and want deeper reasoning | [Understand](concepts/index.html) | the guarantee or failure boundary is clear |
+| You know the model and need to implement one task | [Apply](how-to/index.html) | the task is complete |
+| You need an exact setting or API member | [Configuration](configuration.html) or API reference | you have the required value |
+
+The beginner path includes the quickstart. It does not require you to alternate between tutorial,
+concept, and how-to pages. Those other sections become useful after the course has introduced their
+topic.
 
 ## When FCQRS is a good fit, and when it isn't
 

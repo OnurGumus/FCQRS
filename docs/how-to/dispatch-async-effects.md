@@ -1,7 +1,7 @@
 ---
 title: Dispatch a best-effort async effect
-category: How-to
-categoryindex: 5
+category: Apply
+categoryindex: 4
 index: 9
 ---
 

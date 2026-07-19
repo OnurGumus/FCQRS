@@ -1,8 +1,8 @@
 ---
 title: Test your domain
-category: How-to
-categoryindex: 5
-index: 3
+category: Apply
+categoryindex: 4
+index: 6
 ---
 
 # Test your domain

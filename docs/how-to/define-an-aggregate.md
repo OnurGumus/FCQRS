@@ -1,7 +1,7 @@
 ---
 title: Define an aggregate
-category: How-to
-categoryindex: 5
+category: Apply
+categoryindex: 4
 index: 2
 ---
 

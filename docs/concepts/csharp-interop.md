@@ -1,7 +1,7 @@
 ---
 title: C# interop and serialization
-category: Concepts
-categoryindex: 4
+category: Understand
+categoryindex: 3
 index: 9
 ---
 

@@ -1,8 +1,8 @@
 ---
 title: Read your writes
-category: How-to
-categoryindex: 5
-index: 6
+category: Apply
+categoryindex: 4
+index: 4
 ---
 
 # Read your writes

@@ -1,8 +1,8 @@
 ---
 title: Evolve persisted events
-category: How-to
-categoryindex: 5
-index: 4
+category: Apply
+categoryindex: 4
+index: 7
 ---
 
 # Evolve persisted events

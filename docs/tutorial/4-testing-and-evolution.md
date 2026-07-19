@@ -1,8 +1,8 @@
 ---
 title: 4. Testing and evolution
-category: Tutorial
-categoryindex: 3
-index: 5
+category: Learn FCQRS
+categoryindex: 2
+index: 6
 ---
 
 # 4. Testing and evolution
@@ -17,9 +17,9 @@ domain safe to change. Event-sourced code has four behaviours worth testing sepa
 
 None of these tests requires Akka.NET or a database.
 
-> **Learn alongside this chapter:** revisit [Consistency and recovery](../concepts/consistency-and-recovery.html)
-> to see what the tests must prove. Use [Test your domain](../how-to/test-your-domain.html) for test
-> helpers and [Evolve persisted events](../how-to/evolve-events.html) for compatibility strategies.
+> **Course position:** chapters 1 through 3 built the write side, read side, and saga. This chapter
+> freezes their important guarantees as tests before discussing changes to durable event contracts.
+> By the end you will know what to test before changing an event-sourced system.
 
 ## Test decisions as a table
 
@@ -190,14 +190,11 @@ A projection is derived from the journal. To verify a projection change:
 Do not delete or edit journal rows to repair a projection. Correct the projection and rebuild its
 output.
 
-## Understand it and use it
+## Continue the learning path
 
-- **Understand:** [Aggregates and the write side](../concepts/aggregates.html) explains why decisions and
-  folds can be tested without the runtime. [Consistency and recovery](../concepts/consistency-and-recovery.html)
-  explains replay, uncertain delivery, and the durable boundaries the tests protect.
-- **Apply:** [Test your domain](../how-to/test-your-domain.html) provides F# and C# envelope helpers.
-  [Evolve persisted events](../how-to/evolve-events.html) and
-  [Rebuild a read model](../how-to/rebuild-a-read-model.html) turn compatibility and replay into
-  repeatable procedures.
+Next, [prepare the system for production](5-production.html). The final stage applies the recovery
+model you just tested to storage, projections, diagnostics, backups, and deployment.
 
-Next, [prepare the system for production](5-production.html).
+After finishing the course, [Test your domain](../how-to/test-your-domain.html), [Evolve persisted
+events](../how-to/evolve-events.html), and [Rebuild a read
+model](../how-to/rebuild-a-read-model.html) provide the shorter repeatable procedures.
