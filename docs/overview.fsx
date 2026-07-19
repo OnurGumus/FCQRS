@@ -10,28 +10,46 @@ index: 1
 (**
 # FCQRS
 
-FCQRS is a small F# framework for building applications with **Command Query Responsibility
-Segregation (CQRS)** and **event sourcing**, on top of Akka.NET actors. It is usable from both F#
-and C#, and it is built on one bet: that the reliability and clarity of an event-sourced,
-actor-based system are worth having from day one — even for ordinary applications — and that the
-framework, not you, should carry the distributed-systems machinery.
-
 <figure style="margin: 1.5rem 0;">
-  <img src="img/two-models.png" alt="On the left, one tangled Entity Framework object graph; on the right, the same domain split into command-side aggregates that enforce invariants and query-side read models shaped for fast queries." style="width: 100%; height: auto; border: 1px solid var(--line, #d7e1ef); border-radius: 12px;"/>
-  <figcaption style="margin-top: .6rem; font-size: .9rem; color: var(--muted, #4d5f7d); text-align: center;">The split at the heart of CQRS: one side of the model enforces invariants (aggregates), the other is flattened for fast reads (read models). FCQRS gives you both — and keeps them in sync for you.</figcaption>
+  <img src="img/two-models.png" alt="On the left, one tangled Entity Framework object graph where every entity references every other; on the right, the same domain split into small command-side aggregates that each enforce their own invariants, plus flat query-side read models shaped for fast queries." style="width: 100%; height: auto; border: 1px solid var(--line, #d7e1ef); border-radius: 12px;"/>
+  <figcaption style="margin-top: .6rem; font-size: .9rem; color: var(--muted, #4d5f7d); text-align: center;">Why CQRS, in one picture: a single tangled model on the left, the two-model split on the right.</figcaption>
 </figure>
 
-## What you actually write
+## Why two models?
 
-Each entity is an **aggregate** — an Akka.NET actor that processes one command at a time, decides
-what happened, and emits **events**. Those events are appended to a journal (the source of truth) and
-flow out to **read models** shaped for querying and to **sagas** that turn events into follow-up
-commands. A **correlation id** threads through the whole request so a caller knows exactly when the
-read side has caught up. You write pure decision and fold functions; FCQRS supplies the actors,
-sharding, persistence, and coordination.
+The left side is where most applications start: one object graph that tries to do everything. Every
+entity references every other, a single save can touch half the graph, and each query drags in
+relationships it never needed. Worst of all, the **invariants** — the rules that must always hold,
+like *"an order's total matches its lines"* — have no single home. They scatter across services, or
+go quietly assumed until the day they're violated.
 
-The same domain reads almost identically in C#, using C# 15 discriminated `union` types for commands
-and events — which the framework serializes natively.
+**CQRS** — Command Query Responsibility Segregation — splits that one model in two, because writing
+and reading want opposite things:
+
+* The **command side** breaks the graph into small **aggregates**: a `Customer`, an `Order`. Each
+  aggregate is a *consistency boundary* — it owns its invariants, changes in a single transaction,
+  and refers to other aggregates only by id. The tangle is gone, and every rule has an obvious owner.
+* The **query side** is built from **read models**: flat, denormalized shapes — an `OrderSummary`, a
+  `CustomerOrders` view — tuned for exactly the reads your screens make. No domain behaviour and no
+  joins at read time; just fast answers.
+
+The payoff is correctness (invariants live in one place), speed (reads never contend with writes),
+and clarity (each side does one job). The one new cost is keeping the two sides in sync — and that is
+exactly the work you hand to the framework.
+
+## What FCQRS is
+
+FCQRS is a small F# framework for exactly this split, on top of Akka.NET actors and usable from both
+F# and C#. Each aggregate is an actor that handles one command at a time, decides what happened, and
+emits **events**. Those events are appended to a **journal** — the source of truth — and then
+*projected* into your read models, so the query side is always derived from what actually happened
+instead of hand-maintained. **Sagas** turn events into follow-up commands across aggregates, and a
+**correlation id** threads through each request so a caller knows exactly when the read side has
+caught up.
+
+You write two pure functions — a decision and a fold — and FCQRS carries the actors, sharding,
+persistence, and the machinery that keeps the two models in sync. The same domain reads almost
+identically in C#, using C# 15 discriminated `union` types, which the framework serializes natively.
 
 <img src="img/architecture.svg" alt="How FCQRS fits together" width="900"/>
 
