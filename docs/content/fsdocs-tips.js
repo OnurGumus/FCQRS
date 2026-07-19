@@ -396,26 +396,6 @@ window.Clipboard_CopyTo = Clipboard_CopyTo;
         if (panel) panel.parentNode.insertBefore(nav, panel);
     }
 
-    function turnListsIntoCards(root, key) {
-        const headings = key === "overview.html"
-            ? ["Find your path"]
-            : key === "tutorial/index.html"
-                ? ["The five stages"]
-                : key === "concepts/index.html"
-                    ? ["Read in this order"]
-                    : key === "how-to/index.html"
-                        ? ["Model the write side", "Build the read side", "Coordinate work", "Configure and operate"]
-                        : [];
-        if (!headings.length) return;
-        root.classList.add("learning-index");
-        root.querySelectorAll("h2").forEach(function (h2) {
-            if (headings.indexOf(h2.textContent.trim()) < 0) return;
-            let list = h2.nextElementSibling;
-            while (list && list.tagName !== "UL" && list.tagName !== "OL" && list.tagName !== "H2") list = list.nextElementSibling;
-            if (list && (list.tagName === "UL" || list.tagName === "OL")) list.classList.add("learning-card-list");
-        });
-    }
-
     function addCodeCopy(root) {
         root.querySelectorAll("pre.fssnip, table.pre").forEach(function (block) {
             if (block.querySelector(":scope > .copy-code")) return;
@@ -509,7 +489,6 @@ window.Clipboard_CopyTo = Clipboard_CopyTo;
         addMeta(root, key);
         addOutcomes(root, key);
         addTutorialProgress(root, key);
-        turnListsIntoCards(root, key);
         addCodeCopy(root);
         linkSectionIndexes();
         addLessonNav(root);
