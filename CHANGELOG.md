@@ -1,5 +1,48 @@
 # Changelog
 
+## 6.0.0-rc5 (FCQRS core)
+- **Saga starts deliver the starting event exactly once**: a fresh start ran
+  the recovery re-drive (`recovering = true` at subscription ack), sending a
+  spurious `ContinueOrAbort` that re-published the starting event to every
+  same-CID subscriber — or, when a concurrent command had already advanced the
+  originator, falsely aborted the just-started saga. The re-drive now runs
+  only for genuinely recovered sagas (journal or snapshot replay).
+- **Snapshot-recovered sagas complete the resurrection handshake**: recovery
+  through a snapshot lost the `subscribed` flag, so a same-CID re-trigger of a
+  completed saga dropped the re-delivered starting event and the originator's
+  saga-start handshake FailFasted the process. Snapshots now restore the flag
+  (the starting-event wrapper always predates a snapshot).
+- **Delayed saga commands reach sharded targets**: `toOriginatorAfter` /
+  `toAggregateAfter` scheduled the raw command to the shard region, which the
+  message extractor rejected — the command was silently lost. Scheduled
+  commands are now wrapped in a `ShardEnvelope`; `StopSaga` also delivers the
+  delayed commands returned alongside it (Self-targeted ones excepted, with a
+  warning, so a completed saga cannot resurrect itself).
+- **Bounded waits**: command subscriptions and `sendAwaiting`'s projection
+  wait now raise `TimeoutException` after `akka.fcqrs.command-timeout`
+  (default 30s; a bare number means seconds, matching `saga-start-timeout`)
+  instead of hanging the caller forever on `UnhandledEvent`/`IgnoreEvent`, a
+  never-matching filter, or a suppressed notification.
+- **Notification hub isolates slow subscribers**: one blocking callback pinned
+  the shared BroadcastHub and silently starved every other subscriber.
+  Consumers now run behind per-consumer DropHead buffers (with an async
+  boundary), so a stalled subscriber sheds only its own backlog. Subscriber
+  stream failures are logged instead of vanishing; notification publish
+  failures during shutdown no longer FailFast the process.
+- **C# host builder fails loudly on ambiguity**: two aggregates sharing a
+  command/event type pair made the unkeyed `Handler<C,E>` DI registration
+  resolve to the wrong shard region silently — it now throws with guidance,
+  and keyed-by-shard registrations are always available. A second
+  `AddProjection` call and `TimeProvider` misuse (`Timeout.InfiniteTimeSpan`
+  firing immediately, timestamp units ~100x off outside Windows) are fixed
+  likewise; `DynamicConfig` no longer crashes on sparse array keys.
+- **Typed C# saga adapters report their boundary**: `SagaApi.InitSimple` only
+  delivers the originator's `Event<'TEvent>`; other messages (ToSelf timeouts,
+  other aggregates' replies) are now logged as ignored instead of silently
+  dropped, and the docs point multi-aggregate sagas at the obj-based API.
+  Null saga-starter definitions fail with the property named instead of an
+  NRE that surfaced as a handshake timeout.
+
 ## 6.0.0-rc2 satellites (FCQRS.Model, FCQRS.Serialization, FCQRS.SQLProvider)
 - **FCQRS.Model — Aether compose functions no longer crash for typed errors**:
   five `compose*` functions returned `Error (unbox<'e> "Invalid path")`, which
