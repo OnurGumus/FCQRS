@@ -19,6 +19,10 @@ open FCQRS.FSharp
 
 This chapter adds a user quota to the document application. It reuses the validated values from
 [chapter 1](1-the-aggregate.html) and adds `Username`, which also identifies the user aggregate.
+
+> **Learn alongside this chapter:** read [Sagas](../concepts/sagas.html) for the durable state-machine,
+> retry, timeout, and compensation model. Use [Write a saga](../how-to/write-a-saga.html) as the compact
+> API reference while implementing the chapter.
 *)
 
 module Values =
@@ -530,12 +534,15 @@ replay safety comes from storing time in events instead of reading the clock in 
 - **Using a saga for disposable work.** Use an ephemeral async effect when losing in-flight work during
   restart is acceptable.
 
-## Further study
+## Understand it and use it
 
-- [Sagas](../concepts/sagas.html): state, startup, and recovery.
-- [Consistency and recovery](../concepts/consistency-and-recovery.html): version checks and failure
-  boundaries.
-- [Write a saga](../how-to/write-a-saga.html): the focused API recipe.
+- **Understand:** [Sagas](../concepts/sagas.html) develops the workflow from partial failure through
+  persisted states, safe startup, repeated delivery, timeouts, and compensation.
+  [Consistency and recovery](../concepts/consistency-and-recovery.html) explains what remains uncertain
+  across journal, actor, and external-service boundaries.
+- **Apply:** [Write a saga](../how-to/write-a-saga.html) is the durable workflow recipe.
+  [Dispatch async effects](../how-to/dispatch-async-effects.html) shows the best-effort alternative when
+  work may safely be lost.
 
 ## You've built the whole loop
 

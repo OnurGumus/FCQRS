@@ -17,6 +17,10 @@ domain safe to change. Event-sourced code has four behaviours worth testing sepa
 
 None of these tests requires Akka.NET or a database.
 
+> **Learn alongside this chapter:** revisit [Consistency and recovery](../concepts/consistency-and-recovery.html)
+> to see what the tests must prove. Use [Test your domain](../how-to/test-your-domain.html) for test
+> helpers and [Evolve persisted events](../how-to/evolve-events.html) for compatibility strategies.
+
 ## Test decisions as a table
 
 The important cases for the document aggregate are states and commands, not methods and mocks. Write
@@ -125,7 +129,14 @@ A projection is derived from the journal. To verify a projection change:
 Do not delete or edit journal rows to repair a projection. Correct the projection and rebuild its
 output.
 
-## Continue
+## Understand it and use it
 
-The focused examples in [Test your domain](../how-to/test-your-domain.html) provide envelope helpers for
-F# and C#. Next, [prepare the system for production](5-production.html).
+- **Understand:** [Aggregates and the write side](../concepts/aggregates.html) explains why decisions and
+  folds can be tested without the runtime. [Consistency and recovery](../concepts/consistency-and-recovery.html)
+  explains replay, uncertain delivery, and the durable boundaries the tests protect.
+- **Apply:** [Test your domain](../how-to/test-your-domain.html) provides F# and C# envelope helpers.
+  [Evolve persisted events](../how-to/evolve-events.html) and
+  [Rebuild a read model](../how-to/rebuild-a-read-model.html) turn compatibility and replay into
+  repeatable procedures.
+
+Next, [prepare the system for production](5-production.html).

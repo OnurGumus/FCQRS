@@ -45,6 +45,20 @@ discard the tutorial history and begin again.
 The F# code in the executable chapters is checked while this documentation site is built. C# versions
 of the important types and functions appear beside the F# examples.
 
+## Learn in three layers
+
+Each chapter links three kinds of material. Use them together rather than treating the tutorial as an
+isolated code walkthrough:
+
+| Layer | Purpose | When to use it |
+|---|---|---|
+| Tutorial | Build one application in a deliberate sequence | First encounter with the framework |
+| Concept | Understand the problem, guarantee, and limitation | Before or after the matching chapter |
+| How-to | Repeat one implementation task quickly | While building your own application |
+
+Every chapter begins with suggested concept and how-to companions, and ends by pointing to the next
+useful references.
+
 ## The five stages
 
 1. [Model the aggregate](1-the-aggregate.html): separate requests from recorded facts, define

@@ -399,7 +399,7 @@ window.Clipboard_CopyTo = Clipboard_CopyTo;
             : key === "tutorial/index.html"
                 ? ["The five stages"]
                 : key === "concepts/index.html"
-                    ? ["The pages"]
+                    ? ["Read in this order"]
                     : key === "how-to/index.html"
                         ? ["Model the write side", "Build the read side", "Coordinate work", "Configure and operate"]
                         : [];

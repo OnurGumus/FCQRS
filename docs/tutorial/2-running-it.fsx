@@ -65,6 +65,10 @@ Chapter 1 produced a document aggregate as pure functions. This chapter register
 FCQRS, stores their events in SQLite, projects the events into query data, and sends a command through
 the complete path. Continue in the same `Program.fs`.
 
+> **Learn alongside this chapter:** read [The read side](../concepts/read-models.html) to understand
+> projections and offsets before wiring them, then use [Add a projection](../how-to/add-a-projection.html)
+> as the production-oriented recipe.
+
 ## Two paths, on purpose: writing and reading
 
 The application has two paths:
@@ -280,12 +284,14 @@ coordinated the query with that projection.
   update instead.
 - **Forgetting `Fcqrs.wireSagaStarters`.** Wire an empty list when the application has no sagas.
 
-## Further study
+## Understand it and use it
 
-- [The read side](../concepts/read-models.html): projections, offsets, and rebuilds.
-- [Consistency and recovery](../concepts/consistency-and-recovery.html): correlation ids, snapshots,
-  and restarts.
-- [Configure the database](../how-to/configure-the-database.html): supported persistence providers.
+- **Understand:** [The read side](../concepts/read-models.html) follows facts through projections,
+  offsets, transactions, queries, and rebuilds. [Consistency and recovery](../concepts/consistency-and-recovery.html)
+  places the aggregate commit, projection commit, correlation id, version, and restart on one timeline.
+- **Apply:** use [Add a projection](../how-to/add-a-projection.html),
+  [Read your writes](../how-to/read-your-writes.html), and
+  [Configure the database](../how-to/configure-the-database.html) in your application.
 
 Next, add a [saga](3-adding-a-saga.html) for a rule that spans a document and its owner.
 *)

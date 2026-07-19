@@ -11,6 +11,11 @@ The domain model does not change when the application moves from a laptop to pro
 environment does. Production readiness means deciding what happens when storage is slow, a projection
 fails, an external service accepts a request twice, or a node stops during a workflow.
 
+> **Learn alongside this chapter:** use [Consistency and recovery](../concepts/consistency-and-recovery.html)
+> as the failure model, then keep [Observe your system](../how-to/observability.html) and the
+> [configuration reference](../configuration.html) open while turning the checklist into deployment
+> settings and alerts.
+
 ## 1. Put the journal on durable storage
 
 SQLite is suitable for local development and a single-process deployment. A multi-node cluster needs a
@@ -111,6 +116,15 @@ You are ready to use FCQRS effectively when you can answer these questions for y
 - How are the journal, snapshots, and read models backed up and restored?
 - Which logs, traces, and alerts reveal a stuck saga or failed projection?
 
-The [how-to guides](../how-to/index.html) are the working reference after this course. The
-[configuration reference](../configuration.html) lists the FCQRS and Akka.NET settings used by the
-runtime.
+## Continue learning while operating
+
+- **Understand:** return to [The read side](../concepts/read-models.html),
+  [Sagas](../concepts/sagas.html), and
+  [Consistency and recovery](../concepts/consistency-and-recovery.html) when a production symptom crosses
+  more than one durability boundary.
+- **Apply:** the [how-to guides](../how-to/index.html) are the working reference after this course.
+  Start with [Configure the database](../how-to/configure-the-database.html),
+  [Observe your system](../how-to/observability.html), and
+  [Rebuild a read model](../how-to/rebuild-a-read-model.html). The
+  [configuration reference](../configuration.html) lists the FCQRS and Akka.NET settings used by the
+  runtime.

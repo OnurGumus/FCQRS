@@ -5,48 +5,135 @@ categoryindex: 4
 index: 4
 ---
 
-# The read side
+# The read side: from facts to answers
 
-The write side stores `OrderPlaced`, `PaymentReceived`, and `OrderShipped`. A screen needs a row with
-the order number, customer, total, and current delivery status. A **projection** turns the stored events
-into that queryable row.
+The journal is excellent at preserving what happened. It is a poor shape for most questions a user
+asks.
 
-## From events to query data
+An order page wants one query-ready result containing customer, lines, totals, payment state, delivery
+state, and a timeline. Reconstructing several aggregates and scanning their event histories for every
+page request would make queries slow and couple the user interface to write-side internals.
 
-<img src="../img/read-path.svg" alt="The read path: events become query-ready tables" width="900"/>
+The read side exists to turn stored facts into useful answers ahead of time.
 
-A projection receives each event in order and updates a **read model**. The read model may be a SQL
-table, search index, cache, or document store. `OrderPlaced` can insert a row and `OrderShipped` can
-change its delivery status.
+## Projection and read model are different things
 
-Another projection can use the same events to maintain a customer order history. Each read model is
-shaped for its queries and does not have to match the event or aggregate state.
+A **projection** is the event-handling process. A **read model** is the data it produces.
 
-## The offset and transaction boundary
+For example:
 
-A projection stores an **offset** that records how far it has read. Store the read-model update and the
-new offset in the same database transaction. If the transaction commits, both are saved. If it rolls
-back, neither is saved and the event is processed again after restart. This gives the projection
-exactly-once updates within that transaction. A projection that writes to several stores must provide
-its own idempotency or coordination.
+```text
+OrderPlaced      -> insert order_summary row
+PaymentReceived  -> set payment_status = 'paid'
+OrderShipped     -> set delivery_status = 'shipped'
+```
 
-## Queries never touch the journal
+The read model may be a SQL table, document, search index, graph, or cache. Its shape follows a query,
+not the aggregate state or event schema. It may duplicate names and totals if that makes reads direct
+and understandable.
 
-Reads run against the read model, not the event journal. The order page can query a table designed and
-indexed for that page. The journal remains the source used to build the table.
+<img src="../img/read-path.svg" alt="Stored events flow through a projection into query-ready read-model tables" width="900"/>
 
-## Why a read model is disposable
+Several projections can consume the same event. `OrderPlaced` might update an order page, a customer
+history, a warehouse queue, and a sales report. Those read models can evolve independently because
+they share facts rather than one schema.
 
-Everything in a read model comes from its projection and the events still held in the journal. To
-correct a projection, stop it, replace or clear its read model, reset its offset, and replay the event
-stream. The projection then builds the read model again from the stored events.
+## Follow the event stream with an offset
 
-## The bridge to the client
+The journal assigns an ordered position to the event stream. A projection keeps an **offset** recording
+the last position it committed.
 
-A projection can publish the events it has handled to a subscription stream. A caller waiting for a
-specific correlation id then knows that this projection has committed the corresponding update. This
-is the read-your-writes mechanism described in [consistency and
-recovery](consistency-and-recovery.html).
+Imagine this stream:
 
-The runnable version is in the [tutorial](../tutorial/index.html); the recipe is in
-[add a projection](../how-to/add-a-projection.html).
+```text
+offset 41  OrderPlaced
+offset 42  PaymentReceived
+offset 43  OrderShipped
+```
+
+If the projection has committed offset 42, it resumes after 42 and handles `OrderShipped`. It does not
+ask each aggregate for current state. The journal is the source; the offset is the projection's
+bookmark.
+
+An aggregate version and a projection offset are different counters. A version orders events for one
+aggregate identity. An offset locates an event in the stream a projection consumes.
+
+## The transaction boundary creates reliable progress
+
+For a SQL read model, handle one event like this:
+
+1. Begin a database transaction.
+2. Apply the read-model insert, update, or delete.
+3. Store the new offset in the same transaction.
+4. Commit.
+
+If the process stops before commit, neither change is durable and the event is retried. If commit
+succeeds, both the data and offset are durable. This prevents the two dangerous split states:
+
+- data changed but offset did not advance, so a non-idempotent update runs twice;
+- offset advanced but data did not change, so the event is skipped forever.
+
+Within one transactional store, this produces one committed update per offset. If a projection writes
+to SQL and a search service, those systems do not share the transaction. The handler must then use
+idempotency, an outbox, or another explicit coordination design.
+
+## Event order is part of the model
+
+A projection should make invalid histories visible. If `OrderShipped` arrives without `OrderPlaced`,
+silently inventing a partial row hides a broken contract or rebuild. Failing the projection exposes the
+problem at the event that caused it.
+
+Handlers should also define how repeated or superseded facts behave. A transactional offset prevents
+normal repeats in one store, but rebuild tools, migrations, or external writes may still benefit from
+idempotent operations keyed by event identity.
+
+## Queries use only the read model
+
+Application queries do not load aggregate actors or inspect the journal. They read the structure
+created for them. This keeps query latency and indexing independent from write-side recovery and
+business rules.
+
+A read model is allowed to be stale for a short time. The aggregate commits first; the projection
+commits later. This is **eventual consistency**. It is not lost data, but it changes what the caller may
+observe immediately after a command.
+
+## Read your own write when the interaction needs it
+
+Some interactions can redirect immediately and allow the page to catch up. Others must show the new
+result before replying.
+
+FCQRS carries a correlation id from the command to its event. A caller can:
+
+1. subscribe to that correlation id;
+2. send the command;
+3. wait until the required projection commits and publishes the matching event;
+4. query that projection's read model.
+
+Subscribe before sending. Subscribing afterward creates a race in which the notification may already
+have passed. The notification is a coordination signal, not durable business messaging. The data and
+offset remain the durable proof of projection progress.
+
+## Read models are disposable, rebuilds are not casual
+
+Because every read-model value is derived from retained events, it can be rebuilt:
+
+1. stop or isolate the live projection;
+2. create or clear the target schema;
+3. reset its offset to the chosen starting position;
+4. replay and monitor failures;
+5. validate counts and representative queries;
+6. switch traffic to the rebuilt model.
+
+“Disposable” means the journal can reproduce the data. It does not mean deleting a production view is
+risk-free. Large replays take time, old events must remain deserializable, and a broken projection may
+fail halfway through. A side-by-side rebuild often provides the safest rollback.
+
+## Design one read model per question
+
+Start from a consumer and a query, not from the event types. Write the result shape the consumer would
+like to receive in one read. Then determine which events create and update it, which fields need
+indexes, and how the projection handles missing or out-of-order facts.
+
+Chapter 2 of the [tutorial](../tutorial/2-running-it.html) builds the complete write-to-read loop. Use
+[Add a projection](../how-to/add-a-projection.html), [Read your writes](../how-to/read-your-writes.html),
+and [Rebuild a read model](../how-to/rebuild-a-read-model.html) for focused implementation recipes.

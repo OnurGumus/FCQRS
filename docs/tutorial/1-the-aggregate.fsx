@@ -25,6 +25,10 @@ This chapter models that write side. It uses no actor system or database yet. Yo
 domain values, separate requests from recorded outcomes, and write the two pure functions FCQRS runs
 inside an aggregate.
 
+> **Learn alongside this chapter:** read [CQRS and event sourcing](../concepts/cqrs-and-event-sourcing.html)
+> for the ground-up mental model, then keep [Define an aggregate](../how-to/define-an-aggregate.html)
+> nearby as the shorter implementation recipe.
+
 ## Commands and events are not the same thing
 
 A **command** asks the system to do something, such as `CreateOrUpdate`. The aggregate may accept or
@@ -321,12 +325,14 @@ let action = Document.decide (cmd (Document.CreateOrUpdate doc)) Document.initia
 - **Passing raw strings through the domain.** Parse them into domain values at the application edge.
 - **Treating aggregate state as stored data.** It is derived from the event history during recovery.
 
-## Further study
+## Understand it and use it
 
-- [Aggregates and the write side](../concepts/aggregates.html): the consistency boundary and actor
-  lifecycle.
-- [CQRS and event sourcing](../concepts/cqrs-and-event-sourcing.html): separate write and read models.
-- [Test your domain](../how-to/test-your-domain.html): command and event envelope helpers.
+- **Understand:** [CQRS and event sourcing](../concepts/cqrs-and-event-sourcing.html) explains why the
+  write and query models separate. [Aggregates and the write side](../concepts/aggregates.html) develops
+  the consistency boundary, decision, fold, actor lifecycle, and recovery model from first principles.
+- **Apply:** [Define an aggregate](../how-to/define-an-aggregate.html) is the focused recipe.
+  [Test your domain](../how-to/test-your-domain.html) provides command and event envelope helpers and
+  replay-test patterns.
 
 Next, [run the aggregate and project its events](2-running-it.html).
 *)
