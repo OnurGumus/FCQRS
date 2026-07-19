@@ -8,7 +8,7 @@ index: 2
 *)
 
 (*** hide ***)
-#r "nuget: FCQRS, 6.0.0-rc1"
+#r "nuget: FCQRS, 6.0.0-rc5"
 
 (**
 # 0. Quickstart: follow one request end to end
