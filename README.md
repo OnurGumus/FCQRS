@@ -124,6 +124,10 @@ conventional database application.
 
 ## Examples
 
+- [`samples/getting-started-fsharp/`](samples/getting-started-fsharp/) runs the first complete flow in
+  F#.
+- [`samples/getting-started-csharp/`](samples/getting-started-csharp/) runs the same flow in stable C#
+  on .NET 10.
 - [`sample/`](sample/) contains a small user aggregate.
 - [`saga_sample/`](saga_sample/) adds a verification saga.
 - [`focument_workshop`](https://github.com/OnurGumus/focument_workshop) is a C# workshop application.

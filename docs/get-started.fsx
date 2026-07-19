@@ -24,6 +24,26 @@ data and offset transactionally; [Add a projection](how-to/add-a-projection.html
 Read [Concepts](concepts/index.html) first if CQRS and event sourcing are new to you. Follow the
 [Tutorial](tutorial/index.html) for the complete course from domain modelling through production.
 
+## Run a complete sample
+
+The repository contains two small projects that perform the complete flow on stable .NET 10:
+
+| Language | Project |
+|---|---|
+| F# | [`samples/getting-started-fsharp`](https://github.com/OnurGumus/FCQRS/tree/main/samples/getting-started-fsharp) |
+| C# | [`samples/getting-started-csharp`](https://github.com/OnurGumus/FCQRS/tree/main/samples/getting-started-csharp) |
+
+After cloning FCQRS, run either project from the repository root:
+
+```text
+dotnet run --project samples/getting-started-fsharp
+dotnet run --project samples/getting-started-csharp
+```
+
+Both send one command, persist one event to SQLite, wait for an in-memory projection, and query the
+result. The C# sample begins with one concrete command and event type, so it does not require preview
+union syntax. The C# examples later on this page show how the domain expands to several cases.
+
 ## Create the project
 
 ```text

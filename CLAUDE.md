@@ -108,6 +108,8 @@ Keep these distinctions intact in code comments and documentation.
 - `src/FCQRS/CSharpInterop.fs`: C# types and lower-level interop.
 - `src/FCQRS/HostExtensions.fs`: C# host-builder and dependency-injection registration.
 - `src/FCQRS/default.hocon`: embedded Akka.NET defaults.
+- `samples/getting-started-fsharp/` and `samples/getting-started-csharp/`: equivalent first-project
+  flows kept on stable .NET 10.
 - `sample/` and `saga_sample/`: executable examples.
 - `test/Facade.Tests/`: facade and behaviour tests.
 

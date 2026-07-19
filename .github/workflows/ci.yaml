@@ -26,6 +26,8 @@ jobs:
         run: dotnet run --project test/Facade.Tests -c Release
       - name: Samples build
         run: |
+          dotnet build samples/getting-started-fsharp -c Release
+          dotnet build samples/getting-started-csharp -c Release
           dotnet build sample -c Release
           dotnet build saga_sample -c Release
 
