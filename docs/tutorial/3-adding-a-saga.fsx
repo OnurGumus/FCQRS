@@ -123,6 +123,80 @@ The four decision cases form two pairs: the first request is stored and its retr
 first result is stored and its retry is deferred. The final wildcard rejects every command and state
 combination that does not belong to this workflow.
 
+<div class="cs-alt"></div>
+
+```csharp
+public readonly record struct DocumentId(Guid Value);
+public enum PublicationResult { Published, Rejected }
+
+public abstract record PublicationDocumentState
+{
+    public sealed record Draft : PublicationDocumentState;
+    public sealed record WaitingForSlug(DocumentId DocumentId, string Slug)
+        : PublicationDocumentState;
+    public sealed record Finished(
+        DocumentId DocumentId, string Slug, PublicationResult Result)
+        : PublicationDocumentState;
+
+    public static readonly PublicationDocumentState Initial = new Draft();
+}
+
+public union DocumentCommand(DocumentCommand.Publish, DocumentCommand.FinishPublication)
+{
+    public record Publish(DocumentId DocumentId, string Slug);
+    public record FinishPublication(PublicationResult Result);
+}
+
+public union DocumentEvent(DocumentEvent.PublicationRequested, DocumentEvent.PublicationFinished)
+{
+    public record PublicationRequested(DocumentId DocumentId, string Slug);
+    public record PublicationFinished(
+        DocumentId DocumentId, string Slug, PublicationResult Result);
+}
+
+public sealed class PublicationDocumentAggregate
+    : Aggregate<PublicationDocumentState, DocumentCommand, DocumentEvent>
+{
+    public override PublicationDocumentState InitialState => PublicationDocumentState.Initial;
+    public override string EntityName => "Document";
+
+    public override EventAction<DocumentEvent> HandleCommand(
+        Command<DocumentCommand> command, PublicationDocumentState state) =>
+        (command.CommandDetails, state) switch
+        {
+            (DocumentCommand.Publish request, PublicationDocumentState.Draft) =>
+                EventActions.Persist<DocumentEvent>(
+                    new DocumentEvent.PublicationRequested(request.DocumentId, request.Slug)),
+            (DocumentCommand.Publish request, PublicationDocumentState.WaitingForSlug waiting)
+                when request.DocumentId == waiting.DocumentId && request.Slug == waiting.Slug =>
+                EventActions.Defer<DocumentEvent>(
+                    new DocumentEvent.PublicationRequested(request.DocumentId, request.Slug)),
+            (DocumentCommand.FinishPublication finish,
+                PublicationDocumentState.WaitingForSlug waiting) =>
+                EventActions.Persist<DocumentEvent>(new DocumentEvent.PublicationFinished(
+                    waiting.DocumentId, waiting.Slug, finish.Result)),
+            (DocumentCommand.FinishPublication finish,
+                PublicationDocumentState.Finished current) when finish.Result == current.Result =>
+                EventActions.Defer<DocumentEvent>(new DocumentEvent.PublicationFinished(
+                    current.DocumentId, current.Slug, current.Result)),
+            _ => EventActions.Ignore<DocumentEvent>()
+        };
+
+    public override PublicationDocumentState ApplyEvent(
+        Event<DocumentEvent> stored, PublicationDocumentState state) =>
+        stored.EventDetails switch
+        {
+            DocumentEvent.PublicationRequested requested =>
+                new PublicationDocumentState.WaitingForSlug(
+                    requested.DocumentId, requested.Slug),
+            DocumentEvent.PublicationFinished finished =>
+                new PublicationDocumentState.Finished(
+                    finished.DocumentId, finished.Slug, finished.Result),
+            _ => state
+        };
+}
+```
+
 ## Step 2: let each slug protect its own uniqueness
 
 The slug aggregate is addressed by the slug text. Its entire state is the document that owns the
@@ -159,6 +233,50 @@ module Slug =
 The first reservation becomes durable. Repeating it for the same document returns the existing result.
 A different document receives `SlugUnavailable` without changing the owner. Both repeated paths are
 safe when a saga resumes after uncertain delivery.
+
+<div class="cs-alt"></div>
+
+```csharp
+public sealed record SlugState(DocumentId? ReservedFor = null)
+{
+    public static readonly SlugState Initial = new();
+}
+
+public union SlugCommand(SlugCommand.Reserve)
+{
+    public record Reserve(DocumentId DocumentId);
+}
+
+public union SlugEvent(SlugEvent.SlugReserved, SlugEvent.SlugUnavailable)
+{
+    public record SlugReserved(DocumentId DocumentId);
+    public record SlugUnavailable(DocumentId DocumentId);
+}
+
+public sealed class SlugAggregate : Aggregate<SlugState, SlugCommand, SlugEvent>
+{
+    public override SlugState InitialState => SlugState.Initial;
+    public override string EntityName => "Slug";
+
+    public override EventAction<SlugEvent> HandleCommand(
+        Command<SlugCommand> command, SlugState state) =>
+        (command.CommandDetails, state.ReservedFor) switch
+        {
+            (SlugCommand.Reserve reserve, null) =>
+                EventActions.Persist<SlugEvent>(new SlugEvent.SlugReserved(reserve.DocumentId)),
+            (SlugCommand.Reserve reserve, DocumentId owner) when owner == reserve.DocumentId =>
+                EventActions.Defer<SlugEvent>(new SlugEvent.SlugReserved(reserve.DocumentId)),
+            (SlugCommand.Reserve reserve, _) =>
+                EventActions.Defer<SlugEvent>(new SlugEvent.SlugUnavailable(reserve.DocumentId)),
+            _ => EventActions.Ignore<SlugEvent>()
+        };
+
+    public override SlugState ApplyEvent(Event<SlugEvent> stored, SlugState state) =>
+        stored.EventDetails is SlugEvent.SlugReserved reserved
+            ? new SlugState(reserved.DocumentId)
+            : state;
+}
+```
 
 ## Step 3: write the saga as a table
 
@@ -420,11 +538,11 @@ let wire (api: IActor) =
 ```csharp
 services
     .AddFcqrs(connectionString, "Documents")
-    .AddAggregate<DocumentAggregate>()
+    .AddAggregate<PublicationDocumentAggregate>()
     .AddAggregate<SlugAggregate>()
     .AddSaga<PublicationSaga, DocumentEvent, PublicationData, PublicationState>(
         create: sp => new PublicationSaga(
-            sp.AggregateFactory<DocumentAggregate>(),
+            sp.AggregateFactory<PublicationDocumentAggregate>(),
             sp.AggregateFactory<SlugAggregate>()),
         startOn: e => e is Event<DocumentEvent>
             { EventDetails: DocumentEvent.PublicationRequested });

@@ -43,6 +43,27 @@ let decide (cmd: Command<NoteCommand>) state =
     | GiveUp          -> SummaryUnavailable |> PersistEvent
 ```
 
+<div class="cs-alt"></div>
+
+```csharp
+public abstract record NoteEffect
+{
+    public sealed record SummarizeText(string Text) : NoteEffect;
+}
+
+EventAction<NoteEvent> Decide(Command<NoteCommand> cmd, NoteState state) =>
+    cmd.CommandDetails switch
+    {
+        NoteCommand.Summarize =>
+            EventActions.Dispatch<NoteEvent>(new NoteEffect.SummarizeText(state.Body)),
+        NoteCommand.RecordSummary result =>
+            EventActions.Persist<NoteEvent>(new NoteEvent.SummaryRecorded(result.Summary)),
+        NoteCommand.GiveUp =>
+            EventActions.Persist<NoteEvent>(new NoteEvent.SummaryUnavailable()),
+        _ => EventActions.Ignore<NoteEvent>()
+    };
+```
+
 No service client appears in `decide`, so the returned action can be compared directly in a unit test.
 
 ## Register the runner
@@ -59,6 +80,31 @@ let notes =
                 return RecordSummary summary
             with _ ->
                 return GiveUp })
+```
+
+<div class="cs-alt"></div>
+
+```csharp
+var notes = ActorWiring.InitAggregateWithEffects(
+    actor,
+    NoteState.Initial,
+    "Note",
+    Decide,
+    Fold,
+    runner: async description =>
+    {
+        var effect = (NoteEffect.SummarizeText)description;
+        try
+        {
+            var summary = await ai.Summarize(effect.Text);
+            return new NoteCommand.RecordSummary(summary);
+        }
+        catch
+        {
+            return new NoteCommand.GiveUp();
+        }
+    },
+    SnapshotPolicy.Default);
 ```
 
 The runner executes away from the aggregate mailbox, so the aggregate can process other commands while
@@ -82,6 +128,18 @@ Expect.equal
     "Summarize dispatches a summarization effect"
 ```
 
+<div class="cs-alt"></div>
+
+```csharp
+var action = Decide(
+    TestEnvelope.Command<NoteCommand>(new NoteCommand.Summarize()),
+    state);
+
+Assert.Equal(
+    EventActions.Dispatch<NoteEvent>(new NoteEffect.SummarizeText(state.Body)),
+    action);
+```
+
 ## Failure contract
 
 - **The work is ephemeral.** A process stop, actor restart, or shard move loses the in-flight operation.
@@ -98,22 +156,5 @@ FCQRS creates a `Dispatch:<CaseName>` span for the runner and parents it to the 
 trace. The result appears as a later command span such as `Command:RecordSummary` or `Command:GiveUp`.
 See [Observe your system](observability.html).
 
-## From C#
-
-The same mechanism, Task-based:
-
-```csharp
-// decide returns a description
-EventActions.Dispatch<NoteEvent>(new SummarizeText(state.Body));
-
-// register with a total runner
-var refs = ActorWiring.InitAggregateWithEffects(
-    actor, Note.Initial, "Note", Decide, Fold,
-    runner: async description =>
-    {
-        try   { var summary = await ai.Summarize(((SummarizeText)description).Text);
-                return new RecordSummary(summary); }
-        catch { return new GiveUp(); }
-    },
-    SnapshotPolicy.Default);
-```
+The C# runner returns `Task<object>` through type inference. Every path returns a command that the
+aggregate understands; an exception must not escape the runner.

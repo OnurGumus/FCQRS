@@ -56,7 +56,10 @@ cd MyApp
 dotnet add package FCQRS --prerelease
 ```
 
-Replace `Program.fs` with the code from the following sections.
+Replace `Program.fs` with the code from the following sections. The C# tabs are direct counterparts;
+because the expanded command and event examples use C# discriminated unions, they require the compiler
+setup described in [C# interop and serialization](concepts/csharp-interop.html). Use the linked stable
+.NET 10 C# sample when you want a runnable project without preview union syntax.
 *)
 
 (*** hide ***)
@@ -125,6 +128,13 @@ functions, so they can be tested without Akka.NET or a database.
 <div class="cs-alt"></div>
 
 ```csharp
+using System.Collections.Concurrent;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using FCQRS;
+using static FCQRS.Common;
+using static FCQRS.CSharp;
+
 public record Document(string Id, string Title, string Content);
 
 public union DocumentCommand(DocumentCommand.Create, DocumentCommand.Edit)
@@ -297,6 +307,39 @@ let run () =
     }
 
 (**
+<div class="cs-alt"></div>
+
+```csharp
+using var host = builder.Build();
+await host.StartAsync();
+
+var documents = host.Services
+    .GetRequiredService<Handler<DocumentCommand, DocumentEvent>>();
+var subscriptions = host.Services
+    .GetRequiredService<FCQRS.Query.ISubscribe>();
+
+var documentId = Guid.NewGuid().ToString("N");
+var aggregateId = Values.CreateAggregateId(documentId);
+var correlationId = Values.NewCID();
+var document = new Document(documentId, "FCQRS notes", "first event");
+
+// Subscribe before sending so the projection cannot publish first.
+using var projectedEvent = subscriptions.SubscribeForFirst(correlationId);
+
+var stored = await documents(
+    outcome => outcome is DocumentEvent.Created,
+    correlationId,
+    aggregateId,
+    new DocumentCommand.Create(document));
+
+await projectedEvent.Task;
+var projected = readModel[documentId];
+Console.WriteLine(
+    $"stored version {stored.Version}; query returned '{projected.Content}'");
+
+await host.StopAsync();
+```
+
 Add the entry point and run the program:
 
 ```fsharp
@@ -305,6 +348,8 @@ let main _ =
     run () |> Async.RunSynchronously
     0
 ```
+
+The C# example uses top-level statements, so its `await host.StartAsync()` sequence is the entry point.
 
 ```text
 dotnet run

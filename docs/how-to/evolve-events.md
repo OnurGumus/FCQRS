@@ -28,6 +28,8 @@ Fcqrs.journalTypes
       journalType<User.Event> "user.event" ]
 ```
 
+<div class="cs-alt"></div>
+
 ```csharp
 services
     .AddFcqrs(connectionString, "app")

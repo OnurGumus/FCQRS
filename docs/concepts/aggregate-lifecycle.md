@@ -76,8 +76,27 @@ let fold event state =
     | AlreadyCancelled -> state
 ```
 
-The same rule applies in C#: `EventActions.Defer(...)` returns a non-journaled reply, and
-`ApplyEvent` must leave state unchanged for that reply.
+<div class="cs-alt"></div>
+
+```csharp
+EventAction<OrderEvent> HandleCommand(OrderCommand command, OrderState state) =>
+    (command, state) switch
+    {
+        (OrderCommand.CancelOrder, OrderState.Shipped) =>
+            EventActions.Defer<OrderEvent>(new OrderEvent.OrderAlreadyShipped()),
+        (OrderCommand.CancelOrder, OrderState.Cancelled) =>
+            EventActions.Defer<OrderEvent>(new OrderEvent.AlreadyCancelled()),
+        (OrderCommand.CancelOrder, _) =>
+            EventActions.Persist<OrderEvent>(new OrderEvent.OrderCancelled()),
+        _ => EventActions.Ignore<OrderEvent>()
+    };
+
+OrderState ApplyEvent(OrderEvent outcome, OrderState state) =>
+    outcome is OrderEvent.OrderCancelled ? OrderState.Cancelled : state;
+```
+
+`EventActions.Defer(...)` returns a non-journaled reply, and `ApplyEvent` leaves state unchanged for
+that reply.
 
 ## Snapshots shorten recovery
 

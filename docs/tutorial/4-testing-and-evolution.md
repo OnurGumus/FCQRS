@@ -66,8 +66,30 @@ test <@
 @>
 ```
 
+<div class="cs-alt"></div>
+
+```csharp
+var fixedTime = new FakeTimeProvider(
+    new DateTimeOffset(2026, 1, 1, 12, 0, 0, TimeSpan.Zero));
+var aggregate = new PublicationDocumentAggregate();
+var publishedState = new PublicationDocumentState.Finished(
+    documentId, "guides/fcqrs", PublicationResult.Published);
+
+var action = aggregate.HandleCommand(
+    TestEnvelope.Command<DocumentCommand>(
+        new DocumentCommand.FinishPublication(PublicationResult.Published),
+        fixedTime),
+    publishedState);
+
+Assert.Equal(
+    EventActions.Defer<DocumentEvent>(new DocumentEvent.PublicationFinished(
+        documentId, "guides/fcqrs", PublicationResult.Published)),
+    action);
+```
+
 Use fixed timestamps in test envelopes even when the current rule does not read time. Stable inputs
-make failures reproducible and keep future time-dependent rules deterministic.
+make failures reproducible and keep future time-dependent rules deterministic. The C# example uses
+`FakeTimeProvider` from the `Microsoft.Extensions.TimeProvider.Testing` package.
 
 ## Test folds with histories
 
@@ -83,6 +105,28 @@ let recovered =
 test <@
     recovered = Document.Finished(documentId, "guides/fcqrs", Document.Published)
 @>
+```
+
+<div class="cs-alt"></div>
+
+```csharp
+var history = new DocumentEvent[]
+{
+    new DocumentEvent.PublicationRequested(documentId, "guides/fcqrs"),
+    new DocumentEvent.PublicationFinished(
+        documentId, "guides/fcqrs", PublicationResult.Published)
+};
+
+var recovered = history
+    .Select((details, index) =>
+        TestEnvelope.Event<DocumentEvent>(details, index + 1, fixedTime))
+    .Aggregate(PublicationDocumentState.Initial,
+        (state, stored) => aggregate.ApplyEvent(stored, state));
+
+Assert.Equal(
+    new PublicationDocumentState.Finished(
+        documentId, "guides/fcqrs", PublicationResult.Published),
+    recovered);
 ```
 
 This test is the executable definition of recovery. If a fold reads the clock, generates an id, or
@@ -123,6 +167,8 @@ Register stable journal names so moving a CLR type does not change the stored ma
 ```fsharp
 Fcqrs.journalTypes [ journalType<Document.Event> "document.event" ]
 ```
+
+<div class="cs-alt"></div>
 
 ```csharp
 builder.WithJournalTypes(types => types.Type<DocumentEvent>("document.event"));

@@ -37,6 +37,25 @@ let event version details : Event<_> =
       Metadata = Map.empty }
 ```
 
+<div class="cs-alt"></div>
+
+```csharp
+using Microsoft.Extensions.Time.Testing;
+using static FCQRS.CSharp;
+
+var fixedTime = new FakeTimeProvider(
+    new DateTimeOffset(2026, 1, 1, 12, 0, 0, TimeSpan.Zero));
+
+Command<T> MakeCommand<T>(T details) =>
+    TestEnvelope.Command(details, fixedTime);
+
+Event<T> MakeEvent<T>(long version, T details) where T : notnull =>
+    TestEnvelope.Event(details, version, fixedTime);
+```
+
+`FakeTimeProvider` comes from the `Microsoft.Extensions.TimeProvider.Testing` package. Use
+`TimeProvider.System` when the rule does not inspect the envelope time and a fixed clock adds no value.
+
 The examples below use `Expect.equal` from Expecto. Use the equivalent equality assertion in another
 test framework.
 
@@ -56,6 +75,21 @@ Expect.equal
     action
     (PersistEvent (Document.Updated doc))
     "creating a document stores Updated"
+```
+
+<div class="cs-alt"></div>
+
+```csharp
+Document.TryCreate(Guid.NewGuid(), "Spec", "draft", out var doc, out _);
+var aggregate = new DocumentAggregate();
+
+var action = aggregate.HandleCommand(
+    MakeCommand<DocumentCommand>(new DocumentCommand.CreateOrUpdate(doc!)),
+    DocumentState.Initial);
+
+Assert.Equal(
+    EventActions.Persist<DocumentEvent>(new DocumentEvent.Updated(doc!)),
+    action);
 ```
 
 For an idempotent verdict, such as publication confirmation in
@@ -78,6 +112,24 @@ Expect.equal
     "repeating the result defers the existing publication outcome"
 ```
 
+<div class="cs-alt"></div>
+
+```csharp
+var publication = new PublicationDocumentAggregate();
+var publishedState = new PublicationDocumentState.Finished(
+    doc!.Id, "guides/fcqrs", PublicationResult.Published);
+
+var action2 = publication.HandleCommand(
+    MakeCommand<DocumentCommand>(
+        new DocumentCommand.FinishPublication(PublicationResult.Published)),
+    publishedState);
+
+Assert.Equal(
+    EventActions.Defer<DocumentEvent>(new DocumentEvent.PublicationFinished(
+        doc.Id, "guides/fcqrs", PublicationResult.Published)),
+    action2);
+```
+
 Write one case for every meaningful command and state combination, including commands that should be
 ignored or unhandled.
 
@@ -88,6 +140,16 @@ ignored or unhandled.
 ```fsharp
 let state = Document.fold (event 1L (Document.Updated doc)) Document.initial
 Expect.equal state.Document (Some doc) "Updated becomes the current document"
+```
+
+<div class="cs-alt"></div>
+
+```csharp
+var state = aggregate.ApplyEvent(
+    MakeEvent<DocumentEvent>(1, new DocumentEvent.Updated(doc!)),
+    DocumentState.Initial);
+
+Assert.Equal(doc, state.Document);
 ```
 
 The envelope version is maintained by FCQRS. Do not duplicate it in domain state unless the domain has
@@ -108,6 +170,24 @@ let recovered =
 Expect.equal recovered.Document (Some edited) "replay recovers the latest document"
 ```
 
+<div class="cs-alt"></div>
+
+```csharp
+var edited = doc! with { Content = newContent };
+var history = new DocumentEvent[]
+{
+    new DocumentEvent.Updated(doc),
+    new DocumentEvent.Updated(edited)
+};
+
+var recovered = history
+    .Select((details, index) => MakeEvent<DocumentEvent>(index + 1, details))
+    .Aggregate(DocumentState.Initial,
+        (state, stored) => aggregate.ApplyEvent(stored, state));
+
+Assert.Equal(edited, recovered.Document);
+```
+
 Use fixed events captured from an older release as compatibility fixtures. A replay test should fail if
 a changed fold can no longer reproduce the historical state.
 
@@ -120,28 +200,9 @@ a deferred `Published` reply instead of persisting another publication.
 Also test boundary times and generated ids. Put the chosen value in the command or event; never let a
 fold read the live clock or random generator.
 
-In C#, `decide`/`fold` are the aggregate's `HandleCommand`/`ApplyEvent` methods, and `TestEnvelope`
-wraps the payload (pass a `FakeTimeProvider` to test time-dependent logic deterministically):
-
-<div class="cs-alt"></div>
-
-```csharp
-// No actor system or DI: construct the aggregate and call it directly.
-using static FCQRS.CSharp;   // TestEnvelope, EventActions
-using Xunit;
-
-var agg = new DocumentAggregate();
-
-// a write persists Updated
-var cmd = TestEnvelope.Command(new DocumentCommand.CreateOrUpdate(doc), TimeProvider.System);
-var action = agg.HandleCommand(cmd, DocumentState.Initial);
-Assert.Equal(EventActions.Persist<DocumentEvent>(new DocumentEvent.Updated(doc)), action);
-
-// the fold changes domain state; the envelope carries the persistence version
-var evt = TestEnvelope.Event(new DocumentEvent.Updated(doc), version: 1, TimeProvider.System);
-var state = agg.ApplyEvent(evt, DocumentState.Initial);
-Assert.Equal(doc, state.Document);
-```
+In C#, `decide` and `fold` are the aggregate's `HandleCommand` and `ApplyEvent` methods. The paired
+examples use `TestEnvelope` and a `FakeTimeProvider`; no actor system or dependency-injection container
+is started.
 
 ## Test sagas in two layers
 

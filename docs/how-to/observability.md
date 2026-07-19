@@ -85,6 +85,12 @@ sensitive values when detailed payload diagnostics are not acceptable:
 FCQRS.Common.Telemetry.IncludePayloads <- false   // or builder.WithPayloadDiagnostics(false)
 ```
 
+<div class="cs-alt"></div>
+
+```csharp
+builder.WithPayloadDiagnostics(false);
+```
+
 Tags and log lines then contain the case name only. This switch affects diagnostics, not persisted
 events. A secret stored in an event remains in the journal regardless of the diagnostics setting.
 
@@ -98,6 +104,16 @@ and process-exit flushing. Register a bounded flush hook for buffered telemetry:
 FCQRS.Common.Telemetry.FatalFlush <- System.Action(fun () ->
     tracerProvider.ForceFlush(3000) |> ignore
     loggerProvider.ForceFlush(3000) |> ignore) // or Serilog's Log.CloseAndFlush()
+```
+
+<div class="cs-alt"></div>
+
+```csharp
+FCQRS.Common.Telemetry.FatalFlush = new Action(() =>
+{
+    tracerProvider.ForceFlush(3000);
+    loggerProvider.ForceFlush(3000); // or Serilog.Log.CloseAndFlush()
+});
 ```
 
 The hook runs on a background thread with a five-second cap.

@@ -11,7 +11,7 @@ FCQRS starts from an embedded Akka.NET configuration and merges application conf
 page lists the defaults, FCQRS runtime keys, persistence providers, and the settings required to move
 from one local process to a cluster.
 
-## Minimal F# configuration
+## Minimal configuration
 
 `Fcqrs.connect` supplies the persistence provider and connection string. An empty `IConfiguration`
 accepts the rest of the embedded defaults:
@@ -24,8 +24,18 @@ let connection = Fcqrs.connect FCQRS.Actor.DBType.Sqlite "Data Source=app.db;"
 let api = Fcqrs.actor config loggerFactory (Some connection) "MyCluster"
 ```
 
+<div class="cs-alt"></div>
+
+```csharp
+var builder = Host.CreateApplicationBuilder(args);
+
+builder.Services.AddFcqrs(
+    connectionString: "Data Source=app.db;",
+    clusterName: "MyCluster");
+```
+
 The supported `DBType` values are listed in [Configure the database](how-to/configure-the-database.html).
-The C# `services.AddFcqrs(connectionString, clusterName)` overload creates the same setup with SQLite.
+The C# host-builder overload creates the same setup with SQLite.
 
 ## What the defaults set up for you
 

@@ -32,6 +32,24 @@ let! ack =
 // On return, this projection has published the matching event. Query its model now.
 ```
 
+<div class="cs-alt"></div>
+
+```csharp
+// C# composes the same subscribe-before-send sequence explicitly.
+using var projected = subscriptions.SubscribeForFirst(cid);
+
+var reply = await documents(
+    isExpectedReply,
+    cid,
+    documentId,
+    new DocumentCommand.CreateOrUpdate(document));
+
+if (reply.Journaled is not { Value: false })
+    await projected.Task;
+
+// This projection has now published the matching event. Query its model.
+```
+
 The helper waits for one notification. If a command persists a batch and the projection publishes
 several events for the same CID, either filter notifications so only the final required update is
 published or compose a subscription with the correct `take` count.
@@ -47,7 +65,8 @@ FCQRS stamps the delivered envelope with `Event.Journaled : bool option`:
 - `Some false`: the reply was deferred or publish-only and will not reach a projection;
 - `None`: the envelope predates or bypassed the delivery stamp.
 
-`sendAwaiting` skips the projection wait for `Some false`.
+`sendAwaiting` skips the projection wait for `Some false`. The C# sequence performs the equivalent
+`Journaled` check explicitly.
 
 ## Compose the sequence manually
 

@@ -251,11 +251,11 @@ Register it with both factories and the safe start predicate:
 ```csharp
 services
     .AddFcqrs(connectionString, "Documents")
-    .AddAggregate<DocumentAggregate>()
+    .AddAggregate<PublicationDocumentAggregate>()
     .AddAggregate<SlugAggregate>()
     .AddSaga<PublicationSaga, DocumentEvent, PublicationData, PublicationState>(
         create: sp => new PublicationSaga(
-            sp.AggregateFactory<DocumentAggregate>(),
+            sp.AggregateFactory<PublicationDocumentAggregate>(),
             sp.AggregateFactory<SlugAggregate>()),
         startOn: e => e is Event<DocumentEvent>
             { EventDetails: DocumentEvent.PublicationRequested });

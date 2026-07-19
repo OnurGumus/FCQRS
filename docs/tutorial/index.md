@@ -41,8 +41,13 @@ Run the project at any point with `dotnet run`. The first running chapter create
 contains the event journal and snapshots. Delete `tutorial.db*` only when you intentionally want to
 discard the tutorial history and begin again.
 
-The F# code in the executable chapters is checked while this documentation site is built. C# versions
-of the important types and functions appear beside the F# examples.
+The F# code in the executable chapters is checked while this documentation site is built. Every
+public-API teaching example has a C# counterpart beside it or a complete C# implementation in the same
+section. Examples using C# discriminated unions require a .NET 11 preview SDK and
+`<LangVersion>preview</LangVersion>`; [C# interop and
+serialization](../concepts/csharp-interop.html) explains that compiler and persistence boundary. The
+[stable .NET 10 C# sample](https://github.com/OnurGumus/FCQRS/tree/main/samples/getting-started-csharp)
+uses one concrete command and event type and needs no preview syntax.
 
 ## Learn in three layers
 

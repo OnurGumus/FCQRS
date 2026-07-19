@@ -323,6 +323,22 @@ let action = Document.decide (cmd (Document.CreateOrUpdate doc)) Document.initia
 // => PersistEvent (Updated doc)
 ```
 
+<div class="cs-alt"></div>
+
+```csharp
+Document.TryCreate(Guid.NewGuid(), "Spec", "draft", out var doc, out _);
+var aggregate = new DocumentAggregate();
+
+var action = aggregate.HandleCommand(
+    TestEnvelope.Command<DocumentCommand>(
+        new DocumentCommand.CreateOrUpdate(doc!)),
+    DocumentState.Initial);
+
+Assert.Equal(
+    EventActions.Persist<DocumentEvent>(new DocumentEvent.Updated(doc!)),
+    action);
+```
+
 ## Common mistakes
 
 - **Reading changing values in `fold`.** Capture time and generated ids before persistence and carry

@@ -224,7 +224,8 @@ let run () =
 ```csharp
 // C#: resolve the command handler + subscription from DI, then the same
 // subscribe-before-send, read-your-writes flow.
-var app = builder.Build();
+using var app = builder.Build();
+await app.StartAsync();
 var documents = app.Services.GetRequiredService<Handler<DocumentCommand, DocumentEvent>>();
 var subs = app.Services.GetRequiredService<ISubscribe>();
 
@@ -240,6 +241,8 @@ if (Document.TryCreate(Guid.Parse("11111111-1111-1111-1111-111111111111"), "Welc
     await awaiter.Task;
     Console.WriteLine($"saved version {ev.Version}; query returned '{readModel[doc.Id.ToString()].Title}'");
 }
+
+await app.StopAsync();
 ```
 *)
 
@@ -252,6 +255,9 @@ let main _ =
     run () |> Async.RunSynchronously
     0
 ```
+
+The C# version uses top-level statements; the `StartAsync` and `StopAsync` calls shown above form its
+entry-point lifecycle.
 
 ## Run it, then run it again
 
