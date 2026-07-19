@@ -28,10 +28,10 @@ the cases down before writing the assertions:
 
 | Publication state | Command | Expected action |
 |---|---|---|
-| draft | `Publish "guides/fcqrs"` | persist `PublicationRequested` |
-| reserving the same slug | `Publish "guides/fcqrs"` again | defer `PublicationRequested` |
-| reserving | `ConfirmPublication` | persist `Published` |
-| published | `ConfirmPublication` again | defer `Published` |
+| draft | `Publish(documentId, "guides/fcqrs")` | persist `PublicationRequested` |
+| waiting for the same slug | the same `Publish` again | defer `PublicationRequested` |
+| waiting for the slug | `FinishPublication Published` | persist `PublicationFinished Published` |
+| already published | `FinishPublication Published` again | defer `PublicationFinished Published` |
 
 The last row is a retry case. The reply still tells the saga that the document is published, but the
 aggregate does not store a second publication.
@@ -51,8 +51,19 @@ let command details : Command<_> =
       CorrelationId = Fcqrs.newCid ()
       Metadata = Map.empty }
 
-let action = Document.decide (command Document.ConfirmPublication) publishedState
-test <@ action = DeferEvent (Document.Published(documentId, "guides/fcqrs")) @>
+let publishedState =
+    Document.Finished(documentId, "guides/fcqrs", Document.Published)
+
+let action =
+    Document.decide
+        (command (Document.FinishPublication Document.Published))
+        publishedState
+
+test <@
+    action =
+        DeferEvent(
+            Document.PublicationFinished(documentId, "guides/fcqrs", Document.Published))
+@>
 ```
 
 Use fixed timestamps in test envelopes even when the current rule does not read time. Stable inputs
@@ -64,14 +75,14 @@ A single fold assertion verifies one transition. A replay test verifies that the
 
 ```fsharp
 let recovered =
-    [ Document.Updated document
-      Document.PublicationRequested(document.Id, "guides/fcqrs")
-      Document.Published(document.Id, "guides/fcqrs") ]
+    [ Document.PublicationRequested(documentId, "guides/fcqrs")
+      Document.PublicationFinished(documentId, "guides/fcqrs", Document.Published) ]
     |> List.mapi (fun index details -> event (int64 index + 1L) details)
     |> List.fold (fun state stored -> Document.fold stored state) Document.initial
 
-test <@ recovered.Document = Some document @>
-test <@ recovered.Publication = Document.PublishedAs "guides/fcqrs" @>
+test <@
+    recovered = Document.Finished(documentId, "guides/fcqrs", Document.Published)
+@>
 ```
 
 This test is the executable definition of recovery. If a fold reads the clock, generates an id, or
@@ -86,10 +97,11 @@ Test a saga in two layers:
 - `applySideEffects` maps the resulting state to commands and a saga transition.
 
 For `ReservingSlug(documentId, "guides/fcqrs")`, assert that the saga sends one `Reserve` command to the
-slug aggregate identified by `guides/fcqrs`. For `ConfirmingPublication`, assert that it sends
-`ConfirmPublication` to the originating document. Call `applySideEffects` with `recovering = true` and
-verify that it returns a command safe for re-delivery or a recovery-specific status check. Do not
-assume the original command was either delivered or lost when the process stopped.
+slug aggregate identified by `guides/fcqrs`. For `ReportingResult Published`, assert that it sends
+`FinishPublication Published` to the originating document. Call `applySideEffects` with
+`recovering = true` and verify that it returns a command safe for re-delivery or a recovery-specific
+status check. Do not assume the original command was either delivered or lost when the process
+stopped.
 
 ## Treat persisted events as contracts
 

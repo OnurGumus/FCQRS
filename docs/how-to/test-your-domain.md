@@ -63,16 +63,19 @@ For an idempotent verdict, such as publication confirmation in
 
 ```fsharp
 let publishedState =
-    { Document.Document = Some doc
-      Publication = Document.PublishedAs "guides/fcqrs" }
+    Document.Finished(doc.Id, "guides/fcqrs", Document.Published)
 
-// confirming again returns the same verdict without another journal write
-let action2 = Document.decide (command Document.ConfirmPublication) publishedState
+// reporting the same result again does not add another journal entry
+let action2 =
+    Document.decide
+        (command (Document.FinishPublication Document.Published))
+        publishedState
 
 Expect.equal
     action2
-    (DeferEvent (Document.Published(doc.Id, "guides/fcqrs")))
-    "repeated confirmation defers the existing publication verdict"
+    (DeferEvent(
+        Document.PublicationFinished(doc.Id, "guides/fcqrs", Document.Published)))
+    "repeating the result defers the existing publication outcome"
 ```
 
 Write one case for every meaningful command and state combination, including commands that should be

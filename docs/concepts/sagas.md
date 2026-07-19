@@ -22,10 +22,10 @@ Publishing a document under `/guides/fcqrs` takes several steps:
 1. the document records `PublicationRequested`;
 2. the saga asks the `guides/fcqrs` slug aggregate to reserve itself;
 3. the slug replies with `SlugReserved` or `SlugUnavailable`;
-4. the saga tells the document to confirm or reject publication.
+4. the saga reports `Published` or `Rejected` to the document.
 
 The process can stop after any step. A node may restart after the slug is reserved but before the
-document is confirmed.
+result reaches the document.
 
 > **Motivation:** A chain of in-memory callbacks forgets where it was when the process stops. A saga
 > stores that progress so the conversation can continue from its last durable step.
@@ -37,10 +37,9 @@ The publication workflow can be written as a table before any FCQRS code:
 | Current state | Incoming event | Persisted next state | Command after persistence |
 |---|---|---|---|
 | not started | `PublicationRequested` | `ReservingSlug` | `ReserveSlug` |
-| `ReservingSlug` | `SlugReserved` | `ConfirmingPublication` | `ConfirmPublication` |
-| `ReservingSlug` | `SlugUnavailable` | `RejectingPublication` | `RejectPublication` |
-| `ConfirmingPublication` | `Published` | `Done` | none; stop |
-| `RejectingPublication` | `PublicationRejected` | `Done` | none; stop |
+| `ReservingSlug` | `SlugReserved` | `ReportingResult Published` | `FinishPublication Published` |
+| `ReservingSlug` | `SlugUnavailable` | `ReportingResult Rejected` | `FinishPublication Rejected` |
+| `ReportingResult result` | `PublicationFinished result` | `Done` | none; stop |
 
 The state names say what the workflow is waiting for. The state also carries the identifiers needed to
 repeat the next command after recovery.
@@ -58,12 +57,12 @@ applySideEffects : persisted saga state + recovering   -> transition + commands
 ```
 
 `handleEvent` is the saga's event-driven transition function. For example, `SlugReserved` is accepted
-only while the saga is `ReservingSlug`. It returns `StateChangedEvent ConfirmingPublication`. FCQRS
-stores that state change before running commands for the new state.
+only while the saga is `ReservingSlug`. It returns `StateChangedEvent (ReportingResult Published)`.
+FCQRS stores that state change before running commands for the new state.
 
-`applySideEffects` runs after a state change is durable. In `ConfirmingPublication`, it returns a
-command to the originating document. FCQRS also calls it after recovery, with `recovering = true`, so
-the workflow can safely resume from the state it last stored.
+`applySideEffects` runs after a state change is durable. In `ReportingResult Published`, it returns
+`FinishPublication Published` to the originating document. FCQRS also calls it after recovery, with
+`recovering = true`, so the workflow can safely resume from the state it last stored.
 
 This ordering is the core guarantee:
 
@@ -120,8 +119,8 @@ it represents one particular workflow and should exist only when its starting bu
 
 The `StartOn` predicate declares that boundary. For the publication saga it matches
 `PublicationRequested` and ignores every other document event. The aggregate that produced this event
-is the **originator**. Commands such as `toOriginator ConfirmPublication` route back to that exact
-document instance.
+is the **originator**. Commands such as `toOriginator (FinishPublication Published)` route back to
+that exact document instance.
 
 Application code does not construct `SagaStartingEvent` directly. FCQRS wraps the matched originator
 event in that internal envelope so the saga can retain:
@@ -162,18 +161,19 @@ FCQRS stores each accepted saga state transition. On restart it loads a snapshot
 later state changes, restores the starting-event context, and subscribes the saga again. It then calls
 `applySideEffects` for the recovered state with `recovering = true`.
 
-Suppose the last durable state is `ConfirmingPublication`. FCQRS knows the saga must send
-`ConfirmPublication`; it cannot know whether the previous process sent that command just before it
-stopped. The correct recovery action is therefore to re-drive the state with a retry-safe command.
+Suppose the last durable state is `ReportingResult Published`. FCQRS knows the saga must send
+`FinishPublication Published`; it cannot know whether the previous process sent that command just
+before it stopped. The correct recovery action is therefore to re-drive the state with a retry-safe
+command.
 
 ```text
-stored state: ConfirmingPublication
-unknown:      was ConfirmPublication delivered before the crash?
-resume:       send ConfirmPublication again safely
+stored state: ReportingResult Published
+unknown:      was FinishPublication Published delivered before the crash?
+resume:       send FinishPublication Published again safely
 ```
 
-The document aggregate should treat a repeated confirmation as the same business result rather than
-publish twice. At an external boundary, use a stable idempotency key or query the operation's status.
+The document aggregate should treat a repeated result as the same business outcome rather than store
+it twice. At an external boundary, use a stable idempotency key or query the operation's status.
 The `recovering` flag can select that status-check path when repeating the normal command is unsafe.
 
 Returning no commands for every recovered state is usually wrong. It strands a saga when the original

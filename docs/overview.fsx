@@ -71,8 +71,8 @@ another maintains a customer history or a reporting table. A projection chooses 
 that fits its query. It does not have to copy the shape of the write model.
 
 A **saga** coordinates work that crosses aggregate boundaries. For example, a
-`PublicationRequested` event can start a process that reserves a URL slug and then confirms or rejects
-the publication. The saga stores its progress so the process can continue after a restart.
+`PublicationRequested` event can start a process that reserves a URL slug and reports the reservation
+result to the document. The saga stores its progress so the process can continue after a restart.
 
 Every command and event carries a [**correlation id**](concepts/correlation-ids.html). A client can
 subscribe to that id before sending a command and wait until the projection publishes the matching

@@ -41,11 +41,9 @@ Document                  Publication saga                 Slug[guides/fcqrs]
    |-- PublicationRequested ---->|                                |
    |                              |-- Reserve(documentId) -------->|
    |                              |<-- SlugReserved / Unavailable --|
-   |<-- ConfirmPublication -------|                                |
-   |          or                  |                                |
-   |<-- RejectPublication --------|                                |
+   |<-- FinishPublication(result) -|                                |
    |                              |                                |
-   |-- Published / Rejected ----->|-- stop                         |
+   |-- PublicationFinished ------>|-- stop                         |
 </pre>
 
 The target aggregates still own every business decision. The saga owns only the progress of this
@@ -56,9 +54,9 @@ conversation.
 
 ## Keep the domain types small
 
-Chapter 1 covered validated titles and content. This chapter uses strings for those already-understood
-fields so the workflow code is easier to see. Validate the slug at the application boundary before
-sending `Publish`.
+Chapter 1 already covered document content. This chapter models only the publication status, because
+that is the part involved in the cross-aggregate conversation. Validate the slug at the application
+boundary before sending `Publish`.
 *)
 
 module Values =
@@ -71,72 +69,59 @@ module Values =
 (**
 ## Step 1: let the document request publication
 
-The document stores `PublicationRequested` before any reservation begins. Its status records the slug
-being reserved, so confirmation and rejection remain valid after recovery.
+The document stores `PublicationRequested` before any reservation begins. Its state records the
+document and slug involved, so the eventual result remains valid after recovery.
 *)
 
 module Document =
     open Values
 
-    type Root =
-        { Id: DocumentId
-          Title: string
-          Content: string }
-
-    type PublicationStatus =
-        | Draft
-        | ReservingSlug of string
-        | PublishedAs of string
-        | RejectedFor of string
+    type PublicationResult =
+        | Published
+        | Rejected
 
     type State =
-        { Document: Root option
-          Publication: PublicationStatus }
+        | Draft
+        | WaitingForSlug of DocumentId * slug: string
+        | Finished of DocumentId * slug: string * PublicationResult
 
-    let initial = { Document = None; Publication = Draft }
+    let initial = Draft
 
     type Command =
-        | CreateOrUpdate of Root
-        | Publish of slug: string
-        | ConfirmPublication
-        | RejectPublication
+        | Publish of DocumentId * slug: string
+        | FinishPublication of PublicationResult
 
     type Event =
-        | Updated of Root
         | PublicationRequested of DocumentId * slug: string
-        | Published of DocumentId * slug: string
-        | PublicationRejected of DocumentId * slug: string
+        | PublicationFinished of DocumentId * slug: string * PublicationResult
 
     let decide (cmd: Command<Command>) state =
-        match cmd.CommandDetails, state.Document, state.Publication with
-        | CreateOrUpdate document, _, _ ->
-            Updated document |> PersistEvent
-        | Publish slug, Some document, Draft
-        | Publish slug, Some document, RejectedFor _ ->
-            PublicationRequested(document.Id, slug) |> PersistEvent
-        | Publish slug, Some document, ReservingSlug current when current = slug ->
-            PublicationRequested(document.Id, slug) |> DeferEvent
-        | ConfirmPublication, Some document, ReservingSlug slug ->
-            Published(document.Id, slug) |> PersistEvent
-        | ConfirmPublication, Some document, PublishedAs slug ->
-            Published(document.Id, slug) |> DeferEvent
-        | RejectPublication, Some document, ReservingSlug slug ->
-            PublicationRejected(document.Id, slug) |> PersistEvent
-        | RejectPublication, Some document, RejectedFor slug ->
-            PublicationRejected(document.Id, slug) |> DeferEvent
+        match cmd.CommandDetails, state with
+        | Publish(documentId, slug), Draft ->
+            PublicationRequested(documentId, slug) |> PersistEvent
+        | Publish(documentId, slug), WaitingForSlug(currentId, currentSlug)
+            when documentId = currentId && slug = currentSlug ->
+            PublicationRequested(documentId, slug) |> DeferEvent
+        | FinishPublication result, WaitingForSlug(documentId, slug) ->
+            PublicationFinished(documentId, slug, result) |> PersistEvent
+        | FinishPublication result, Finished(documentId, slug, current) when result = current ->
+            PublicationFinished(documentId, slug, result) |> DeferEvent
         | _ -> UnhandledEvent
 
     let fold (event: Event<Event>) state =
         match event.EventDetails with
-        | Updated document -> { state with Document = Some document }
-        | PublicationRequested(_, slug) -> { state with Publication = ReservingSlug slug }
-        | Published(_, slug) -> { state with Publication = PublishedAs slug }
-        | PublicationRejected(_, slug) -> { state with Publication = RejectedFor slug }
+        | PublicationRequested(documentId, slug) -> WaitingForSlug(documentId, slug)
+        | PublicationFinished(documentId, slug, result) -> Finished(documentId, slug, result)
 
 (**
-`ConfirmPublication` and `RejectPublication` are retry-safe. Repeating the verdict returns the same
-outcome with `DeferEvent`, so recovery can reissue the saga command without storing another domain
-event.
+`FinishPublication` carries either `Published` or `Rejected`. Repeating the same result returns the
+same `PublicationFinished` outcome with `DeferEvent`, so recovery can reissue one saga command without
+storing another domain event. Keeping the result as data removes duplicate success and failure
+branches from the aggregate.
+
+The four decision cases form two pairs: the first request is stored and its retry is deferred; the
+first result is stored and its retry is deferred. The final wildcard rejects every command and state
+combination that does not belong to this workflow.
 
 ## Step 2: let each slug protect its own uniqueness
 
@@ -182,10 +167,9 @@ Before writing the saga functions, write every accepted event and resulting comm
 | Current state | Incoming event | Stored next state | Command after storage |
 |---|---|---|---|
 | not started | `PublicationRequested` | `ReservingSlug` | `Reserve` to slug |
-| `ReservingSlug` | `SlugReserved` | `ConfirmingPublication` | `ConfirmPublication` to document |
-| `ReservingSlug` | `SlugUnavailable` | `RejectingPublication` | `RejectPublication` to document |
-| `ConfirmingPublication` | `Published` | `Done` | stop |
-| `RejectingPublication` | `PublicationRejected` | `Done` | stop |
+| `ReservingSlug` | `SlugReserved` | `ReportingResult Published` | `FinishPublication Published` to document |
+| `ReservingSlug` | `SlugUnavailable` | `ReportingResult Rejected` | `FinishPublication Rejected` to document |
+| `ReportingResult result` | `PublicationFinished result` | `Done` | stop |
 
 This table separates two questions:
 
@@ -201,8 +185,7 @@ module PublicationSaga =
 
     type State =
         | ReservingSlug of DocumentId * string
-        | ConfirmingPublication
-        | RejectingPublication
+        | ReportingResult of Document.PublicationResult
         | Done
 
 (**
@@ -229,13 +212,12 @@ patterns recover their typed envelopes. The first domain event reaches user code
             ReservingSlug(documentId, slug) |> StateChangedEvent
         | SlugEvent(Slug.SlugReserved documentId), Some(ReservingSlug(expected, _))
             when documentId = expected ->
-            ConfirmingPublication |> StateChangedEvent
+            ReportingResult Document.Published |> StateChangedEvent
         | SlugEvent(Slug.SlugUnavailable documentId), Some(ReservingSlug(expected, _))
             when documentId = expected ->
-            RejectingPublication |> StateChangedEvent
-        | DocumentEvent(Document.Published _), Some ConfirmingPublication ->
-            Done |> StateChangedEvent
-        | DocumentEvent(Document.PublicationRejected _), Some RejectingPublication ->
+            ReportingResult Document.Rejected |> StateChangedEvent
+        | DocumentEvent(Document.PublicationFinished(_, _, result)), Some(ReportingResult expected)
+            when result = expected ->
             Done |> StateChangedEvent
         | _ -> UnhandledEvent
 
@@ -253,10 +235,8 @@ recovery, with `recovering = true`.
         match sagaState.State with
         | ReservingSlug(documentId, slug) ->
             Stay, [ toAggregate slugFactory slug (Slug.Reserve documentId) ]
-        | ConfirmingPublication ->
-            Stay, [ toOriginator documentFactory Document.ConfirmPublication ]
-        | RejectingPublication ->
-            Stay, [ toOriginator documentFactory Document.RejectPublication ]
+        | ReportingResult result ->
+            Stay, [ toOriginator documentFactory (Document.FinishPublication result) ]
         | Done ->
             StopSaga, []
 
@@ -326,8 +306,7 @@ The C# API keeps the same two functions. `HandleEvent` returns a persisted state
 public abstract record PublicationState
 {
     public sealed record ReservingSlug(DocumentId DocumentId, string Slug) : PublicationState;
-    public sealed record ConfirmingPublication : PublicationState;
-    public sealed record RejectingPublication : PublicationState;
+    public sealed record ReportingResult(PublicationResult Result) : PublicationState;
     public sealed record Done : PublicationState;
 }
 
@@ -362,15 +341,16 @@ public sealed class PublicationSaga
                     requested.DocumentId, requested.Slug)),
             (Event<SlugEvent> { EventDetails: SlugEvent.SlugReserved },
                 PublicationState.ReservingSlug _) =>
-                StateChanged(new PublicationState.ConfirmingPublication()),
+                StateChanged(new PublicationState.ReportingResult(
+                    PublicationResult.Published)),
             (Event<SlugEvent> { EventDetails: SlugEvent.SlugUnavailable },
                 PublicationState.ReservingSlug _) =>
-                StateChanged(new PublicationState.RejectingPublication()),
-            (Event<DocumentEvent> { EventDetails: DocumentEvent.Published },
-                PublicationState.ConfirmingPublication _) =>
-                StateChanged(new PublicationState.Done()),
-            (Event<DocumentEvent> { EventDetails: DocumentEvent.PublicationRejected },
-                PublicationState.RejectingPublication _) =>
+                StateChanged(new PublicationState.ReportingResult(
+                    PublicationResult.Rejected)),
+            (Event<DocumentEvent>
+                { EventDetails: DocumentEvent.PublicationFinished finished },
+                PublicationState.ReportingResult reporting)
+                when finished.Result == reporting.Result =>
                 StateChanged(new PublicationState.Done()),
             _ => Unhandled()
         };
@@ -386,17 +366,11 @@ public sealed class PublicationSaga
                 Commands = [SagaCommands.ToAggregate(
                     _slugs, s.Slug, new SlugCommand.Reserve(s.DocumentId))]
             },
-            PublicationState.ConfirmingPublication _ => new()
+            PublicationState.ReportingResult s => new()
             {
                 Transition = Stay(),
                 Commands = [SagaCommands.ToOriginator(
-                    _documents, new DocumentCommand.ConfirmPublication())]
-            },
-            PublicationState.RejectingPublication _ => new()
-            {
-                Transition = Stay(),
-                Commands = [SagaCommands.ToOriginator(
-                    _documents, new DocumentCommand.RejectPublication())]
+                    _documents, new DocumentCommand.FinishPublication(s.Result))]
             },
             PublicationState.Done _ => new()
             {
@@ -458,18 +432,18 @@ services
 
 ## How resumption works
 
-Assume the saga has stored `ConfirmingPublication` and sent `ConfirmPublication`, then the process
+Assume the saga has stored `ReportingResult Published` and sent `FinishPublication Published`, then the process
 stops. On restart FCQRS:
 
 1. loads the saga snapshot when one exists;
 2. replays later state changes;
 3. restores the starting-event context;
 4. subscribes the saga again;
-5. calls `applySideEffects` for `ConfirmingPublication` with `recovering = true`.
+5. calls `applySideEffects` for `ReportingResult Published` with `recovering = true`.
 
-The saga cannot know whether the earlier confirmation reached the document. It sends the command
-again. The document's idempotent decision returns `Published` without storing a duplicate if the first
-command already succeeded.
+The saga cannot know whether the earlier result reached the document. It sends the command again. The
+document's idempotent decision returns the same `PublicationFinished` event without storing a
+duplicate if the first command already succeeded.
 
 This is resumability: recover durable progress and re-drive the next safe action. It is not rewinding
 the other aggregate, and it is not exactly-once delivery.
@@ -484,11 +458,11 @@ Publish two documents under the same slug:
 <pre>
 document A + guides/fcqrs
   -> SlugReserved
-  -> Published
+  -> PublicationFinished Published
 
 document B + guides/fcqrs
   -> SlugUnavailable
-  -> PublicationRejected
+  -> PublicationFinished Rejected
 </pre>
 
 The slug aggregate serializes both reservations and accepts only the first owner. Each publication

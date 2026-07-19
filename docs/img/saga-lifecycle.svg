@@ -31,7 +31,8 @@
   <text class="stlbl" x="410" y="266" text-anchor="middle">ReservingSlug</text>
 
   <rect class="st" x="310" y="344" width="200" height="58" rx="12"/>
-  <text class="stlbl" x="410" y="378" text-anchor="middle">ConfirmingPublication</text>
+  <text class="stlbl" x="410" y="369" text-anchor="middle">ReportingResult</text>
+  <text class="stlbl" x="410" y="389" text-anchor="middle">Published</text>
 
   <rect class="st" x="310" y="456" width="200" height="58" rx="12"/>
   <text class="stlbl" x="410" y="490" text-anchor="middle">Done</text>
@@ -42,12 +43,12 @@
 
   <text class="evt" x="300" y="208" text-anchor="end">on PublicationRequested</text>
   <text class="evt" x="300" y="320" text-anchor="end">on SlugReserved</text>
-  <text class="evt" x="300" y="432" text-anchor="end">on Published</text>
+  <text class="evt" x="300" y="432" text-anchor="end">on PublicationFinished</text>
 
   <text class="note" x="524" y="156">no command</text>
   <text class="cmd" x="524" y="266">issues → ReserveSlug</text>
-  <text class="cmd" x="524" y="378">issues → ConfirmPublication</text>
+  <text class="cmd" x="524" y="378">issues → FinishPublication Published</text>
   <text class="cmd" x="524" y="490">StopSaga → passivate</text>
 
-  <text class="note" x="40" y="538">SlugUnavailable follows the parallel rejection branch shown in the state table above.</text>
+  <text class="note" x="40" y="538">SlugUnavailable follows the same path with Rejected as the result.</text>
 </svg>

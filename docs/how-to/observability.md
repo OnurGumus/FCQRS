@@ -18,7 +18,7 @@ versions, saga transitions, and commands issued by sagas. Every line contains th
 
 ```text
 info: FCQRS.MessageFlow
-      Command Publish ("guides/fcqrs") to aggregate doc-42 yielded PersistEvent (PublicationRequested ...) [cid: ...]
+      Command Publish (doc-42, "guides/fcqrs") to aggregate doc-42 yielded PersistEvent (PublicationRequested ...) [cid: ...]
 info: FCQRS.MessageFlow
       Aggregate doc-42 persisted event PublicationRequested (...) (v2) [cid: ...]
 info: FCQRS.MessageFlow
