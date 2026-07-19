@@ -513,7 +513,17 @@ body.content {
 #content table:not(.pre) th,
 #content table:not(.pre) td {
     padding: 0.75rem 0.85rem;
-    border-color: var(--nav-item-border-color);
+    border-right: 1px solid var(--nav-item-border-color);
+    border-bottom: 1px solid var(--nav-item-border-color);
+}
+
+#content table:not(.pre) th:last-child,
+#content table:not(.pre) td:last-child {
+    border-right: 0;
+}
+
+#content table:not(.pre) tbody tr:last-child td {
+    border-bottom: 0;
 }
 
 #content img:not(.icon) {

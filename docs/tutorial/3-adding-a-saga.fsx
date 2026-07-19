@@ -36,14 +36,14 @@ one URL slug is available. Neither aggregate can make both decisions from its ow
 The saga coordinates this conversation:
 
 <pre>
-Document                  Publication saga                 Slug[guides/fcqrs]
-   |                              |                                |
-   |-- PublicationRequested ---->|                                |
-   |                              |-- Reserve(documentId) -------->|
-   |                              |<-- SlugReserved / Unavailable --|
-   |<-- FinishPublication(result) -|                                |
-   |                              |                                |
-   |-- PublicationFinished ------>|-- stop                         |
+Document                          Publication saga              Slug[guides/fcqrs]
+   |                                      |                                       |
+   |-- PublicationRequested ------------->|                                       |
+   |                                      |-- Reserve(documentId) --------------->|
+   |                                      |<-- SlugReserved / Unavailable --------|
+   |<-- FinishPublication(result) --------|                                       |
+   |                                      |                                       |
+   |-- PublicationFinished -------------->|  StopSaga                             |
 </pre>
 
 The target aggregates still own every business decision. The saga owns only the progress of this
