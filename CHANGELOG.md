@@ -1,5 +1,19 @@
 # Changelog
 
+## 6.0.0-rc6 (FCQRS core)
+- **Saga handshake state is threaded, not held in cells** (internal refactor,
+  no behavior change): the two recovery flags introduced with the rc5
+  re-drive fix sat in `ref` cells beside a receive loop that already threaded
+  its state functionally. They are now an `Incarnation` DU (`Fresh` /
+  `RecoveredFromJournal` / `RecoveredFromSnapshot`) inside a named
+  `Handshake` record, so the impossible "recovered from a snapshot but not
+  recovered" combination is unrepresentable, and the loop's three bool
+  arguments are named fields instead of positional tuple elements — a
+  transposition there was the same class of mistake rc5 fixed. The span and
+  scheduler-cancelable cells stay: they are resource handles shared with the
+  side-effect machinery, not loop state. Internal types only; no public API
+  change.
+
 ## 6.0.0-rc5 (FCQRS core)
 - **Saga starts deliver the starting event exactly once**: a fresh start ran
   the recovery re-drive (`recovering = true` at subscription ack), sending a
