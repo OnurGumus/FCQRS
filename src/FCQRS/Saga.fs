@@ -66,6 +66,32 @@ type internal SagaSnapshot<'SagaData, 'State, 'TEvent when 'TEvent : not null> =
       StartingEvent: SagaStartingEvent<Event<'TEvent>> option }
     interface ISerializable
 
+/// How this incarnation of the saga came to exist. Only a recovered saga
+/// re-drives its side effects: a fresh start signals Continue through the
+/// (Stay, false) branch of applySideEffects, and re-driving there instead
+/// sends a spurious ContinueOrAbort to the originator. Two independent bools
+/// could say "recovered from a snapshot but not recovered"; this cannot.
+type internal Incarnation =
+    | Fresh
+    | RecoveredFromJournal
+    | RecoveredFromSnapshot
+
+    /// The `recovering` flag handed to applySideEffects.
+    member this.IsRecovery = this <> Fresh
+
+/// Saga-start handshake state, threaded through the receive loop's recursion.
+/// The actor's mailbox already serializes access, so this is a parameter, not
+/// mutable cells. Named fields rather than a positional tuple of bools: a
+/// transposed argument here silently changes what the handshake means.
+type internal Handshake<'TEvent when 'TEvent : not null> =
+    { StartingEvent: SagaStartingEvent<Event<'TEvent>> option
+      /// The starting event is journaled, so a re-delivery must re-signal
+      /// Continue rather than be dropped.
+      Subscribed: bool
+      /// The mediator acknowledged the CID subscription.
+      SubscriptionAcked: bool
+      Incarnation: Incarnation }
+
 let private runSaga<'TEvent, 'SagaData, 'State when 'TEvent : not null and 'State : not null>
     (snapshotEvery: int64 option)
     (mailbox: Eventsourced<obj>)
@@ -81,12 +107,13 @@ let private runSaga<'TEvent, 'SagaData, 'State when 'TEvent : not null and 'Stat
     body
     innerStateDefaults
     (currentSagaActivityRef: (Activity | null) ref)
-    (recoveredFromSnapshotRef: bool ref)
-    (recoveredRef: bool ref)
     (cleanupOnStop: unit -> unit)
     =
-    let rec innerSet (startingEvent: option<SagaStarter.SagaStartingEvent<Event<'TEvent>>>, subscribed, subscriptionAcked) =
-        let innerSetValue = startingEvent, subscribed, subscriptionAcked
+    let rec innerSet (hs: Handshake<'TEvent>) =
+        let { StartingEvent = startingEvent
+              Subscribed = subscribed
+              SubscriptionAcked = subscriptionAcked } =
+            hs
 
         actor {
             let! msg = mailbox.Receive()
@@ -140,17 +167,21 @@ let private runSaga<'TEvent, 'SagaData, 'State when 'TEvent : not null and 'Stat
                 let poision = Akka.Cluster.Sharding.Passivate <| Actor.PoisonPill.Instance
                 log.LogInformation("Aborting")
                 mailbox.Parent() <! poision
-                return! innerSet (startingEvent, subscribed, subscriptionAcked)
+                return! innerSet hs
 
             | :? Persistence.RecoveryCompleted ->
                 subscriber mediator mailbox
                 log.LogInformation("Saga RecoveryCompleted")
-                return! innerSet (startingEvent, subscribed, subscriptionAcked)
+                return! innerSet hs
             | Recovering mailbox (:? SagaStartingEventWrapper<'TEvent> as SagaStartingEventWrapper event) ->
-                recoveredRef.Value <- true
-                return! innerSet (Some event, true, subscriptionAcked)
+                return!
+                    innerSet
+                        { hs with
+                            StartingEvent = Some event
+                            Subscribed = true
+                            Incarnation = RecoveredFromJournal }
             | Recovering mailbox (:? SagaEvent<'State> as event) ->
-                recoveredRef.Value <- true
+                let hs = { hs with Incarnation = RecoveredFromJournal }
 
                 match event with
                 | StateChanged s ->
@@ -159,11 +190,11 @@ let private runSaga<'TEvent, 'SagaData, 'State when 'TEvent : not null and 'Stat
                         // Mirror the live path's per-event version bump so the recovered
                         // in-memory version matches and post-snapshot replay stays consistent.
                         let newState = { state with SagaState = newSagaState; Version = state.Version + 1L }
-                        return! newState |> set innerSetValue
+                        return! newState |> set hs
                     with ex ->
                         log.LogError(ex, "Fatal error during saga recovery for {0}. Terminating process to prevent restart loop.", mailbox.Self.Path.ToString())
                         fatalFailFast currentSagaActivityRef.Value "Process terminated due to saga error" ex
-                        return! innerSet (startingEvent, subscribed, subscriptionAcked)
+                        return! innerSet hs
 
             | PersistentLifecycleEvent _
             | :? Persistence.SaveSnapshotSuccess
@@ -171,12 +202,11 @@ let private runSaga<'TEvent, 'SagaData, 'State when 'TEvent : not null and 'Stat
                 // Lifecycle noise must not mutate handshake state (this used to
                 // force subscribed=true, masking the real RecoveryCompleted /
                 // SubscriptionAcknowledged signals).
-                return! innerSet (startingEvent, subscribed, subscriptionAcked)
+                return! innerSet hs
             | SnapshotOffer(snapState: obj) ->
-                recoveredFromSnapshotRef.Value <- true
-                recoveredRef.Value <- true
+                let hs = { hs with Incarnation = RecoveredFromSnapshot }
 
-                // subscribed = true in both branches: the wrapper is journal seq 1,
+                // Subscribed = true in both branches: the wrapper is journal seq 1,
                 // so any snapshot postdates it — the starting event was journaled.
                 // Leaving it false made a snapshot-recovered resurrection drop the
                 // re-delivered SagaStartingEvent without signalling Continue, which
@@ -185,36 +215,44 @@ let private runSaga<'TEvent, 'SagaData, 'State when 'TEvent : not null and 'Stat
                 | :? SagaSnapshot<'SagaData, 'State, 'TEvent> as snap ->
                     // Restore the starting event alongside the state — the wrapper
                     // event predates the snapshot and will not be replayed.
-                    return! snap.Parent |> set (snap.StartingEvent, true, subscriptionAcked)
+                    return!
+                        snap.Parent
+                        |> set
+                            { hs with
+                                StartingEvent = snap.StartingEvent
+                                Subscribed = true }
                 | _ ->
                     // Pre-SagaSnapshot shape (older journals): no starting event
                     // available. The recovery re-drive still runs (see the
                     // SubscriptionAcknowledged branch); re-issued commands just
                     // lose the starting event's metadata.
-                    return! snapState |> unbox<_> |> set (startingEvent, true, subscriptionAcked)
+                    return! snapState |> unbox<_> |> set { hs with Subscribed = true }
             | SubscriptionAcknowledged mailbox _ ->
                 // notify saga starter about the subscription completed
-                let nextInner = startingEvent, true, true
+                let nextInner =
+                    { hs with
+                        Subscribed = true
+                        SubscriptionAcked = true }
 
                 match startingEvent with
                 | Some _ ->
-                    // recovering = whether this incarnation actually replayed state.
-                    // On a fresh start this ack arrives while the saga sits in
-                    // Started, and passing true here ran handleStartedState's
-                    // recovery re-drive: a spurious ContinueOrAbort that either
-                    // re-published the starting event (duplicate delivery to every
-                    // same-CID subscriber) or, if the originator had already moved
-                    // on, falsely aborted a live saga. The fresh-start Continue is
+                    // Only a genuinely recovered incarnation re-drives. On a fresh
+                    // start this ack arrives while the saga sits in Started, and
+                    // passing true here ran handleStartedState's recovery re-drive:
+                    // a spurious ContinueOrAbort that either re-published the
+                    // starting event (duplicate delivery to every same-CID
+                    // subscriber) or, if the originator had already moved on,
+                    // falsely aborted a live saga. The fresh-start Continue is
                     // signalled by the (Stay, false) branch of applySideEffects.
-                    let newState = applySideEffects state startingEvent recoveredRef.Value
+                    let newState = applySideEffects state startingEvent hs.Incarnation.IsRecovery
 
                     match newState with
                     | Some newState ->
                         // Activity will be emitted when state is persisted (in Persisted branch)
                         return! newState |> StateChanged |> box |> Persist <@> innerSet nextInner
                     | None ->
-                        return! state |> set innerSetValue <@> innerSet nextInner
-                | None when recoveredFromSnapshotRef.Value ->
+                        return! state |> set hs <@> innerSet nextInner
+                | None when hs.Incarnation = RecoveredFromSnapshot ->
                     // Recovered through a snapshot that carried no starting event
                     // (pre-SagaSnapshot shape). The saga state is real and journaled,
                     // so the recovery re-drive must still run — re-issue pending
@@ -226,21 +264,24 @@ let private runSaga<'TEvent, 'SagaData, 'State when 'TEvent : not null and 'Stat
                     | Some newState ->
                         return! newState |> StateChanged |> box |> Persist <@> innerSet nextInner
                     | None ->
-                        return! state |> set innerSetValue <@> innerSet nextInner
+                        return! state |> set hs <@> innerSet nextInner
                 | None ->
                     // Wait for starting event before applying side effects.
-                    return! state |> set innerSetValue <@> innerSet nextInner
+                    return! state |> set hs <@> innerSet nextInner
 
             | Deferred mailbox obj
             | Persisted mailbox obj ->
                 match obj with
                 | :? SagaStartingEventWrapper<'TEvent> as SagaStartingEventWrapper e ->
-                    let nextInner = Some e, true, subscriptionAcked
+                    let nextInner =
+                        { hs with
+                            StartingEvent = Some e
+                            Subscribed = true }
 
                     if startingEvent.IsNone then
                         // A live wrapper persist is always a fresh start (replayed
                         // wrappers arrive through the Recovering branch), so this is
-                        // never a recovery re-drive. Passing subscriptionAcked here
+                        // never a recovery re-drive. Passing SubscriptionAcked here
                         // spuriously sent ContinueOrAbort when the mediator ack won
                         // the race against the wrapper persist.
                         let newState = applySideEffects state (Some e) false
@@ -250,7 +291,7 @@ let private runSaga<'TEvent, 'SagaData, 'State when 'TEvent : not null and 'Stat
                             // Activity will be emitted when state is persisted (in Persisted branch)
                             return! newState |> StateChanged |> box |> Persist <@> innerSet nextInner
                         | None ->
-                            return! state |> set innerSetValue <@> innerSet nextInner
+                            return! state |> set hs <@> innerSet nextInner
                     else
                         return! innerSet nextInner
                 | :? SagaEvent<'State> as e ->
@@ -305,24 +346,24 @@ let private runSaga<'TEvent, 'SagaData, 'State when 'TEvent : not null and 'Stat
 
                                 if dueForSnapshot then
                                     return!
-                                        newSagaState |> set innerSetValue
+                                        newSagaState |> set hs
                                         <@> persistNext
                                         <@> SaveSnapshot { Parent = parentState; StartingEvent = startingEvent }
                                 else
                                     return!
-                                        newSagaState |> set innerSetValue
+                                        newSagaState |> set hs
                                         <@> persistNext
                             | None ->
                                 if dueForSnapshot then
-                                    return! parentState |> set innerSetValue <@> SaveSnapshot { Parent = parentState; StartingEvent = startingEvent }
+                                    return! parentState |> set hs <@> SaveSnapshot { Parent = parentState; StartingEvent = startingEvent }
                                 else
-                                    return! parentState |> set innerSetValue
+                                    return! parentState |> set hs
                         with ex ->
                             log.LogError(ex, "Fatal error during saga persisted event handling for {0}. Terminating process to prevent restart loop.", mailbox.Self.Path.ToString())
                             // FailFast, not Exit: Exit runs ProcessExit handlers (which can
                             // hang or flush bad state); the policy is an immediate kill.
                             fatalFailFast currentSagaActivityRef.Value "Process terminated due to saga error" ex
-                            return! state |> set innerSetValue
+                            return! state |> set hs
 
 
                 | other ->
@@ -332,15 +373,15 @@ let private runSaga<'TEvent, 'SagaData, 'State when 'TEvent : not null and 'Stat
                         typeof<SagaEvent<'State>>
                     )
 
-                    return! state |> set innerSetValue
+                    return! state |> set hs
 
             | :? (SagaStarter.SagaStartingEvent<Event<'TEvent>>) as e when startingEvent.IsNone ->
                 return! SagaStartingEventWrapper e |> box |> Persist
             | :? (SagaStarter.SagaStartingEvent<Event<'TEvent>>) when subscribed ->
                 cont mediator
-                return! innerSet (startingEvent, subscribed, subscriptionAcked)
+                return! innerSet hs
             | msg when msg.GetType().Name.StartsWith("SagaStartingEvent") ->
-                return! innerSet (startingEvent, subscribed, subscriptionAcked)
+                return! innerSet hs
 
             | _ ->
                 return! body msg
@@ -378,14 +419,8 @@ let private actorProp<'SagaData, 'State, 'TEvent when 'TEvent : not null and 'St
     // Ref cell to hold the current saga state activity (kept alive across iterations)
     // This is at actorProp level so both runSaga and applySideEffects can access it
     let currentSagaActivityRef: (Activity | null) ref = ref null
-    // Set when recovery delivered a SnapshotOffer — distinguishes "recovered
-    // through a snapshot, starting event may be missing" from "fresh start,
-    // starting event simply hasn't arrived yet" (which must NOT re-drive).
-    let recoveredFromSnapshotRef: bool ref = ref false
-    // Set when this incarnation replayed ANY prior state (journal or snapshot).
-    // Gates the SubscriptionAcknowledged re-drive: only a genuinely recovered
-    // saga may send ContinueOrAbort; a fresh start must not.
-    let recoveredRef: bool ref = ref false
+    // How this incarnation started (fresh / replayed) is threaded through the
+    // receive loop as Handshake.Incarnation, not held in a cell.
     // Cancelables for delayed commands the saga has scheduled, paired with the
     // wall-clock time at which the underlying schedule is guaranteed to have
     // fired (delay + buffer). Akka's ICancelable does not flip
@@ -716,11 +751,14 @@ let private actorProp<'SagaData, 'State, 'TEvent when 'TEvent : not null and 'St
             body
             innerStateDefaults
             currentSagaActivityRef
-            recoveredFromSnapshotRef
-            recoveredRef
             cleanupOnStop
 
-    set (None, false, false) initialState
+    set
+        { StartingEvent = None
+          Subscribed = false
+          SubscriptionAcked = false
+          Incarnation = Fresh }
+        initialState
 
 let internal init<'SagaData, 'State, 'TEvent when 'TEvent : not null and 'State : not null>
     (actorApi: IActor)
