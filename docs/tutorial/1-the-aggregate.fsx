@@ -8,7 +8,7 @@ index: 3
 *)
 
 (*** hide ***)
-#r "nuget: FCQRS, 6.0.0-rc5"
+#r "nuget: FCQRS, 6.0.0-rc6"
 open System
 open FCQRS.Common
 open FCQRS.Model.Data
