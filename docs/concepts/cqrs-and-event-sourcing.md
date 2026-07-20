@@ -47,7 +47,7 @@ keeping the code and data flows distinct.
 | Write side | Read side |
 |---|---|
 | Accepts commands | Accepts queries |
-| Shaped around invariants | Shaped around screens and consumers |
+| Shaped around invariants — rules that must hold after every accepted command | Shaped around screens and consumers |
 | One consistency boundary per decision | Joins and duplicates data freely |
 | Produces events | Consumes events |
 | Rejects invalid changes | Returns available information |

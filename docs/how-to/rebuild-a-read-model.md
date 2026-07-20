@@ -41,7 +41,9 @@ rebuild then retries the uncommitted event.
 For a large model or one that must remain available:
 
 1. create new tables or an index with a versioned name;
-2. run a second projection with its own offset into the new destination;
+2. run a second projection with its own offset into the new destination — **in a separate process or
+   deployment**: one FCQRS host supports one projection, and a second `AddProjection` call throws
+   `InvalidOperationException` at registration;
 3. let it replay and catch up while queries continue using the old model;
 4. compare the old and new results;
 5. switch queries to the new destination;

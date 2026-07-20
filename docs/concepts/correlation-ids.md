@@ -68,7 +68,7 @@ When the caller must read its own write, FCQRS uses the CID as a request-scoped 
 
 Projection notifications are live signals. They are not retained for a caller that arrives later.
 If the application sends first, a fast projection can publish before the subscription exists and the
-caller can wait forever for a signal that already passed.
+caller can wait indefinitely for a signal that already passed.
 
 Subscribing first removes that race:
 
@@ -79,8 +79,10 @@ safe:   subscribe --- send --- projection publishes --- wait completes
 ```
 
 The journal event and projection offset are durable. The notification is deliberately ephemeral. It
-coordinates one active request; it is not a queue for disconnected clients. Use a timeout or
-cancellation token so the request has a defined outcome if the projection cannot catch up.
+coordinates one active request; it is not a queue for disconnected clients. Bound the wait so the
+request has a defined outcome if the projection cannot catch up: the F# `sendAwaiting` helper is
+bounded by `akka.fcqrs.command-timeout` (default 30s) and raises `TimeoutException`; raw subscriptions
+and the C# awaiter take an explicit timeout or cancellation token.
 
 ## Wait for the projection you will query
 
@@ -106,7 +108,8 @@ FCQRS stamps the delivered reply to distinguish the paths:
 
 - `Journaled = Some true`: a stored event can later reach a projection;
 - `Journaled = Some false`: a deferred or publish-only reply will not reach a journal projection;
-- `Journaled = None`: the envelope predates or bypassed that delivery stamp.
+- `Journaled = None`: the envelope — the command/event record carrying the payload, correlation id,
+  and metadata — predates or bypassed that delivery stamp.
 
 The `sendAwaiting` helper checks this value and skips the projection wait for a non-journaled reply.
 Without that check, rejection paths could wait for notifications that can never exist.

@@ -51,8 +51,8 @@ union syntax. The C# examples later on this page show how the domain expands to 
 ## Create the project
 
 ```text
-dotnet new console -lang F# -n MyApp
-cd MyApp
+dotnet new console -lang F# -n DocStore
+cd DocStore
 dotnet add package FCQRS --prerelease
 ```
 

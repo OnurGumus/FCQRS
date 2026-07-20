@@ -28,7 +28,7 @@ the cases down before writing the assertions:
 
 | Publication state | Command | Expected action |
 |---|---|---|
-| draft | `Publish(documentId, "guides/fcqrs")` | persist `PublicationRequested` |
+| document exists, no publication requested | `Publish "guides/fcqrs"` | persist `PublicationRequested` |
 | waiting for the same slug | the same `Publish` again | defer `PublicationRequested` |
 | waiting for the slug | `FinishPublication Published` | persist `PublicationFinished Published` |
 | already published | `FinishPublication Published` again | defer `PublicationFinished Published` |
@@ -40,30 +40,47 @@ aggregate does not store a second publication.
 > inputs always select the same action and rebuild the same state, runtime restarts can safely reuse
 > the domain logic you tested.
 
-Use a command envelope helper and call `decide` directly:
+Use envelope helpers and call `decide` directly. These are the same helpers as in
+[Test your domain](../how-to/test-your-domain.html) (`ValueLens` comes from `FCQRS.Model.Data`), and
+the assertions use Expecto's `Expect.equal` — substitute your test framework's equality check:
 
 ```fsharp
+let fixedTime = DateTime(2026, 1, 1, 12, 0, 0, DateTimeKind.Utc)
+
 let command details : Command<_> =
     { CommandDetails = details
-      CreationDate = DateTime(2026, 1, 1, 12, 0, 0, DateTimeKind.Utc)
-      Id = None
+      CreationDate = fixedTime
+      Id = Guid.CreateVersion7().ToString() |> ValueLens.CreateAsResult |> Result.value
       Sender = None
       CorrelationId = Fcqrs.newCid ()
       Metadata = Map.empty }
 
-let publishedState =
-    Document.Finished(documentId, "guides/fcqrs", Document.Published)
+let event version details : Event<_> =
+    { EventDetails = details
+      CreationDate = fixedTime
+      Id = Guid.CreateVersion7().ToString() |> ValueLens.CreateAsResult |> Result.value
+      Sender = None
+      CorrelationId = Fcqrs.newCid ()
+      Version = version |> ValueLens.TryCreate |> Result.value
+      Metadata = Map.empty }
+
+let doc =
+    Document.Root.TryCreate(Guid.NewGuid(), "Spec", "draft") |> Result.value
+
+let publishedState: Document.State =
+    { Document = Some doc
+      Publication = Document.Finished("guides/fcqrs", Document.Published) }
 
 let action =
     Document.decide
         (command (Document.FinishPublication Document.Published))
         publishedState
 
-test <@
-    action =
-        DeferEvent(
-            Document.PublicationFinished(documentId, "guides/fcqrs", Document.Published))
-@>
+Expect.equal
+    action
+    (DeferEvent(
+        Document.PublicationFinished(doc.Id, "guides/fcqrs", Document.Published)))
+    "repeating the result defers the existing publication outcome"
 ```
 
 <div class="cs-alt"></div>
@@ -72,8 +89,10 @@ test <@
 var fixedTime = new FakeTimeProvider(
     new DateTimeOffset(2026, 1, 1, 12, 0, 0, TimeSpan.Zero));
 var aggregate = new PublicationDocumentAggregate();
-var publishedState = new PublicationDocumentState.Finished(
-    documentId, "guides/fcqrs", PublicationResult.Published);
+
+Document.TryCreate(Guid.NewGuid(), "Spec", "draft", out var doc, out _);
+var publishedState = new DocumentState(
+    doc, new PublicationProgress.Finished("guides/fcqrs", PublicationResult.Published));
 
 var action = aggregate.HandleCommand(
     TestEnvelope.Command<DocumentCommand>(
@@ -83,7 +102,7 @@ var action = aggregate.HandleCommand(
 
 Assert.Equal(
     EventActions.Defer<DocumentEvent>(new DocumentEvent.PublicationFinished(
-        documentId, "guides/fcqrs", PublicationResult.Published)),
+        doc!.Id, "guides/fcqrs", PublicationResult.Published)),
     action);
 ```
 
@@ -97,14 +116,15 @@ A single fold assertion verifies one transition. A replay test verifies that the
 
 ```fsharp
 let recovered =
-    [ Document.PublicationRequested(documentId, "guides/fcqrs")
-      Document.PublicationFinished(documentId, "guides/fcqrs", Document.Published) ]
+    [ Document.PublicationRequested(doc.Id, "guides/fcqrs")
+      Document.PublicationFinished(doc.Id, "guides/fcqrs", Document.Published) ]
     |> List.mapi (fun index details -> event (int64 index + 1L) details)
     |> List.fold (fun state stored -> Document.fold stored state) Document.initial
 
-test <@
-    recovered = Document.Finished(documentId, "guides/fcqrs", Document.Published)
-@>
+Expect.equal
+    recovered.Publication
+    (Document.Finished("guides/fcqrs", Document.Published))
+    "replay recovers the finished publication"
 ```
 
 <div class="cs-alt"></div>
@@ -112,21 +132,20 @@ test <@
 ```csharp
 var history = new DocumentEvent[]
 {
-    new DocumentEvent.PublicationRequested(documentId, "guides/fcqrs"),
+    new DocumentEvent.PublicationRequested(doc!.Id, "guides/fcqrs"),
     new DocumentEvent.PublicationFinished(
-        documentId, "guides/fcqrs", PublicationResult.Published)
+        doc.Id, "guides/fcqrs", PublicationResult.Published)
 };
 
 var recovered = history
     .Select((details, index) =>
         TestEnvelope.Event<DocumentEvent>(details, index + 1, fixedTime))
-    .Aggregate(PublicationDocumentState.Initial,
+    .Aggregate(DocumentState.Initial,
         (state, stored) => aggregate.ApplyEvent(stored, state));
 
 Assert.Equal(
-    new PublicationDocumentState.Finished(
-        documentId, "guides/fcqrs", PublicationResult.Published),
-    recovered);
+    new PublicationProgress.Finished("guides/fcqrs", PublicationResult.Published),
+    recovered.Publication);
 ```
 
 This test is the executable definition of recovery. If a fold reads the clock, generates an id, or

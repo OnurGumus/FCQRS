@@ -97,7 +97,7 @@ var notes = ActorWiring.InitAggregateWithEffects(
         try
         {
             var summary = await ai.Summarize(effect.Text);
-            return new NoteCommand.RecordSummary(summary);
+            return (object)new NoteCommand.RecordSummary(summary);
         }
         catch
         {
@@ -119,11 +119,12 @@ result command when an older result must not overwrite newer work.
 
 ## Test it without Akka.NET
 
-Because the effect is data, `decide` is testable like any other decision:
+Because the effect is data, `decide` is testable like any other decision — here with the `command`
+envelope helper from [Test your domain](test-your-domain.html):
 
 ```fsharp
 Expect.equal
-    (decide (mkCommand Summarize) state)
+    (decide (command Summarize) state)
     (dispatch (SummarizeText state.Body))
     "Summarize dispatches a summarization effect"
 ```
@@ -156,5 +157,5 @@ FCQRS creates a `Dispatch:<CaseName>` span for the runner and parents it to the 
 trace. The result appears as a later command span such as `Command:RecordSummary` or `Command:GiveUp`.
 See [Observe your system](observability.html).
 
-The C# runner returns `Task<object>` through type inference. Every path returns a command that the
+The runner returns the command boxed as `object`. Every path returns a command that the
 aggregate understands; an exception must not escape the runner.

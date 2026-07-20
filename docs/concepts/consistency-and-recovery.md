@@ -53,6 +53,10 @@ before sending and why deferred replies must skip the wait.
 
 ## Version, offset, and correlation id are not interchangeable
 
+These three values recur at every recovery boundary, so it pays to restate them together (they are
+introduced individually with [the read side](read-models.html) and
+[correlation ids](correlation-ids.html)):
+
 | Value | Scope | What it tells you |
 |---|---|---|
 | Aggregate version | one aggregate identity | how many persisted events that identity has applied |

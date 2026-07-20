@@ -54,6 +54,12 @@ The helper waits for one notification. If a command persists a batch and the pro
 several events for the same CID, either filter notifications so only the final required update is
 published or compose a subscription with the correct `take` count.
 
+The wait is bounded: if no matching notification arrives within `akka.fcqrs.command-timeout` (default
+30s — a bare number means seconds, HOCON durations like `500ms` also work), `sendAwaiting` raises
+`TimeoutException`. A projection that suppresses or filters out the matching event therefore surfaces
+as a timeout instead of hanging the request. See
+[Configuration](../configuration.html).
+
 ## Why "only if journaled"
 
 An aggregate can persist an event or defer a reply. A deferred rejection or idempotent response is
@@ -111,5 +117,11 @@ about another projection with a different offset or deployment. If a response de
 models, wait for a completion signal representing all of them.
 
 Subscriptions are in-memory rendezvous points, not durable messages for disconnected clients. Create
-the subscription as part of the active request, use a timeout or cancellation token, and decide how the
-API reports a projection that does not catch up in time.
+the subscription as part of the active request, and decide how the API reports a projection that does
+not catch up in time.
+
+The timeout story differs by API. The F# `sendAwaiting` helper is bounded by
+`akka.fcqrs.command-timeout` (default 30s) and raises `TimeoutException`. Raw `Subscribe` awaiters and
+the C# `SubscribeForFirst` awaiter are **not** bounded by that key — compose them with
+`WaitAsync(cancellationToken)` in C# or a cancellation token in F#, as the C# examples in
+[Use FCQRS from C#](use-from-csharp.html) show.

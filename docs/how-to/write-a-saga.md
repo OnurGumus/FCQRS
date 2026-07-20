@@ -94,8 +94,10 @@ The command helpers select a target:
 - `toOriginator factory command`: the exact aggregate instance whose event started the saga;
 - `toAggregate factory id command`: another aggregate instance selected by id;
 - `toActor actorRef command`: an arbitrary actor reference;
-- `toOriginatorAfter factory delayMs taskName command`: a delayed originator command for timeout or
-  retry behaviour.
+- `toSelf command`: a message back to the saga itself (it lands in `handleEvent`);
+- `toOriginatorAfter factory delayMs taskName command` / `toAggregateAfter` / `toSelfAfter`: delayed
+  variants for timeout or retry behaviour. A `toSelfAfter` reminder is the idiomatic saga timeout:
+  enter a state, schedule a wake-up, and let `handleEvent` decide whether it still matters.
 
 The returned saga transition means:
 
@@ -269,6 +271,11 @@ services
         startOn: e => e is Event<DocumentEvent>
             { EventDetails: DocumentEvent.PublicationRequested });
 ```
+
+The host builder wires the saga-starter automatically from all registered sagas at startup — there is
+no C# counterpart of `wireSagaStarters` to call. Note also the signature asymmetry: `HandleEvent`
+receives the saga state as an `FSharpOption` (`None` before the first user state exists), while
+`ApplySideEffects` runs only once a user state exists and so receives it directly.
 
 ## Make recovery commands safe
 

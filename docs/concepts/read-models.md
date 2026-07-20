@@ -79,7 +79,8 @@ succeeds, both the data and offset are durable. This prevents the two dangerous 
 
 Within one transactional store, this produces one committed update per offset. If a projection writes
 to SQL and a search service, those systems do not share the transaction. The handler must then use
-idempotency, an outbox, or another explicit coordination design.
+idempotency, an outbox (staging the external write in the local transaction and relaying it
+afterwards), or another explicit coordination design.
 
 ## Event order is part of the model
 
@@ -104,21 +105,11 @@ observe immediately after a command.
 ## Read your own write when the interaction needs it
 
 Some interactions can redirect immediately and allow the page to catch up. Others must show the new
-result before replying.
-
-FCQRS carries a correlation id from the command to its event. A caller can:
-
-1. subscribe to that correlation id;
-2. send the command;
-3. wait until the required projection commits and publishes the matching event;
-4. query that projection's read model.
-
-Subscribe before sending. Subscribing afterward creates a race in which the notification may already
-have passed. The notification is a coordination signal, not durable business messaging. The data and
-offset remain the durable proof of projection progress.
-
-[Correlation IDs and read-your-writes](correlation-ids.html) follows this request flow from the API
-boundary through deferred replies, saga work, and projection-specific completion signals.
+result before replying. FCQRS carries a correlation id from the command to its event, so an active
+caller can subscribe to that id before sending and wait until the required projection publishes the
+matching event. The full request flow — the subscribe-before-send ordering, deferred replies that
+skip the wait, and the timeouts that bound it — is developed in
+[Correlation IDs and read-your-writes](correlation-ids.html).
 
 ## Read models are disposable, rebuilds are not casual
 

@@ -17,8 +17,10 @@ lifetime in mind.
 
 ## Register stable journal names
 
-Without a stable mapping, a journal manifest can depend on the CLR assembly and type name. Register a
-name before the actor system writes events:
+Without a stable mapping, a journal manifest can depend on the CLR assembly and type name. Register
+names at startup, before the actor system writes anything — the mapping is a process-wide registry
+read at serialization time, so call it before `Fcqrs.actor`: connect, `journalTypes`, actor,
+aggregates:
 
 ```fsharp
 open FCQRS.FSharp

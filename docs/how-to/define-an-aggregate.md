@@ -16,7 +16,8 @@ boundary.
 > facts inside it. No handler implementation can make an invariant atomic after its required state has
 > been split across independent aggregates.
 
-The implementation has three domain types and two pure functions:
+The implementation has three domain types and two pure functions. This example extends the tutorial's
+document aggregate with a `Delete` command so all three common actions appear:
 
 ```fsharp
 open FCQRS.Common
@@ -26,32 +27,27 @@ type State = { Document: Root option }
 let initial = { Document = None }
 
 type Command =
-    | Create of Root
-    | Edit of DocumentId * Content
+    | CreateOrUpdate of Root
+    | Delete
 
 type Event =
-    | Created of Root
-    | Edited of DocumentId * Content
-    | DocumentNotFound of DocumentId
+    | Updated of Root
+    | Deleted
+    | DocumentNotFound
 
 // decide (handleCommand): command + state -> action
 let decide (cmd: Command<Command>) state =
     match cmd.CommandDetails, state.Document with
-    | Create doc, None -> Created doc |> PersistEvent
-    | Create doc, Some current when current.Id = doc.Id -> Created current |> DeferEvent
-    | Edit(id, content), Some current when current.Id = id -> Edited(id, content) |> PersistEvent
-    | Edit(id, _), _ -> DocumentNotFound id |> DeferEvent
-    | _ -> UnhandledEvent
+    | CreateOrUpdate doc, _ -> Updated doc |> PersistEvent
+    | Delete, Some _ -> Deleted |> PersistEvent
+    | Delete, None -> DocumentNotFound |> DeferEvent
 
 // fold (applyEvent): event -> new state
 let fold (event: Event<Event>) state =
     match event.EventDetails with
-    | Created doc -> { Document = Some doc }
-    | Edited(id, content) ->
-        match state.Document with
-        | Some current when current.Id = id -> { Document = Some { current with Content = content } }
-        | _ -> state
-    | DocumentNotFound _ -> state
+    | Updated doc -> { Document = Some doc }
+    | Deleted -> { Document = None }
+    | DocumentNotFound -> state
 
 // Registering the aggregate returns its typed handle.
 let register (api: IActor) =
@@ -60,26 +56,31 @@ let register (api: IActor) =
           Snapshots = Default }        // snapshot cadence: Default | NoSnapshots | Every n
 ```
 
+Every `Command` case is covered above, so no catch-all is needed. When you do add one, choose
+`UnhandledEvent` for "this command is not valid here" (the caller's wait times out with a
+`TimeoutException`) and `IgnoreEvent` when producing no reply is the intended outcome.
+
 <div class="cs-alt"></div>
 
 ```csharp
 // In C# the same aggregate is a class deriving Aggregate<>; commands/events are
-// C# 15 unions, and it's wired via the DI host-builder.
+// C# 15 unions (the preview-union setup in C# interop and serialization), and
+// it's wired via the DI host-builder.
 using static FCQRS.Common;     // Command<>, Event<>, EventAction<>
 using static FCQRS.CSharp;      // Aggregate<>, EventActions
 using Microsoft.Extensions.DependencyInjection;
 
-public union DocumentCommand(DocumentCommand.Create, DocumentCommand.Edit)
+public union DocumentCommand(DocumentCommand.CreateOrUpdate, DocumentCommand.Delete)
 {
-    public record Create(Root Document);
-    public record Edit(DocumentId Id, Content Content);
+    public record CreateOrUpdate(Root Document);
+    public record Delete;
 }
 
-public union DocumentEvent(DocumentEvent.Created, DocumentEvent.Edited, DocumentEvent.DocumentNotFound)
+public union DocumentEvent(DocumentEvent.Updated, DocumentEvent.Deleted, DocumentEvent.DocumentNotFound)
 {
-    public record Created(Root Document);
-    public record Edited(DocumentId Id, Content Content);
-    public record DocumentNotFound(DocumentId Id);
+    public record Updated(Root Document);
+    public record Deleted;
+    public record DocumentNotFound;
 }
 
 public record DocumentState(Root? Document = null)
@@ -97,14 +98,12 @@ public sealed class DocumentAggregate : Aggregate<DocumentState, DocumentCommand
         Command<DocumentCommand> cmd, DocumentState state) =>
         (cmd.CommandDetails, state.Document) switch
         {
-            (DocumentCommand.Create c, null) =>
-                EventActions.Persist<DocumentEvent>(new DocumentEvent.Created(c.Document)),
-            (DocumentCommand.Create c, { } current) when current.Id == c.Document.Id =>
-                EventActions.Defer<DocumentEvent>(new DocumentEvent.Created(current)),
-            (DocumentCommand.Edit e, { } current) when current.Id == e.Id =>
-                EventActions.Persist<DocumentEvent>(new DocumentEvent.Edited(e.Id, e.Content)),
-            (DocumentCommand.Edit e, _) =>
-                EventActions.Defer<DocumentEvent>(new DocumentEvent.DocumentNotFound(e.Id)),
+            (DocumentCommand.CreateOrUpdate c, _) =>
+                EventActions.Persist<DocumentEvent>(new DocumentEvent.Updated(c.Document)),
+            (DocumentCommand.Delete, { }) =>
+                EventActions.Persist<DocumentEvent>(new DocumentEvent.Deleted()),
+            (DocumentCommand.Delete, null) =>
+                EventActions.Defer<DocumentEvent>(new DocumentEvent.DocumentNotFound()),
             _ => EventActions.Ignore<DocumentEvent>()
         };
 
@@ -112,9 +111,8 @@ public sealed class DocumentAggregate : Aggregate<DocumentState, DocumentCommand
     public override DocumentState ApplyEvent(Event<DocumentEvent> evt, DocumentState state) =>
         evt.EventDetails switch
         {
-            DocumentEvent.Created e => state with { Document = e.Document },
-            DocumentEvent.Edited e when state.Document is { } current && current.Id == e.Id =>
-                state with { Document = current with { Content = e.Content } },
+            DocumentEvent.Updated e => state with { Document = e.Document },
+            DocumentEvent.Deleted => state with { Document = null },
             _ => state
         };
 }

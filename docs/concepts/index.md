@@ -58,7 +58,7 @@ read-model rows are not three names for the same data.
 | How do projections, offsets, and query models differ? | [The read side](read-models.html) | Chapter 2 |
 | How does one request wait for the correct projection? | [Correlation IDs and read-your-writes](correlation-ids.html) | Chapter 2 |
 | How do independent owners coordinate after failures? | [Sagas](sagas.html) | Chapter 3 |
-| What do defer, snapshot, and passivation each do? | [Deferring, snapshots, and passivation](aggregate-lifecycle.html) | Chapter 1 |
+| What do defer, snapshot, and passivation each do? | [Deferring, snapshots, and passivation](aggregate-lifecycle.html) | Chapter 2 |
 | What is durable at each point in the complete flow? | [Consistency and recovery](consistency-and-recovery.html) | Chapter 3 |
 | How should C# messages cross the persistence boundary? | [C# interop and serialization](csharp-interop.html) | Quickstart |
 

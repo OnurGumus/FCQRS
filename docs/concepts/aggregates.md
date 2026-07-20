@@ -107,20 +107,23 @@ simple.
 
 ## Choose what becomes history
 
-An `EventAction` tells FCQRS what to do with the outcome.
+An `EventAction` tells FCQRS what to do with the outcome. The F# names are shown; the C# equivalents
+are `EventActions.Persist`, `EventActions.Defer`, and `EventActions.Ignore`.
 
 | Action | Stored | Folded live | Published to projections | Typical use |
 |---|---:|---:|---:|---|
-| Persist | yes | yes | yes | a fact needed for recovery |
-| Defer | no | yes | no | a rejection or repeated verdict |
-| Ignore | no | no | no | intentionally no outcome |
+| `PersistEvent` | yes | yes | yes | a fact needed for recovery |
+| `DeferEvent` | no | yes | no | a rejection or repeated verdict |
+| `IgnoreEvent` | no | no | no | intentionally no outcome |
 
 A persisted event increments the aggregate's persisted version. A deferred event does not. FCQRS
 folds a deferred event in the live actor, but recovery cannot replay it because it is absent from the
 journal. Its fold should therefore preserve state. If a deferred event changes state, that change
 disappears after restart.
 
-FCQRS also exposes actions for batches, explicit snapshots, publishing, and unhandled cases. The
+FCQRS also exposes `PersistAllEvents` (an atomic batch for one aggregate), `PersistAndSnapshot` (a
+manual checkpoint), `PublishEvent` (publish without persisting or folding), and `UnhandledEvent`
+(the command is not valid for this state; the caller's wait times out). The
 [aggregate how-to](../how-to/define-an-aggregate.html) gives the complete action table. The conceptual
 choice remains: persist every fact required to reconstruct the future decision state.
 
@@ -140,7 +143,7 @@ must already be inside the stored event.
 
 Keep `decide` free of I/O as well. Put input such as the current time or a generated id into the command
 before it reaches the aggregate. Durable cross-boundary work belongs in a saga. Best-effort work that
-may safely be lost can use an async effect.
+may safely be lost can use an [async effect](../how-to/dispatch-async-effects.html).
 
 ## The actor is the runtime boundary
 

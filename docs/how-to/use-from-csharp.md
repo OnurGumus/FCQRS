@@ -117,7 +117,8 @@ public sealed class DocumentAggregate
 ## 3. Register the runtime
 
 The host starts aggregates first, then sagas, the saga starter, and finally the projection. Register
-one projection handler per FCQRS runtime; that handler may update several read-model tables.
+one projection handler per FCQRS runtime — a second `AddProjection` call throws
+`InvalidOperationException`; that one handler may update several read-model tables.
 
 ```csharp
 var builder = Host.CreateApplicationBuilder(args);
@@ -126,15 +127,16 @@ builder.Services
     .AddFcqrs("Data Source=documents.db;", "documents")
     .AddAggregate<DocumentAggregate>()
     .AddProjection(
-        (long offset, object message) => projection.Handle(offset, message),
-        lastOffset: projection.LastCommittedOffset);
+        (long offset, object message) => MyProjection.Handle(connectionString, offset, message),
+        lastOffset: MyProjection.GetLastCommittedOffset(connectionString));
 
 var app = builder.Build();
 await app.RunAsync();
 ```
 
-For a durable projection, commit its read-model changes and `offset` in the same transaction. On the
-next start, pass the committed offset instead of zero. See [Add a projection](add-a-projection.html).
+`MyProjection` stands in for your projection component — the transactional handler and offset store
+from [Add a projection](add-a-projection.html). For a durable projection, commit its read-model changes
+and `offset` in the same transaction. On the next start, pass the committed offset instead of zero.
 
 ## 4. Send from an endpoint or application service
 

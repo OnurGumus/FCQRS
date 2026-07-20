@@ -58,45 +58,9 @@ restart.
 
 Use a deferred reply for a rejection or idempotent verdict whose meaning is “nothing new happened.”
 Persist the outcome instead when it must become part of history, change future decisions, or reach
-journal projections.
-
-For example:
-
-```fsharp
-let decide command state =
-    match command, state with
-    | CancelOrder, Shipped -> OrderAlreadyShipped |> DeferEvent
-    | CancelOrder, Cancelled -> AlreadyCancelled |> DeferEvent
-    | CancelOrder, _ -> OrderCancelled |> PersistEvent
-
-let fold event state =
-    match event with
-    | OrderCancelled -> Cancelled
-    | OrderAlreadyShipped
-    | AlreadyCancelled -> state
-```
-
-<div class="cs-alt"></div>
-
-```csharp
-EventAction<OrderEvent> HandleCommand(OrderCommand command, OrderState state) =>
-    (command, state) switch
-    {
-        (OrderCommand.CancelOrder, OrderState.Shipped) =>
-            EventActions.Defer<OrderEvent>(new OrderEvent.OrderAlreadyShipped()),
-        (OrderCommand.CancelOrder, OrderState.Cancelled) =>
-            EventActions.Defer<OrderEvent>(new OrderEvent.AlreadyCancelled()),
-        (OrderCommand.CancelOrder, _) =>
-            EventActions.Persist<OrderEvent>(new OrderEvent.OrderCancelled()),
-        _ => EventActions.Ignore<OrderEvent>()
-    };
-
-OrderState ApplyEvent(OrderEvent outcome, OrderState state) =>
-    outcome is OrderEvent.OrderCancelled ? OrderState.Cancelled : state;
-```
-
-`EventActions.Defer(...)` returns a non-journaled reply, and `ApplyEvent` leaves state unchanged for
-that reply.
+journal projections. The `CancelOrder` decide/fold pair in
+[Aggregates and the write side](aggregates.html) shows the pattern: `OrderAlreadyShipped` and
+`AlreadyCancelled` are deferred replies whose folds preserve state.
 
 ## Snapshots shorten recovery
 

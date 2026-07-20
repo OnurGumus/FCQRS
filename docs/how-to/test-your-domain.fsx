@@ -32,36 +32,47 @@ module Document =
         | Published
         | Rejected
 
+    type PublicationStatus =
+        | NotRequested
+        | WaitingForSlug of slug: string
+        | Finished of slug: string * PublicationResult
+
     type State =
-        | Editing of Root option
-        | Finished of Guid * slug: string * PublicationResult
+        { Document: Root option
+          Publication: PublicationStatus }
 
-        member this.Document =
-            match this with
-            | Editing document -> document
-            | Finished _ -> None
-
-    let initial = Editing None
+    let initial = { Document = None; Publication = NotRequested }
 
     type Command =
         | CreateOrUpdate of Root
+        | Publish of slug: string
         | FinishPublication of PublicationResult
 
     type Event =
         | Updated of Root
+        | PublicationRequested of Guid * slug: string
         | PublicationFinished of Guid * slug: string * PublicationResult
 
     let decide (command: FCQRS.Common.Command<Command>) state =
         match command.CommandDetails, state with
         | CreateOrUpdate document, _ -> Updated document |> PersistEvent
-        | FinishPublication result, Finished(id, slug, current) when result = current ->
-            PublicationFinished(id, slug, result) |> DeferEvent
+        | Publish slug, { Document = Some doc; Publication = NotRequested } ->
+            PublicationRequested(doc.Id, slug) |> PersistEvent
+        | Publish slug, { Document = Some doc; Publication = WaitingForSlug currentSlug }
+            when slug = currentSlug ->
+            PublicationRequested(doc.Id, slug) |> DeferEvent
+        | FinishPublication result, { Document = Some doc; Publication = WaitingForSlug slug } ->
+            PublicationFinished(doc.Id, slug, result) |> PersistEvent
+        | FinishPublication result, { Document = Some doc; Publication = Finished(slug, current) }
+            when result = current ->
+            PublicationFinished(doc.Id, slug, result) |> DeferEvent
         | _ -> UnhandledEvent
 
-    let fold (event: FCQRS.Common.Event<Event>) _state =
+    let fold (event: FCQRS.Common.Event<Event>) state =
         match event.EventDetails with
-        | Updated document -> Editing(Some document)
-        | PublicationFinished(id, slug, result) -> Finished(id, slug, result)
+        | Updated document -> { state with Document = Some document }
+        | PublicationRequested(_, slug) -> { state with Publication = WaitingForSlug slug }
+        | PublicationFinished(_, slug, result) -> { state with Publication = Finished(slug, result) }
 
 (**
 # Test your domain
@@ -151,8 +162,9 @@ For an idempotent verdict, such as publication confirmation in
 [chapter 3](../tutorial/3-adding-a-saga.html), assert the deferred event the same way:
 *)
 
-let publishedState =
-    Document.Finished(doc.Id, "guides/fcqrs", Document.Published)
+let publishedState: Document.State =
+    { Document = Some doc
+      Publication = Document.Finished("guides/fcqrs", Document.Published) }
 
 // reporting the same result again does not add another journal entry
 let action2 =
@@ -171,8 +183,8 @@ Expect.equal
 
 ```csharp
 var publication = new PublicationDocumentAggregate();
-var publishedState = new PublicationDocumentState.Finished(
-    doc!.Id, "guides/fcqrs", PublicationResult.Published);
+var publishedState = new DocumentState(
+    doc, new PublicationProgress.Finished("guides/fcqrs", PublicationResult.Published));
 
 var action2 = publication.HandleCommand(
     MakeCommand<DocumentCommand>(

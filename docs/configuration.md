@@ -21,6 +21,10 @@ open FCQRS.FSharp
 
 let connection = Fcqrs.connect FCQRS.Actor.DBType.Sqlite "Data Source=app.db;"
 
+// An empty IConfiguration accepts the embedded Akka.NET defaults.
+let config = Microsoft.Extensions.Configuration.ConfigurationBuilder().Build()
+let loggerFactory = Microsoft.Extensions.Logging.LoggerFactory.Create(fun _ -> ())
+
 let api = Fcqrs.actor config loggerFactory (Some connection) "MyCluster"
 ```
 

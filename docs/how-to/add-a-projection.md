@@ -40,6 +40,9 @@ aggregate and saga. Match the envelope types this projection needs. Advance the 
 including event types that do not change this read model.
 
 ```fsharp
+// NuGet: Dapper, Microsoft.Data.Sqlite
+open Dapper
+open Microsoft.Data.Sqlite
 open FCQRS.Common
 open FCQRS.FSharp
 
@@ -99,27 +102,44 @@ public static void HandleEventWrapper(string connString, long offset, object eve
 Read `DocumentProjection` from `Offsets` during startup and pass that value to the projection:
 
 ```fsharp
+let getLastOffset (connString: string) : int64 =
+    use conn = new SqliteConnection(connString)
+    conn.Open()
+
+    conn.ExecuteScalar<int64>(
+        "select OffsetCount from Offsets where OffsetName = 'DocumentProjection'")
+
 let subscriptions =
     Fcqrs.projection api
-        (Projection.single (int (Db.getLastOffset connString)) (handle connString))
+        (Projection.single (getLastOffset connString) (handle connString))
 ```
 
 <div class="cs-alt"></div>
 
 ```csharp
 // C#: resolve both the handler and last offset from application services.
+static long GetLastOffset(string connString)
+{
+    using var conn = new SqliteConnection(connString);
+    conn.Open();
+    return conn.ExecuteScalar<long>(
+        "select OffsetCount from Offsets where OffsetName = 'DocumentProjection'");
+}
+
 services.AddProjection(
     handler: sp => (offset, evt) => HandleEventWrapper(connString, offset, evt),
-    lastOffset: _ => (int)ServerQuery.GetLastOffset(connString));
+    lastOffset: _ => GetLastOffset(connString));
 ```
 
 `Fcqrs.projection` returns an `ISubscribe`. A client can subscribe to a correlation id and wait until
 this handler commits the matching event. Aggregate `.Send` waits only for the aggregate reply; the
 projection subscription is the separate read-side confirmation.
 
-The C# host builder has one `AddProjection` slot per FCQRS runtime. A handler may update several read
-models in the same process. Independently deployed projection consumers should keep independent
-offsets.
+The C# host builder supports one projection per FCQRS runtime: a second `AddProjection` call throws
+`InvalidOperationException` at registration. A handler may update several read models in the same
+process, and a side-by-side rebuild runs as a separate process (see
+[Rebuild a read model](rebuild-a-read-model.html)). Independently deployed projection consumers should
+keep independent offsets.
 
 ## Choose which events notify callers
 

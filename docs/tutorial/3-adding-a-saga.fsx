@@ -10,6 +10,9 @@ index: 5
 (*** hide ***)
 #r "nuget: FCQRS, 6.0.0-rc6"
 open System
+open System.Collections.Concurrent
+open Microsoft.Extensions.Configuration
+open Microsoft.Extensions.Logging
 open FCQRS.Common
 open FCQRS.Model.Data
 open FCQRS.FSharp
@@ -53,11 +56,14 @@ conversation.
 > **Motivation:** Keeping each rule with its owner prevents the saga from becoming a second, stale copy
 > of document and slug state. The saga coordinates answers; it does not invent them.
 
-## Keep the domain types small
+## Extend the document with publication
 
-Chapter 1 already covered document content. This chapter models only the publication status, because
-that is the part involved in the cross-aggregate conversation. Validate the slug at the application
-boundary before sending `Publish`.
+Chapters 1 and 2 gave the document its content model: `Root`, `CreateOrUpdate`, and `Updated`. Those
+stay exactly as they were. Publication is added to that same aggregate — the state gains a publication
+track beside the document. The document id is the aggregate's own identity, so the new `Publish`
+command carries only the slug. Validate the slug at the application boundary before sending it.
+
+The validated values are unchanged from chapter 1:
 *)
 
 module Values =
@@ -67,10 +73,27 @@ module Values =
         member this.Value = let (DocumentId value) = this in value
         override this.ToString() = let (DocumentId value) = this in value.ToString()
 
+    type Title =
+        | Title of ShortString
+        static member TryCreate s =
+            match ValueLens.TryCreate s with
+            | Ok ss -> Ok(Title ss)
+            | Error _ -> Error "Invalid title"
+        member this.Value = let (Title s) = this in ValueLens.Value s
+
+    type Content =
+        | Content of LongString
+        static member TryCreate s =
+            match ValueLens.TryCreate s with
+            | Ok ss -> Ok(Content ss)
+            | Error _ -> Error "Invalid content"
+        member this.Value = let (Content s) = this in ValueLens.Value s
+
 (**
 <div class="cs-alt"></div>
 
 ```csharp
+// Unchanged from chapter 1.
 public readonly record struct DocumentId(Guid Value)
 {
     public static DocumentId OfGuid(Guid value) => new(value);
@@ -80,49 +103,69 @@ public readonly record struct DocumentId(Guid Value)
 
 ## Step 1: let the document request publication
 
-The document stores `PublicationRequested` before any reservation begins. Its state records the
-document and slug involved, so the eventual result remains valid after recovery.
+The document stores `PublicationRequested` before any reservation begins. Its state records the slug
+being reserved, so the eventual result remains valid after recovery. A document must exist (chapter
+1's `CreateOrUpdate`) before it can be published.
 *)
 
 module Document =
     open Values
 
+    type Root =
+        { Id: DocumentId; Title: Title; Content: Content }
+
+        static member TryCreate(guid, title, content) =
+            match Title.TryCreate title, Content.TryCreate content with
+            | Ok t, Ok c -> Ok { Id = DocumentId.OfGuid guid; Title = t; Content = c }
+            | Error e, _ -> Error e
+            | _, Error e -> Error e
+
     type PublicationResult =
         | Published
         | Rejected
 
-    type State =
-        | Draft
-        | WaitingForSlug of DocumentId * slug: string
-        | Finished of DocumentId * slug: string * PublicationResult
+    type PublicationStatus =
+        | NotRequested
+        | WaitingForSlug of slug: string
+        | Finished of slug: string * PublicationResult
 
-    let initial = Draft
+    type State =
+        { Document: Root option
+          Publication: PublicationStatus }
+
+    let initial = { Document = None; Publication = NotRequested }
 
     type Command =
-        | Publish of DocumentId * slug: string
+        | CreateOrUpdate of Root
+        | Publish of slug: string
         | FinishPublication of PublicationResult
 
     type Event =
+        | Updated of Root
         | PublicationRequested of DocumentId * slug: string
         | PublicationFinished of DocumentId * slug: string * PublicationResult
 
     let decide (cmd: Command<Command>) state =
         match cmd.CommandDetails, state with
-        | Publish(documentId, slug), Draft ->
-            PublicationRequested(documentId, slug) |> PersistEvent
-        | Publish(documentId, slug), WaitingForSlug(currentId, currentSlug)
-            when documentId = currentId && slug = currentSlug ->
-            PublicationRequested(documentId, slug) |> DeferEvent
-        | FinishPublication result, WaitingForSlug(documentId, slug) ->
-            PublicationFinished(documentId, slug, result) |> PersistEvent
-        | FinishPublication result, Finished(documentId, slug, current) when result = current ->
-            PublicationFinished(documentId, slug, result) |> DeferEvent
+        | CreateOrUpdate doc, _ ->
+            Updated doc |> PersistEvent
+        | Publish slug, { Document = Some doc; Publication = NotRequested } ->
+            PublicationRequested(doc.Id, slug) |> PersistEvent
+        | Publish slug, { Document = Some doc; Publication = WaitingForSlug currentSlug }
+            when slug = currentSlug ->
+            PublicationRequested(doc.Id, slug) |> DeferEvent
+        | FinishPublication result, { Document = Some doc; Publication = WaitingForSlug slug } ->
+            PublicationFinished(doc.Id, slug, result) |> PersistEvent
+        | FinishPublication result, { Document = Some doc; Publication = Finished(slug, current) }
+            when result = current ->
+            PublicationFinished(doc.Id, slug, result) |> DeferEvent
         | _ -> UnhandledEvent
 
     let fold (event: Event<Event>) state =
         match event.EventDetails with
-        | PublicationRequested(documentId, slug) -> WaitingForSlug(documentId, slug)
-        | PublicationFinished(documentId, slug, result) -> Finished(documentId, slug, result)
+        | Updated doc -> { state with Document = Some doc }
+        | PublicationRequested(_, slug) -> { state with Publication = WaitingForSlug slug }
+        | PublicationFinished(_, slug, result) -> { state with Publication = Finished(slug, result) }
 
 (**
 `FinishPublication` carries either `Published` or `Rejected`. Repeating the same result returns the
@@ -130,78 +173,92 @@ same `PublicationFinished` outcome with `DeferEvent`, so recovery can reissue on
 storing another domain event. Keeping the result as data removes duplicate success and failure
 branches from the aggregate.
 
-The four decision cases form two pairs: the first request is stored and its retry is deferred; the
+The publication cases form two pairs: the first request is stored and its retry is deferred; the
 first result is stored and its retry is deferred. The final wildcard rejects every command and state
-combination that does not belong to this workflow.
+combination that does not belong to this workflow — including `Publish` before the document exists.
 
 <div class="cs-alt"></div>
 
 ```csharp
 public enum PublicationResult { Published, Rejected }
 
-public abstract record PublicationDocumentState
+public abstract record PublicationProgress
 {
-    public sealed record Draft : PublicationDocumentState;
-    public sealed record WaitingForSlug(DocumentId DocumentId, string Slug)
-        : PublicationDocumentState;
-    public sealed record Finished(
-        DocumentId DocumentId, string Slug, PublicationResult Result)
-        : PublicationDocumentState;
-
-    public static readonly PublicationDocumentState Initial = new Draft();
+    public sealed record NotRequested : PublicationProgress;
+    public sealed record WaitingForSlug(string Slug) : PublicationProgress;
+    public sealed record Finished(string Slug, PublicationResult Result) : PublicationProgress;
 }
 
-public union DocumentCommand(DocumentCommand.Publish, DocumentCommand.FinishPublication)
+// The chapter-1 state type gains a publication track beside the document.
+public sealed record DocumentState(Document? Document, PublicationProgress Publication)
 {
-    public record Publish(DocumentId DocumentId, string Slug);
+    public static readonly DocumentState Initial =
+        new(null, new PublicationProgress.NotRequested());
+}
+
+public union DocumentCommand(
+    DocumentCommand.CreateOrUpdate, DocumentCommand.Publish, DocumentCommand.FinishPublication)
+{
+    public record CreateOrUpdate(Document Document);
+    public record Publish(string Slug);
     public record FinishPublication(PublicationResult Result);
 }
 
-public union DocumentEvent(DocumentEvent.PublicationRequested, DocumentEvent.PublicationFinished)
+public union DocumentEvent(
+    DocumentEvent.Updated, DocumentEvent.PublicationRequested, DocumentEvent.PublicationFinished)
 {
+    public record Updated(Document Document);
     public record PublicationRequested(DocumentId DocumentId, string Slug);
     public record PublicationFinished(
         DocumentId DocumentId, string Slug, PublicationResult Result);
 }
 
 public sealed class PublicationDocumentAggregate
-    : Aggregate<PublicationDocumentState, DocumentCommand, DocumentEvent>
+    : Aggregate<DocumentState, DocumentCommand, DocumentEvent>
 {
-    public override PublicationDocumentState InitialState => PublicationDocumentState.Initial;
+    public override DocumentState InitialState => DocumentState.Initial;
     public override string EntityName => "Document";
 
     public override EventAction<DocumentEvent> HandleCommand(
-        Command<DocumentCommand> command, PublicationDocumentState state) =>
+        Command<DocumentCommand> command, DocumentState state) =>
         (command.CommandDetails, state) switch
         {
-            (DocumentCommand.Publish request, PublicationDocumentState.Draft) =>
+            (DocumentCommand.CreateOrUpdate c, _) =>
+                EventActions.Persist<DocumentEvent>(new DocumentEvent.Updated(c.Document)),
+            (DocumentCommand.Publish p,
+                { Document: { } doc, Publication: PublicationProgress.NotRequested }) =>
                 EventActions.Persist<DocumentEvent>(
-                    new DocumentEvent.PublicationRequested(request.DocumentId, request.Slug)),
-            (DocumentCommand.Publish request, PublicationDocumentState.WaitingForSlug waiting)
-                when request.DocumentId == waiting.DocumentId && request.Slug == waiting.Slug =>
+                    new DocumentEvent.PublicationRequested(doc.Id, p.Slug)),
+            (DocumentCommand.Publish p,
+                { Document: { } doc, Publication: PublicationProgress.WaitingForSlug waiting })
+                when p.Slug == waiting.Slug =>
                 EventActions.Defer<DocumentEvent>(
-                    new DocumentEvent.PublicationRequested(request.DocumentId, request.Slug)),
+                    new DocumentEvent.PublicationRequested(doc.Id, p.Slug)),
             (DocumentCommand.FinishPublication finish,
-                PublicationDocumentState.WaitingForSlug waiting) =>
+                { Document: { } doc, Publication: PublicationProgress.WaitingForSlug waiting }) =>
                 EventActions.Persist<DocumentEvent>(new DocumentEvent.PublicationFinished(
-                    waiting.DocumentId, waiting.Slug, finish.Result)),
+                    doc.Id, waiting.Slug, finish.Result)),
             (DocumentCommand.FinishPublication finish,
-                PublicationDocumentState.Finished current) when finish.Result == current.Result =>
+                { Document: { } doc, Publication: PublicationProgress.Finished current })
+                when finish.Result == current.Result =>
                 EventActions.Defer<DocumentEvent>(new DocumentEvent.PublicationFinished(
-                    current.DocumentId, current.Slug, current.Result)),
+                    doc.Id, current.Slug, finish.Result)),
             _ => EventActions.Ignore<DocumentEvent>()
         };
 
-    public override PublicationDocumentState ApplyEvent(
-        Event<DocumentEvent> stored, PublicationDocumentState state) =>
+    public override DocumentState ApplyEvent(
+        Event<DocumentEvent> stored, DocumentState state) =>
         stored.EventDetails switch
         {
+            DocumentEvent.Updated updated =>
+                state with { Document = updated.Document },
             DocumentEvent.PublicationRequested requested =>
-                new PublicationDocumentState.WaitingForSlug(
-                    requested.DocumentId, requested.Slug),
+                state with { Publication = new PublicationProgress.WaitingForSlug(requested.Slug) },
             DocumentEvent.PublicationFinished finished =>
-                new PublicationDocumentState.Finished(
-                    finished.DocumentId, finished.Slug, finished.Result),
+                state with
+                {
+                    Publication = new PublicationProgress.Finished(finished.Slug, finished.Result)
+                },
             _ => state
         };
 }
@@ -604,20 +661,120 @@ the other aggregate, and it is not exactly-once delivery.
 
 ## Run both outcomes
 
+Now run the workflow. The helper below publishes one document and prints the result the saga drives
+back. Two details from chapter 2 return here: the document is created with `CreateOrUpdate` before
+`Publish`, and the subscription is made *before* sending so the result cannot slip past. The saga's
+commands keep your correlation id, so one subscription sees the whole workflow — the final
+`PublicationFinished` included.
+*)
+
+let buildApi () : IActor =
+    let config = ConfigurationBuilder().Build()
+    let loggerFactory = LoggerFactory.Create(fun _ -> ())
+
+    let connection =
+        Fcqrs.connect FCQRS.Actor.DBType.Sqlite "Data Source=tutorial.db;"
+
+    Fcqrs.actor config loggerFactory (Some connection) "tutorial"
+
+let readModel = ConcurrentDictionary<string, Document.Root>()
+
+let handleProjection (_offset: int64) (message: obj) =
+    match message with
+    | :? Event<Document.Event> as event ->
+        match event.EventDetails with
+        | Document.Updated document -> readModel[document.Id.ToString()] <- document
+        | _ -> ()
+    | _ -> ()
+
+let private isPublicationFinished (message: IMessageWithCID) =
+    match message with
+    | :? Event<Document.Event> as event ->
+        match event.EventDetails with
+        | Document.PublicationFinished _ -> true
+        | _ -> false
+    | _ -> false
+
+let publishAndPrintOutcome
+    (documents: AggregateHandle<Document.Command, Document.Event>)
+    (subscriptions: FCQRS.Query.ISubscribe)
+    (doc: Document.Root)
+    slug
+    =
+    async {
+        let id = Fcqrs.aggregateId (doc.Id.ToString())
+
+        // The document must exist before it can be published (chapter 1's command).
+        let! _created =
+            documents.Send (Fcqrs.newCid ()) id (Document.CreateOrUpdate doc)
+                (fun e ->
+                    match e with
+                    | Document.Updated _ -> true
+                    | _ -> false)
+
+        let cid = Fcqrs.newCid ()
+        let mutable outcome = None
+
+        // Subscribe BEFORE publishing: the saga's commands keep this CID, so the
+        // final result arrives on this same subscription.
+        use finished =
+            subscriptions.Subscribe(cid, isPublicationFinished, 1, fun message ->
+                outcome <- Some message)
+
+        let! _requested =
+            documents.Send cid id (Document.Publish slug)
+                (fun e ->
+                    match e with
+                    | Document.PublicationRequested _ -> true
+                    | _ -> false)
+
+        do! finished.Task |> Async.AwaitTask
+
+        match outcome with
+        | Some(:? Event<Document.Event> as event) ->
+            (match event.EventDetails with
+             | Document.PublicationFinished(_, slug, result) ->
+                 printfn "%s -> %A (%s)" slug result doc.Title.Value
+             | _ -> ())
+            |> ignore
+        | _ -> ()
+    }
+
+(**
+```fsharp
+let run () =
+    async {
+        let api = buildApi ()
+        let documents = wire api
+        let subscriptions = Fcqrs.projection api (Projection.single 0 handleProjection)
+
+        let docA =
+            Document.Root.TryCreate(Guid.NewGuid(), "FCQRS guide", "draft A") |> Result.value
+
+        let docB =
+            Document.Root.TryCreate(Guid.NewGuid(), "Competing guide", "draft B") |> Result.value
+
+        do! publishAndPrintOutcome documents subscriptions docA "guides/fcqrs"
+        do! publishAndPrintOutcome documents subscriptions docB "guides/fcqrs"
+    }
+
+[<EntryPoint>]
+let main _ =
+    run () |> Async.RunSynchronously
+    0
+```
+
 Publish two documents under the same slug:
 
-<pre>
-document A + guides/fcqrs
-  -> SlugReserved
-  -> PublicationFinished Published
-
-document B + guides/fcqrs
-  -> SlugUnavailable
-  -> PublicationFinished Rejected
-</pre>
+```text
+dotnet run
+# guides/fcqrs -> Published (FCQRS guide)
+# guides/fcqrs -> Rejected (Competing guide)
+```
 
 The slug aggregate serializes both reservations and accepts only the first owner. Each publication
-saga stores its own progress and safely completes the matching document.
+saga stores its own progress and safely completes the matching document. Run again without deleting
+`tutorial.db` and both documents are rejected — the reservation from the first run is durable.
 
 ## Common mistakes
 

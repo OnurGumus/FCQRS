@@ -97,8 +97,9 @@ The two functions return different control values because they answer different 
 
 Delayed commands returned with `StopSaga` are still delivered — they are the saga's final act. The
 exception is `Self`-targeted delayed commands, which FCQRS cancels with a warning: a completed saga
-must not be resurrected by its own final message (remember-entities would restart it, and recovery
-would re-drive the same state). Final delayed commands should target other entities.
+must not be resurrected by its own final message. (With Akka.NET's remembered entities — the default
+here — a passivated entity restarts when a message arrives, and recovery would re-drive the same
+state.) Final delayed commands should target other entities.
 
 Most workflows use `StateChangedEvent` for business events and `Stay` while waiting for a reply.
 `NextState` is useful for an internal step that should advance immediately. Use it carefully: every
@@ -192,8 +193,9 @@ exactly-once messaging.
 ## The starting event also protects resumption
 
 During recovery FCQRS uses the stored starting event to check the originator exchange and continue the
-startup protocol safely. If the originator has moved to an incompatible version of the exchange,
-FCQRS can abort rather than continue from stale assumptions.
+startup protocol safely. If the originator has moved past the starting event's version, the check
+fails: the originator answers the saga with an `AbortedEvent` — visible as an `Abort:` span and in the
+message-flow logs — and the saga passivates instead of continuing from stale assumptions.
 
 This check protects the FCQRS actor conversation. It does not make an independent database, payment
 provider, or HTTP service part of the saga journal transaction. External operations still require
