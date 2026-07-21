@@ -575,6 +575,10 @@ type TargetActor =
     /// Specifies the target using its direct IActorRef (usually boxed as obj).
     | ActorRef of obj // Typically IActorRef
     /// Specifies the target as the original sender of the message that triggered the current saga step.
+    /// NOTE: side effects run inside persist re-injections, where the ambient sender is the
+    /// journal actor, or in the subscription-ack re-drive, where it is the pub-sub mediator —
+    /// never the original trigger. Commands to Sender therefore dead-letter; the saga logs a
+    /// warning at resolution. Use FactoryAndName with Originator to reach the originator instead.
     | Sender
     /// Specifies the target as the current saga actor itself.
     | Self
@@ -681,7 +685,7 @@ type IActor =
     /// Initializes a sharded, persistent saga actor.
     /// <param name="initialState">The initial state (`SagaState`) for new saga instances.</param>
     /// <param name="handleEvent">The event handler function: `Event -> SagaState -> EventAction`.</param>
-    /// <param name="applySideEffects">Function determining side effects based on state transitions: `SagaState -> Option<StartingEvent> -> bool -> SagaTransition<NewState> * ExecuteCommand list`.</param>
+    /// <param name="applySideEffects">Function determining side effects based on state transitions: `SagaState -> Option<StartingEvent> -> bool -> SagaTransition<NewState> * ExecuteCommand list`. CONTRACT: it must be idempotent for the same state — the framework invokes it on every state entry, on recovery re-drives, and (for this raw API) again when the start handshake acknowledges, so issued commands must be retry-safe. The SagaBuilder facade absorbs the extra invocations by returning Stay; raw sagas must do it themselves.</param>
     /// <param name="applyStateChange">Function to apply internal state changes: `SagaState -> SagaState`.</param>
     /// <param name="name">The shard type name for this saga.</param>
     /// <returns>An entity factory (`EntityFac<obj>`) for creating instances of this saga.</returns>

@@ -343,11 +343,25 @@ module Fcqrs =
                     | :? FCQRS.Query.IHasNotificationTimeout as t -> t.Timeout
                     | _ -> System.TimeSpan.FromSeconds 30.0
 
+                // Task.Delay throws beyond ~49.7 days (uint.MaxValue-1 ms); an
+                // absurdly large configured command-timeout must still bound the
+                // wait, not detonate the call with an argument exception.
+                let maxDelay =
+                    System.TimeSpan.FromMilliseconds(float System.UInt32.MaxValue - 1.0)
+
+                let timeout = if timeout > maxDelay then maxDelay else timeout
+
                 let! winner =
                     System.Threading.Tasks.Task.WhenAny(awaiter.Task, System.Threading.Tasks.Task.Delay timeout)
                     |> Async.AwaitTask
 
-                if not (obj.ReferenceEquals(winner, awaiter.Task)) then
+                if obj.ReferenceEquals(winner, awaiter.Task) then
+                    // Await the winner: a subscription that faulted or completed
+                    // early (actor-system shutdown tearing the stream down
+                    // mid-wait) must surface, not pass for a projection
+                    // notification that never arrived.
+                    do! awaiter.Task |> Async.AwaitTask |> Async.Ignore
+                else
                     raise (
                         System.TimeoutException(
                             "The command was journaled but its projection notification did not arrive within the command timeout (akka.fcqrs.command-timeout). A filtered/multi projection may be suppressing the matching event."

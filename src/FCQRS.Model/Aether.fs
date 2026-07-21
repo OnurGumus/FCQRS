@@ -586,10 +586,10 @@ module Optics =
         let pos_ (i: int) : Prism<'v list, 'v> =
 #if NET35
             (function
-            | l when List.length l > i -> Some(List.nth l i)
+            | l when i >= 0 && List.length l > i -> Some(List.nth l i)
 #else
             (function
-            | l when List.length l > i -> Some(List.item i l)
+            | l when i >= 0 && List.length l > i -> Some(List.item i l)
 #endif
             | _ -> None),
             (fun v l -> List.mapi (fun i' x -> if i = i' then v else x) l)

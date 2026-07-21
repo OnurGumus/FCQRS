@@ -34,6 +34,10 @@ module Counter =
         | Reset
         // acked to the caller but never journaled — exercises DeferEvent delivery
         | Poke
+        // deferred AND state-changing: a fold that must never reach a snapshot
+        | Freebie of int
+        // deferred read of the live state (nothing journaled)
+        | Report
         // decide returns a RunAsync effect (mini saga); the runner self-dispatches
         | Dispatch of Effect
 
@@ -41,11 +45,13 @@ module Counter =
         | Incremented of int
         | WasReset
         | Poked
+        | Freebied of int
+        | Reported of int
 
     type State = { Total: int }
     let initial = { Total = 0 }
 
-    let decide (cmd: Command<Command>) _state =
+    let decide (cmd: Command<Command>) state =
         match cmd.CommandDetails with
         | Increment n -> Incremented n |> PersistEvent
         // one command, two events, one journal AtomicWrite
@@ -54,6 +60,8 @@ module Counter =
         | Checkpoint -> WasReset |> persistAndSnapshot
         | Reset -> WasReset |> PersistEvent
         | Poke -> Poked |> DeferEvent
+        | Freebie n -> Freebied n |> DeferEvent
+        | Report -> Reported state.Total |> DeferEvent
         // pure: returns the effect DESCRIPTION, no oracle in sight
         | Dispatch eff -> dispatch eff
 
@@ -62,6 +70,8 @@ module Counter =
         | Incremented n -> { state with Total = state.Total + n }
         | WasReset -> { Total = 0 }
         | Poked -> state
+        | Freebied n -> { state with Total = state.Total + n }
+        | Reported _ -> state
 
 /// A saga that resets the counter whenever it sees a "big" (>= 100) increment —
 /// proving the saga reacts to an originator event and drives a command back into
@@ -1164,13 +1174,44 @@ let private timeProviderTest =
         Threading.Thread.Sleep 300 // give a hypothetical second fire a chance
         Expect.equal fired.Value 1 "a one-shot timer fired exactly once"
 
+        // BCL parity: out-of-range due times and periods throw instead of
+        // silently clamping (the old clamp fired a 30-day timer ~5 days early,
+        // and a negative period hung with no diagnostic).
+        Expect.throwsT<ArgumentOutOfRangeException>
+            (fun () ->
+                tp.CreateTimer(Threading.TimerCallback(fun _ -> ()), box (), TimeSpan.FromMilliseconds -2.0, Threading.Timeout.InfiniteTimeSpan)
+                |> ignore)
+            "a due time below -1 ms throws"
+
+        Expect.throwsT<ArgumentOutOfRangeException>
+            (fun () ->
+                tp.CreateTimer(Threading.TimerCallback(fun _ -> ()), box (), TimeSpan.FromMilliseconds 10.0, TimeSpan.FromDays -1.0)
+                |> ignore)
+            "a period below -1 ms throws"
+
+        Expect.throwsT<ArgumentOutOfRangeException>
+            (fun () ->
+                tp.CreateTimer(Threading.TimerCallback(fun _ -> ()), box (), TimeSpan.FromDays 50.0, Threading.Timeout.InfiniteTimeSpan)
+                |> ignore)
+            "a due time beyond the BCL maximum (~49.7 days) throws"
+
+        // Beyond the old Int32 ms clamp (~24.86 days) but within the BCL
+        // range: schedules fine and does NOT fire early.
+        use _t3 =
+            tp.CreateTimer(Threading.TimerCallback(fun _ -> incr fired), box (), TimeSpan.FromDays 30.0, Threading.Timeout.InfiniteTimeSpan)
+
+        Threading.Thread.Sleep 300
+        Expect.equal fired.Value 1 "a 30-day timer does not fire early"
+
         api.Stop().Wait(TimeSpan.FromSeconds 30.0) |> ignore
 
-/// DynamicConfig: dense numeric runs become HOCON arrays; sparse numeric keys
-/// and scalar+children collisions (legal IConfiguration shapes, typical of
-/// env-var overrides) must not crash or corrupt.
+/// DynamicConfig: GetSectionAsDynamic returns the requested section itself
+/// (the old off-by-one returned its parent), dense numeric runs become HOCON
+/// arrays, sparse numeric keys and scalar+children collisions (legal
+/// IConfiguration shapes, typical of env-var overrides) must not crash or
+/// corrupt, and a section with no keys yields an empty object.
 let private dynamicConfigTest =
-    testCase "dynamic config: dense runs become arrays; sparse keys and scalar+children do not crash"
+    testCase "dynamic config: returns the requested section; dense runs become arrays; missing section is empty"
     <| fun _ ->
         let kvp k v = Collections.Generic.KeyValuePair<string, string | null>(k, v)
 
@@ -1184,10 +1225,13 @@ let private dynamicConfigTest =
                       kvp "config:akka:sparse:1" "x"
                       // one key with BOTH a value and children (env-var style)
                       kvp "config:akka:collision" "scalar"
-                      kvp "config:akka:collision:child" "y" ])
+                      kvp "config:akka:collision:child" "y"
+                      kvp "config:akka:persistence:journal:plugin" "akka.persistence.journal.sql" ])
                 .Build()
 
-        // This call itself crashed on the sparse key before the fix.
+        // The requested section itself: config:akka -> the akka node, so its
+        // children sit at the HOCON root. This call crashed on the sparse key
+        // before an earlier fix.
         let dyn =
             FCQRS.DynamicConfig.ConfigExtension.GetSectionAsDynamic(cfg, "config:akka")
             :?> System.Dynamic.ExpandoObject
@@ -1195,11 +1239,40 @@ let private dynamicConfigTest =
         let hocon = Akka.Configuration.ConfigurationFactory.FromObject dyn
 
         Expect.equal
-            (hocon.GetStringList("akka.remote.seed-nodes") |> List.ofSeq)
+            (hocon.GetStringList("remote.seed-nodes") |> List.ofSeq)
             [ "akka.tcp://a@127.0.0.1:4053"; "akka.tcp://a@127.0.0.1:4054" ]
             "a dense 0..n-1 run becomes a HOCON array"
 
-        Expect.equal (hocon.GetString("akka.sparse.1")) "x" "sparse numeric keys stay a plain object"
+        Expect.equal (hocon.GetString("sparse.1")) "x" "sparse numeric keys stay a plain object"
+
+        // A deeper section returns that section, not an ancestor.
+        let persistenceHocon =
+            Akka.Configuration.ConfigurationFactory.FromObject(
+                FCQRS.DynamicConfig.ConfigExtension.GetSectionAsDynamic(cfg, "config:akka:persistence"))
+
+        Expect.equal
+            (persistenceHocon.GetString("journal.plugin"))
+            "akka.persistence.journal.sql"
+            "config:akka:persistence returns the persistence node"
+
+        // The internal call site (Actor.api) asks for "config": the wrapper
+        // node whose akka child becomes the HOCON root.
+        let configHocon =
+            Akka.Configuration.ConfigurationFactory.FromObject(
+                FCQRS.DynamicConfig.ConfigExtension.GetSectionAsDynamic(cfg, "config"))
+
+        Expect.equal
+            (configHocon.GetStringList("akka.remote.seed-nodes") |> List.ofSeq)
+            [ "akka.tcp://a@127.0.0.1:4053"; "akka.tcp://a@127.0.0.1:4054" ]
+            "config returns the wrapper node feeding ConfigurationFactory.FromObject"
+
+        // A section with no keys yields an empty object instead of throwing.
+        // Callers (Akka) then fall back to their own defaults.
+        let missing =
+            FCQRS.DynamicConfig.ConfigExtension.GetSectionAsDynamic(cfg, "config:does-not-exist")
+            :?> Collections.Generic.IDictionary<string, obj>
+
+        Expect.equal missing.Count 0 "a missing section returns an empty object, no KeyNotFoundException"
 
 /// A saga whose handleEvent keys ONLY on the event type — it never inspects
 /// its current state — and counts every delivery of its starting event. A
@@ -1581,9 +1654,95 @@ let private crossTypeHandshakeTest =
         Expect.equal results.[0] (box (Counter.Incremented 100)) "the Counter handshake completed"
         Expect.equal results.[1] (box (CounterB.Incremented 100)) "the CounterB handshake completed"
 
+/// Boot a Counter with an Every-2 snapshot cadence, for the defer/snapshot test.
+let private bootDeferSnap (db: string) =
+    registerJournalTypes ()
+    let api =
+        Fcqrs.actor (ConfigurationBuilder().Build()) NullLoggerFactory.Instance
+            (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite (sprintf "Data Source=%s;" db))) "DeferSnapSmoke"
+    let counter =
+        Fcqrs.aggregate api { Name = "Counter"; Initial = Counter.initial; Decide = Counter.decide; Fold = Counter.fold; Snapshots = Every 2 }
+    Fcqrs.wireSagaStarters api []
+    api, counter
+
+let private deferSnapshotTest =
+    testCase "facade: a DeferEvent fold never leaks into a snapshot"
+    <| fun _ ->
+        let db = Path.Combine(Path.GetTempPath(), sprintf "fcqrs_defersnap_%s.db" (Guid.NewGuid().ToString("N")))
+
+        // Phase 1: Freebie 7 is DEFERRED (in-memory Total=7, nothing journaled),
+        // then two increments persist v1 and v2; the Every-2 cadence snapshots at
+        // v2. Journal-only Total=10; the defer-polluted behavior state is 17.
+        let api1, counter1 = bootDeferSnap db
+
+        counter1.Send (Fcqrs.newCid ()) (Fcqrs.aggregateId "defer") (Counter.Freebie 7)
+            (function Counter.Freebied _ -> true | _ -> false)
+        |> Async.RunSynchronously
+        |> ignore
+
+        counter1.Send (Fcqrs.newCid ()) (Fcqrs.aggregateId "defer") (Counter.Increment 5)
+            (function Counter.Incremented _ -> true | _ -> false)
+        |> Async.RunSynchronously
+        |> ignore
+
+        counter1.Send (Fcqrs.newCid ()) (Fcqrs.aggregateId "defer") (Counter.Increment 5)
+            (function Counter.Incremented _ -> true | _ -> false)
+        |> Async.RunSynchronously
+        |> ignore
+
+        // The snapshot must be durable before the reboot, or phase 2 recovers
+        // from the journal alone and the test proves nothing.
+        let snapshotCount () =
+            use conn = new Microsoft.Data.Sqlite.SqliteConnection(sprintf "Data Source=%s;" db)
+            conn.Open()
+            use cmd = conn.CreateCommand()
+            cmd.CommandText <- "SELECT COUNT(*) FROM snapshot WHERE persistence_id LIKE '%defer%'"
+            cmd.ExecuteScalar() :?> int64
+
+        let mutable snaps = 0L
+        let mutable attempts = 0
+
+        while snaps = 0L && attempts < 40 do
+            attempts <- attempts + 1
+            Threading.Thread.Sleep 250
+            snaps <- try snapshotCount () with _ -> 0L
+
+        Expect.isGreaterThanOrEqual snaps 1L "phase 1: the v2 snapshot is durable"
+        api1.Stop().Wait(TimeSpan.FromSeconds 30.0) |> ignore
+
+        // Phase 2: reboot on the same journal and read the recovered state via a
+        // deferred Report. The deferred +7 must be gone: recovery from a snapshot
+        // must match recovery from the journal (Total=10), not the polluted
+        // behavior state that used to be snapshotted (17).
+        let api2, counter2 = bootDeferSnap db
+
+        let ev =
+            counter2.Send (Fcqrs.newCid ()) (Fcqrs.aggregateId "defer") Counter.Report
+                (function Counter.Reported _ -> true | _ -> false)
+            |> Async.RunSynchronously
+
+        Expect.equal ev.EventDetails (Counter.Reported 10) "recovered state is the journal-only Total; the deferred fold disappeared"
+        api2.Stop().Wait(TimeSpan.FromSeconds 30.0) |> ignore
+
+let private cidSeparatorTest =
+    testCase "facade: a CID containing the correlation separator is rejected"
+    <| fun _ ->
+        // A CID with "~" breaks the topic/entity-name correlation parsing
+        // (toRawGuid/toCid) and leaves sagas permanently deaf; CreateCID now
+        // fails fast instead.
+        let mutable caught: exn option = None
+
+        try
+            FCQRS.CSharp.Values.CreateCID "tenant~abc" |> ignore
+        with e ->
+            caught <- Some e
+
+        let ex = Expect.wantSome caught "CreateCID rejects a CID containing '~'"
+        Expect.isTrue (ex :? ArgumentException) (sprintf "expected ArgumentException, got %s" (ex.GetType().Name))
+
 let tests =
     testSequenced (
-        testList "facade" [ manifestTest; roundTripTest; persistAllTest; manualSnapshotTest; telemetryTest; payloadSwitchTest; overflowTest; snapshotRecoveryTest; restartDetectionTest; filteredProjectionTest; persistIfTest; bridgeTest; pendingBridgeTest; focusShapeTest; journaledStampTest; runAsyncTest; aggregateRecoveryTest; commandTimeoutTest; concurrencyTest; stopSagaDelayedTest; timeProviderTest; dynamicConfigTest; freshStartSingleDeliveryTest; concurrentSagaStartTest; snapshotResurrectionTest; sendAwaitingTimeoutTest; slowSubscriberIsolationTest; specialCharEntityIdTest; filterThrowTest; hoconConnectionStringTest; crossTypeHandshakeTest ]
+        testList "facade" [ manifestTest; roundTripTest; persistAllTest; manualSnapshotTest; telemetryTest; payloadSwitchTest; overflowTest; snapshotRecoveryTest; restartDetectionTest; filteredProjectionTest; persistIfTest; bridgeTest; pendingBridgeTest; focusShapeTest; journaledStampTest; runAsyncTest; aggregateRecoveryTest; commandTimeoutTest; concurrencyTest; stopSagaDelayedTest; timeProviderTest; dynamicConfigTest; freshStartSingleDeliveryTest; concurrentSagaStartTest; snapshotResurrectionTest; sendAwaitingTimeoutTest; slowSubscriberIsolationTest; specialCharEntityIdTest; filterThrowTest; hoconConnectionStringTest; crossTypeHandshakeTest; deferSnapshotTest; cidSeparatorTest ]
     )
 
 [<EntryPoint>]

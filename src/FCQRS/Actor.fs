@@ -45,6 +45,7 @@ module internal Internal =
     let runActor<'TEvent , 'TState when 'TEvent : not null>
         (snapshotEvery: int64 option)
         (manualSnapshotRequested: bool ref)
+        (journaledStateRef: 'TState ref)
         (sagaStartTimeout: TimeSpan)
         (logger: ILogger)
         (flowLogger: ILogger)
@@ -95,7 +96,12 @@ module internal Internal =
             | :? Persistence.SaveSnapshotSuccess
             | LifecycleEvent _ -> return! state |> set
 
-            | SnapshotOffer(snapState: obj) -> return! snapState |> unbox<_> |> set
+            | SnapshotOffer(snapState: obj) ->
+                let snap = snapState |> unbox<State<'State>>
+                // The snapshot holds journal-only state by construction; resume
+                // the mirror from it before replay continues.
+                journaledStateRef.Value <- snap.State
+                return! snap |> set
             | :? Command<ContinueOrAbort<'TEvent>> as (cmd) ->
                 let (ContinueOrAbort(e: Event<'TEvent>)) = cmd.CommandDetails
                 let currentVersion = state.Version |> ValueLens.Value
@@ -209,6 +215,11 @@ module internal Internal =
                         null
 
                 let innerState = applyChecked event state.State
+                // The mirror folds only journaled events, and snapshots store it —
+                // a DeferEvent fold (never journaled) must not leak into a snapshot
+                // and reappear on recovery.
+                let journaledState = applyChecked event journaledStateRef.Value
+                journaledStateRef.Value <- journaledState
                 publishEvent true event
 
                 match activity with
@@ -230,12 +241,14 @@ module internal Internal =
                     | None -> false
 
                 if manual || dueByCadence then
-                    return! state |> set <@> SaveSnapshot state
+                    return! state |> set <@> SaveSnapshot { state with State = journaledState }
                 else
                     return! state |> set
 
             | Recovering mailbox (:? Common.Event<'TEvent> as event) ->
                 let state = applyChecked event state.State
+                // Replay is journal-only by construction: keep the mirror in step.
+                journaledStateRef.Value <- applyChecked event journaledStateRef.Value
 
                 let newState =
                     {   Version = event.Version
@@ -362,6 +375,13 @@ module internal Internal =
 
         // per-actor flag: a PersistAndSnapshot is in flight
         let manualSnapshotRequested = ref false
+
+        // Journal-only mirror of the entity state: only persisted (journaled)
+        // events fold into it. Snapshots must store THIS state, not the behavior
+        // state — the behavior state may include DeferEvent folds, and a deferred
+        // change captured by a snapshot would reappear on recovery even though a
+        // deferred change is supposed to disappear on recovery.
+        let journaledStateRef = ref initialState
 
         let rec set (state: State<'State>) =
             let body (bodyInput: BodyInput<'Event>) =
@@ -532,7 +552,7 @@ module internal Internal =
                         return Unhandled
                 }
 
-            runActor snapshotEvery manualSnapshotRequested sagaStartTimeout logger flowLogger mailbox mediator set state (apply: Event<_> -> 'State -> 'State) body
+            runActor snapshotEvery manualSnapshotRequested journaledStateRef sagaStartTimeout logger flowLogger mailbox mediator set state (apply: Event<_> -> 'State -> 'State) body
 
         let initialState =
             { 
@@ -715,8 +735,10 @@ let api (config: IConfiguration) (loggerFactory: ILoggerFactory) (connection: Co
         | None ->
             config
 
+    // FromObject must receive the `config` node itself (its `akka` child becomes
+    // the HOCON root); asking for "config:akka" would unwrap one level too deep.
     let akkaConfig: ExpandoObject =
-        unbox<_> (mergedConfig.GetSectionAsDynamic("config:akka"))
+        unbox<_> (mergedConfig.GetSectionAsDynamic("config"))
 
     let akkaConfiguration = Configuration.ConfigurationFactory.FromObject akkaConfig
 

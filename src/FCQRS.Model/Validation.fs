@@ -65,8 +65,6 @@ and Validator<'E when 'E: not null>(all) =
         errors <- Map.add name [ error ] errors
 
     member x.Test name (value: 'T) : FieldInfo<'T, 'T, 'E> =
-        errors <- Map.add name [] errors
-
         if not all && hasError then
             { key = name
               original = value
@@ -294,7 +292,7 @@ and Validator<'E when 'E: not null>(all) =
             | :? string as strErr -> strErr.Replace("{len}", len.ToString()) :> obj :?> 'E
             | _ -> err
 
-        x.IsValid (fun input -> Seq.length input <= len) err input
+        x.IsValid (fun input -> not (isNull (box input)) && Seq.length input <= len) err input
 
     /// Min length, if err is a string, it can contains `{len}` to reuse first param
     member x.MinLen len err (input: FieldInfo<'T, 'T0, 'E>) =
@@ -303,29 +301,31 @@ and Validator<'E when 'E: not null>(all) =
             | :? string as strErr -> strErr.Replace("{len}", len.ToString()) :> obj :?> 'E
             | _ -> err
 
-        x.IsValid (fun input -> Seq.length input >= len) err input
+        x.IsValid (fun input -> not (isNull (box input)) && Seq.length input >= len) err input
 
     member x.Enum<'T, 'T0, 'E when 'T0: equality>(enums: 'T0 list) =
         (fun input -> enums |> List.contains input) |> x.IsValid<'T, 'T0>
 
+    // A null string counts as invalid for the string rules below: the input
+    // fails the rule instead of throwing ArgumentNullException.
     member x.IsMail (error: 'E) input =
-        x.IsValid<'T, string> ValidateRegexes.mail.IsMatch error input
+        x.IsValid<'T, string> (fun s -> not (isNull (box s)) && ValidateRegexes.mail.IsMatch s) error input
 
     member x.IsUrl (error: 'E) input =
-        x.IsValid<'T, string> ValidateRegexes.url.IsMatch error input
+        x.IsValid<'T, string> (fun s -> not (isNull (box s)) && ValidateRegexes.url.IsMatch s) error input
 
     member x.Match (regex: Regex) (error: 'E) input =
-        x.IsValid<'T, string> (regex.IsMatch) error input
+        x.IsValid<'T, string> (fun s -> not (isNull (box s)) && regex.IsMatch s) error input
 
 #if FABLE_COMPILER
 
     member x.IsDigit error input =
-        x.IsValid<'T, string> (String.forall (fun c -> c >= '0' && c <= '9')) error input
+        x.IsValid<'T, string> (fun s -> not (isNull (box s)) && String.forall (fun c -> c >= '0' && c <= '9') s) error input
 
 #else
 
     member x.IsDigit error input =
-        x.IsValid<'T, string> (String.forall (Char.IsDigit)) error input
+        x.IsValid<'T, string> (fun s -> not (isNull (box s)) && String.forall (Char.IsDigit) s) error input
 
 #endif
 
@@ -364,7 +364,16 @@ let inline fastAsync (tester: Validator<'E> -> Async<'T>) = validateAsync false 
 let single (tester: Validator<'E> -> 'T) =
     let t = Validator(true)
     let ret = tester t
-    if t.HasError then Error t.Errors.[singleKey] else Ok ret
+
+    if t.HasError then
+        // Test no longer seeds an empty list per field, so a failure always
+        // has a non-empty error list. Fall back to all collected errors if
+        // the tester used a key other than singleKey.
+        match t.Errors.TryFind singleKey with
+        | Some errors -> Error errors
+        | None -> Error(t.Errors |> Map.toList |> List.collect snd)
+    else
+        Ok ret
 
 /// Validate single value asynchronize
 let singleAsync (tester: Validator<'E> -> Async<'T>) =
@@ -373,7 +382,9 @@ let singleAsync (tester: Validator<'E> -> Async<'T>) =
         let! ret = tester t
 
         if t.HasError then
-            return Error t.Errors.[singleKey]
+            match t.Errors.TryFind singleKey with
+            | Some errors -> return Error errors
+            | None -> return Error(t.Errors |> Map.toList |> List.collect snd)
         else
             return Ok ret
     }

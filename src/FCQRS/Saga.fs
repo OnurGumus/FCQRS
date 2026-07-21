@@ -196,6 +196,14 @@ let private runSaga<'TEvent, 'SagaData, 'State when 'TEvent : not null and 'Stat
                         fatalFailFast currentSagaActivityRef.Value "Process terminated due to saga error" ex
                         return! innerSet hs
 
+            | LifecycleEvent PostStop ->
+                // Passivation and shard handoff stop the entity without aborting
+                // it: cancel its pending delayed commands so they don't fire into
+                // the resurrected incarnation, which re-drives and re-schedules
+                // its own on recovery. Idempotent — the abort and StopSaga paths
+                // already ran cleanupOnStop and emptied the list.
+                cleanupOnStop ()
+                return! innerSet hs
             | PersistentLifecycleEvent _
             | :? Persistence.SaveSnapshotSuccess
             | LifecycleEvent _ ->
@@ -541,7 +549,16 @@ let private actorProp<'SagaData, 'State, 'TEvent when 'TEvent : not null and 'St
                         let factory = factory :?> (string -> IEntityRef<obj>)
                         factory name, createFinalCommand cmd
 
-                    | Sender -> mailbox.Sender(), createFinalCommand cmd
+                    | Sender ->
+                        // The ambient sender at side-effect time is the journal
+                        // (Persisted re-injection) or the pub-sub mediator (ack
+                        // re-drive), never the original trigger — warn so the
+                        // misrouted command is at least visible in the logs.
+                        log.Warning(
+                            "TargetActor.Sender resolved to {0}, the ambient sender at side-effect time (journal or mediator), not the original trigger; the command will likely dead-letter. Target the originator via FactoryAndName instead.",
+                            mailbox.Sender().Path)
+
+                        mailbox.Sender(), createFinalCommand cmd
                     | ActorRef actor -> actor :?> ICanTell<_>, cmd.Command
                     | Self -> mailbox.Self, cmd.Command
 

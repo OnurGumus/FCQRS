@@ -18,14 +18,20 @@ type internal NamedCancelable
         cancelEventToTrigger: Event<string option * TimeSpan * (unit -> unit)>
     ) =
 
-    // 0 = not cancelled, 1 = cancelled-and-signalled. Guards the event trigger:
-    // two concurrent Cancel() calls must not fire the cancelled event twice.
+    // 0 = not signalled, 1 = signalled. Guards the cancelled event: repeated
+    // or concurrent cancellation (Cancel, or a CancelAfter timer tripping)
+    // must fire it exactly once.
     let mutable cancelSignalled = 0
 
-    let cancelCore (cancel: unit -> unit) =
+    let fireCancelEvent () =
         if Interlocked.CompareExchange(&cancelSignalled, 1, 0) = 0 then
-            cancel ()
             cancelEventToTrigger.Trigger(name, taskInitialDelay, taskAction)
+
+    let cancelCore (cancel: unit -> unit) =
+        // CancellationTokenSource.Cancel is thread-safe and idempotent, and
+        // fireCancelEvent carries the once-only guard for the event.
+        cancel ()
+        fireCancelEvent ()
 
     interface ICancelable with
         member _.IsCancellationRequested = ctsToManage.IsCancellationRequested
@@ -35,12 +41,17 @@ type internal NamedCancelable
 
         member _.Token = ctsToManage.Token
 
-        member _.CancelAfter(delay: TimeSpan) = ctsToManage.CancelAfter(delay)
-        // Note: The cancelledEvent will be triggered if ctsToManage.Cancel() is eventually called.
-        // Direct event trigger upon CancelAfter completion would require further logic if desired.
+        member _.CancelAfter(delay: TimeSpan) =
+            ctsToManage.CancelAfter(delay)
+            // Mirror Cancel(): fire the cancelled event when the delayed cancel
+            // trips. fireCancelEvent's guard prevents a double-fire if Cancel()
+            // ran (or runs) as well; an already-cancelled token invokes the
+            // registration synchronously, which the guard also absorbs.
+            ctsToManage.Token.Register(Action(fun () -> fireCancelEvent ())) |> ignore
 
         member _.CancelAfter(millisecondsDelay: int) =
             ctsToManage.CancelAfter(millisecondsDelay)
+            ctsToManage.Token.Register(Action(fun () -> fireCancelEvent ())) |> ignore
 
         member _.Cancel(throwOnFirstException: bool) =
             cancelCore (fun () -> ctsToManage.Cancel(throwOnFirstException))
@@ -111,11 +122,17 @@ type ObservingScheduler(config: Config, log: ILoggingAdapter) =
                 if not cts.IsCancellationRequested then
                     action ()
 
+        // Thread the cancelable into the inner schedule: TestScheduler.Advance
+        // re-enqueues repeating items whose cancelable is null-or-not-cancelled,
+        // so without it a cancelled schedule would be re-enqueued forever.
+        let cancelable =
+            new NamedCancelable(cts, name, initialDelay, action, cancelledEvent)
+
         (inner :> IActionScheduler)
-            .ScheduleRepeatedly(initialDelay, interval, Action(wrappedAction))
+            .ScheduleRepeatedly(initialDelay, interval, Action(wrappedAction), cancelable)
 
         enqueuedEvent.Trigger(name, initialDelay, action)
-        new NamedCancelable(cts, name, initialDelay, action, cancelledEvent) :> ICancelable
+        cancelable :> ICancelable
 
     /// Fallback ScheduleRepeatedly without name
     member this.ScheduleRepeatedly(initialDelay: TimeSpan, interval: TimeSpan, action: unit -> unit) : ICancelable =
@@ -139,11 +156,16 @@ type ObservingScheduler(config: Config, log: ILoggingAdapter) =
                 if not cts.IsCancellationRequested then
                     originalTellAction ()
 
+        // Same cancelable threading as ScheduleRepeatedly: keeps a cancelled
+        // recurring Tell from being re-enqueued by TestScheduler.Advance.
+        let cancelable =
+            new NamedCancelable(cts, name, initialDelay, originalTellAction, cancelledEvent)
+
         (inner :> IActionScheduler)
-            .ScheduleRepeatedly(initialDelay, interval, Action(wrappedTellAction))
+            .ScheduleRepeatedly(initialDelay, interval, Action(wrappedTellAction), cancelable)
 
         enqueuedEvent.Trigger(name, initialDelay, originalTellAction)
-        new NamedCancelable(cts, name, initialDelay, originalTellAction, cancelledEvent) :> ICancelable
+        cancelable :> ICancelable
 
     /// Fallback ScheduleTellRepeatedly without name
     member this.ScheduleTellRepeatedly
@@ -153,13 +175,15 @@ type ObservingScheduler(config: Config, log: ILoggingAdapter) =
 
     /// Cancel via wrapper with name
     member this.Cancel(cancelable: ICancelable, name: string option) =
-        // This method seems to imply associating a name with an externally provided ICancelable for cancellation.
-        // However, our NamedCancelable already handles its name.
-        // If the provided cancelable is one of our NamedCancelable, its name is already known.
-        // If it's an external ICancelable, we don't have a direct way to associate this 'name' with its cancellation event.
-        // For now, just call Cancel() and trigger a generic event if this method is used.
+        // A NamedCancelable triggers the cancelled event itself (with its real
+        // name, delay and action) inside Cancel(), so triggering again here
+        // would fire the event twice for one logical cancel. External
+        // cancelables carry no payload; report the passed name once.
         cancelable.Cancel()
-        cancelledEvent.Trigger(name, TimeSpan.Zero, fun () -> ()) // Generic cancellation event
+
+        match cancelable with
+        | :? NamedCancelable -> ()
+        | _ -> cancelledEvent.Trigger(name, TimeSpan.Zero, fun () -> ())
 
     /// The virtual clock's current time.
     member _.Now = inner.Now

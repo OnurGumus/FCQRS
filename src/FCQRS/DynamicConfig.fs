@@ -77,12 +77,17 @@ let internal getSection (configs: KeyValuePair<string, _> seq) : obj =
 [<Extension>]
 type ConfigExtension() =
     /// <summary>
-    /// An extension method that returns given string as an dynamic Expando object
+    /// An extension method that returns the given configuration section as a dynamic Expando object
     /// </summary>
-    /// <exception cref="System.ArgumentNullException">Thrown configuration or section is null</exception>
+    /// <returns>An expando object representing the requested section. A section with no keys
+    /// yields an empty expando object (mirroring IConfiguration.GetSection, which never returns
+    /// null), so callers can layer their own defaults underneath, e.g. Akka's reference.conf.</returns>
+    /// <exception cref="System.ArgumentNullException">Thrown when configuration or section is null</exception>
     [<Extension>]
 
     static member GetSectionAsDynamic(configuration: IConfiguration, section: string) : obj =
+        if isNull (box configuration) then nullArg "configuration"
+        if isNull (box section) then nullArg "section"
 
         let configs =
             configuration.GetSection(section).AsEnumerable()
@@ -92,11 +97,15 @@ type ConfigExtension() =
 
         let paths = section.Split(":", StringSplitOptions.None) |> List.ofArray
 
+        // Descend the full path so the returned node is the requested section itself.
+        // A missing segment (section absent from the configuration) yields an empty
+        // object instead of a KeyNotFoundException.
         let rec loop paths (res: obj) =
             match paths, res with
-            | head :: (_ :: _ as tail), (:? IDictionary<string, obj> as d) ->
-                let v = d.[head]
-                loop tail v
+            | head :: tail, (:? IDictionary<string, obj> as d) ->
+                match d.TryGetValue head with
+                | true, v -> loop tail v
+                | _ -> box (ExpandoObject())
             | _ -> res
 
         loop paths res

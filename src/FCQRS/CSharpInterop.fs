@@ -32,8 +32,14 @@ type Values =
         | Ok v -> v
         | Error e -> failwithf "Failed to create ShortString: %A" e
 
-    /// Create a CID from a string (throws on failure)
+    /// Create a CID from a string (throws on failure).
+    /// A CID becomes part of pub-sub topics and saga entity names built with
+    /// "~" separators, so a CID containing "~" breaks the correlation parsing
+    /// (toRawGuid/toCid) and leaves sagas permanently deaf. Rejected here.
     static member CreateCID(s: string) : CID =
+        if not (isNull s) && s.Contains "~" then
+            invalidArg (nameof s) "A CID must not contain '~' (the FCQRS correlation separator)."
+
         let shortString = Values.CreateShortString s
         ValueLens.Create shortString
 
