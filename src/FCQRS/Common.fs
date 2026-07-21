@@ -1047,7 +1047,11 @@ module SagaStarter =
                               saga <! msg //box (ShardRegion.StartEntity(saga.EntityId))
                               yield saga.EntityId ]
 
-                    let name = originator.Path.Name
+                    // Key by the full originator path, not the bare entity id: two
+                    // aggregate types can share an entity id (Order and OrderPayment
+                    // both "42"), and a name-only key made their concurrent
+                    // handshakes overwrite each other's stored reply-to.
+                    let name = string originator.Path
                     let batchId = Guid.NewGuid()
                     let batch = (sagas, batchId)
 
@@ -1069,47 +1073,53 @@ module SagaStarter =
                     match! mailbox.Receive() with
                     | Command Continue ->
                         let sender = untyped <| mailbox.Sender()
-                        let originName = sender.Path.Name |> toOriginatorName
+                        let sagaName = sender.Path.Name
 
-                        match state.TryFind originName with
-                        | None -> return! set state
-                        | Some(originator, batches) ->
-                            match batches |> List.tryFind (fun (lst, _) -> lst |> List.contains sender.Path.Name) with
-                            | None ->
-                                // Routine, not anomalous: recovered sagas re-signal
-                                // Continue defensively, and duplicates/pruned batches
-                                // land here too.
-                                log.Debug(
-                                    "Saga {0} sent Continue but no batch is tracked for originator {1} (recovered saga re-signal, pruned batch, or duplicate delivery)",
-                                    sender.Path.Name,
-                                    originName)
-                                return! set state
-                            | Some(targetList, batchId) ->
-                                // Remove only the first occurrence (not all) to handle duplicate entity IDs
-                                let removeFirst item list =
-                                    let rec loop acc =
-                                        function
-                                        | [] -> List.rev acc
-                                        | x :: xs when x = item -> List.rev acc @ xs
-                                        | x :: xs -> loop (x :: acc) xs
-                                    loop [] list
+                        // Remove only the first occurrence (not all) to handle duplicate entity IDs
+                        let removeFirst item list =
+                            let rec loop acc =
+                                function
+                                | [] -> List.rev acc
+                                | x :: xs when x = item -> List.rev acc @ xs
+                                | x :: xs -> loop (x :: acc) xs
 
-                                let newList = removeFirst sender.Path.Name targetList
-                                let otherBatches = batches |> List.filter (fun (_, bid) -> bid <> batchId)
+                            loop [] list
 
-                                if newList.IsEmpty then
-                                    originator.Tell(SagaCheckDone, untyped mailbox.Self)
+                        // One saga can be tracked by batches of several originators:
+                        // different aggregate types sharing an entity id start sagas
+                        // for the same CID, and one subscribed saga satisfies every
+                        // handshake waiting on it. Scan all entries and count this
+                        // Continue toward each batch that tracks this saga.
+                        let newState, tracked =
+                            ((state, false), state)
+                            ||> Seq.fold (fun (acc, tracked) kvp ->
+                                let (originator, batches) = kvp.Value
 
-                                    if otherBatches.IsEmpty then
-                                        return! set <| state.Remove originName
+                                match batches |> List.tryFind (fun (lst, _) -> lst |> List.contains sagaName) with
+                                | None -> acc, tracked
+                                | Some(targetList, batchId) ->
+                                    let newList = removeFirst sagaName targetList
+                                    let otherBatches = batches |> List.filter (fun (_, bid) -> bid <> batchId)
+
+                                    if newList.IsEmpty then
+                                        originator.Tell(SagaCheckDone, untyped mailbox.Self)
+
+                                        if otherBatches.IsEmpty then
+                                            acc.Remove kvp.Key, true
+                                        else
+                                            acc.Remove(kvp.Key).Add(kvp.Key, (originator, otherBatches)), true
                                     else
-                                        return! set <| state.Remove(originName).Add(originName, (originator, otherBatches))
-                                else
-                                    return!
-                                        set
-                                        <| state
-                                            .Remove(originName)
-                                            .Add(originName, (originator, (newList, batchId) :: otherBatches))
+                                        acc.Remove(kvp.Key).Add(kvp.Key, (originator, (newList, batchId) :: otherBatches)), true)
+
+                        if not tracked then
+                            // Routine, not anomalous: recovered sagas re-signal
+                            // Continue defensively, and duplicates/pruned batches
+                            // land here too.
+                            log.Debug(
+                                "Saga {0} sent Continue but no batch tracks it (recovered saga re-signal, pruned batch, or duplicate delivery)",
+                                sagaName)
+
+                        return! set newState
                     | Command(CheckSagas(o, originator, cid)) ->
                         match sagaCheck o with
                         | [] ->
@@ -1180,6 +1190,15 @@ module CommandHandler =
             { EntityId: string
               Cid: string }
 
+        /// Internal marker replied to the asker when the event filter throws.
+        /// The ask must fail loudly with the real exception: letting it escape
+        /// the subscriber actor restarts the incarnation without its Execute
+        /// message or receive timeout, hanging the caller forever.
+        type internal CommandSubscriptionFilterError =
+            { EntityId: string
+              Cid: string
+              Exception: exn }
+
         // Upper bound for one command subscription: the aggregate's reply event
         // (persist + publish) should arrive in milliseconds; if it never does
         // (decide returned UnhandledEvent/IgnoreEvent, or the filter never
@@ -1229,6 +1248,11 @@ module CommandHandler =
                                 | Execute cd ->
                                     let cid = cd.Cmd.CorrelationId |> ValueLens.Value |> ValueLens.Value
 
+                                    // The topic must match the publisher verbatim:
+                                    // publishEvent publishes to self.Path.Name + "~" + cid,
+                                    // and the shard names entity actors
+                                    // Uri.EscapeDataString(entityId) — so the path name
+                                    // is the ESCAPED id and the subscriber must escape too.
                                     mediator
                                     <! box (
                                         Subscribe(
@@ -1273,12 +1297,42 @@ module CommandHandler =
 
                             return! Stop
                         // When receiving an Event, check TraceId (CID may change due to span propagation)
-                        | :? (Event<'Event>) as e when sameTrace e.CorrelationId state.Value.CommandDetails.Cmd.CorrelationId ->
-                            if state.Value.CommandDetails.Filter e.EventDetails then
-                                state.Value.Sender.Tell e // Send event back to original asker
-                                return! Stop // Stop the temporary subscription actor
-                            else
-                                return! set state // Continue waiting
+                        | :? (Event<'Event>) as e ->
+                            match state with
+                            | Some s when sameTrace e.CorrelationId s.CommandDetails.Cmd.CorrelationId ->
+                                match (try Choice1Of2(s.CommandDetails.Filter e.EventDetails) with ex -> Choice2Of2 ex) with
+                                | Choice1Of2 true ->
+                                    s.Sender.Tell e // Send event back to original asker
+                                    return! Stop // Stop the temporary subscription actor
+                                | Choice1Of2 false -> return! set state // Continue waiting
+                                | Choice2Of2 ex ->
+                                    // A filter exception must not escape the actor: the
+                                    // default supervisor would restart this incarnation,
+                                    // dropping the consumed Execute and the receive timeout
+                                    // armed with it — hanging the caller's ask forever.
+                                    // Fail the asker loudly with the real exception instead.
+                                    let cid =
+                                        s.CommandDetails.Cmd.CorrelationId
+                                        |> ValueLens.Value
+                                        |> ValueLens.Value
+
+                                    log.Error(
+                                        ex,
+                                        "Command subscription filter threw for entity {0} [cid: {1}]; failing the waiting caller.",
+                                        s.CommandDetails.EntityRef.EntityId,
+                                        cid)
+
+                                    s.Sender.Tell(
+                                        { EntityId = s.CommandDetails.EntityRef.EntityId
+                                          Cid = cid
+                                          Exception = ex },
+                                        untyped mailbox.Self)
+
+                                    return! Stop
+                            | _ ->
+                                // Different trace, or a restarted incarnation that lost
+                                // its state: keep waiting for the matching event.
+                                return! set state
                         | LifecycleEvent _ -> return! Ignore // Ignore actor lifecycle events
                         | _ ->
                             log.Error("Unexpected message in subscriber: {msg}", msg)
@@ -1292,6 +1346,14 @@ module CommandHandler =
                 let! res = spawnAnonymous system (props (actorProp mediator)) <? box command
 
                 match box res with
+                | :? CommandSubscriptionFilterError as f ->
+                    return
+                        raise (
+                            InvalidOperationException(
+                                $"The event filter for the command subscription on entity '{f.EntityId}' [cid: {f.Cid}] threw an exception. See the inner exception.",
+                                f.Exception
+                            )
+                        )
                 | :? CommandSubscriptionTimeout as t ->
                     return
                         raise (

@@ -41,7 +41,10 @@ type Values =
     static member NewCID() : CID =
         Guid.CreateVersion7().ToString() |> Values.CreateCID
 
-    /// Create an AggregateId from a string (throws on failure)
+    /// Create an AggregateId from a string (throws on failure).
+    /// Any non-blank id works: the shard names entity actors
+    /// Uri.EscapeDataString(entityId), so characters Akka actor names would
+    /// reject directly (spaces, %) are escaped before they reach an actor path.
     static member CreateAggregateId(s: string) : AggregateId =
         let shortString = Values.CreateShortString s
         ValueLens.Create shortString

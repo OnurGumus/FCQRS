@@ -174,6 +174,64 @@ module RenamedCounter =
         | WasReset
         | Poked
 
+/// A second, trivially different aggregate type. Two aggregate TYPES can share
+/// an entity id ("shared") — the saga-starter handshake used to key its batches
+/// by the bare entity id, so their concurrent handshakes collided and overwrote
+/// each other's reply-to: one originator timed out and FailFasted the process.
+module CounterB =
+    type Command = Increment of int
+
+    type Event = Incremented of int
+
+    type State = { Total: int }
+    let initial = { Total = 0 }
+
+    let decide (cmd: Command<Command>) _state =
+        match cmd.CommandDetails with
+        | Increment n -> Incremented n |> PersistEvent
+
+    let fold (e: Event<Event>) state =
+        match e.EventDetails with
+        | Incremented n -> { state with Total = state.Total + n }
+
+/// Minimal saga for the cross-type handshake test: it starts and parks in the
+/// framework's Started state — only the start handshake matters.
+module DualStart =
+    type State = Idle // never entered: the saga parks in the framework's Started
+
+    let private handleEvent (_: obj) (_: SagaState<unit, State option>) : EventAction<State> = UnhandledEvent
+
+    let private applySideEffects (sagaState: SagaState<unit, State>) _recovering =
+        match sagaState.State with
+        | Idle -> StopSaga, [] // unreachable: handleEvent never transitions here
+
+    let private startsOnA (e: Event<Counter.Event>) =
+        match e.EventDetails with
+        | Counter.Incremented n -> n >= 100
+        | _ -> false
+
+    let private startsOnB (e: Event<CounterB.Event>) =
+        match e.EventDetails with
+        | CounterB.Incremented n -> n >= 100
+
+    let definitionA counterFactory =
+        { Name = "DualStartA"
+          InitialData = ()
+          Originator = counterFactory
+          HandleEvent = handleEvent
+          ApplySideEffects = applySideEffects
+          StartOn = startsOnA
+          Snapshots = Default }
+
+    let definitionB counterFactory =
+        { Name = "DualStartB"
+          InitialData = ()
+          Originator = counterFactory
+          HandleEvent = handleEvent
+          ApplySideEffects = applySideEffects
+          StartOn = startsOnB
+          Snapshots = Default }
+
 // Multi-event handler shape: return exactly what to publish.
 let private projection (_offset: int64) (ev: obj) : IMessageWithCID list =
     match ev with
@@ -186,7 +244,7 @@ let private projection (_offset: int64) (ev: obj) : IMessageWithCID list =
 let private singleHandled = ref 0
 
 let private registerJournalTypes () =
-    Fcqrs.journalTypes [ journalType<Counter.Event> "counter.event" ]
+    Fcqrs.journalTypes [ journalType<Counter.Event> "counter.event"; journalType<CounterB.Event> "counterb.event" ]
 
 /// A total effect runner for Counter: maps each effect description to a
 /// command, and `total` maps any oracle exception to a command (never lets it
@@ -240,6 +298,23 @@ let private boot () =
     // The projection stream invokes the handler sequentially, so a plain incr is safe.
     let subs = Fcqrs.projection api (Projection.single 0 (fun _ _ -> incr singleHandled))
     counter, subs
+
+/// Boot a system with BOTH aggregate types and a DualStart saga per type, so
+/// two originators of different types can start sagas for the same entity id.
+let private bootDual () =
+    registerJournalTypes ()
+    let db = Path.Combine(Path.GetTempPath(), sprintf "fcqrs_dual_%s.db" (Guid.NewGuid().ToString("N")))
+    let api =
+        Fcqrs.actor (ConfigurationBuilder().Build()) NullLoggerFactory.Instance
+            (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite (sprintf "Data Source=%s;" db))) "DualSmoke"
+    let counterA =
+        Fcqrs.aggregate api { Name = "Counter"; Initial = Counter.initial; Decide = Counter.decide; Fold = Counter.fold; Snapshots = Default }
+    let counterB =
+        Fcqrs.aggregate api { Name = "CounterB"; Initial = CounterB.initial; Decide = CounterB.decide; Fold = CounterB.fold; Snapshots = Default }
+    let sagaA = Fcqrs.saga api (DualStart.definitionA counterA.Factory)
+    let sagaB = Fcqrs.saga api (DualStart.definitionB counterB.Factory)
+    Fcqrs.wireSagaStarters api [ sagaA; sagaB ]
+    counterA, counterB
 
 let private isWasReset (m: IMessageWithCID) =
     match m with
@@ -1419,9 +1494,96 @@ let private slowSubscriberIsolationTest =
         Expect.equal ev.EventDetails (Counter.Incremented 1) "sendAwaiting completed despite the blocked subscriber"
         api.Stop().Wait(TimeSpan.FromSeconds 30.0) |> ignore
 
+let private specialCharEntityIdTest =
+    testCase "facade: entity ids needing actor-name escaping round-trip their events"
+    <| fun _ ->
+        // The shard names entity actors Uri.EscapeDataString(entityId), so the
+        // published topic carries the ESCAPED id ("counter 1" -> "counter%201").
+        // The command subscriber escapes identically — that symmetry is what makes
+        // these ids work; do not "fix" one side to the raw form.
+        let counter, _subs = boot ()
+
+        for id in [ "counter 1"; "user+1" ] do
+            let ev =
+                counter.Send (Fcqrs.newCid ()) (Fcqrs.aggregateId id) (Counter.Increment 5)
+                    (function Counter.Incremented _ -> true | _ -> false)
+                |> Async.RunSynchronously
+
+            Expect.equal ev.EventDetails (Counter.Incremented 5) (sprintf "the awaited event arrived for entity id '%s'" id)
+
+let private filterThrowTest =
+    testCase "facade: a throwing event filter fails the caller instead of hanging the subscription"
+    <| fun _ ->
+        // A filter exception escaping the ephemeral subscriber actor restarted it
+        // without its Execute message or receive timeout, hanging the caller's ask
+        // forever. The fix fails the ask loudly with the original exception.
+        let counter, _subs = boot ()
+
+        let mutable caught: exn option = None
+
+        try
+            counter.Send (Fcqrs.newCid ()) (Fcqrs.aggregateId "filterboom") (Counter.Increment 1)
+                (fun _ -> failwith "filter exploded")
+            |> Async.RunSynchronously
+            |> ignore
+        with e ->
+            caught <- Some e
+
+        let ex = Expect.wantSome caught "the filter exception reaches the caller instead of hanging"
+        Expect.isTrue (ex :? InvalidOperationException) (sprintf "expected InvalidOperationException, got %s" (ex.GetType().Name))
+        Expect.equal ex.InnerException.Message "filter exploded" "the original filter exception is preserved"
+
+let private hoconConnectionStringTest =
+    testCase "facade: a connection string with a backslash or quote survives HOCON injection"
+    <| fun _ ->
+        // Windows paths, SqlServer named instances (localhost\SQLEXPRESS) and
+        // passwords with quotes are legitimate connection strings; injected
+        // unescaped into default.hocon they broke the HOCON tokenizer at startup.
+        registerJournalTypes ()
+
+        let db =
+            Path.Combine(Path.GetTempPath(), sprintf "fcqrs_bs_%s" (Guid.NewGuid().ToString("N")))
+            |> fun p -> p + "\\nested\"quoted.db"
+
+        let api =
+            Fcqrs.actor (ConfigurationBuilder().Build()) NullLoggerFactory.Instance
+                (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite (sprintf "Data Source=%s;" db))) "HoconSmoke"
+
+        api.Stop().Wait(TimeSpan.FromSeconds 30.0) |> ignore
+        try File.Delete db with _ -> ()
+
+let private crossTypeHandshakeTest =
+    testCase "facade: concurrent saga starts from two aggregate types sharing an entity id both complete"
+    <| fun _ ->
+        // The handshake used to key batches by bare entity id, so the two
+        // handshakes below collided: the second overwrote the first's reply-to,
+        // and the first timed out and FailFasted the process.
+        let counterA, counterB = bootDual ()
+
+        let results =
+            [ async {
+                let! ev =
+                    counterA.Send (Fcqrs.newCid ()) (Fcqrs.aggregateId "shared") (Counter.Increment 100)
+                        (function Counter.Incremented _ -> true | _ -> false)
+
+                return ev.EventDetails :> obj
+              }
+              async {
+                let! ev =
+                    counterB.Send (Fcqrs.newCid ()) (Fcqrs.aggregateId "shared") (CounterB.Increment 100)
+                        (function CounterB.Incremented _ -> true)
+
+                return ev.EventDetails :> obj
+              } ]
+            |> Async.Parallel
+            |> Async.RunSynchronously
+
+        Expect.equal results.[0] (box (Counter.Incremented 100)) "the Counter handshake completed"
+        Expect.equal results.[1] (box (CounterB.Incremented 100)) "the CounterB handshake completed"
+
 let tests =
     testSequenced (
-        testList "facade" [ manifestTest; roundTripTest; persistAllTest; manualSnapshotTest; telemetryTest; payloadSwitchTest; overflowTest; snapshotRecoveryTest; restartDetectionTest; filteredProjectionTest; persistIfTest; bridgeTest; pendingBridgeTest; focusShapeTest; journaledStampTest; runAsyncTest; aggregateRecoveryTest; commandTimeoutTest; concurrencyTest; stopSagaDelayedTest; timeProviderTest; dynamicConfigTest; freshStartSingleDeliveryTest; concurrentSagaStartTest; snapshotResurrectionTest; sendAwaitingTimeoutTest; slowSubscriberIsolationTest ]
+        testList "facade" [ manifestTest; roundTripTest; persistAllTest; manualSnapshotTest; telemetryTest; payloadSwitchTest; overflowTest; snapshotRecoveryTest; restartDetectionTest; filteredProjectionTest; persistIfTest; bridgeTest; pendingBridgeTest; focusShapeTest; journaledStampTest; runAsyncTest; aggregateRecoveryTest; commandTimeoutTest; concurrencyTest; stopSagaDelayedTest; timeProviderTest; dynamicConfigTest; freshStartSingleDeliveryTest; concurrentSagaStartTest; snapshotResurrectionTest; sendAwaitingTimeoutTest; slowSubscriberIsolationTest; specialCharEntityIdTest; filterThrowTest; hoconConnectionStringTest; crossTypeHandshakeTest ]
     )
 
 [<EntryPoint>]

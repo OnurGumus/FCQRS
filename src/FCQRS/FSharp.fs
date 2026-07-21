@@ -229,6 +229,9 @@ module Fcqrs =
         System.Guid.CreateVersion7().ToString() |> ValueLens.CreateAsResult |> Result.value
 
     /// An aggregate id from a string (e.g. a document/user key).
+    /// Any non-blank id works: the shard names entity actors
+    /// Uri.EscapeDataString(entityId), so characters Akka actor names would
+    /// reject directly (spaces, %) are escaped before they reach an actor path.
     let aggregateId (s: string) : AggregateId =
         s |> ValueLens.CreateAsResult |> Result.value
 

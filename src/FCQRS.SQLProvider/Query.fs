@@ -31,59 +31,74 @@ let private augment  eval filter orderby orderbydesc thenby thenbydesc (take:int
             @>
         | None -> db
 
+    // A secondary sort must live in the SAME query expression as the primary:
+    // F# translates a second sort clause there into ThenBy. A spliced previous
+    // query is statically IQueryable even when it ends in sortBy, and the
+    // expression builder rejects ThenBy over that (ArgumentException) — the
+    // shape thenby/thenbydesc used to have, so every secondary sort crashed.
+    // When both orderby and orderbydesc are set the descending one wins
+    // (sequential OrderBy calls reset rather than chain — long-standing
+    // behavior); the same precedence applies to thenbydesc over thenby.
     let db =
-        match orderby with
-        | Some orderby ->
+        match orderbydesc, orderby, thenbydesc, thenby with
+        | Some obd, _, Some tbd, _ ->
             <@
                 query {
                     for c in (%db) do
-                        sortBy ((%%sortByEval orderby) c)
+                        sortByDescending ((%%sortByEval obd) c)
+                        thenByDescending ((%%sortByEval tbd) c)
                         select c
                 }
             @>
-        | None ->
+        | Some obd, _, None, Some tb ->
             <@
                 query {
                     for c in (%db) do
+                        sortByDescending ((%%sortByEval obd) c)
+                        thenBy ((%%sortByEval tb) c)
                         select c
                 }
             @>
-
-    let db =
-        match orderbydesc with
-        | Some orderbydesc ->
+        | Some obd, _, None, None ->
             <@
                 query {
                     for c in (%db) do
-                        sortByDescending ((%%sortByEval orderbydesc) c)
+                        sortByDescending ((%%sortByEval obd) c)
                         select c
                 }
             @>
-        | None -> db
-
-    let db =
-        match thenby with
-        | Some thenby ->
+        | None, Some ob, Some tbd, _ ->
             <@
                 query {
                     for c in (%db) do
-                        thenBy ((%%sortByEval thenby) c)
+                        sortBy ((%%sortByEval ob) c)
+                        thenByDescending ((%%sortByEval tbd) c)
                         select c
                 }
             @>
-        | None -> db
-
-    let db =
-        match thenbydesc with
-        | Some thenbydesc ->
+        | None, Some ob, None, Some tb ->
             <@
                 query {
                     for c in (%db) do
-                        thenByDescending ((%%sortByEval thenbydesc) c)
+                        sortBy ((%%sortByEval ob) c)
+                        thenBy ((%%sortByEval tb) c)
                         select c
                 }
             @>
-        | None -> db
+        | None, Some ob, None, None ->
+            <@
+                query {
+                    for c in (%db) do
+                        sortBy ((%%sortByEval ob) c)
+                        select c
+                }
+            @>
+        | None, None, Some _, _
+        | None, None, None, Some _ ->
+            invalidArg
+                "thenby"
+                "thenby/thenbydesc require orderby or orderbydesc: a secondary sort needs a primary sort to chain onto."
+        | None, None, None, None -> db
 
     // Skip BEFORE Take: SQL OFFSET/FETCH and LINQ both paginate skip-then-take.
     // Take(n).Skip(m) would return items m+1..n of the first n rows (and nothing

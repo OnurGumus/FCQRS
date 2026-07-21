@@ -252,12 +252,14 @@ let private runSaga<'TEvent, 'SagaData, 'State when 'TEvent : not null and 'Stat
                         return! newState |> StateChanged |> box |> Persist <@> innerSet nextInner
                     | None ->
                         return! state |> set hs <@> innerSet nextInner
-                | None when hs.Incarnation = RecoveredFromSnapshot ->
+                | None when hs.Incarnation.IsRecovery ->
                     // Recovered through a snapshot that carried no starting event
                     // (pre-SagaSnapshot shape). The saga state is real and journaled,
                     // so the recovery re-drive must still run — re-issue pending
                     // commands and re-signal Continue — or the saga sits passive
-                    // until poked from outside.
+                    // until poked from outside. IsRecovery, not = RecoveredFromSnapshot:
+                    // events replayed after such a snapshot flip the incarnation to
+                    // RecoveredFromJournal, and the re-drive must still run for them.
                     let newState = applySideEffects state None true
 
                     match newState with

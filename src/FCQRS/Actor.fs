@@ -693,9 +693,17 @@ let api (config: IConfiguration) (loggerFactory: ILoggerFactory) (connection: Co
 
             let connectionStringValue = conn.ConnectionString |> ValueLens.Value
 
+            // The value lands inside a quoted HOCON string in default.hocon, so the
+            // two characters the HOCON tokenizer treats specially must be escaped —
+            // otherwise legitimate connection strings (Windows paths, SqlServer
+            // named instances like localhost\SQLEXPRESS, passwords containing ")
+            // break config parsing at startup.
+            let hoconSafeConnectionString =
+                connectionStringValue.Replace("\\", "\\\\").Replace("\"", "\\\"")
+
             let hoconString =
                 hoconTemplate
-                    .Replace("${connection-string}", connectionStringValue)
+                    .Replace("${connection-string}", hoconSafeConnectionString)
                     .Replace("${db-type}", dbTypeString)
 
             // Create new configuration builder with hocon string merged with existing config
