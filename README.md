@@ -106,7 +106,7 @@ For F# on .NET 10:
 ```bash
 dotnet new console -lang F# -n MyApp
 cd MyApp
-dotnet add package FCQRS --prerelease
+dotnet add package FCQRS
 ```
 
 C# support uses C# 15 union types. While the feature remains in preview, use a .NET 11 preview SDK and

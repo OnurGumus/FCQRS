@@ -52,7 +52,7 @@ you already ran one of the repository samples, stage 0 will be a short review.
 ```bash
 dotnet new console -lang F# -n DocStore
 cd DocStore
-dotnet add package FCQRS --prerelease
+dotnet add package FCQRS
 ```
 
 Run the project at any point with `dotnet run`. Chapter 2 creates `tutorial.db`, which contains the

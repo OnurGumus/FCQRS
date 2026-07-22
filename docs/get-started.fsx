@@ -53,7 +53,7 @@ union syntax. The C# examples later on this page show how the domain expands to 
 ```text
 dotnet new console -lang F# -n DocStore
 cd DocStore
-dotnet add package FCQRS --prerelease
+dotnet add package FCQRS
 ```
 
 Replace `Program.fs` with the code from the following sections. The C# tabs are direct counterparts;

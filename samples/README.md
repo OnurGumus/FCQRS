@@ -14,4 +14,4 @@ Choose the language you want to start with:
 - [C# getting started](getting-started-csharp/)
 
 Both projects reference the FCQRS source project so they always compile against the repository version.
-An application outside this repository should use `dotnet add package FCQRS --prerelease` instead.
+An application outside this repository should use `dotnet add package FCQRS` instead.
