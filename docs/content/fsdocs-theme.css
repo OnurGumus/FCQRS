@@ -104,10 +104,12 @@ table.pre.lang-pane {
 }
 .hljs-title,
 .hljs-title.class_,
-.hljs-title.function_,
 .hljs-type,
 .hljs-class .hljs-title {
     color: var(--code-reference-color);
+}
+.hljs-title.function_ {
+    color: var(--code-function-color);
 }
 .hljs-attr,
 .hljs-property {

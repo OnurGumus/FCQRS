@@ -8,7 +8,7 @@ index: 6
 *)
 
 (*** hide ***)
-#r "nuget: FCQRS, 6.0.0-rc6"
+#r "nuget: FCQRS, 6.0.0"
 #r "nuget: Expecto, 10.2.3"
 
 open System

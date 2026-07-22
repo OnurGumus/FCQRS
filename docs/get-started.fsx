@@ -8,7 +8,7 @@ index: 2
 *)
 
 (*** hide ***)
-#r "nuget: FCQRS, 6.0.0-rc6"
+#r "nuget: FCQRS, 6.0.0"
 
 (**
 # 0. Quickstart: follow one request end to end
@@ -99,14 +99,16 @@ module Document =
 
     let initial = { Document = None }
 
+    // Decide: a pure function from command and current state to one event action.
     let decide (command: Command<Command>) state =
         match command.CommandDetails, state with
-        | Create document, { Document = None } -> Created document |> PersistEvent
-        | Create _, { Document = Some _ } -> AlreadyExists |> DeferEvent
+        | Create document, { Document = None } -> Created document |> PersistEvent // stored and published
+        | Create _, { Document = Some _ } -> AlreadyExists |> DeferEvent // reply only, nothing stored
         | Edit(id, content), { Document = Some document } when document.Id = id ->
             Edited(id, content) |> PersistEvent
         | Edit _, _ -> NoSuchDocument |> DeferEvent
 
+    // Fold: rebuilds state one event at a time; it also runs during replay after a restart.
     let fold (event: Event<Event>) state =
         match event.EventDetails with
         | Created document -> { Document = Some document }
@@ -116,7 +118,7 @@ module Document =
                 { Document = Some { document with Content = content } }
             | _ -> state
         | AlreadyExists
-        | NoSuchDocument -> state
+        | NoSuchDocument -> state // deferred replies never change persisted state
 
 (**
 `PersistEvent` appends the event to the journal, folds it into state, and publishes it. `DeferEvent`
@@ -164,19 +166,23 @@ public sealed class DocumentAggregate
     public override DocumentState InitialState => DocumentState.Initial;
     public override string EntityName => "Document";
 
+    // Decide: a pure function from command and current state to one event action.
     public override EventAction<DocumentEvent> HandleCommand(
         Command<DocumentCommand> command, DocumentState state) =>
         (command.CommandDetails, state.Document) switch
         {
             (DocumentCommand.Create create, null) =>
+                // Stored and published.
                 EventActions.Persist<DocumentEvent>(new DocumentEvent.Created(create.Document)),
             (DocumentCommand.Create, _) =>
+                // Reply only, nothing stored.
                 EventActions.Defer<DocumentEvent>(new DocumentEvent.AlreadyExists()),
             (DocumentCommand.Edit edit, { } document) when document.Id == edit.Id =>
                 EventActions.Persist<DocumentEvent>(new DocumentEvent.Edited(edit.Id, edit.Content)),
             _ => EventActions.Defer<DocumentEvent>(new DocumentEvent.NoSuchDocument())
         };
 
+    // Fold: rebuilds state one event at a time; it also runs during replay after a restart.
     public override DocumentState ApplyEvent(
         Event<DocumentEvent> eventEnvelope, DocumentState state) =>
         eventEnvelope.EventDetails switch
@@ -184,6 +190,7 @@ public sealed class DocumentAggregate
             DocumentEvent.Created created => state with { Document = created.Document },
             DocumentEvent.Edited edited when state.Document is { } document && document.Id == edited.Id =>
                 state with { Document = document with { Content = edited.Content } },
+            // Deferred replies never change persisted state.
             _ => state
         };
 }
@@ -210,7 +217,7 @@ let handleProjection (_offset: int64) (message: obj) =
             | true, document -> readModel[id] <- { document with Content = content }
             | false, _ -> failwith $"Projection received Edited before Created for {id}"
         | Document.AlreadyExists
-        | Document.NoSuchDocument -> ()
+        | Document.NoSuchDocument -> () // deferred replies carry nothing to project
     | _ -> ()
 
 (**
@@ -236,6 +243,7 @@ void HandleProjection(long _offset, object message)
         case DocumentEvent.Edited edited:
             throw new InvalidOperationException(
                 $"Projection received Edited before Created for {edited.Id}");
+        // AlreadyExists and NoSuchDocument fall through: deferred replies carry nothing to project.
     }
 }
 ```
@@ -300,6 +308,7 @@ let run () =
               Title = "FCQRS notes"
               Content = "first event" }
 
+        // Subscribe before sending so the projection cannot publish first.
         use projectedEvent = subscriptions.Subscribe(correlationId, 1)
 
         let! stored =
@@ -307,10 +316,12 @@ let run () =
                 correlationId
                 aggregateId
                 (Document.Create document)
+                // The filter picks which aggregate reply completes this send.
                 (function
                     | Document.Created _ -> true
                     | _ -> false)
 
+        // Read-your-writes: wait until the projection has handled this correlation id.
         do! projectedEvent.Task |> Async.AwaitTask
         let projected = readModel[documentId]
         printfn "stored version %A; query returned '%s'" stored.Version projected.Content
@@ -337,11 +348,13 @@ var document = new Document(documentId, "FCQRS notes", "first event");
 using var projectedEvent = subscriptions.SubscribeForFirst(correlationId);
 
 var stored = await documents(
+    // The filter picks which aggregate reply completes this send.
     outcome => outcome is DocumentEvent.Created,
     correlationId,
     aggregateId,
     new DocumentCommand.Create(document));
 
+// Read-your-writes: wait until the projection has handled this correlation id.
 await projectedEvent.Task;
 var projected = readModel[documentId];
 Console.WriteLine(

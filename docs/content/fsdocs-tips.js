@@ -249,6 +249,51 @@ window.Clipboard_CopyTo = Clipboard_CopyTo;
             el.textContent = el.textContent; // drop fsdocs' weak C# spans → raw text
             el.classList.add("language-csharp");
             try { window.hljs.highlightElement(el); } catch (e) { /* ignore */ }
+            markCSharpIdentifiers(el);
+        });
+    }
+
+    // The stock hljs C# grammar only marks declaration sites, so type and
+    // member usages (EventAction<DocumentEvent>, EventActions.Persist(...))
+    // stay plain text. C# convention makes the remainder decidable: wrap each
+    // untokenized PascalCase identifier as a call, a member access, or a type,
+    // mirroring the distinct colours the F# lexer gives functions, properties,
+    // and types.
+    function markCSharpIdentifiers(el) {
+        const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, null);
+        const bare = [];
+        let node;
+        while ((node = walker.nextNode())) {
+            let p = node.parentElement, tokenized = false;
+            while (p && p !== el) {
+                if (/\bhljs-/.test(p.className)) { tokenized = true; break; }
+                p = p.parentElement;
+            }
+            if (!tokenized) bare.push(node);
+        }
+        const ident = /\b[A-Z][A-Za-z0-9_]*\b/g;
+        bare.forEach(function (textNode) {
+            const text = textNode.nodeValue;
+            ident.lastIndex = 0;
+            let m, last = 0, frag = null;
+            while ((m = ident.exec(text))) {
+                const after = text.slice(m.index + m[0].length);
+                const before = m.index > 0 ? text[m.index - 1] : "";
+                let scope;
+                if (/^\s*(?:<[^<>]*>)?\s*\(/.test(after)) scope = "hljs-title function_";
+                else if (before === ".") scope = "hljs-property";
+                else scope = "hljs-type";
+                if (!frag) frag = document.createDocumentFragment();
+                if (m.index > last) frag.appendChild(document.createTextNode(text.slice(last, m.index)));
+                const span = document.createElement("span");
+                span.className = scope;
+                span.textContent = m[0];
+                frag.appendChild(span);
+                last = m.index + m[0].length;
+            }
+            if (!frag) return;
+            if (last < text.length) frag.appendChild(document.createTextNode(text.slice(last)));
+            textNode.parentNode.replaceChild(frag, textNode);
         });
     }
 
@@ -398,6 +443,9 @@ window.Clipboard_CopyTo = Clipboard_CopyTo;
 
     function addCodeCopy(root) {
         root.querySelectorAll("pre.fssnip, table.pre").forEach(function (block) {
+            // A fenced block renders as table.pre wrapping a pre.fssnip; both match
+            // this selector, so only the outer wrapper gets the button.
+            if (block.matches("pre.fssnip") && block.closest("table.pre")) return;
             if (block.querySelector(":scope > .copy-code")) return;
             const code = block.querySelector("code") || block;
             const button = document.createElement("button");
