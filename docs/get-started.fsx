@@ -16,8 +16,7 @@ index: 2
 The application in this quickstart is DocStore, a small document store. It keeps titled text
 documents: you can create a document, edit its content, and look a document up by its id.
 
-This page builds the smallest slice of DocStore that does something real: save one new document, then
-read it back. In FCQRS the save and the read take different paths. The save is recorded as an event, a
+This page builds just enough of DocStore to save one new document and read it back. In FCQRS the save and the read take different paths. The save is recorded as an event, a
 small stored fact describing what happened. The read is served from a lookup view that is updated from
 those events shortly after they are stored. Because the view lags behind by a moment, the program
 waits for its confirmation before reading. Each section below introduces one part of that path as the
@@ -26,7 +25,7 @@ code needs it.
 > **Course position:** this is the first practical stage. It assumes only basic F# or C# and introduces
 > the runtime vocabulary used by chapters 1 through 5.
 
-> **Motivation:** Build one complete vertical slice first. An aggregate alone hides the asynchronous
+> **Motivation:** Build one complete write-and-read path first. An aggregate alone hides the asynchronous
 > handoff to projections, while a full command-to-query loop exposes the architecture you will use in
 > a real application.
 
