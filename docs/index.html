@@ -212,9 +212,21 @@
     }
 
     .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 19px;
+      font-size: .78rem;
+      font-weight: 800;
+      letter-spacing: .13em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+
+    .eyebrow::before {
+      content: "";
       width: 34px;
       height: 4px;
-      margin-bottom: 19px;
       border-radius: 999px;
       background: var(--red-600);
     }
@@ -399,6 +411,34 @@
     .flow-card p { margin: 0; color: var(--muted); font-size: .9rem; }
     .flow-card .mini-step { position: absolute; top: 12px; left: 12px; }
 
+    .flow-branches { grid-column: span 2; display: grid; grid-auto-rows: 1fr; gap: 20px; }
+    .flow-card.split::after { content: none; }
+    .flow-card.branch {
+      min-height: 0;
+      display: grid;
+      grid-template-columns: 58px 1fr;
+      grid-template-areas: "icon head" "icon body";
+      align-content: center;
+      align-items: center;
+      column-gap: 14px;
+      text-align: left;
+    }
+    .flow-card.branch svg { grid-area: icon; margin: 0; }
+    .flow-card.branch h3 { grid-area: head; display: flex; align-items: center; gap: 9px; margin: 0 0 4px; }
+    .flow-card.branch p { grid-area: body; }
+    .flow-card.branch .mini-step { position: static; translate: none; }
+    .flow-card.branch::after { content: none; }
+    .flow-card.branch::before {
+      content: "→";
+      position: absolute;
+      left: -29px;
+      top: 50%;
+      translate: 0 -50%;
+      color: var(--navy-900);
+      font-size: 1.6rem;
+      font-weight: 800;
+    }
+
     .reliability-grid {
       display: grid;
       grid-template-columns: repeat(5, minmax(0, 1fr));
@@ -444,7 +484,6 @@
       gap: 10px 22px; padding: 2px 0 6px;
       color: var(--muted); font-size: .87rem; font-weight: 700;
     }
-    .trust-strip img { height: 20px; display: block; }
     .trust-strip b { color: var(--ink); }
     .trust-strip a { color: var(--green-700); border-bottom: 1px solid transparent; }
     .trust-strip a:hover { border-color: currentColor; }
@@ -608,6 +647,10 @@
       .flow-card h3, .flow-card p { grid-column: 2; }
       .flow-card:not(:last-child)::after { content: "↓"; top: auto; right: 50%; bottom: -21px; translate: 50% 0; }
       .flow-card .mini-step { position: static; grid-column: 1; grid-row: 1 / span 2; justify-self: end; translate: 24px -26px; }
+      .flow-branches { grid-column: auto; gap: 16px; border-left: 3px solid var(--line); padding-left: 13px; }
+      .flow-card.branch::before { content: none; }
+      .flow-card.branch::after { content: none; }
+      .flow-card.branch .mini-step { translate: none; }
       .reliability-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .benefit-grid { grid-template-columns: 1fr; }
       .under-hood { grid-template-columns: 1fr; }
@@ -692,13 +735,13 @@
       <div class="hero-shape" aria-hidden="true"></div>
       <div class="container hero-grid">
         <div>
-          <div class="eyebrow" aria-hidden="true"></div>
+          <div class="eyebrow">Event-sourced CQRS for .NET</div>
           <h1>
-            Model decisions as events.
-            <span class="secondary">Build <span class="green">reliable, queryable workflows.</span></span>
+            Focus on your business rules.
+            <span class="secondary">FCQRS <span class="green">handles the rest.</span></span>
           </h1>
           <div class="hero-copy">
-            <p>FCQRS combines event-sourced aggregates, projections, sagas, and correlation-based read-your-writes.</p>
+            <p>The rest: event storage, recovery, projections, sagas, and correlation-based read-your-writes.</p>
             <p>Start with two pure domain functions, then learn where storage, recovery, and distributed boundaries matter.</p>
           </div>
           <div class="language-support" aria-label="First-class support for C sharp and F sharp">
@@ -729,10 +772,9 @@
 
     <div class="container">
       <div class="trust-strip">
-        <a href="https://github.com/OnurGumus/FCQRS" aria-label="FCQRS on GitHub"><img src="https://img.shields.io/github/stars/OnurGumus/FCQRS?style=flat&amp;logo=github&amp;label=Stars&amp;color=0e1c56" alt="GitHub stars" width="96" height="20" /></a>
+        <a href="https://github.com/OnurGumus/FCQRS" target="_blank" rel="noreferrer">Open source on GitHub</a>
         <span>Built on <b>Akka.NET</b></span>
         <span>First-class <b>F#</b> &amp; <b>C#</b></span>
-        <span>Open source</span>
         <a href="https://github.com/OnurGumus/focument_workshop">See a full app &rarr;</a>
       </div>
     </div>
@@ -752,22 +794,23 @@
             <h3><code>decide</code></h3>
             <p>Choose an event from the command and current state.</p>
           </article>
-          <article class="flow-card">
+          <article class="flow-card split">
             <svg aria-hidden="true"><use href="#i-events"/></svg>
             <h3>Events</h3>
-            <p>Facts recorded as immutable events.</p>
+            <p>Immutable facts appended to the journal.</p>
           </article>
-          <article class="flow-card core">
-            <span class="step-number mini-step">2</span>
-            <svg aria-hidden="true"><use href="#i-code"/></svg>
-            <h3><code>fold</code></h3>
-            <p>Apply stored events to reconstruct state.</p>
-          </article>
-          <article class="flow-card">
-            <svg aria-hidden="true"><use href="#i-table"/></svg>
-            <h3>Read models</h3>
-            <p>Fast, query-optimized views for your application.</p>
-          </article>
+          <div class="flow-branches">
+            <article class="flow-card core branch">
+              <svg aria-hidden="true"><use href="#i-code"/></svg>
+              <h3><span class="step-number mini-step">2</span><code>fold</code></h3>
+              <p>Applies events to aggregate state, live and during replay.</p>
+            </article>
+            <article class="flow-card branch">
+              <svg aria-hidden="true"><use href="#i-table"/></svg>
+              <h3>Projections</h3>
+              <p>Update read models asynchronously: the views your application queries.</p>
+            </article>
+          </div>
         </div>
       </div>
     </section>
