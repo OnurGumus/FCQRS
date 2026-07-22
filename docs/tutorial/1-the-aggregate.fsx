@@ -29,6 +29,48 @@ inside an aggregate.
 > part, the aggregate decision. By the end you will be able to explain and test command, event, state,
 > `decide`, and `fold` without running Akka.NET.
 
+This wireframe is the chapter's result: validated values, message types, and three functions with
+their bodies left unimplemented. The rest of the chapter fills them in.
+
+```fsharp
+// Values: Title and Content, validated string types that reject illegal values.
+// Document.Root, State, Command, and Event: the document and its message types.
+
+module Document =
+    let decide (cmd: Command<Command>) (state: State) : EventAction<Event> =
+        failwith "not written yet"
+
+    let fold (event: Event<Event>) (state: State) : State =
+        failwith "not written yet"
+
+    let register (api: IActor) : AggregateHandle<Command, Event> =
+        failwith "not written yet"
+```
+
+<div class="cs-alt"></div>
+
+```csharp
+// Title and Content: validated string types that reject illegal values.
+// Document, DocumentState, DocumentCommand, and DocumentEvent: the document
+// and its message types.
+
+public sealed class DocumentAggregate
+    : Aggregate<DocumentState, DocumentCommand, DocumentEvent>
+{
+    public override DocumentState InitialState =>
+        throw new NotImplementedException();
+    public override string EntityName => "Document";
+
+    public override EventAction<DocumentEvent> HandleCommand(
+        Command<DocumentCommand> cmd, DocumentState state) =>
+        throw new NotImplementedException();
+
+    public override DocumentState ApplyEvent(
+        Event<DocumentEvent> evt, DocumentState state) =>
+        throw new NotImplementedException();
+}
+```
+
 ## Commands and events are not the same thing
 
 A **command** asks the system to do something, such as `CreateOrUpdate`. The aggregate may accept or

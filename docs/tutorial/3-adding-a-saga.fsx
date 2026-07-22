@@ -56,6 +56,69 @@ conversation.
 > **Motivation:** Keeping each rule with its owner prevents the saga from becoming a second, stale copy
 > of document and slug state. The saga coordinates answers; it does not invent them.
 
+The chapter's new pieces as a wireframe; each unimplemented body names the step that fills it in.
+
+```fsharp
+// Step 1 extends Document with Publish / FinishPublication commands and
+// PublicationRequested / PublicationFinished events.
+
+module Slug =
+    // One aggregate instance per slug; the first Reserve wins.
+    let decide (cmd: Command<Command>) (state: State) : EventAction<Event> =
+        failwith "step 2"
+
+    let fold (event: Event<Event>) (state: State) : State =
+        failwith "step 2"
+
+module PublicationSaga =
+    // Store intended progress first, then send the next safe command.
+    let handleEvent (message: obj) (sagaState: SagaState<unit, State option>)
+        : EventAction<State> =
+        failwith "step 3"
+
+    let applySideEffects documentFactory slugFactory sagaState recovering
+        : SagaTransition<State> * ExecuteCommand list =
+        failwith "step 3"
+
+    let startsOn (event: Event<Document.Event>) : bool =
+        failwith "step 4"
+```
+
+<div class="cs-alt"></div>
+
+```csharp
+// Step 1 extends DocumentCommand with Publish / FinishPublication and
+// DocumentEvent with PublicationRequested / PublicationFinished.
+
+// One aggregate instance per slug; the first Reserve wins.
+public sealed class SlugAggregate : Aggregate<SlugState, SlugCommand, SlugEvent>
+{
+    public override EventAction<SlugEvent> HandleCommand(
+        Command<SlugCommand> cmd, SlugState state) =>
+        throw new NotImplementedException("step 2");
+
+    public override SlugState ApplyEvent(Event<SlugEvent> evt, SlugState state) =>
+        throw new NotImplementedException("step 2");
+}
+
+// Store intended progress first, then send the next safe command.
+public sealed class PublicationSaga
+    : Saga<DocumentEvent, PublicationData, PublicationState>
+{
+    public override EventAction<PublicationState> HandleEvent(
+        object message,
+        SagaState<PublicationData, FSharpOption<PublicationState>> sagaState) =>
+        throw new NotImplementedException("step 3");
+
+    public override SagaSideEffectResult<PublicationState> ApplySideEffects(
+        SagaState<PublicationData, PublicationState> sagaState, bool recovering) =>
+        throw new NotImplementedException("step 3");
+
+    public static bool StartsOn(object message) =>
+        throw new NotImplementedException("step 4");
+}
+```
+
 ## Extend the document with publication
 
 Chapters 1 and 2 gave the document its content model: `Root`, `CreateOrUpdate`, and `Updated`. Those

@@ -69,6 +69,33 @@ the complete path. Continue in the same `Program.fs`.
 > event into a query model. By the end you will understand the journal, projection offset,
 > correlation id, and subscribe-before-send ordering from one working request.
 
+This chapter adds three pieces around chapter 1's aggregate. Each `failwith` message names the
+section that implements it.
+
+```fsharp
+let buildApi () : IActor =
+    failwith "create the actor system"
+
+let handle (offset: int64) (message: obj) : unit =
+    failwith "build the query side"
+
+let run () : Async<unit> =
+    failwith "send a command and read your own write"
+```
+
+<div class="cs-alt"></div>
+
+```csharp
+// "Create the actor system": the host-builder replaces buildApi.
+var builder = WebApplication.CreateBuilder(args);
+
+// "Build the query side": the projection handler.
+void Handle(long offset, object message) =>
+    throw new NotImplementedException("build the query side");
+
+// "Send a command and read your own write": top-level statements after Build().
+```
+
 ## Two paths, on purpose: writing and reading
 
 The application has two paths:

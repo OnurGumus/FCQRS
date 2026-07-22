@@ -70,6 +70,64 @@ Replace `Program.fs` (`Program.cs` in C#) with the code from the following secti
 because the expanded command and event examples use C# discriminated unions, they require the compiler
 setup described in [C# interop and serialization](concepts/csharp-interop.html). Use the linked stable
 .NET 10 C# sample when you want a runnable project without preview union syntax.
+
+## The shape of the program
+
+`Program.fs` will hold four pieces. The wireframe below shows every signature with an unimplemented
+body; sections 1 to 4 replace each `failwith` with a working implementation.
+
+```fsharp
+module Document =
+    // 1. The aggregate: Root, State, Command, and Event, then two pure functions.
+    let decide (command: Command<Command>) (state: State) : EventAction<Event> =
+        failwith "section 1"
+
+    let fold (event: Event<Event>) (state: State) : State =
+        failwith "section 1"
+
+// 2. The read model: apply each stored event to an in-memory view.
+let handleProjection (offset: int64) (message: obj) : unit =
+    failwith "section 2"
+
+// 3. The actor system: configuration, logging, and SQLite storage.
+let buildApi () : IActor =
+    failwith "section 3"
+
+// 4. One request end to end: send Create, wait for the projection, query.
+let run () : Async<unit> =
+    failwith "section 4"
+```
+
+<div class="cs-alt"></div>
+
+```csharp
+// Program.cs as a wireframe; sections 1 to 4 replace each throw with a
+// working implementation.
+
+// 1. The aggregate: the document types, then two pure functions.
+public sealed class DocumentAggregate
+    : Aggregate<DocumentState, DocumentCommand, DocumentEvent>
+{
+    public override DocumentState InitialState => DocumentState.Initial;
+    public override string EntityName => "Document";
+
+    public override EventAction<DocumentEvent> HandleCommand(
+        Command<DocumentCommand> command, DocumentState state) =>
+        throw new NotImplementedException("section 1");
+
+    public override DocumentState ApplyEvent(
+        Event<DocumentEvent> eventEnvelope, DocumentState state) =>
+        throw new NotImplementedException("section 1");
+}
+
+// 2. The read model: apply each stored event to an in-memory view.
+void HandleProjection(long offset, object message) =>
+    throw new NotImplementedException("section 2");
+
+// 3. The host: register FCQRS, the aggregate, and the projection.
+// 4. One request end to end: send Create, await the projection, query.
+// Sections 3 and 4 are top-level statements, shown in full below.
+```
 *)
 
 (*** hide ***)
