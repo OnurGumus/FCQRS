@@ -147,18 +147,24 @@ module Document =
 
     let decide (cmd: Command<Command>) state =
         match cmd.CommandDetails, state with
+        // Content changes work exactly as in chapter 1.
         | CreateOrUpdate doc, _ ->
             Updated doc |> PersistEvent
+        // First Publish: store the request; state now remembers the slug being reserved.
         | Publish slug, { Document = Some doc; Publication = NotRequested } ->
             PublicationRequested(doc.Id, slug) |> PersistEvent
+        // The same Publish again (a retry): same reply, nothing stored twice.
         | Publish slug, { Document = Some doc; Publication = WaitingForSlug currentSlug }
             when slug = currentSlug ->
             PublicationRequested(doc.Id, slug) |> DeferEvent
+        // The saga reports the outcome: store it once.
         | FinishPublication result, { Document = Some doc; Publication = WaitingForSlug slug } ->
             PublicationFinished(doc.Id, slug, result) |> PersistEvent
+        // The same outcome again (saga recovery): same reply, nothing stored twice.
         | FinishPublication result, { Document = Some doc; Publication = Finished(slug, current) }
             when result = current ->
             PublicationFinished(doc.Id, slug, result) |> DeferEvent
+        // Everything else: no document yet, a different slug, a contradicting result.
         | _ -> UnhandledEvent
 
     let fold (event: Event<Event>) state =
@@ -223,26 +229,32 @@ public sealed class PublicationDocumentAggregate
         Command<DocumentCommand> command, DocumentState state) =>
         (command.CommandDetails, state) switch
         {
+            // Content changes work exactly as in chapter 1.
             (DocumentCommand.CreateOrUpdate c, _) =>
                 EventActions.Persist<DocumentEvent>(new DocumentEvent.Updated(c.Document)),
+            // First Publish: store the request; state now remembers the slug being reserved.
             (DocumentCommand.Publish p,
                 { Document: { } doc, Publication: PublicationProgress.NotRequested }) =>
                 EventActions.Persist<DocumentEvent>(
                     new DocumentEvent.PublicationRequested(doc.Id, p.Slug)),
+            // The same Publish again (a retry): same reply, nothing stored twice.
             (DocumentCommand.Publish p,
                 { Document: { } doc, Publication: PublicationProgress.WaitingForSlug waiting })
                 when p.Slug == waiting.Slug =>
                 EventActions.Defer<DocumentEvent>(
                     new DocumentEvent.PublicationRequested(doc.Id, p.Slug)),
+            // The saga reports the outcome: store it once.
             (DocumentCommand.FinishPublication finish,
                 { Document: { } doc, Publication: PublicationProgress.WaitingForSlug waiting }) =>
                 EventActions.Persist<DocumentEvent>(new DocumentEvent.PublicationFinished(
                     doc.Id, waiting.Slug, finish.Result)),
+            // The same outcome again (saga recovery): same reply, nothing stored twice.
             (DocumentCommand.FinishPublication finish,
                 { Document: { } doc, Publication: PublicationProgress.Finished current })
                 when finish.Result == current.Result =>
                 EventActions.Defer<DocumentEvent>(new DocumentEvent.PublicationFinished(
                     doc.Id, current.Slug, finish.Result)),
+            // Everything else: no document yet, a different slug, a contradicting result.
             _ => EventActions.Ignore<DocumentEvent>()
         };
 
@@ -284,10 +296,13 @@ module Slug =
 
     let decide (cmd: Command<Command>) state =
         match cmd.CommandDetails, state.ReservedFor with
+        // First reservation wins and becomes durable.
         | Reserve documentId, None ->
             SlugReserved documentId |> PersistEvent
+        // The same document asking again gets the same answer, nothing stored.
         | Reserve documentId, Some current when current = documentId ->
             SlugReserved documentId |> DeferEvent
+        // Any other document: taken; the owner does not change.
         | Reserve documentId, Some _ ->
             SlugUnavailable documentId |> DeferEvent
 
@@ -329,10 +344,13 @@ public sealed class SlugAggregate : Aggregate<SlugState, SlugCommand, SlugEvent>
         Command<SlugCommand> command, SlugState state) =>
         (command.CommandDetails, state.ReservedFor) switch
         {
+            // First reservation wins and becomes durable.
             (SlugCommand.Reserve reserve, null) =>
                 EventActions.Persist<SlugEvent>(new SlugEvent.SlugReserved(reserve.DocumentId)),
+            // The same document asking again gets the same answer, nothing stored.
             (SlugCommand.Reserve reserve, DocumentId owner) when owner == reserve.DocumentId =>
                 EventActions.Defer<SlugEvent>(new SlugEvent.SlugReserved(reserve.DocumentId)),
+            // Any other document: taken; the owner does not change.
             (SlugCommand.Reserve reserve, _) =>
                 EventActions.Defer<SlugEvent>(new SlugEvent.SlugUnavailable(reserve.DocumentId)),
             _ => EventActions.Ignore<SlugEvent>()
@@ -406,17 +424,21 @@ patterns recover their typed envelopes. The first domain event reaches user code
 
     let handleEvent message sagaState =
         match message, sagaState.State with
+        // Table row 1: the starting event opens the workflow.
         | DocumentEvent(Document.PublicationRequested(documentId, slug)), None ->
             ReservingSlug(documentId, slug) |> StateChangedEvent
+        // Table rows 2 and 3: the slug's answer decides which result to report.
         | SlugEvent(Slug.SlugReserved documentId), Some(ReservingSlug(expected, _))
             when documentId = expected ->
             ReportingResult Document.Published |> StateChangedEvent
         | SlugEvent(Slug.SlugUnavailable documentId), Some(ReservingSlug(expected, _))
             when documentId = expected ->
             ReportingResult Document.Rejected |> StateChangedEvent
+        // Table row 4: the document confirmed the result; the workflow is complete.
         | DocumentEvent(Document.PublicationFinished(_, _, result)), Some(ReportingResult expected)
             when result = expected ->
             Done |> StateChangedEvent
+        // Anything else is out of order for the current state.
         | _ -> UnhandledEvent
 
 (**
@@ -428,10 +450,12 @@ public override EventAction<PublicationState> HandleEvent(
     SagaState<PublicationData, FSharpOption<PublicationState>> sagaState) =>
     (message, sagaState.State?.Value) switch
     {
+        // Table row 1: the starting event opens the workflow.
         (Event<DocumentEvent>
             { EventDetails: DocumentEvent.PublicationRequested requested }, null) =>
             StateChanged(new PublicationState.ReservingSlug(
                 requested.DocumentId, requested.Slug)),
+        // Table rows 2 and 3: the slug's answer decides which result to report.
         (Event<SlugEvent>
             { EventDetails: SlugEvent.SlugReserved reserved },
             PublicationState.ReservingSlug expected)
@@ -444,11 +468,13 @@ public override EventAction<PublicationState> HandleEvent(
             when unavailable.DocumentId == expected.DocumentId =>
             StateChanged(new PublicationState.ReportingResult(
                 PublicationResult.Rejected)),
+        // Table row 4: the document confirmed the result; the workflow is complete.
         (Event<DocumentEvent>
             { EventDetails: DocumentEvent.PublicationFinished finished },
             PublicationState.ReportingResult reporting)
             when finished.Result == reporting.Result =>
             StateChanged(new PublicationState.Done()),
+        // Anything else is out of order for the current state.
         _ => Unhandled()
     };
 ```
@@ -464,10 +490,13 @@ recovery, with `recovering = true`.
 
     let applySideEffects documentFactory slugFactory sagaState _recovering =
         match sagaState.State with
+        // Ask the slug to reserve; recovery re-sends this, and Reserve is retry-safe.
         | ReservingSlug(documentId, slug) ->
             Stay, [ toAggregate slugFactory slug (Slug.Reserve documentId) ]
+        // Report the outcome back to the document that started the workflow.
         | ReportingResult result ->
             Stay, [ toOriginator documentFactory (Document.FinishPublication result) ]
+        // Nothing left to send; the saga completes and passivates.
         | Done ->
             StopSaga, []
 
@@ -480,18 +509,21 @@ public override SagaSideEffectResult<PublicationState> ApplySideEffects(
     bool _recovering) =>
     sagaState.State switch
     {
+        // Ask the slug to reserve; recovery re-sends this, and Reserve is retry-safe.
         PublicationState.ReservingSlug state => new()
         {
             Transition = Stay(),
             Commands = [SagaCommands.ToAggregate(
                 _slugs, state.Slug, new SlugCommand.Reserve(state.DocumentId))]
         },
+        // Report the outcome back to the document that started the workflow.
         PublicationState.ReportingResult state => new()
         {
             Transition = Stay(),
             Commands = [SagaCommands.ToOriginator(
                 _documents, new DocumentCommand.FinishPublication(state.Result))]
         },
+        // Nothing left to send; the saga completes and passivates.
         PublicationState.Done => new()
         {
             Transition = StopSaga(),
