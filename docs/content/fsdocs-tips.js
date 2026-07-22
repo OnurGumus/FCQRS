@@ -154,6 +154,11 @@ window.Clipboard_CopyTo = Clipboard_CopyTo;
 // the F# block (preceding the marker) with the C# block (following it) into a
 // tabbed widget. The choice is sticky and global — pick C# once and every
 // tabbed block on the site shows C# (remembered via localStorage).
+//
+// For twins that are not fsharp/csharp fences (e.g. paired shell commands),
+// data-fs and data-cs override the language matched on each side:
+// <div class="cs-alt" data-fs="text" data-cs="text"></div>. The F#-flavoured
+// block still goes before the marker and the C#-flavoured one after it.
 // ---------------------------------------------------------------------------
 (function () {
     const STORAGE_KEY = "fcqrs-lang";
@@ -201,8 +206,8 @@ window.Clipboard_CopyTo = Clipboard_CopyTo;
         const codeEls = Array.prototype.slice.call(root.querySelectorAll("code[lang]"));
 
         markers.forEach(function (marker) {
-            const cs = nearest(codeEls, marker, "csharp", true);
-            const fs = nearest(codeEls, marker, "fsharp", false);
+            const cs = nearest(codeEls, marker, marker.dataset.cs || "csharp", true);
+            const fs = nearest(codeEls, marker, marker.dataset.fs || "fsharp", false);
             if (!cs || !fs) return;
             const fsRoot = blockRoot(fs);
             const csRoot = blockRoot(cs);

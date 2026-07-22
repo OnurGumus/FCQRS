@@ -255,8 +255,12 @@ let main _ =
     0
 ```
 
-The C# version uses top-level statements; the `StartAsync` and `StopAsync` calls shown above form its
-entry-point lifecycle.
+<div class="cs-alt"></div>
+
+```csharp
+// Nothing to wire: the top-level statements are the entry point, and the
+// StartAsync and StopAsync calls shown above form its lifecycle.
+```
 
 ## Run it, then run it again
 

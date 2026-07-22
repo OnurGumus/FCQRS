@@ -56,7 +56,15 @@ cd DocStore
 dotnet add package FCQRS
 ```
 
-Replace `Program.fs` with the code from the following sections. The C# tabs are direct counterparts;
+<div class="cs-alt" data-fs="text" data-cs="text"></div>
+
+```text
+dotnet new console -n DocStore
+cd DocStore
+dotnet add package FCQRS
+```
+
+Replace `Program.fs` (`Program.cs` in C#) with the code from the following sections. The C# tabs are direct counterparts;
 because the expanded command and event examples use C# discriminated unions, they require the compiler
 setup described in [C# interop and serialization](concepts/csharp-interop.html). Use the linked stable
 .NET 10 C# sample when you want a runnable project without preview union syntax.
@@ -372,7 +380,12 @@ let main _ =
     0
 ```
 
-The C# example uses top-level statements, so its `await host.StartAsync()` sequence is the entry point.
+<div class="cs-alt"></div>
+
+```csharp
+// Nothing to add: the top-level statements above are the entry point,
+// and await host.StartAsync() already runs the program.
+```
 
 ```text
 dotnet run

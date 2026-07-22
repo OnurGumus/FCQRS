@@ -47,10 +47,18 @@ you already ran one of the repository samples, stage 0 will be a short review.
 ## What you need
 
 - The **.NET 10 SDK**. `dotnet --version` should print `10.*`.
-- A scratch F# project for the executable course:
+- A scratch project for the executable course:
 
 ```bash
 dotnet new console -lang F# -n DocStore
+cd DocStore
+dotnet add package FCQRS
+```
+
+<div class="cs-alt" data-fs="bash" data-cs="bash"></div>
+
+```bash
+dotnet new console -n DocStore
 cd DocStore
 dotnet add package FCQRS
 ```
