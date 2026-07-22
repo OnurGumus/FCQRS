@@ -773,6 +773,58 @@ let publishAndPrintOutcome
     }
 
 (**
+<div class="cs-alt"></div>
+
+```csharp
+// The wiring step configured the builder; C# needs no separate buildApi.
+var readModel = new ConcurrentDictionary<string, Document>();
+
+void HandleProjection(long _offset, object message)
+{
+    if (message is Event<DocumentEvent> { EventDetails: DocumentEvent.Updated updated })
+        readModel[updated.Document.Id.ToString()] = updated.Document;
+}
+
+async Task PublishAndPrintOutcome(
+    Handler<DocumentCommand, DocumentEvent> documents,
+    ISubscribe subscriptions,
+    Document doc,
+    string slug)
+{
+    var id = Values.CreateAggregateId(doc.Id.ToString());
+
+    // The document must exist before it can be published (chapter 1's command).
+    await documents(
+        e => e is DocumentEvent.Updated,
+        Values.NewCID(), id, new DocumentCommand.CreateOrUpdate(doc));
+
+    var cid = Values.NewCID();
+    Event<DocumentEvent>? outcome = null;
+
+    // Subscribe BEFORE publishing: the saga's commands keep this CID, so the
+    // final result arrives on this same subscription. The filter also records
+    // the matching event, because the awaiter's Task carries no payload.
+    using var awaiter = subscriptions.SubscribeForFirst(cid, message =>
+    {
+        if (message is Event<DocumentEvent> { EventDetails: DocumentEvent.PublicationFinished } ev)
+        {
+            outcome = ev;
+            return true;
+        }
+        return false;
+    });
+
+    await documents(
+        e => e is DocumentEvent.PublicationRequested,
+        cid, id, new DocumentCommand.Publish(slug));
+
+    await awaiter.Task;
+
+    if (outcome is { EventDetails: DocumentEvent.PublicationFinished finished })
+        Console.WriteLine($"{finished.Slug} -> {finished.Result} ({doc.Title})");
+}
+```
+
 ```fsharp
 let run () =
     async {
@@ -794,6 +846,29 @@ let run () =
 let main _ =
     run () |> Async.RunSynchronously
     0
+```
+
+<div class="cs-alt"></div>
+
+```csharp
+// Top-level statements are the entry point: register the projection, start the
+// host from the wiring step, and run both publications.
+builder.Services.AddProjection(HandleProjection, lastOffset: 0);
+
+using var host = builder.Build();
+await host.StartAsync();
+
+var documents = host.Services.GetRequiredService<Handler<DocumentCommand, DocumentEvent>>();
+var subscriptions = host.Services.GetRequiredService<ISubscribe>();
+
+// Result.value in F#; validation cannot fail for these literals.
+Document.TryCreate(Guid.NewGuid(), "FCQRS guide", "draft A", out var docA, out _);
+Document.TryCreate(Guid.NewGuid(), "Competing guide", "draft B", out var docB, out _);
+
+await PublishAndPrintOutcome(documents, subscriptions, docA, "guides/fcqrs");
+await PublishAndPrintOutcome(documents, subscriptions, docB, "guides/fcqrs");
+
+await host.StopAsync();
 ```
 
 Publish two documents under the same slug:
