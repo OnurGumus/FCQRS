@@ -14,10 +14,14 @@ index: 2
 # 0. Quickstart: follow one request end to end
 
 The application in this quickstart is DocStore, a small document store. It keeps titled text
-documents: a caller can create a document, edit its content, and look a document up by its id. This
-page builds the create-and-read slice of DocStore in a single file: a command creates a document, the
-aggregate stores a `Created` event, a projection updates the read model that serves lookups, and the
-program queries that model after receiving the projection's confirmation.
+documents: you can create a document, edit its content, and look a document up by its id.
+
+This page builds the smallest slice of DocStore that does something real: save one new document, then
+read it back. In FCQRS the save and the read take different paths. The save is recorded as an event, a
+small stored fact describing what happened. The read is served from a lookup view that is updated from
+those events shortly after they are stored. Because the view lags behind by a moment, the program
+waits for its confirmation before reading. Each section below introduces one part of that path as the
+code needs it.
 
 > **Course position:** this is the first practical stage. It assumes only basic F# or C# and introduces
 > the runtime vocabulary used by chapters 1 through 5.
