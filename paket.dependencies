@@ -19,8 +19,8 @@ nuget Akkling.Streams >= 0.17.0
 nuget FSharp.SystemTextJson >= 1.4.36
 nuget FsToolkit.ErrorHandling >= 5.1.0
 nuget Hocon.Extensions.Configuration >= 2.0.4
-nuget FCQRS.Serialization >= 6.0.0-rc2
-nuget FCQRS.Model >= 6.0.0-rc2
+nuget FCQRS.Serialization >= 6.0.0
+nuget FCQRS.Model >= 6.0.0
 nuget FCQRS
 nuget SQLProvider
 nuget SQLitePCLRaw.core

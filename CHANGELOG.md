@@ -1,5 +1,61 @@
 # Changelog
 
+## 6.0.0 (FCQRS core)
+Stable release of the 6.0.0 line (rc1 through rc6 plus two further audit
+rounds). Changes since rc6:
+
+- **Migrated-journal sagas resume correctly**: the rc6 `Incarnation` refactor
+  gated the old-shape-snapshot recovery re-drive on `= RecoveredFromSnapshot`,
+  but events replayed after such a snapshot flip the incarnation to
+  `RecoveredFromJournal`, so migrated journals parked the saga passive
+  forever. The re-drive now guards on `IsRecovery`.
+- **Throwing command-subscription filters fail the ask loudly**: an exception
+  escaping the filter restarted the ephemeral subscriber without its
+  `Execute` message or receive timeout, hanging the caller on Akka's infinite
+  default ask timeout. The original filter exception now faults the ask.
+- **Saga-starter handshake keys batches by full originator path**: keying by
+  bare entity id let two aggregate types sharing an id overwrite each other's
+  reply-to (lost wakeup or a handshake-timeout FailFast). One subscribed
+  saga's `Continue` counts toward every batch tracking it, so one subscribed
+  saga satisfies all originators sharing its CID.
+- **Connection strings are escaped before HOCON substitution**: Windows
+  paths, SqlServer named instances, and quote-bearing passwords no longer
+  break the HOCON tokenizer at startup.
+- **Passivation cancels a saga's pending delayed commands**: they were only
+  cancelled on abort and `StopSaga`, never on ordinary passivation or shard
+  handoff, so a resurrected saga re-drove its schedules while the old timers
+  were still armed (duplicate delivery with fresh command ids). `PostStop`
+  now cancels them.
+- **Snapshots store journal-only aggregate state**: snapshots stored the
+  defer-polluted behavior state, so a `DeferEvent` fold could survive
+  recovery through a snapshot. The aggregate now keeps a journal-only mirror
+  (persisted events and replay only) and snapshots that, making snapshot
+  recovery provably match journal recovery.
+- **`sendAwaiting` awaits its race winner**: a subscription faulted by
+  actor-system shutdown no longer passes for read-your-writes, and a
+  command-timeout beyond ~49.7 days no longer overflows `Task.Delay`.
+- **`CreateCID` rejects `~`**: the saga-correlation separator inside a CID
+  broke correlation parsing and left sagas deaf.
+- **`AkkaTimeProvider` matches the BCL contract**: due times beyond
+  ~24.86 days no longer clamp (firing early), negative due times are rejected
+  instead of becoming a silent never-fire, timestamps follow the virtual
+  clock under `ObservingScheduler`, exactly one cancel event fires per
+  cancel, and `DisposeAsync` is honored via `WatchAsync`.
+- **`DynamicConfig.GetSectionAsDynamic` returns the requested section**: it
+  returned the parent of the requested section and threw
+  `KeyNotFoundException` on missing ones; it now descends the full section
+  path and returns an empty object for missing sections.
+- **Documented contracts**: `TargetActor.Sender` warns loudly and documents
+  that it resolves to the journal or the mediator at side-effect time;
+  `InitializeSaga`'s `applySideEffects` documents its idempotency contract
+  for the raw API.
+
+The Information-level `FCQRS.MessageFlow` logging ships as the stable
+default; suppress it with a standard logger override. The facade suite
+stands at 32 tests, including defer-snapshot recovery, CID separator,
+special-character entity ids, throwing filters, HOCON connection strings,
+and cross-type concurrent saga starts.
+
 ## 6.0.0 satellites (FCQRS.Model, FCQRS.Serialization, FCQRS.SQLProvider, FCQRS.ExpectoTickSpec)
 - **FCQRS.Model — validation rules are null-safe and never seed empty errors**:
   the string rules threw on null input instead of recording the error,
