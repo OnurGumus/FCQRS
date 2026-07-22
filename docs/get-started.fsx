@@ -13,9 +13,11 @@ index: 2
 (**
 # 0. Quickstart: follow one request end to end
 
-This page builds one complete FCQRS path in a single file. A command creates a document, the aggregate
-stores an event, a projection updates a read model, and the program queries that model after receiving
-the projection's confirmation.
+The application in this quickstart is DocStore, a small document store. It keeps titled text
+documents: a caller can create a document, edit its content, and look a document up by its id. This
+page builds the create-and-read slice of DocStore in a single file: a command creates a document, the
+aggregate stores a `Created` event, a projection updates the read model that serves lookups, and the
+program queries that model after receiving the projection's confirmation.
 
 > **Course position:** this is the first practical stage. It assumes only basic F# or C# and introduces
 > the runtime vocabulary used by chapters 1 through 5.
