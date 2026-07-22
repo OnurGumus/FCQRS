@@ -14,7 +14,7 @@ module Internal =
     //  crash or silently corrupt. Recurses into array elements so arrays nested
     //  inside array elements (a:0:b:0 = x) convert too.
     let rec internal convertNumericRuns (node: ExpandoObject) : obj =
-        let dict = node :> IDictionary<string, obj>
+        let dict = node :> IDictionary<string, objnull>
         let keys = dict.Keys |> List.ofSeq
 
         let parsed =
@@ -30,7 +30,7 @@ module Internal =
             && (parsed |> List.sort = [ 0 .. keys.Length - 1 ])
 
         if isDenseIntRun then
-            let arr: obj array = keys.Length |> Array.zeroCreate
+            let arr: objnull array = keys.Length |> Array.zeroCreate
 
             for kvp in dict do
                 arr.[kvp.Key |> Int32.Parse] <-
@@ -38,14 +38,14 @@ module Internal =
                     | :? ExpandoObject as e -> convertNumericRuns e
                     | v -> v
 
-            box arr
+            arr :> obj
         else
             for k in keys do
                 match dict.[k] with
                 | :? ExpandoObject as e -> dict.[k] <- convertNumericRuns e
                 | _ -> ()
 
-            box node
+            node :> obj
 
 let internal getSection (configs: KeyValuePair<string, _> seq) : obj =
     let result = ExpandoObject()
@@ -100,15 +100,17 @@ type ConfigExtension() =
         // Descend the full path so the returned node is the requested section itself.
         // A missing segment (section absent from the configuration) yields an empty
         // object instead of a KeyNotFoundException.
-        let rec loop paths (res: obj) =
+        let rec loop paths (res: objnull) : objnull =
             match paths, res with
-            | head :: tail, (:? IDictionary<string, obj> as d) ->
+            | head :: tail, (:? IDictionary<string, objnull> as d) ->
                 match d.TryGetValue head with
                 | true, v -> loop tail v
                 | _ -> box (ExpandoObject())
             | _ -> res
 
-        loop paths res
+        match loop paths res with
+        | null -> ExpandoObject() :> obj
+        | v -> v
 
     /// <summary>
     /// An extension method that returns given string as an dynamic Expando object

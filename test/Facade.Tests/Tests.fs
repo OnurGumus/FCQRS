@@ -803,9 +803,11 @@ let private filteredProjectionTest =
         let publishAll = FCQRS.Query.filterPublish (fun _ _ -> Publish)
         let suppressAll = FCQRS.Query.filterPublish (fun _ _ -> Suppress)
 
-        Expect.equal (publishAll 0L (box msg)) [ msg ] "Publish forwards the event when it carries a CID"
-        Expect.isEmpty (publishAll 0L (box 42)) "Publish on a non-CID event notifies nothing"
-        Expect.isEmpty (suppressAll 0L (box msg)) "Suppress notifies nothing even for a CID-bearing event"
+        let boxedMsg = box msg |> Unchecked.nonNull
+        let boxedInt = box 42 |> Unchecked.nonNull
+        Expect.equal (publishAll 0L boxedMsg) [ msg ] "Publish forwards the event when it carries a CID"
+        Expect.isEmpty (publishAll 0L boxedInt) "Publish on a non-CID event notifies nothing"
+        Expect.isEmpty (suppressAll 0L boxedMsg) "Suppress notifies nothing even for a CID-bearing event"
 
 /// persistIf (C# EventActions.PersistConditionally): persist when the guard holds,
 /// otherwise defer the same event (returned to the caller but not journalled).
@@ -1604,7 +1606,7 @@ let private filterThrowTest =
 
         let ex = Expect.wantSome caught "the filter exception reaches the caller instead of hanging"
         Expect.isTrue (ex :? InvalidOperationException) (sprintf "expected InvalidOperationException, got %s" (ex.GetType().Name))
-        Expect.equal ex.InnerException.Message "filter exploded" "the original filter exception is preserved"
+        Expect.equal (Unchecked.nonNull ex.InnerException).Message "filter exploded" "the original filter exception is preserved"
 
 let private hoconConnectionStringTest =
     testCase "facade: a connection string with a backslash or quote survives HOCON injection"

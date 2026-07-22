@@ -97,7 +97,7 @@ module internal Internal =
             | LifecycleEvent _ -> return! state |> set
 
             | SnapshotOffer(snapState: obj) ->
-                let snap = snapState |> unbox<State<'State>>
+                let snap = snapState |> unbox<State<'TState>>
                 // The snapshot holds journal-only state by construction; resume
                 // the mirror from it before replay continues.
                 journaledStateRef.Value <- snap.State

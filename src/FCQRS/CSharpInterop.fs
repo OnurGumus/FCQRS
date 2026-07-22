@@ -37,7 +37,7 @@ type Values =
     /// "~" separators, so a CID containing "~" breaks the correlation parsing
     /// (toRawGuid/toCid) and leaves sagas permanently deaf. Rejected here.
     static member CreateCID(s: string) : CID =
-        if not (isNull s) && s.Contains "~" then
+        if not (isNull (box s)) && s.Contains "~" then
             invalidArg (nameof s) "A CID must not contain '~' (the FCQRS correlation separator)."
 
         let shortString = Values.CreateShortString s
@@ -316,7 +316,7 @@ type ActorWiring =
     /// handshake-timeout FailFast.
     static member InitSagaStarter(
         actor: IActor,
-        eventHandler: Func<obj, System.Collections.Generic.IList<SagaDefinition>>) : unit =
+        eventHandler: Func<obj, System.Collections.Generic.IList<SagaDefinition> | null>) : unit =
         let handler evt =
             match eventHandler.Invoke(evt) with
             | null -> []
@@ -332,7 +332,7 @@ type ActorWiring =
                     if isNull (box def.StartingEvent) then
                         invalidOp $"SagaDefinition.StartingEvent is null for starting event type {evt.GetType().Name}. Set StartingEvent when constructing the SagaDefinition."
 
-                    (def.Factory.Invoke, def.PrefixConversion, def.StartingEvent))
+                    (def.Factory.Invoke, def.PrefixConversion, def.StartingEvent |> Unchecked.nonNull))
                 |> List.ofSeq
 
         actor.InitializeSagaStarter(handler)
@@ -341,7 +341,7 @@ type ActorWiring =
     /// A null list means "no sagas"; a null factory fails with a named error.
     static member InitSagaStarterSimple(
         actor: IActor,
-        eventHandler: Func<obj, System.Collections.Generic.IList<AggregateFactory>>) : unit =
+        eventHandler: Func<obj, System.Collections.Generic.IList<AggregateFactory> | null>) : unit =
         let handler evt =
             match eventHandler.Invoke(evt) with
             | null -> []
@@ -736,7 +736,7 @@ type SagaApi =
                 logger.LogWarning(
                     "Saga {Saga} (InitSimple) ignored a {MessageType}: the typed handler only accepts Event<{EventType}>. Use the obj-based Init overload for ToSelf timeouts or multi-aggregate sagas.",
                     sagaName,
-                    (match other with
+                    (match box other with
                      | null -> "null"
                      | o -> o.GetType().Name),
                     typeof<'TEvent>.Name)

@@ -626,11 +626,10 @@ let private actorProp<'SagaData, 'State, 'TEvent when 'TEvent : not null and 'St
                         match targetActor with
                         | :? (Akkling.Cluster.Sharding.IEntityRef<obj>) as entityRef ->
                             entityRef.Underlying,
-                            box (
-                                { ShardId = entityRef.ShardId
-                                  EntityId = entityRef.EntityId
-                                  Message = finalCommand }: Akkling.Cluster.Sharding.ShardEnvelope
-                            )
+                            ({ ShardId = entityRef.ShardId
+                               EntityId = entityRef.EntityId
+                               Message = finalCommand }: Akkling.Cluster.Sharding.ShardEnvelope)
+                            :> obj
                         | other -> other.Underlying, finalCommand
 
                     let untypedSender = mailbox.Self.Underlying :?> Akka.Actor.IActorRef

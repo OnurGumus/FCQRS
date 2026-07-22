@@ -186,7 +186,8 @@ let transitionTo (state: 'state) : EventAction<'state> = StateChangedEvent state
 /// `Fcqrs.aggregateWithEffects`. EPHEMERAL: the in-flight work is not
 /// journaled; use a saga when the result must survive a crash. See
 /// `EventAction.RunAsync`.
-let dispatch (description: 'description) : EventAction<'event> = RunAsync(box description)
+let dispatch (description: 'description) : EventAction<'event> =
+    RunAsync(box description |> Unchecked.nonNull)
 
 /// Make an effect-runner body TOTAL: run `work`, mapping ANY exception (oracle
 /// error, timeout, cancellation) to a command via `onError`, so the runner
@@ -258,7 +259,7 @@ module Fcqrs =
             fun (description: obj) ->
                 async {
                     let! (command: 'Command) = runner (unbox description)
-                    return box command
+                    return box command |> Unchecked.nonNull
                 }
 
         let fac =
