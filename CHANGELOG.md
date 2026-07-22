@@ -1,5 +1,20 @@
 # Changelog
 
+## 6.0.0 satellites (FCQRS.Model, FCQRS.Serialization, FCQRS.SQLProvider, FCQRS.ExpectoTickSpec)
+- **FCQRS.Model — validation rules are null-safe and never seed empty errors**:
+  the string rules threw on null input instead of recording the error,
+  `List.pos_` threw on negative indices instead of failing the prism, and the
+  validator polluted its error map with empty lists (`single` could even
+  return `Error []`). Null now records a violation, negative indices fail the
+  prism getter, and empty error lists are never emitted.
+- **FCQRS.SQLProvider — `thenby`/`thenbydesc` compose instead of throwing**:
+  a spliced quotation is statically `IQueryable`, so `ThenBy` always raised
+  `ArgumentException`. Primary and secondary sorts now compose in a single
+  query expression (all nine sort combinations verified); `thenby` without a
+  preceding `orderby` fails by name via `invalidArg`.
+- **FCQRS.Serialization / FCQRS.ExpectoTickSpec**: version alignment with the
+  6.0.0 line; no code change since 6.0.0-rc2.
+
 ## 6.0.0-rc6 (FCQRS core)
 - **Saga handshake state is threaded, not held in cells** (internal refactor,
   no behavior change): the two recovery flags introduced with the rc5
