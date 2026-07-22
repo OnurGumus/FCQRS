@@ -219,6 +219,11 @@ pre.fssnip.highlighted,
     --blockquote-color: #d6e2f4;
     --code-background: #06122a;    /* deep navy code panel */
     --code-fence-border-color: #16263f;
+
+    /* fsdocs' dark palette brightens every code colour except these two,
+       leaving the light-mode dark purple invisible on the navy panel. */
+    --code-function-color: #a78bfa;
+    --code-printf-color: #a78bfa;
 }
 
 /* Headings echo the landing's tighter, navy display type. */
