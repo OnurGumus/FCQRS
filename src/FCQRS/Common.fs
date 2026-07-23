@@ -606,9 +606,9 @@ type RetrySchedule =
     /// Re-send at a fixed interval.
     | FixedInterval of TimeSpan
     /// Re-send with exponential backoff: first after `Initial`, each following
-    /// interval multiplied by `Factor`, capped at `Max`. A ±20% jitter is applied
-    /// to every interval so many sagas released by one infrastructure blip do not
-    /// retry in lockstep.
+    /// interval multiplied by `Factor`, capped at `Max`. A stretch-only jitter of
+    /// up to +25% is applied to every wake so many sagas released by one
+    /// infrastructure blip do not retry in lockstep.
     | Backoff of Initial: TimeSpan * Factor: float * Max: TimeSpan
 
 /// A declared expectation attached to a saga's waiting state via

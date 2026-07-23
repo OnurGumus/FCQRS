@@ -775,11 +775,16 @@ let private actorProp<'SagaData, 'State, 'TEvent when 'TEvent : not null and 'St
                 match exp.RetryEvery with
                 | Backoff _ ->
                     // Jitter: sagas released together by one infrastructure blip
-                    // must not retry in lockstep against the same shard.
-                    TimeSpan.FromTicks(int64 (float baseDelay.Ticks * (0.8 + 0.4 * Random.Shared.NextDouble())))
+                    // must not retry in lockstep against the same shard. Stretch
+                    // only (1.0-1.25x): a wake BEFORE its tick re-targets the same
+                    // tick on recompute and re-sends twice for one scheduled retry.
+                    TimeSpan.FromTicks(int64 (float baseDelay.Ticks * (1.0 + 0.25 * Random.Shared.NextDouble())))
                 | FixedInterval _ -> baseDelay
 
-        let delayMs = max 1L (int64 delay.TotalMilliseconds)
+        // Ceil, never truncate: a sub-millisecond floor wakes the reminder just
+        // before its tick, which double-sends that tick (fire early, recompute,
+        // fire again). At or after the tick, the recompute counts it done.
+        let delayMs = max 1L (int64 (ceil delay.TotalMilliseconds))
 
         dispatchCommands
             None

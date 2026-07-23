@@ -1943,6 +1943,12 @@ let private expectationExhaustionTest =
         Expect.isGreaterThanOrEqual markers.Value 2
             "the expectation re-sent its command at least once beyond state entry"
 
+        // Upper bound: entry + at most 4 ticks (300..1200ms inside a 1300ms
+        // deadline) + 1 slack. A wake that fires before its tick re-sends twice
+        // per scheduled retry and breaks this ceiling.
+        Threading.Thread.Sleep 500
+        Expect.isLessThanOrEqual markers.Value 6 "each scheduled tick re-sent at most once"
+
         api.Stop().Wait(TimeSpan.FromSeconds 30.0) |> ignore
 
 let private expectationUnhandledTest =
