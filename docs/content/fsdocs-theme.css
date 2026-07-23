@@ -233,9 +233,12 @@ pre.fssnip.highlighted,
        panel: identifiers are near-white lavender, keywords pale blue, strings
        gray. Re-tint them; the hljs rules (C# tabs) read the same variables,
        so both languages shift together. Keywords echo the landing code card's
-       green. */
+       green. Identifiers stay deliberately calm (VS Code's dark identifier
+       blue): in FENCED snippets fsdocs has no type information, so nearly
+       every token is `id` — a saturated hue there reads as a wall of one
+       colour. */
     --code-keywords-color: #77e58d;
-    --code-identifiers-color: #7fb8ff;
+    --code-identifiers-color: #9cdcfe;
     --code-strings-color: #e8c07b;
     --code-numbers-color: #4ad3b5;
 }
