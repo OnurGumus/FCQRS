@@ -20,9 +20,23 @@ open FCQRS.FSharp
 (**
 # 3. Adding a saga
 
-The document application can now store and project documents. This chapter adds one cross-aggregate
-rule: a document may be published under a URL slug only when the aggregate identified by that slug
-reserves it for that document.
+DocStore can now store and look up documents. This chapter adds one more rule: a document can be
+published under a URL slug, and each slug may belong to only one document.
+
+Every rule so far involved a single document, so one aggregate could enforce it alone. This rule is
+different, and it runs into a restriction that has been true since chapter 1: an aggregate can read
+and change only its own state. A document aggregate cannot look inside a slug aggregate, cannot lock
+it, and cannot update it in the same transaction. Aggregates never call each other. FCQRS keeps them
+isolated on purpose, because that isolation is what lets each one process commands, recover, and move
+between nodes independently.
+
+In a single-database application the new rule would be one transaction touching a documents table and
+a slugs table. Across aggregates there is no shared transaction, so something else must coordinate,
+and that coordinator is the saga. A saga is a durable workflow that does the job a transaction
+coordinator does in a database: it waits for an event from one aggregate, sends a command to the
+next, waits for the reply, and reports the outcome back to where the work started. It cannot lock
+both aggregates or roll them back together. Instead it stores its own progress after every step, so a
+crash in the middle resumes the conversation instead of losing it.
 
 This example is intentionally small. The only new problem is durable coordination, so the saga
 mechanics remain visible.
@@ -34,10 +48,9 @@ mechanics remain visible.
 
 ## The rule belongs to two owners
 
-The document aggregate owns whether one document is ready to publish. A slug aggregate owns whether
-one URL slug is available. Neither aggregate can make both decisions from its own state.
-
-The saga coordinates this conversation:
+The document aggregate decides whether its document may be published. The slug aggregate decides
+whether its slug is still free. Neither one can see the other's state, so neither one can enforce the
+whole rule alone. The saga carries the conversation between them:
 
 <pre>
 Document                          Publication saga              Slug[guides/fcqrs]
@@ -50,8 +63,8 @@ Document                          Publication saga              Slug[guides/fcqr
    |-- PublicationFinished -------------->|  StopSaga                             |
 </pre>
 
-The target aggregates still own every business decision. The saga owns only the progress of this
-conversation.
+The aggregates still make every business decision. The saga only remembers how far the conversation
+has gone and sends the next message.
 
 > **Motivation:** Keeping each rule with its owner prevents the saga from becoming a second, stale copy
 > of document and slug state. The saga coordinates answers; it does not invent them.

@@ -11,9 +11,15 @@ An aggregate can make a correct decision only from state it owns. A document agg
 whether a document is ready to publish, but it cannot decide whether the requested URL slug is already
 reserved by another document. That rule belongs to the aggregate identified by the slug.
 
-A **saga** coordinates the conversation between those independent owners. It stores where the
-conversation has reached, listens for outcomes, and sends the next command. It does not move another
-aggregate's rules into one large object.
+Aggregates cannot reference each other, and no transaction spans two of them. Each one processes its
+own commands against its own state, which is what keeps it safe to run, recover, and relocate
+independently. A rule that needs answers from two aggregates therefore needs a coordinator standing
+between them.
+
+A **saga** is that coordinator: the event-sourced counterpart of a distributed transaction
+coordinator. It stores where the conversation has reached, listens for outcomes, and sends the next
+command. It cannot lock the participants or roll them back together; it drives the workflow forward
+one durable step at a time. It does not move another aggregate's rules into one large object.
 
 ## Start with a workflow that can stop halfway
 
