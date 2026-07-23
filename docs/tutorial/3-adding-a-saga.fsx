@@ -448,7 +448,11 @@ Before writing the saga functions, write every accepted event and resulting comm
 | not started | `PublicationRequested` | `ReservingSlug` | `Reserve` to slug |
 | `ReservingSlug` | `SlugReserved` | `ReportingResult Published` | `FinishPublication Published` to document |
 | `ReservingSlug` | `SlugUnavailable` | `ReportingResult Rejected` | `FinishPublication Rejected` to document |
+| `ReservingSlug` | `ExpectationExhausted` | `ReportingResult Rejected` | `FinishPublication Rejected` to document |
 | `ReportingResult result` | `PublicationFinished result` | `Done` | stop |
+
+The fourth row is the timeout. `ExpectationExhausted` is not a domain event: FCQRS delivers it when
+the wait declared in Function 2 below runs out of time without any answer from the slug.
 
 This table separates two questions:
 
@@ -498,7 +502,7 @@ patterns recover their typed envelopes. The first domain event reaches user code
         | :? Event<Slug.Event> as event -> Some event.EventDetails
         | _ -> None
 
-    let handleEvent message sagaState =
+    let handleEvent (message: obj) sagaState =
         match message, sagaState.State with
         // Table row 1: the starting event opens the workflow.
         | DocumentEvent(Document.PublicationRequested(documentId, slug)), None ->
@@ -510,7 +514,11 @@ patterns recover their typed envelopes. The first domain event reaches user code
         | SlugEvent(Slug.SlugUnavailable documentId), Some(ReservingSlug(expected, _))
             when documentId = expected ->
             ReportingResult Document.Rejected |> StateChangedEvent
-        // Table row 4: the document confirmed the result; the workflow is complete.
+        // Timeout row: the declared wait ran out without an answer. Unknown is
+        // treated as Rejected; the prose after Function 2 discusses the cost.
+        | :? ExpectationExhausted, Some(ReservingSlug _) ->
+            ReportingResult Document.Rejected |> StateChangedEvent
+        // Last row: the document confirmed the result; the workflow is complete.
         | DocumentEvent(Document.PublicationFinished(_, _, result)), Some(ReportingResult expected)
             when result = expected ->
             Done |> StateChangedEvent
@@ -544,7 +552,11 @@ public override EventAction<PublicationState> HandleEvent(
             when unavailable.DocumentId == expected.DocumentId =>
             StateChanged(new PublicationState.ReportingResult(
                 PublicationResult.Rejected)),
-        // Table row 4: the document confirmed the result; the workflow is complete.
+        // Timeout row: the declared wait ran out without an answer.
+        (ExpectationExhausted, PublicationState.ReservingSlug) =>
+            StateChanged(new PublicationState.ReportingResult(
+                PublicationResult.Rejected)),
+        // Last row: the document confirmed the result; the workflow is complete.
         (Event<DocumentEvent>
             { EventDetails: DocumentEvent.PublicationFinished finished },
             PublicationState.ReportingResult reporting)
@@ -566,9 +578,14 @@ recovery, with `recovering = true`.
 
     let applySideEffects documentFactory slugFactory sagaState _recovering =
         match sagaState.State with
-        // Ask the slug to reserve; recovery re-sends this, and Reserve is retry-safe.
+        // Ask the slug to reserve, and declare the wait: re-send Reserve every
+        // five seconds (it is retry-safe, the same property recovery relies on)
+        // and deliver ExpectationExhausted after thirty. The deadline measures
+        // from the journaled entry into this state, so restarts cannot reset it.
         | ReservingSlug(documentId, slug) ->
-            Stay, [ toAggregate slugFactory slug (Slug.Reserve documentId) ]
+            expecting (TimeSpan.FromSeconds 30.0) (FixedInterval(TimeSpan.FromSeconds 5.0))
+                [ toAggregate slugFactory slug (Slug.Reserve documentId) ],
+            []
         // Report the outcome back to the document that started the workflow.
         | ReportingResult result ->
             Stay, [ toOriginator documentFactory (Document.FinishPublication result) ]
@@ -585,12 +602,16 @@ public override SagaSideEffectResult<PublicationState> ApplySideEffects(
     bool _recovering) =>
     sagaState.State switch
     {
-        // Ask the slug to reserve; recovery re-sends this, and Reserve is retry-safe.
+        // Ask the slug to reserve, and declare the wait: re-send Reserve every
+        // five seconds, deliver ExpectationExhausted after thirty.
         PublicationState.ReservingSlug state => new()
         {
             Transition = Stay(),
-            Commands = [SagaCommands.ToAggregate(
-                _slugs, state.Slug, new SlugCommand.Reserve(state.DocumentId))]
+            Expect = Expectations.Create(
+                [SagaCommands.ToAggregate(
+                    _slugs, state.Slug, new SlugCommand.Reserve(state.DocumentId))],
+                deadline: TimeSpan.FromSeconds(30),
+                retryEvery: RetrySchedules.Fixed(TimeSpan.FromSeconds(5)))
         },
         // Report the outcome back to the document that started the workflow.
         PublicationState.ReportingResult state => new()
@@ -613,9 +634,21 @@ The C# constructor in Step 4 supplies `_documents` and `_slugs`. As in F#, the m
 recovery flag even though this retry-safe workflow sends the same command during live processing and
 recovery.
 
-`Stay` keeps the stored state while the saga waits for a reply. `StopSaga` completes and passivates the
-saga. `NextState next` is the third available transition; it persists another state immediately when a
-step should advance without waiting for an event. This workflow does not need it.
+`StayExpecting` (C#: `Stay` plus the `Expect` property) keeps the stored state like `Stay` while
+declaring what the wait is for: FCQRS sends `Reserve` on entry into `ReservingSlug`, re-sends exactly
+that command on the schedule while no transition is stored, and past the deadline delivers the
+`ExpectationExhausted` handled in Function 1. `ReportingResult` uses plain `Stay`; a fuller design
+would bound that wait the same way. `StopSaga` completes and passivates the saga. `NextState next` is
+the fourth available transition; it persists another state immediately when a step should advance
+without waiting for an event. This workflow does not need it.
+
+The timeout row buys a bounded wait at a price the domain must acknowledge: exhaustion reports
+`Rejected` while the true outcome is unknown. The slug may have reserved successfully with only its
+answer lost, and a `SlugReserved` arriving after the escalation is out of order for
+`ReportingResult`, so `handleEvent` ignores it: the reservation stays held by a document that was
+told its publication failed. A production workflow gives the failure path a compensating command
+(release the slug) or lets the late answer un-fail the workflow.
+[Write a saga](../how-to/write-a-saga.html) states the general rules.
 
 The state is always stored before its commands are issued:
 
@@ -971,9 +1004,9 @@ saga stores its own progress and safely completes the matching document. Run aga
 - **Suppressing commands whenever `recovering = true`.** Re-drive an idempotent command or reconcile
   uncertain external work, otherwise the saga can remain stuck.
 - **Waiting without a deadline.** A slug that answers with an ignored command, or a lost message
-  between nodes, parks the saga forever. Give every wait a timeout;
-  [Write a saga](../how-to/write-a-saga.html) shows both the `toSelfAfter` reminder and the declared
-  `StayExpecting` form.
+  between nodes, parks the saga forever. `ReservingSlug` declares its wait with `StayExpecting`;
+  [Write a saga](../how-to/write-a-saga.html) states the general rules and the hand-rolled
+  `toSelfAfter` form.
 - **Assuming `StopSaga` deletes history.** It completes and passivates the actor; persisted progress
   remains available for diagnostics and storage policy.
 
