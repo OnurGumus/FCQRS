@@ -178,14 +178,21 @@ type internal AbortedEvent = AbortedEvent
 [<AutoOpen>]
 module internal Internal =
     type SagaEvent<'TState> =
-        | StateChanged of 'TState
+        // EnteredAt: scheduler-clock time the state was entered, stamped at
+        // persist. It is the base for expectation deadlines: recovery re-derives
+        // "how long has this state been waiting" from the journal instead of the
+        // wall clock, so a crash loop cannot postpone an expectation forever.
+        | StateChanged of state: 'TState * enteredAt: System.DateTime
 
         interface ISerializable
 
 
     type SagaStateWithVersion<'SagaData, 'State> =
         { SagaState: SagaState<'SagaData, 'State>
-          Version: int64 }
+          Version: int64
+          // Entry time of SagaState.State, mirrored from the last StateChanged
+          // event so snapshot recovery keeps expectation deadlines anchored.
+          StateEnteredAt: System.DateTime }
 
         interface ISerializable
 
@@ -594,6 +601,52 @@ type ExecuteCommand =
         DelayInMs: (int64 * string) option
     }
 
+/// Retry cadence for a saga expectation (see <see cref="T:FCQRS.Common.Expectation"/>).
+type RetrySchedule =
+    /// Re-send at a fixed interval.
+    | FixedInterval of TimeSpan
+    /// Re-send with exponential backoff: first after `Initial`, each following
+    /// interval multiplied by `Factor`, capped at `Max`. A ±20% jitter is applied
+    /// to every interval so many sagas released by one infrastructure blip do not
+    /// retry in lockstep.
+    | Backoff of Initial: TimeSpan * Factor: float * Max: TimeSpan
+
+/// A declared expectation attached to a saga's waiting state via
+/// <c>StayExpecting</c>: the framework sends <c>Resend</c> on state entry,
+/// re-sends exactly those commands on the schedule while no state transition is
+/// persisted, and past <c>Deadline</c> (measured from the persisted state-entry
+/// time, so crash loops cannot postpone it) delivers an
+/// <see cref="T:FCQRS.Common.ExpectationExhausted"/> message to the saga's
+/// event handler. Commands in <c>Resend</c> must be retry-safe (the same
+/// contract recovery re-drives already require) and must not carry their own
+/// <c>DelayInMs</c>.
+type Expectation =
+    {
+        /// The commands sent on state entry and re-sent on every retry tick.
+        Resend: ExecuteCommand list
+        /// Absolute time budget measured from the persisted state-entry time.
+        Deadline: TimeSpan
+        /// Cadence of re-sends inside the deadline window.
+        RetryEvery: RetrySchedule
+    }
+
+/// Delivered to the saga's event handler when an expectation's deadline has
+/// passed without a state transition. The handler must match this type and
+/// answer with a state change (typically to a domain failure or compensation
+/// state). An unhandled exhaustion is logged as an error and re-delivered one
+/// deadline period later; the framework never invents a terminal state. The
+/// original reply may still arrive after exhaustion — the escalated state's
+/// handler should decide what a late success means.
+type ExpectationExhausted =
+    {
+        /// Union-case name of the state whose expectation ran out.
+        StateName: string
+        /// The persisted entry time of that state.
+        EnteredAt: DateTime
+        /// Number of retry ticks that elapsed before exhaustion.
+        Attempts: int
+    }
+
 /// Represents the next state transition for a saga after processing an event or timeout.
 type SagaTransition<'State> =
     /// The saga should stop and terminate
@@ -602,6 +655,10 @@ type SagaTransition<'State> =
     | Stay
     /// The saga should transition to a new state
     | NextState of 'State
+    /// Stay in the current state, but declare that the expectation's commands
+    /// anticipate a state transition: the framework re-sends them on the
+    /// schedule and delivers ExpectationExhausted past the deadline.
+    | StayExpecting of Expectation
 
 /// Represents the state of a saga instance.
 /// <typeparam name="'SagaData">The type of the custom data held by the saga.</typeparam>
@@ -800,6 +857,7 @@ module SagaBuilder =
             match transition with
             | StopSaga -> StopSaga, commands
             | Stay -> Stay, commands
+            | StayExpecting exp -> StayExpecting exp, commands
             | NextState newState -> NextState(UserDefined newState), commands
 
     /// Wraps user's handleEvent to skip NotStarted but allow Started states

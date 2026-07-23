@@ -90,7 +90,12 @@ Keep these distinctions intact in code comments and documentation.
   explicitly recovery-aware.
 - A persisted saga state cannot make an external operation exactly once.
 - External calls need idempotency keys, timeouts, retry policy, and compensation or intervention paths.
-- Avoid circular workflows and give every expected event a domain timeout.
+- Avoid circular workflows and give every expected event a domain timeout, either hand-rolled with
+  `toSelfAfter` or declared with `StayExpecting`.
+- A `StayExpecting` deadline is measured from the persisted state-entry time; the reminder timer is
+  best-effort and re-arms on recovery, so restarts cannot postpone the deadline.
+- `ExpectationExhausted` means the outcome is unknown, not failed. The domain must answer it with a
+  transition, and the escalated state must expect that the original reply may still arrive.
 
 ### Best-effort async effects
 

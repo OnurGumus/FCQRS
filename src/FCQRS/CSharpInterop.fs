@@ -483,8 +483,25 @@ type SagaSideEffectResult<'TState>() =
     member val Transition: SagaTransition<'TState> = SagaTransition.Stay with get, set
     member val Commands: System.Collections.Generic.IList<ExecuteCommand> = System.Collections.Generic.List<ExecuteCommand>() with get, set
 
+    /// Optional expectation for a waiting state (null = none). Requires
+    /// Transition = Stay; the framework sends the expectation's Resend commands
+    /// on state entry, re-sends them on the schedule, and delivers
+    /// ExpectationExhausted to HandleEvent past the deadline.
+    member val Expect: Expectation = Unchecked.defaultof<Expectation> with get, set
+
     /// Convert commands to F# list for internal use
     member this.CommandsList = this.Commands |> List.ofSeq
+
+    /// The transition with Expect folded in (internal use).
+    member this.EffectiveTransition: SagaTransition<'TState> =
+        match box this.Expect with
+        | null -> this.Transition
+        | _ ->
+            match this.Transition with
+            | Stay -> StayExpecting this.Expect
+            | _ ->
+                invalidOp
+                    "SagaSideEffectResult.Expect requires Transition = Stay: an expectation declares what the current state is waiting for."
 
 /// C#-friendly helpers for SagaState
 type SagaStates =
@@ -509,6 +526,34 @@ type SagaTransitions =
     /// Stop the saga (completes the saga lifecycle)
     static member StopSaga<'TState>() : SagaTransition<'TState> =
         SagaTransition.StopSaga
+
+    /// Stay in the current state with a declared expectation (alternative to
+    /// setting SagaSideEffectResult.Expect alongside Stay)
+    static member StayExpecting<'TState>(expectation: Expectation) : SagaTransition<'TState> =
+        SagaTransition.StayExpecting expectation
+
+/// C#-friendly factories for saga expectation retry schedules
+type RetrySchedules =
+    /// Re-send at a fixed interval
+    static member Fixed(interval: TimeSpan) : RetrySchedule = FixedInterval interval
+
+    /// Re-send with exponential backoff (with jitter): first after `initial`,
+    /// multiplied by `factor` each time, capped at `max`
+    static member Backoff(initial: TimeSpan, factor: float, max: TimeSpan) : RetrySchedule =
+        RetrySchedule.Backoff(initial, factor, max)
+
+/// C#-friendly factory for saga expectations
+type Expectations =
+    /// Declare what a waiting state expects: `resend` is sent on state entry and
+    /// re-sent on `retryEvery` until a transition is persisted; past `deadline`
+    /// (measured from the persisted state-entry time) HandleEvent receives an
+    /// ExpectationExhausted message it must answer with a transition.
+    static member Create
+        (resend: System.Collections.Generic.IList<ExecuteCommand>, deadline: TimeSpan, retryEvery: RetrySchedule)
+        : Expectation =
+        { Resend = List.ofSeq resend
+          Deadline = deadline
+          RetryEvery = retryEvery }
 
 /// C#-friendly factory methods for saga EventAction
 type SagaEventActions =
@@ -618,7 +663,7 @@ type SagaApi =
         // Convert C# applySideEffects to F#
         let fsharpApplySideEffects (state: SagaState<'TSagaData, 'TSagaState>) (recovering: bool) : SagaTransition<'TSagaState> * ExecuteCommand list =
             let result = applySideEffects.Invoke(state, recovering)
-            (result.Transition, result.CommandsList)
+            (result.EffectiveTransition, result.CommandsList)
 
         // Convert C# apply to F#
         let fsharpApply (state: SagaState<'TSagaData, SagaStateWrapper<'TSagaState, 'TEvent>>) =
@@ -653,7 +698,7 @@ type SagaApi =
 
         let fsharpApplySideEffects (state: SagaState<'TSagaData, 'TSagaState>) (recovering: bool) : SagaTransition<'TSagaState> * ExecuteCommand list =
             let result = applySideEffects.Invoke(state, recovering)
-            (result.Transition, result.CommandsList)
+            (result.EffectiveTransition, result.CommandsList)
 
         let fsharpApply (state: SagaState<'TSagaData, SagaStateWrapper<'TSagaState, 'TEvent>>) =
             apply.Invoke(state)

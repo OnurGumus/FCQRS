@@ -970,6 +970,10 @@ saga stores its own progress and safely completes the matching document. Run aga
   envelope and handshake.
 - **Suppressing commands whenever `recovering = true`.** Re-drive an idempotent command or reconcile
   uncertain external work, otherwise the saga can remain stuck.
+- **Waiting without a deadline.** A slug that answers with an ignored command, or a lost message
+  between nodes, parks the saga forever. Give every wait a timeout;
+  [Write a saga](../how-to/write-a-saga.html) shows both the `toSelfAfter` reminder and the declared
+  `StayExpecting` form.
 - **Assuming `StopSaga` deletes history.** It completes and passivates the actor; persisted progress
   remains available for diagnostics and storage policy.
 

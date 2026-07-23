@@ -102,10 +102,83 @@ The command helpers select a target:
 The returned saga transition means:
 
 - `Stay`: keep waiting in the current state after sending commands;
+- `StayExpecting expectation`: keep waiting, but declare a timeout and retry policy for the wait (next
+  section);
 - `NextState next`: persist another state immediately and run its side effects;
 - `StopSaga`: send any returned commands, then complete and passivate. Delayed commands returned with
   `StopSaga` are still delivered — except `toSelfAfter` ones, which are cancelled with a warning so a
   completed saga cannot resurrect itself.
+
+## Give every wait a deadline
+
+A waiting state can hang forever for two reasons: the reply command produced no event (the target
+decided `IgnoreEvent`), or a message was lost between nodes. `StayExpecting` declares what the wait
+expects and what happens when it does not arrive:
+
+```fsharp
+| ReservingSlug(docId, slug) ->
+    expecting (TimeSpan.FromSeconds 30.0) (FixedInterval(TimeSpan.FromSeconds 5.0))
+        [ toAggregate slugFactory slug (Slug.Reserve docId) ],
+    []
+| PublicationFailed ->
+    Stay, [ toOriginator documentFactory (Document.FinishPublication Document.Rejected) ]
+```
+
+<div class="cs-alt"></div>
+
+```csharp
+PublicationState.ReservingSlug state => new()
+{
+    Transition = Stay(),
+    Expect = Expectations.Create(
+        [SagaCommands.ToAggregate(_slugs, state.Slug, new SlugCommand.Reserve(state.DocumentId))],
+        deadline: TimeSpan.FromSeconds(30),
+        retryEvery: RetrySchedules.Fixed(TimeSpan.FromSeconds(5)))
+},
+PublicationState.PublicationFailed => new()
+{
+    Transition = Stay(),
+    Commands = [SagaCommands.ToOriginator(
+        _documents, new DocumentCommand.FinishPublication(PublicationResult.Rejected))]
+},
+```
+
+The framework sends the expectation's commands on state entry, re-sends exactly those commands on the
+schedule while no state transition is persisted, and past the deadline delivers an
+`ExpectationExhausted` message to `handleEvent`. The handler must answer it with a transition,
+typically to a failure or compensation state the domain defines:
+
+```fsharp
+| :? ExpectationExhausted, Some(ReservingSlug _) ->
+    PublicationFailed |> StateChangedEvent
+```
+
+<div class="cs-alt"></div>
+
+```csharp
+(ExpectationExhausted, PublicationState.ReservingSlug) =>
+    StateChanged(new PublicationState.PublicationFailed()),
+```
+
+The rules that make this safe:
+
+- The deadline is measured from the persisted state-entry time, not from a timer. A restart or crash
+  loop re-arms the schedule from the journal and cannot postpone the deadline.
+- Re-sent commands must be retry-safe. This is the same contract recovery re-drives already impose;
+  the expectation adds no new obligation on the target aggregate.
+- A timeout means the outcome is unknown, not failed. The reply may still arrive after the saga
+  escalated, so the failure state's `handleEvent` should decide what a late success means instead of
+  ignoring it.
+- An unhandled `ExpectationExhausted` (no matching case, or a handler exception) is logged as an
+  error and re-delivered one deadline period later. The framework never invents a terminal state.
+- `Deadline` and `RetryEvery` are explicit; there are no defaults. Size the deadline above worst-case
+  shard handoff plus journal latency, and prefer `Backoff` (which applies jitter) when many sagas can
+  wait on the same aggregate.
+- One expectation per state. A state waiting on several aggregates with different deadlines should be
+  split into one state per wait.
+
+The hand-rolled equivalent — `toSelfAfter` with an attempt counter in the state — remains valid and
+shows exactly what the framework automates.
 
 ## Declare the start event
 

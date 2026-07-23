@@ -40,8 +40,75 @@ let private stateName (state: 'State) =
     | null -> "null"
     | boxed -> getUnionCaseName boxed
 
-let private toStateChange state =
-    state |> StateChanged |> box |> Persist :> Effect<obj>
+let private toStateChange (enteredAt: DateTime) state =
+    StateChanged(state, enteredAt) |> box |> Persist :> Effect<obj>
+
+/// Scheduled Self-message driving a saga expectation (retry ticks, exhaustion,
+/// and exhaustion re-delivery). Tagged with the saga Version at arming so a
+/// reminder armed by an earlier state is dropped after any state transition.
+/// Never persisted; it lives and dies with the scheduler.
+type internal ExpectationReminder = { ArmedVersion: int64 }
+
+/// Position within an expectation's schedule after `elapsed` time in the
+/// state: (completed retry ticks, delay until the next wake). The next wake is
+/// the earlier of the next retry tick and the deadline itself; None means the
+/// deadline has already passed. Pure: recovery recomputes the position from
+/// the persisted entry time, so a crash cannot reset the schedule.
+let internal expectationPosition (exp: Expectation) (elapsed: TimeSpan) : int * TimeSpan option =
+    let deadline = exp.Deadline
+
+    let intervals =
+        match exp.RetryEvery with
+        | FixedInterval dt -> Seq.initInfinite (fun _ -> dt)
+        | Backoff(initial, factor, max) ->
+            initial
+            |> Seq.unfold (fun (cur: TimeSpan) ->
+                let nextTicks = min max.Ticks (int64 (float cur.Ticks * factor))
+                Some(cur, TimeSpan.FromTicks nextTicks))
+
+    let mutable attempts = 0
+    let mutable cum = TimeSpan.Zero
+    let mutable nextTick = None
+
+    (let e = intervals.GetEnumerator()
+     let mutable go = true
+
+     while go && e.MoveNext() do
+         cum <- cum + e.Current
+
+         if cum >= deadline then go <- false
+         elif cum <= elapsed then attempts <- attempts + 1
+         else
+             nextTick <- Some cum
+             go <- false)
+
+    if elapsed >= deadline then
+        attempts, None
+    else
+        let wake =
+            match nextTick with
+            | Some t -> min t deadline
+            | None -> deadline
+
+        attempts, Some(wake - elapsed)
+
+/// An expectation whose schedule cannot make progress is a programming error
+/// surfaced at first use (expectations are runtime values, so there is no
+/// registration point to validate at). Returns Some error, None when valid.
+let internal validateExpectation (exp: Expectation) : string option =
+    let scheduleOk =
+        match exp.RetryEvery with
+        | FixedInterval dt -> dt > TimeSpan.Zero
+        | Backoff(initial, factor, max) -> initial > TimeSpan.Zero && factor >= 1.0 && max >= initial
+
+    if exp.Deadline <= TimeSpan.Zero then
+        Some "Expectation.Deadline must be positive"
+    elif not scheduleOk then
+        Some "Expectation.RetryEvery must have positive, non-shrinking intervals"
+    elif exp.Resend |> List.exists (fun c -> c.DelayInMs.IsSome) then
+        Some "Expectation.Resend commands must not carry DelayInMs; the retry schedule owns all timing"
+    else
+        None
 
 let private createCommand (mailbox: Eventsourced<_>) (command: 'TCommand) cid metadata =
     { CommandDetails = command
@@ -184,12 +251,19 @@ let private runSaga<'TEvent, 'SagaData, 'State when 'TEvent : not null and 'Stat
                 let hs = { hs with Incarnation = RecoveredFromJournal }
 
                 match event with
-                | StateChanged s ->
+                | StateChanged(s, enteredAt) ->
                     try
                         let newSagaState = applyNewState (wrapper s).SagaState
                         // Mirror the live path's per-event version bump so the recovered
                         // in-memory version matches and post-snapshot replay stays consistent.
-                        let newState = { state with SagaState = newSagaState; Version = state.Version + 1L }
+                        // StateEnteredAt comes from the journaled event, not the wall clock,
+                        // so expectation deadlines survive restarts unmoved.
+                        let newState =
+                            { state with
+                                SagaState = newSagaState
+                                Version = state.Version + 1L
+                                StateEnteredAt = enteredAt }
+
                         return! newState |> set hs
                     with ex ->
                         log.LogError(ex, "Fatal error during saga recovery for {0}. Terminating process to prevent restart loop.", mailbox.Self.Path.ToString())
@@ -257,7 +331,11 @@ let private runSaga<'TEvent, 'SagaData, 'State when 'TEvent : not null and 'Stat
                     match newState with
                     | Some newState ->
                         // Activity will be emitted when state is persisted (in Persisted branch)
-                        return! newState |> StateChanged |> box |> Persist <@> innerSet nextInner
+                        return!
+                            StateChanged(newState, mailbox.System.Scheduler.Now.UtcDateTime)
+                            |> box
+                            |> Persist
+                            <@> innerSet nextInner
                     | None ->
                         return! state |> set hs <@> innerSet nextInner
                 | None when hs.Incarnation.IsRecovery ->
@@ -272,7 +350,11 @@ let private runSaga<'TEvent, 'SagaData, 'State when 'TEvent : not null and 'Stat
 
                     match newState with
                     | Some newState ->
-                        return! newState |> StateChanged |> box |> Persist <@> innerSet nextInner
+                        return!
+                            StateChanged(newState, mailbox.System.Scheduler.Now.UtcDateTime)
+                            |> box
+                            |> Persist
+                            <@> innerSet nextInner
                     | None ->
                         return! state |> set hs <@> innerSet nextInner
                 | None ->
@@ -299,14 +381,18 @@ let private runSaga<'TEvent, 'SagaData, 'State when 'TEvent : not null and 'Stat
                         match newState with
                         | Some newState ->
                             // Activity will be emitted when state is persisted (in Persisted branch)
-                            return! newState |> StateChanged |> box |> Persist <@> innerSet nextInner
+                            return!
+                                StateChanged(newState, mailbox.System.Scheduler.Now.UtcDateTime)
+                                |> box
+                                |> Persist
+                                <@> innerSet nextInner
                         | None ->
                             return! state |> set hs <@> innerSet nextInner
                     else
                         return! innerSet nextInner
                 | :? SagaEvent<'State> as e ->
                     match e with
-                    | StateChanged originalState ->
+                    | StateChanged(originalState, enteredAt) ->
                         try
                             if messageFlowEnabled flowLogger then
                                 flowLogger.LogInformation(
@@ -330,7 +416,10 @@ let private runSaga<'TEvent, 'SagaData, 'State when 'TEvent : not null and 'Stat
                             let parentState =
                                 { outerState with
                                     SagaState = newSagaState
-                                    Version = version }
+                                    Version = version
+                                    // Anchor from the journaled event: expectation
+                                    // deadlines for this state measure from here.
+                                    StateEnteredAt = enteredAt }
 
                             let newState = applySideEffects parentState startingEvent false
 
@@ -352,7 +441,10 @@ let private runSaga<'TEvent, 'SagaData, 'State when 'TEvent : not null and 'Stat
                                 // activity). At a snapshot boundary we additionally snapshot the
                                 // just-confirmed state — without dropping this pending transition,
                                 // which the previous code did.
-                                let persistNext = newState |> StateChanged |> box |> Persist
+                                let persistNext =
+                                    StateChanged(newState, mailbox.System.Scheduler.Now.UtcDateTime)
+                                    |> box
+                                    |> Persist
 
                                 if dueForSnapshot then
                                     return!
@@ -457,8 +549,18 @@ let private actorProp<'SagaData, 'State, 'TEvent when 'TEvent : not null and 'St
             with ex ->
                 log.Debug(ex, "Error cancelling pending saga command during cleanup")
 
+    // The expectation armed by the current state (and its effective entry time),
+    // if any. In-memory on purpose: it dies with the timers it describes, and
+    // recovery re-populates both from the same re-drive. Reminder staleness is
+    // decided by the Version tag, not by this cell.
+    let armedExpectationRef: (Expectation * DateTime) option ref = ref None
+    // Latest starting event seen by applySideEffects, so the reminder path can
+    // dispatch re-sends with the same metadata a state-entry dispatch carries.
+    let lastStartingEventRef: option<SagaStarter.SagaStartingEvent<Event<'TEvent>>> ref = ref None
+
     let cleanupOnStop () =
         disposeCurrentActivity ()
+        armedExpectationRef.Value <- None
         cancelScheduled pendingCancelablesRef.Value
         pendingCancelablesRef.Value <- []
 
@@ -475,28 +577,13 @@ let private actorProp<'SagaData, 'State, 'TEvent when 'TEvent : not null and 'St
             | true, v when v > 0L -> Some v
             | _ -> Some 30L
 
-    let applySideEffects
-        (sagaState: ParentSaga<'SagaData, 'State>)
+    // Command dispatch, extracted from applySideEffects so the expectation
+    // reminder path can re-send a state's Resend commands without re-invoking
+    // the domain's applySideEffects.
+    let dispatchCommands
         (startingEvent: option<SagaStartingEvent<Event<'TEvent>>>)
-        recovering
-        : 'State option =
-        let transition, (cmds: ExecuteCommand list) =
-            try
-                applySideEffects2 sagaState.SagaState startingEvent recovering
-            with ex ->
-                log.Error(ex, "Fatal error in saga applySideEffects2 for {0}. Terminating process to prevent restart loop.", name)
-                fatalFailFast currentSagaActivityRef.Value "Process terminated due to saga error" ex
-
-                failwith "Process terminated due to saga error" // This line will never execute but satisfies the compiler
-
-        // Capture before dispatching: on StopSaga only reminders scheduled by
-        // EARLIER states are cancelled — delayed commands returned alongside
-        // StopSaga are the saga's final commands and must still fire. The one
-        // exception is Self-targeted delayed commands (tracked below): a
-        // completed saga must not be resurrected by its own final message.
-        let pendingBefore = pendingCancelablesRef.Value
-        let selfDelayed = ResizeArray<Akka.Actor.ICancelable * DateTime>()
-
+        (selfDelayed: ResizeArray<Akka.Actor.ICancelable * DateTime>)
+        (cmds: ExecuteCommand list) =
         for cmd in cmds do
             try
                 let createFinalCommand cmd =
@@ -574,7 +661,9 @@ let private actorProp<'SagaData, 'State, 'TEvent when 'TEvent : not null and 'St
                 // the application's message narrative — keep it out of the flow log.
                 let isInternalHandshake =
                     let t = cmd.Command.GetType()
-                    t.IsGenericType && t.GetGenericTypeDefinition() = typedefof<ContinueOrAbort<_>>
+
+                    (t.IsGenericType && t.GetGenericTypeDefinition() = typedefof<ContinueOrAbort<_>>)
+                    || t = typeof<ExpectationReminder>
 
                 if messageFlowEnabled flowLogger && not isInternalHandshake then
                     match cmd.DelayInMs with
@@ -664,6 +753,71 @@ let private actorProp<'SagaData, 'State, 'TEvent when 'TEvent : not null and 'St
                 log.Error(ex, "Fatal error in saga command processing for {0}. Terminating process to prevent restart loop.", name)
                 fatalFailFast currentSagaActivityRef.Value "Process terminated due to saga error" ex
 
+    // Arm exactly one wake-up for the armed expectation: the next retry tick or
+    // the deadline, whichever comes sooner, computed from the persisted entry
+    // time. Ticks that elapsed while the saga was down are skipped, so a
+    // recovery never fires a catch-up burst, and a crash loop cannot postpone
+    // the deadline (the anchor is journaled, not the timer).
+    let armExpectationReminder (exp: Expectation) (entered: DateTime) (version: int64) (delayOverride: TimeSpan option) =
+        let now = mailbox.System.Scheduler.Now.UtcDateTime
+
+        let delay =
+            match delayOverride with
+            | Some d -> d
+            | None ->
+                let _, next = expectationPosition exp (now - entered)
+
+                let baseDelay =
+                    match next with
+                    | Some d -> d
+                    | None -> TimeSpan.Zero // deadline already passed: wake immediately to exhaust
+
+                match exp.RetryEvery with
+                | Backoff _ ->
+                    // Jitter: sagas released together by one infrastructure blip
+                    // must not retry in lockstep against the same shard.
+                    TimeSpan.FromTicks(int64 (float baseDelay.Ticks * (0.8 + 0.4 * Random.Shared.NextDouble())))
+                | FixedInterval _ -> baseDelay
+
+        let delayMs = max 1L (int64 delay.TotalMilliseconds)
+
+        dispatchCommands
+            None
+            (ResizeArray())
+            [ { TargetActor = Self
+                Command = box { ArmedVersion = version }
+                DelayInMs = Some(delayMs, $"expectation:{name}:v{version}") } ]
+
+    let applySideEffects
+        (sagaState: ParentSaga<'SagaData, 'State>)
+        (startingEvent: option<SagaStartingEvent<Event<'TEvent>>>)
+        recovering
+        : 'State option =
+        let transition, (cmds: ExecuteCommand list) =
+            try
+                applySideEffects2 sagaState.SagaState startingEvent recovering
+            with ex ->
+                log.Error(ex, "Fatal error in saga applySideEffects2 for {0}. Terminating process to prevent restart loop.", name)
+                fatalFailFast currentSagaActivityRef.Value "Process terminated due to saga error" ex
+
+                failwith "Process terminated due to saga error" // This line will never execute but satisfies the compiler
+
+        // The reminder path re-sends with the same metadata a state entry uses.
+        lastStartingEventRef.Value <- startingEvent
+        // Whatever the previous state armed is superseded by this invocation;
+        // the StayExpecting branch below re-arms for the current state.
+        armedExpectationRef.Value <- None
+
+        // Capture before dispatching: on StopSaga only reminders scheduled by
+        // EARLIER states are cancelled — delayed commands returned alongside
+        // StopSaga are the saga's final commands and must still fire. The one
+        // exception is Self-targeted delayed commands (tracked below): a
+        // completed saga must not be resurrected by its own final message.
+        let pendingBefore = pendingCancelablesRef.Value
+        let selfDelayed = ResizeArray<Akka.Actor.ICancelable * DateTime>()
+
+        dispatchCommands startingEvent selfDelayed cmds
+
         // Handle ResumeFirstEvent behavior internally when needed
         match transition, recovering with
         | Stay, false ->
@@ -679,7 +833,36 @@ let private actorProp<'SagaData, 'State, 'TEvent when 'TEvent : not null and 'St
             // (duplicates and untracked batches are tolerated), so always re-signal.
             cont mediator
             None
-        | NextState newState, _ -> 
+        | StayExpecting exp, _ ->
+            // Same handshake as Stay in both directions: a fresh entry signals
+            // Continue, and a resurrected saga must re-signal it — skipping that
+            // re-creates the originator deadlock documented on the Stay branch.
+            cont mediator
+
+            (match validateExpectation exp with
+             | Some reason ->
+                 log.Error("Invalid saga expectation in {0}: {1}. Terminating process to prevent restart loop.", name, reason)
+
+                 fatalFailFast
+                     currentSagaActivityRef.Value
+                     "Process terminated due to saga error"
+                     (InvalidOperationException reason)
+             | None ->
+                 // Effective entry: the persisted state-entry time. A saga expecting
+                 // from its never-persisted initial state anchors at now instead
+                 // (recovery then re-anchors at recovery time — best effort there).
+                 let entered =
+                     if sagaState.StateEnteredAt = DateTime.MinValue then
+                         mailbox.System.Scheduler.Now.UtcDateTime
+                     else
+                         sagaState.StateEnteredAt
+
+                 armedExpectationRef.Value <- Some(exp, entered)
+                 dispatchCommands startingEvent selfDelayed exp.Resend
+                 armExpectationReminder exp entered sagaState.Version None)
+
+            None
+        | NextState newState, _ ->
             Some newState
         | StopSaga, _ ->
             disposeCurrentActivity ()
@@ -713,6 +896,67 @@ let private actorProp<'SagaData, 'State, 'TEvent when 'TEvent : not null and 'St
         let body (msg: obj) =
             actor {
                 match msg, sagaState with
+                | (:? ExpectationReminder as reminder), state ->
+                    match armedExpectationRef.Value with
+                    | Some(exp, entered) when reminder.ArmedVersion = state.Version ->
+                        let now = mailbox.System.Scheduler.Now.UtcDateTime
+                        let elapsed = now - entered
+
+                        if elapsed < exp.Deadline then
+                            // Retry tick: re-send exactly the expectation's commands
+                            // (never the state's other side effects) and arm the next
+                            // wake. Duplicate delivery is covered by the same
+                            // retry-safe contract recovery re-drives already require.
+                            dispatchCommands lastStartingEventRef.Value (ResizeArray()) exp.Resend
+                            armExpectationReminder exp entered state.Version None
+                            return! state |> set innerStateDefaults
+                        else
+                            let attempts, _ = expectationPosition exp elapsed
+
+                            let exhausted: ExpectationExhausted =
+                                { StateName = stateName state.SagaState.State
+                                  EnteredAt = entered
+                                  Attempts = attempts }
+
+                            if messageFlowEnabled flowLogger then
+                                flowLogger.LogInformation(
+                                    "Saga {Saga} expectation exhausted in {State} after {Attempts} attempt(s) [cid: {CID}]",
+                                    mailbox.Self.Path.Name,
+                                    exhausted.StateName,
+                                    attempts,
+                                    flowCid)
+
+                            // handleEvent exceptions are fatal by policy, but for this
+                            // framework-injected message a domain without a matching
+                            // case (MatchFailureException) must not kill the process:
+                            // downgrade to unhandled and re-deliver below.
+                            let action =
+                                try
+                                    handleEvent (box exhausted) state.SagaState
+                                with ex ->
+                                    log.Error(
+                                        ex,
+                                        "Saga {0} threw while handling ExpectationExhausted for state {1}; treating as unhandled.",
+                                        name,
+                                        exhausted.StateName)
+
+                                    UnhandledEvent
+
+                            match action with
+                            | StateChangedEvent newState -> return! newState |> toStateChange now
+                            | _ ->
+                                log.Error(
+                                    "Saga {0} left ExpectationExhausted for state {1} unhandled; re-delivering in {2}. Handle it with a transition to a failure or compensation state.",
+                                    name,
+                                    exhausted.StateName,
+                                    exp.Deadline)
+
+                                armExpectationReminder exp entered state.Version (Some exp.Deadline)
+                                return! state |> set innerStateDefaults
+                    | _ ->
+                        // Stale: armed by an earlier state (the version moved on) or
+                        // already cleaned up. Fired schedules are no-ops to cancel.
+                        return! sagaState |> set innerStateDefaults
                 | msg, state ->
                     try
                         let state: EventAction<'State> = handleEvent msg state.SagaState
@@ -727,7 +971,7 @@ let private actorProp<'SagaData, 'State, 'TEvent when 'TEvent : not null and 'St
 
                         match state with
                         | StateChangedEvent newState ->
-                            let newState = newState |> toStateChange
+                            let newState = newState |> toStateChange mailbox.System.Scheduler.Now.UtcDateTime
                             return! newState
                         | IgnoreEvent -> return! sagaState |> set innerStateDefaults
                         | Stash _
@@ -793,7 +1037,10 @@ let internal init<'SagaData, 'State, 'TEvent when 'TEvent : not null and 'State 
     =
     let initialState =
         { Version = 0L
-          SagaState = initialState }
+          SagaState = initialState
+          // Sentinel: no state has been persisted yet. An expectation armed from
+          // this initial state anchors at arming time instead.
+          StateEnteredAt = DateTime.MinValue }
 
     entityFactoryFor actorApi.System shardResolver name
      <| propsPersist (

@@ -159,6 +159,19 @@ let toSelfAfter (delayMs: int64) (taskName: string) (command: obj) : ExecuteComm
       Command = command
       DelayInMs = Some(delayMs, taskName) }
 
+/// Declare a saga expectation: stay in this state, send `resend` now, re-send
+/// exactly those commands on `retryEvery`, and once `deadline` (measured from
+/// the persisted state-entry time, so restarts cannot postpone it) has passed
+/// without a state transition, deliver an ExpectationExhausted message to
+/// HandleEvent. The handler must answer it with a transition, typically to a
+/// failure or compensation state. Resend commands must be retry-safe and must
+/// not carry their own DelayInMs.
+let expecting (deadline: System.TimeSpan) (retryEvery: RetrySchedule) (resend: ExecuteCommand list) : SagaTransition<'State> =
+    StayExpecting
+        { Resend = resend
+          Deadline = deadline
+          RetryEvery = retryEvery }
+
 // ---------------------------------------------------------------------------
 // Optional pipe-friendly aliases. The DU cases (PersistEvent, StateChangedEvent,
 // Stay, StopSaga ...) work directly too; these just read nicely in pipelines.

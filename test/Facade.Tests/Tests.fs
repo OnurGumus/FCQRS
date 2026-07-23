@@ -1742,9 +1742,304 @@ let private cidSeparatorTest =
         let ex = Expect.wantSome caught "CreateCID rejects a CID containing '~'"
         Expect.isTrue (ex :? ArgumentException) (sprintf "expected ArgumentException, got %s" (ex.GetType().Name))
 
+/// Saga exercising StayExpecting. Waiting expects the counter's WasReset while
+/// re-sending an Increment 1 marker (observable in the journal as the retry
+/// count); exhaustion escalates to Failed, whose side effect resets the counter
+/// (the compensation the tests observe). Saga names are per-test so sequential
+/// tests never share a journal identity.
+module Expecting =
+    type State =
+        | Waiting
+        | Failed
+        | Finished
+
+    let private handleEvent (evt: obj) (sagaState: SagaState<_, _>) =
+        match evt, sagaState.State with
+        | :? (Event<Counter.Event>) as e, None ->
+            match e.EventDetails with
+            | Counter.Incremented n when n >= 100 -> Waiting |> StateChangedEvent
+            | _ -> UnhandledEvent
+        | :? ExpectationExhausted, Some Waiting -> Failed |> StateChangedEvent
+        | :? (Event<Counter.Event>) as e, Some Waiting ->
+            match e.EventDetails with
+            | Counter.WasReset -> Finished |> StateChangedEvent
+            | _ -> UnhandledEvent
+        | :? (Event<Counter.Event>) as e, Some Failed ->
+            match e.EventDetails with
+            | Counter.WasReset -> Finished |> StateChangedEvent
+            | _ -> UnhandledEvent
+        | _ -> UnhandledEvent
+
+    let private applySideEffects deadline retry counterFactory (sagaState: SagaState<_, _>) _recovering =
+        match sagaState.State with
+        | Waiting -> expecting deadline retry [ toOriginator counterFactory (Counter.Increment 1 :> obj) ], []
+        | Failed -> Stay, [ toOriginator counterFactory (Counter.Reset :> obj) ]
+        | Finished -> StopSaga, []
+
+    let private startsOn (e: Event<Counter.Event>) =
+        match e.EventDetails with
+        | Counter.Incremented n -> n >= 100
+        | _ -> false
+
+    let definition name deadline retry counterFactory =
+        { Name = name
+          InitialData = ()
+          Originator = counterFactory
+          HandleEvent = handleEvent
+          ApplySideEffects = applySideEffects deadline retry counterFactory
+          StartOn = startsOn
+          Snapshots = Default }
+
+/// Saga that refuses to handle exhaustion: the first delivery throws, later
+/// ones are recorded and left unhandled — proving the framework downgrades the
+/// failure instead of fatally killing the process, and re-delivers.
+module ExpectIgnored =
+    type State = Waiting
+
+    let deliveries = ref 0
+
+    let private handleEvent (evt: obj) (sagaState: SagaState<_, _>) =
+        match evt, sagaState.State with
+        | :? (Event<Counter.Event>) as e, None ->
+            match e.EventDetails with
+            | Counter.Incremented n when n >= 100 -> Waiting |> StateChangedEvent
+            | _ -> UnhandledEvent
+        | :? ExpectationExhausted, Some Waiting ->
+            incr deliveries
+
+            if deliveries.Value = 1 then
+                failwith "domain forgot the exhaustion case"
+
+            UnhandledEvent
+        | _ -> UnhandledEvent
+
+    let private applySideEffects counterFactory (sagaState: SagaState<_, _>) _recovering =
+        match sagaState.State with
+        | Waiting ->
+            expecting (TimeSpan.FromMilliseconds 600.0) (FixedInterval(TimeSpan.FromSeconds 30.0)) [
+                toOriginator counterFactory (Counter.Poke :> obj)
+            ],
+            []
+
+    let private startsOn (e: Event<Counter.Event>) =
+        match e.EventDetails with
+        | Counter.Incremented n -> n >= 100
+        | _ -> false
+
+    let definition counterFactory =
+        { Name = "ExpectIgnored"
+          InitialData = ()
+          Originator = counterFactory
+          HandleEvent = handleEvent
+          ApplySideEffects = applySideEffects counterFactory
+          StartOn = startsOn
+          Snapshots = Default }
+
+let private bootExpecting (systemName: string) (sagaName: string) deadline retry (db: string) (lmdb: string option) =
+    registerJournalTypes ()
+
+    let cfg =
+        match lmdb with
+        | Some l ->
+            ConfigurationBuilder()
+                .AddInMemoryCollection(
+                    [ Collections.Generic.KeyValuePair<string, string | null>(
+                          "config:akka:cluster:distributed-data:durable:lmdb", l) ])
+                .Build()
+        | None -> ConfigurationBuilder().Build()
+
+    let api =
+        Fcqrs.actor cfg NullLoggerFactory.Instance
+            (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite (sprintf "Data Source=%s;" db))) systemName
+
+    let counter =
+        Fcqrs.aggregate api { Name = "Counter"; Initial = Counter.initial; Decide = Counter.decide; Fold = Counter.fold; Snapshots = Default }
+
+    let saga = Fcqrs.saga api (Expecting.definition sagaName deadline retry counter.Factory)
+    Fcqrs.wireSagaStarters api [ saga ]
+    api, counter
+
+/// Projection counting the expectation's Increment 1 markers while forwarding
+/// every counter event for read-your-writes subscriptions.
+let private markerProjection (markers: int ref) =
+    { LastOffset = 0
+      Handle =
+        fun (_offset: int64) (ev: obj) ->
+            match ev with
+            | :? (Event<Counter.Event>) as e ->
+                (match e.EventDetails with
+                 | Counter.Incremented 1 -> incr markers
+                 | _ -> ())
+
+                [ e :> IMessageWithCID ]
+            | _ -> [] }
+
+let private expectationSatisfiedTest =
+    testCase "expectation: a reply before the deadline stops the retry chain"
+    <| fun _ ->
+        let db = Path.Combine(Path.GetTempPath(), sprintf "fcqrs_expsat_%s.db" (Guid.NewGuid().ToString("N")))
+
+        let api, counter =
+            bootExpecting "ExpectSatSmoke" "ExpectSat" (TimeSpan.FromSeconds 20.0)
+                (FixedInterval(TimeSpan.FromMilliseconds 400.0)) db None
+
+        let markers = ref 0
+        let subs = Fcqrs.projection api (markerProjection markers)
+        let cid = Fcqrs.newCid ()
+
+        counter.Send cid (Fcqrs.aggregateId "sat1") (Counter.Increment 100)
+            (function Counter.Incremented _ -> true | _ -> false)
+        |> Async.RunSynchronously
+        |> ignore
+
+        // The entry marker proves the saga is IN Waiting (its expectation sent
+        // Increment 1) before the test satisfies it from outside.
+        let mutable waits = 0
+        while markers.Value < 1 && waits < 40 do
+            waits <- waits + 1
+            Threading.Thread.Sleep 250
+
+        Expect.isGreaterThanOrEqual markers.Value 1 "the expectation's Resend was sent on state entry"
+
+        // Same CID: the saga's subscription is keyed by its starting correlation
+        // id, so the satisfying WasReset must carry it.
+        counter.Send cid (Fcqrs.aggregateId "sat1") Counter.Reset
+            (function Counter.WasReset -> true | _ -> false)
+        |> Async.RunSynchronously
+        |> ignore
+
+        // Give the transition a moment to land, then require marker stability
+        // across three retry intervals: a live reminder chain would keep adding.
+        Threading.Thread.Sleep 1000
+        let afterSatisfied = markers.Value
+        Threading.Thread.Sleep 1300
+        Expect.equal markers.Value afterSatisfied "no re-send after the expectation was satisfied"
+        ignore subs
+        api.Stop().Wait(TimeSpan.FromSeconds 30.0) |> ignore
+
+let private expectationExhaustionTest =
+    testCase "expectation: retries re-send only the declared commands, then exhaustion escalates to the domain's Failed state"
+    <| fun _ ->
+        let db = Path.Combine(Path.GetTempPath(), sprintf "fcqrs_expexh_%s.db" (Guid.NewGuid().ToString("N")))
+
+        let api, counter =
+            bootExpecting "ExpectExhSmoke" "ExpectExh" (TimeSpan.FromMilliseconds 1300.0)
+                (FixedInterval(TimeSpan.FromMilliseconds 300.0)) db None
+
+        let markers = ref 0
+        let subs = Fcqrs.projection api (markerProjection markers)
+        use sawReset = subs.Subscribe(isWasReset, 1)
+
+        counter.Send (Fcqrs.newCid ()) (Fcqrs.aggregateId "exh1") (Counter.Increment 100)
+            (function Counter.Incremented _ -> true | _ -> false)
+        |> Async.RunSynchronously
+        |> ignore
+
+        // Nobody replies: the saga must retry, exhaust, transition to Failed,
+        // and Failed's side effect resets the counter (the compensation).
+        Expect.isTrue (sawReset.Task.Wait(TimeSpan.FromSeconds 25.0))
+            "exhaustion escalated to Failed, whose compensation reset the counter"
+
+        Expect.isGreaterThanOrEqual markers.Value 2
+            "the expectation re-sent its command at least once beyond state entry"
+
+        api.Stop().Wait(TimeSpan.FromSeconds 30.0) |> ignore
+
+let private expectationUnhandledTest =
+    testCase "expectation: a thrown or unhandled exhaustion is downgraded, re-delivered, and never kills the process"
+    <| fun _ ->
+        let db = Path.Combine(Path.GetTempPath(), sprintf "fcqrs_expign_%s.db" (Guid.NewGuid().ToString("N")))
+        registerJournalTypes ()
+
+        let api =
+            Fcqrs.actor (ConfigurationBuilder().Build()) NullLoggerFactory.Instance
+                (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite (sprintf "Data Source=%s;" db))) "ExpectIgnSmoke"
+
+        let counter =
+            Fcqrs.aggregate api { Name = "Counter"; Initial = Counter.initial; Decide = Counter.decide; Fold = Counter.fold; Snapshots = Default }
+
+        let saga = Fcqrs.saga api (ExpectIgnored.definition counter.Factory)
+        Fcqrs.wireSagaStarters api [ saga ]
+
+        ExpectIgnored.deliveries.Value <- 0
+
+        counter.Send (Fcqrs.newCid ()) (Fcqrs.aggregateId "ign1") (Counter.Increment 100)
+            (function Counter.Incremented _ -> true | _ -> false)
+        |> Async.RunSynchronously
+        |> ignore
+
+        // First delivery (~0.6s) throws inside handleEvent; the framework must
+        // downgrade it and re-deliver one deadline period later.
+        let mutable waits = 0
+        while ExpectIgnored.deliveries.Value < 2 && waits < 60 do
+            waits <- waits + 1
+            Threading.Thread.Sleep 250
+
+        Expect.isGreaterThanOrEqual ExpectIgnored.deliveries.Value 2
+            "ExpectationExhausted was re-delivered after being thrown/unhandled"
+
+        // And the process (this test run) is demonstrably still alive.
+        let ev =
+            counter.Send (Fcqrs.newCid ()) (Fcqrs.aggregateId "alive") (Counter.Increment 3)
+                (function Counter.Incremented _ -> true | _ -> false)
+            |> Async.RunSynchronously
+
+        Expect.equal ev.EventDetails (Counter.Incremented 3) "the system still processes commands"
+        api.Stop().Wait(TimeSpan.FromSeconds 30.0) |> ignore
+
+let private expectationRestartTest =
+    testCase "expectation: a restart mid-wait keeps the deadline anchored to the persisted entry time"
+    <| fun _ ->
+        let db = Path.Combine(Path.GetTempPath(), sprintf "fcqrs_expreb_%s.db" (Guid.NewGuid().ToString("N")))
+        let lmdb = Path.Combine(Path.GetTempPath(), sprintf "fcqrs_expreb_lmdb_%s" (Guid.NewGuid().ToString("N")))
+        let deadline = TimeSpan.FromMilliseconds 1500.0
+
+        // Phase 1: enter Waiting, prove it is journaled, then kill the system
+        // while the expectation is pending.
+        let api1, counter1 =
+            bootExpecting "ExpectRebootSmoke" "ExpectReboot" deadline (FixedInterval(TimeSpan.FromMilliseconds 500.0)) db (Some lmdb)
+
+        counter1.Send (Fcqrs.newCid ()) (Fcqrs.aggregateId "reb1") (Counter.Increment 100)
+            (function Counter.Incremented _ -> true | _ -> false)
+        |> Async.RunSynchronously
+        |> ignore
+
+        let sagaRows () =
+            use conn = new Microsoft.Data.Sqlite.SqliteConnection(sprintf "Data Source=%s;" db)
+            conn.Open()
+            use cmd = conn.CreateCommand()
+            cmd.CommandText <- "SELECT COUNT(*) FROM journal WHERE persistence_id LIKE '%~Saga~%'"
+            cmd.ExecuteScalar() :?> int64
+
+        let mutable attempts = 0
+        while (try sagaRows () with _ -> 0L) < 3L && attempts < 40 do
+            attempts <- attempts + 1
+            Threading.Thread.Sleep 250
+
+        Expect.isGreaterThanOrEqual (sagaRows ()) 3L "phase 1: Waiting (and its entry time) is journaled"
+        api1.Stop().Wait(TimeSpan.FromSeconds 30.0) |> ignore
+
+        // Phase 2: reboot on the same journal. The deadline anchor is the
+        // journaled entry time — by now long past — so the resurrected saga must
+        // exhaust promptly, escalate to Failed, and drive the compensation Reset.
+        let api2, _ =
+            bootExpecting "ExpectRebootSmoke" "ExpectReboot" deadline (FixedInterval(TimeSpan.FromMilliseconds 500.0)) db (Some lmdb)
+
+        let mutable seen = false
+        let mutable tries = 0
+
+        while not seen && tries < 15 do
+            tries <- tries + 1
+            let subs = Fcqrs.projection api2 { LastOffset = 0; Handle = projection }
+            use awaiter = subs.Subscribe(isWasReset, 1)
+            seen <- awaiter.Task.Wait(TimeSpan.FromSeconds 2.0)
+
+        Expect.isTrue seen "phase 2: the recovered expectation exhausted from its persisted entry time and compensated"
+        api2.Stop().Wait(TimeSpan.FromSeconds 30.0) |> ignore
+
 let tests =
     testSequenced (
-        testList "facade" [ manifestTest; roundTripTest; persistAllTest; manualSnapshotTest; telemetryTest; payloadSwitchTest; overflowTest; snapshotRecoveryTest; restartDetectionTest; filteredProjectionTest; persistIfTest; bridgeTest; pendingBridgeTest; focusShapeTest; journaledStampTest; runAsyncTest; aggregateRecoveryTest; commandTimeoutTest; concurrencyTest; stopSagaDelayedTest; timeProviderTest; dynamicConfigTest; freshStartSingleDeliveryTest; concurrentSagaStartTest; snapshotResurrectionTest; sendAwaitingTimeoutTest; slowSubscriberIsolationTest; specialCharEntityIdTest; filterThrowTest; hoconConnectionStringTest; crossTypeHandshakeTest; deferSnapshotTest; cidSeparatorTest ]
+        testList "facade" [ manifestTest; roundTripTest; persistAllTest; manualSnapshotTest; telemetryTest; payloadSwitchTest; overflowTest; snapshotRecoveryTest; restartDetectionTest; filteredProjectionTest; persistIfTest; bridgeTest; pendingBridgeTest; focusShapeTest; journaledStampTest; runAsyncTest; aggregateRecoveryTest; commandTimeoutTest; concurrencyTest; stopSagaDelayedTest; timeProviderTest; dynamicConfigTest; freshStartSingleDeliveryTest; concurrentSagaStartTest; snapshotResurrectionTest; sendAwaitingTimeoutTest; slowSubscriberIsolationTest; specialCharEntityIdTest; filterThrowTest; hoconConnectionStringTest; crossTypeHandshakeTest; deferSnapshotTest; cidSeparatorTest; expectationSatisfiedTest; expectationExhaustionTest; expectationUnhandledTest; expectationRestartTest ]
     )
 
 [<EntryPoint>]
