@@ -34,6 +34,9 @@
 .fssnip span.f   { color: var(--code-function-color); }
 .fssnip span.fn  { color: var(--code-function2-color); }
 .fssnip span.pat { color: var(--code-activepattern-color); }
+/* fsdocs defines --code-unioncase-color but ships no rule for span.uc, so
+   union cases render as plain text in both themes. */
+.fssnip span.uc  { color: var(--code-unioncase-color); }
 .fssnip span.u   { color: var(--code-unioncase-color); }
 .fssnip span.k   { color: var(--code-keywords-color); }
 .fssnip span.o   { color: var(--code-operators-color); }
@@ -225,6 +228,16 @@ pre.fssnip.highlighted,
        leaving the light-mode dark purple invisible on the navy panel. */
     --code-function-color: #a78bfa;
     --code-printf-color: #a78bfa;
+
+    /* fsdocs' dark values wash out the most common token classes on the navy
+       panel: identifiers are near-white lavender, keywords pale blue, strings
+       gray. Re-tint them; the hljs rules (C# tabs) read the same variables,
+       so both languages shift together. Keywords echo the landing code card's
+       green. */
+    --code-keywords-color: #77e58d;
+    --code-identifiers-color: #7fb8ff;
+    --code-strings-color: #e8c07b;
+    --code-numbers-color: #4ad3b5;
 }
 
 /* Headings echo the landing's tighter, navy display type. */
