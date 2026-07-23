@@ -194,9 +194,28 @@ pre.fssnip.highlighted,
 
     /* Identifiers are the bulk fallback class (all of a fenced snippet, every
        local in an evaluated one). Keep them neutral near-black so the real
-       accents (keywords, strings, types, union cases) carry the colour;
+       accents (keywords, strings, comments, numbers) carry the colour;
        fsdocs' default paints them purple, which reads as noise in bulk. */
     --code-identifiers-color: #24292f;
+
+    /* Consistency rule: colour only what the lexer knows for certain.
+       Fenced snippets inside tutorial pages are PARTIALLY typechecked, so
+       semantic classes (types, modules, union cases, functions, properties)
+       resolve for some tokens and not others — the same kind of name renders
+       in two colours inside one block. Alias every semantic class to the
+       identifier colour so name-like tokens are uniformly neutral everywhere;
+       keywords, strings, comments, and numbers are lexical and reliable, and
+       they keep the colour. The aliases resolve per-theme via var(), and the
+       hljs rules (C# tabs) read the same variables, so both languages match. */
+    --code-module-color: var(--code-identifiers-color);
+    --code-reference-color: var(--code-identifiers-color);
+    --code-value-color: var(--code-identifiers-color);
+    --code-unioncase-color: var(--code-identifiers-color);
+    --code-activepattern-color: var(--code-identifiers-color);
+    --code-function-color: var(--code-identifiers-color);
+    --code-function2-color: var(--code-identifiers-color);
+    --code-property-color: var(--code-identifiers-color);
+    --code-disposable-color: var(--code-identifiers-color);
 }
 
 :root[data-theme="dark"],
@@ -230,14 +249,11 @@ pre.fssnip.highlighted,
     --code-background: #06122a;    /* deep navy code panel */
     --code-fence-border-color: #16263f;
 
-    /* Dark code palette: VS Code Dark+ hues across the board. fsdocs' own
-       dark values washed out the common classes (near-white identifiers, pale
-       keywords, gray strings), and ad-hoc re-tints drifted into a green
-       monoculture (green keywords + green comments + teal union cases and
-       types). Dark+ is the hue distribution readers already trust: blue
-       keywords, light-blue identifiers and union cases, teal types and
-       modules, salmon strings, muted-green comments, yellow functions. The
-       hljs rules (C# tabs) read the same variables, so both languages match. */
+    /* Dark lexical palette (VS Code Dark+ hues): blue keywords, salmon
+       strings, muted-green comments, pale-green numbers. Name-like tokens
+       stay neutral via the :root consistency aliases — fenced snippets are
+       only partially typechecked, so semantic colours cannot be applied
+       uniformly and are not applied at all. */
     --code-keywords-color: #569cd6;
     /* Neutral near-white, mirroring the light theme's near-black: the bulk
        fallback class must not compete with the accent colours. */
@@ -245,15 +261,7 @@ pre.fssnip.highlighted,
     --code-strings-color: #ce9178;
     --code-numbers-color: #b5cea8;
     --code-comment-color: #6a9955;
-    --code-unioncase-color: #4fc1ff;
-    --code-activepattern-color: #4fc1ff;
-    --code-reference-color: #4ec9b0;
-    --code-value-color: #4ec9b0;
-    --code-module-color: #4ec9b0;
-    --code-property-color: #9cdcfe;
-    --code-function-color: #dcdcaa;
     --code-printf-color: #dcdcaa;
-    --code-function2-color: #dcdcaa;
     --code-operators-color: #d4d4d4;
 }
 
