@@ -224,23 +224,29 @@ pre.fssnip.highlighted,
     --code-background: #06122a;    /* deep navy code panel */
     --code-fence-border-color: #16263f;
 
-    /* fsdocs' dark palette brightens every code colour except these two,
-       leaving the light-mode dark purple invisible on the navy panel. */
-    --code-function-color: #a78bfa;
-    --code-printf-color: #a78bfa;
-
-    /* fsdocs' dark values wash out the most common token classes on the navy
-       panel: identifiers are near-white lavender, keywords pale blue, strings
-       gray. Re-tint them; the hljs rules (C# tabs) read the same variables,
-       so both languages shift together. Keywords echo the landing code card's
-       green. Identifiers stay deliberately calm (VS Code's dark identifier
-       blue): in FENCED snippets fsdocs has no type information, so nearly
-       every token is `id` — a saturated hue there reads as a wall of one
-       colour. */
-    --code-keywords-color: #77e58d;
+    /* Dark code palette: VS Code Dark+ hues across the board. fsdocs' own
+       dark values washed out the common classes (near-white identifiers, pale
+       keywords, gray strings), and ad-hoc re-tints drifted into a green
+       monoculture (green keywords + green comments + teal union cases and
+       types). Dark+ is the hue distribution readers already trust: blue
+       keywords, light-blue identifiers and union cases, teal types and
+       modules, salmon strings, muted-green comments, yellow functions. The
+       hljs rules (C# tabs) read the same variables, so both languages match. */
+    --code-keywords-color: #569cd6;
     --code-identifiers-color: #9cdcfe;
-    --code-strings-color: #e8c07b;
-    --code-numbers-color: #4ad3b5;
+    --code-strings-color: #ce9178;
+    --code-numbers-color: #b5cea8;
+    --code-comment-color: #6a9955;
+    --code-unioncase-color: #4fc1ff;
+    --code-activepattern-color: #4fc1ff;
+    --code-reference-color: #4ec9b0;
+    --code-value-color: #4ec9b0;
+    --code-module-color: #4ec9b0;
+    --code-property-color: #9cdcfe;
+    --code-function-color: #dcdcaa;
+    --code-printf-color: #dcdcaa;
+    --code-function2-color: #dcdcaa;
+    --code-operators-color: #d4d4d4;
 }
 
 /* Headings echo the landing's tighter, navy display type. */
