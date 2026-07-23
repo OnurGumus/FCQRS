@@ -191,6 +191,12 @@ pre.fssnip.highlighted,
     --blockquote-bacground-color: #f4f7fb;
     --code-fence-border-color: #e2e9f3;
     --code-background: #f2f6fc;    /* fsdocs default is pure white; set the panel off the page */
+
+    /* Identifiers are the bulk fallback class (all of a fenced snippet, every
+       local in an evaluated one). Keep them neutral near-black so the real
+       accents (keywords, strings, types, union cases) carry the colour;
+       fsdocs' default paints them purple, which reads as noise in bulk. */
+    --code-identifiers-color: #24292f;
 }
 
 :root[data-theme="dark"],
@@ -233,7 +239,9 @@ pre.fssnip.highlighted,
        modules, salmon strings, muted-green comments, yellow functions. The
        hljs rules (C# tabs) read the same variables, so both languages match. */
     --code-keywords-color: #569cd6;
-    --code-identifiers-color: #9cdcfe;
+    /* Neutral near-white, mirroring the light theme's near-black: the bulk
+       fallback class must not compete with the accent colours. */
+    --code-identifiers-color: #d4d4d4;
     --code-strings-color: #ce9178;
     --code-numbers-color: #b5cea8;
     --code-comment-color: #6a9955;
