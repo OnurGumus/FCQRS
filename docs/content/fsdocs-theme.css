@@ -37,6 +37,11 @@
 /* fsdocs defines --code-unioncase-color but ships no rule for span.uc, so
    union cases render as plain text in both themes. */
 .fssnip span.uc  { color: var(--code-unioncase-color); }
+
+/* Convention accents, assigned by fsdocs-tips.js (after the class rules above
+   so they win at equal specificity). */
+.fssnip span.conv-type { color: var(--conv-type-color); }
+.fssnip span.conv-fn   { color: var(--conv-fn-color); }
 .fssnip span.u   { color: var(--code-unioncase-color); }
 .fssnip span.k   { color: var(--code-keywords-color); }
 .fssnip span.o   { color: var(--code-operators-color); }
@@ -109,14 +114,14 @@ table.pre.lang-pane {
 .hljs-title.class_,
 .hljs-type,
 .hljs-class .hljs-title {
-    color: var(--code-reference-color);
+    color: var(--conv-type-color);
 }
 .hljs-title.function_ {
-    color: var(--code-function-color);
+    color: var(--conv-fn-color);
 }
 .hljs-attr,
 .hljs-property {
-    color: var(--code-property-color, var(--code-identifiers-color));
+    color: var(--conv-type-color);
 }
 .hljs-meta {
     color: var(--code-preprocessor-color);
@@ -216,6 +221,14 @@ pre.fssnip.highlighted,
     --code-function2-color: var(--code-identifiers-color);
     --code-property-color: var(--code-identifiers-color);
     --code-disposable-color: var(--code-identifiers-color);
+
+    /* Convention accents (VS Code Light+ values; dark block overrides).
+       Applied by fsdocs-tips.js from pure local syntax — PascalCase names,
+       and camelCase names applied to a parenthesised argument — so unlike
+       the semantic classes they can never differ between a fully checked
+       snippet and a partially checked fence. */
+    --conv-type-color: #267f99;
+    --conv-fn-color: #795e26;
 }
 
 :root[data-theme="dark"],
@@ -263,6 +276,9 @@ pre.fssnip.highlighted,
     --code-comment-color: #6a9955;
     --code-printf-color: #dcdcaa;
     --code-operators-color: #d4d4d4;
+
+    --conv-type-color: #4ec9b0;
+    --conv-fn-color: #dcdcaa;
 }
 
 /* Headings echo the landing's tighter, navy display type. */

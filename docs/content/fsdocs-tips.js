@@ -312,9 +312,57 @@ window.Clipboard_CopyTo = Clipboard_CopyTo;
         document.head.appendChild(core);
     }
 
+    // Convention accents for F# blocks. Semantic classes are unreliable here:
+    // fenced snippets inside tutorial pages are only PARTIALLY typechecked, so
+    // the same kind of name gets a semantic class in one place and falls back
+    // to `id` in another, and no selector can tell those blocks apart. The CSS
+    // therefore neutralises every semantic class, and this pass re-colours
+    // name-like tokens from pure local syntax instead — the two signals F#
+    // convention makes reliable: PascalCase names (types, modules, union
+    // cases, members) and camelCase names applied to a parenthesised argument
+    // (functions). Only a class is added; tooltip attributes are untouched.
+    const NAME_CLASSES = new Set(["id", "m", "rt", "vt", "uc", "fn", "prop", "pat", "d"]);
+
+    function nextVisibleChar(node) {
+        let n = node.nextSibling;
+        while (n) {
+            const t = n.textContent;
+            const m = t && t.match(/\S/);
+            if (m) return m[0];
+            n = n.nextSibling;
+        }
+        return "";
+    }
+
+    function markFSharpConventions(root) {
+        root.querySelectorAll('code[lang="fsharp"]').forEach(function (code) {
+            if (code.dataset.conv) return;
+            code.dataset.conv = "1";
+
+            code.querySelectorAll("span").forEach(function (span) {
+                const cls = span.classList;
+                let isName = false;
+                for (const c of cls) {
+                    if (NAME_CLASSES.has(c)) { isName = true; break; }
+                }
+                if (!isName) return;
+
+                const text = span.textContent;
+                if (!/^[A-Za-z_][A-Za-z0-9_']*$/.test(text)) return;
+
+                if (/^[A-Z]/.test(text)) {
+                    cls.add("conv-type");
+                } else if (nextVisibleChar(span) === "(") {
+                    cls.add("conv-fn");
+                }
+            });
+        });
+    }
+
     function init() {
         const root = document.getElementById("content") || document.body;
         buildPairs(root);
+        markFSharpConventions(root.ownerDocument || document);
         applyLang(preferred());
         loadHighlighter();
     }
