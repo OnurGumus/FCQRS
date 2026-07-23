@@ -785,7 +785,7 @@ let private actorProp<'SagaData, 'State, 'TEvent when 'TEvent : not null and 'St
             None
             (ResizeArray())
             [ { TargetActor = Self
-                Command = box { ArmedVersion = version }
+                Command = { ArmedVersion = version } :> obj
                 DelayInMs = Some(delayMs, $"expectation:{name}:v{version}") } ]
 
     let applySideEffects
