@@ -152,8 +152,11 @@ the next run can recover the aggregate and replay the projection. See
 ## Build the query side
 
 This tutorial uses an in-memory dictionary for query data. The projection starts at offset zero and
-replays all stored `Updated` events on every run. A production projection persists its read model and
-offset in one transaction; the in-memory version keeps the event-to-query transformation visible.
+replays all stored `Updated` events on every run. A production projection instead persists its read
+model and, in the same database transaction, the offset of the last event it applied. The shared
+transaction is what makes a crash safe: with separate writes, an offset saved first skips an event
+forever, and data saved first applies an event twice on restart. The in-memory version here keeps the
+event-to-query transformation visible.
 *)
 
 let readModel = ConcurrentDictionary<string, Document.Root>()

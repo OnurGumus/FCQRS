@@ -8,9 +8,20 @@ index: 3
 # Add a projection
 
 A projection receives journal events in order and updates data designed for queries. It also records an
-offset identifying the last event it committed. When the read-model update and offset share one
-database transaction, a crash commits both or neither. Retrying the uncommitted event then gives
-exactly-once updates within that transaction.
+offset identifying the last event it committed. This page's single most important rule: commit the
+read-model update and the new offset in the same database transaction.
+
+The rule matters because a crash can land between any two separate writes, and each ordering fails
+differently:
+
+- **Offset first, then data.** A crash in between advances the bookmark past an event that never
+  reached the read model. On restart the projection resumes after it. Nothing errors; the view is
+  simply missing that update and stays wrong until the read model is rebuilt.
+- **Data first, then offset.** A crash in between leaves the bookmark behind, so the event is applied
+  again on restart. An insert-or-replace absorbs the repeat; a counter or an append does not, and the
+  view drifts.
+- **Same transaction.** The crash commits both or neither. Retrying the uncommitted event gives
+  exactly-once updates within that store.
 
 > **Motivation:** Storing data and offset together removes ambiguity after a restart. The projection
 > either committed the event and moves past it, or committed neither and can safely try it again.

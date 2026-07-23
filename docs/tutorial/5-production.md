@@ -30,7 +30,9 @@ See [Configure the database](../how-to/configure-the-database.html).
 ## 2. Make every projection restart-safe
 
 Commit the read-model update and its offset in the same database transaction whenever they share a
-store. If a projection writes to a remote index or several databases, use idempotent writes and record
+store. Separate writes fail in one of two ways after a crash: an offset committed first skips an
+event forever, and data committed first applies an event twice.
+If a projection writes to a remote index or several databases, use idempotent writes and record
 enough information to resume safely. “The handler is called again” must be a supported case.
 
 Monitor projection failures and lag. A command may be safely stored while a query remains stale because

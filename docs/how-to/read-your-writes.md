@@ -7,9 +7,11 @@ index: 4
 
 # Read your writes
 
-An aggregate can store an event before a projection updates its read model. If a request sends a command
-and immediately queries, it may receive the previous view. Read-your-writes waits for the required
-projection before performing that query.
+Save a document and immediately open the page that shows it. With an asynchronous projection the page
+can still show the old content: the aggregate has stored the event, but the read model has not applied
+it yet. Nothing is broken, and waiting or refreshing would eventually show the save. A response that
+must include the caller's own change cannot ship "refresh in a moment", so read-your-writes closes the
+gap by waiting for the required projection before the query runs.
 
 > **Motivation:** Keep projections asynchronous for throughput and independence, then pay the waiting
 > cost only for a request whose response must include its own change.

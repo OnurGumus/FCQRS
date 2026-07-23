@@ -320,7 +320,9 @@ void HandleProjection(long _offset, object message)
 ```
 
 This projection starts at offset zero, so it rebuilds the dictionary from all stored events on every
-run. A durable read model stores its last offset with each update and resumes from there.
+run. A durable read model stores its last offset together with each update in one transaction and
+resumes from there; the shared transaction prevents a crash from skipping an event or applying one
+twice.
 
 ## 3. Create the actor system
 
