@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased (FCQRS core)
+## 6.1.0 (FCQRS core)
 
 - Saga expectations: a waiting state can return `StayExpecting { Resend; Deadline; RetryEvery }`
   (F# sugar `expecting`; C# `SagaSideEffectResult.Expect` with `Expectations` / `RetrySchedules`
