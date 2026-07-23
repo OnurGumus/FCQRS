@@ -180,6 +180,39 @@ The rules that make this safe:
 The hand-rolled equivalent — `toSelfAfter` with an attempt counter in the state — remains valid and
 shows exactly what the framework automates.
 
+## Exhaustion has two answers: escalate or renew
+
+Escalating to a failure state, as above, is correct while the workflow can still change its mind.
+Some waits cannot fail. Once a saga has persisted a decision that other aggregates may already have
+acted on — the commit phase of a two-phase workflow, a payment capture after authorization — the only
+correct behaviour is to keep delivering that decision until every participant has confirmed it.
+
+For such a wait, answer exhaustion by re-entering the same state:
+
+```fsharp
+| :? ExpectationExhausted, Some(Committing pending) ->
+    Committing pending |> StateChangedEvent
+```
+
+<div class="cs-alt"></div>
+
+```csharp
+(ExpectationExhausted, PublicationState.Committing committing) =>
+    StateChanged(committing),
+```
+
+A self-transition persists a new state entry, which re-anchors the deadline and re-arms the schedule:
+the saga retries forever, but in journaled cycles. Each renewal is a durable event operators can
+alert on, so a participant that never recovers shows up as a growing trail of renewals instead of a
+silent hang. This is the deliberate blocking behaviour of a commit phase made observable, not a bug.
+
+Choose per state:
+
+- **Escalate** when a timeout can still resolve the workflow (report a rejection, compensate,
+  release a hold). Anything before the decision point belongs here.
+- **Renew** when the state represents a decision already made. Never abort after the decision;
+  alert on repeated renewals and fix the participant instead.
+
 ## Declare the start event
 
 `StartOn` answers “which originator event creates one new instance of this saga?” Match only the event
