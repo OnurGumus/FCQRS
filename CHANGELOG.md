@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased (FCQRS core)
+
+- Saga expectations: a waiting state can return `StayExpecting { Resend; Deadline; RetryEvery }`
+  (F# sugar `expecting`; C# `SagaSideEffectResult.Expect` with `Expectations` / `RetrySchedules`
+  factories). The framework sends `Resend` on state entry, re-sends exactly those commands on the
+  schedule (backoff applies stretch-only jitter), and past the deadline delivers an
+  `ExpectationExhausted` message the saga's event handler must answer with a transition. A thrown or
+  unmatched exhaustion is logged as an error and re-delivered one deadline period later instead of
+  terminating the process.
+- BREAKING (persisted contract): the journaled saga `StateChanged` event and the saga snapshot
+  envelope now carry the state-entry timestamp that anchors expectation deadlines. Saga journals and
+  snapshots written by 6.0.0 are not readable by this release.
+- BREAKING (source): `SagaTransition<'State>` gained the `StayExpecting` case; F# code matching the
+  union exhaustively must add it.
+
 ## 6.0.0 (FCQRS core)
 Stable release of the 6.0.0 line (rc1 through rc6 plus two further audit
 rounds). Changes since rc6:

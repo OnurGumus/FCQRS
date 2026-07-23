@@ -217,7 +217,11 @@ For any outgoing saga command, failure may occur:
 - after the saga receives the event but before its next state is stored.
 
 No local transaction spans the saga journal and every participant. Design each step so repetition is
-safe, give every wait a timeout, and make failed or compensating states visible to operators.
+safe, give every wait a timeout, and make failed or compensating states visible to operators. A
+waiting state can declare its timeout with `StayExpecting`: the framework re-sends the declared
+commands on a schedule and, past a deadline anchored to the persisted state-entry time, delivers an
+`ExpectationExhausted` message the saga must answer with a transition.
+[Write a saga](../how-to/write-a-saga.html) shows the declared and the hand-rolled form.
 
 ## Compensation is a new action
 
