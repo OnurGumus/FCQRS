@@ -932,7 +932,7 @@ let private actorProp<'SagaData, 'State, 'TEvent when 'TEvent : not null and 'St
                             // downgrade to unhandled and re-deliver below.
                             let action =
                                 try
-                                    handleEvent (box exhausted) state.SagaState
+                                    handleEvent (exhausted :> obj) state.SagaState
                                 with ex ->
                                     log.Error(
                                         ex,
