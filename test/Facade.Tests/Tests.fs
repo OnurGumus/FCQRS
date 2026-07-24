@@ -1494,6 +1494,76 @@ let private bootOneShot (db: string) (lmdb: string) =
     Fcqrs.wireSagaStarters api [ saga ]
     api, counter
 
+/// A saga wired to a starting event whose type it structurally cannot receive.
+/// The saga is created and tracked by the starter's batch, but its receive loop
+/// matches no `SagaStartingEvent<Event<'TEvent>>` case — so before the fix it
+/// dropped the message without reporting `Continue`, the batch never completed,
+/// and the originator's handshake ran to its 30s timeout and KILLED THE PROCESS
+/// with a message about a timeout rather than about the miswiring that caused it.
+/// A misconfigured saga must be loud, not fatal.
+let private sagaTypeMismatchTest =
+    testCase "facade: a saga started with the wrong event type does not stall the originator"
+    <| fun _ ->
+        registerJournalTypes ()
+
+        let db = Path.Combine(Path.GetTempPath(), sprintf "fcqrs_mismatch_%s.db" (Guid.NewGuid().ToString("N")))
+
+        let api =
+            Fcqrs.actor (ConfigurationBuilder().Build()) NullLoggerFactory.Instance
+                (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite (sprintf "Data Source=%s;" db))) "MismatchSmoke"
+
+        let counter =
+            Fcqrs.aggregate api { Name = "Counter"; Initial = Counter.initial; Decide = Counter.decide; Fold = Counter.fold; Snapshots = Default }
+
+        // AutoReset's saga accepts Event<Counter.Event>; the raw starter API hands
+        // it a bare string instead. This is what the C# SagaDefinition surface
+        // allows, since its StartingEvent is untyped.
+        let saga = Fcqrs.saga api (AutoReset.definition counter.Factory)
+
+        api.InitializeSagaStarter(fun (evt: obj) ->
+            match evt with
+            | :? (Event<Counter.Event>) as e ->
+                match e.EventDetails with
+                | Counter.Incremented n when n >= 100 ->
+                    [ (saga.Factory, PrefixConversion(Some id), box "not-the-event-type-this-saga-accepts") ]
+                | _ -> []
+            | _ -> [])
+
+        let sw = Diagnostics.Stopwatch.StartNew()
+
+        let ev =
+            counter.Send (Fcqrs.newCid ()) (Fcqrs.aggregateId "mismatch") (Counter.Increment 100)
+                (function Counter.Incremented _ -> true | _ -> false)
+            |> Async.RunSynchronously
+
+        sw.Stop()
+
+        Expect.equal ev.EventDetails (Counter.Incremented 100) "the originator's command completed"
+
+        // The handshake bound is 30s and it used to be spent in full before the
+        // process died. Releasing the originator has to be prompt, not eventual.
+        Expect.isLessThan sw.Elapsed.TotalSeconds 15.0
+            "the miswired saga released the originator instead of stalling its handshake"
+
+        api.Stop().Wait(TimeSpan.FromSeconds 30.0) |> ignore
+
+/// A CID becomes part of pub-sub topic names and saga entity names, both built
+/// with '~' separators, so a CID containing one is parsed back wrong and the saga
+/// never hears its originator. C# has rejected this since `Values.CreateCID`; the
+/// F# facade had no equivalent until `Fcqrs.cid`.
+let private cidGuardTest =
+    testCase "facade: Fcqrs.cid rejects the correlation separator"
+    <| fun _ ->
+        Expect.throws (fun () -> Fcqrs.cid "order~42" |> ignore)
+            "a CID containing '~' is rejected"
+
+        let ok = Fcqrs.cid "order-42"
+        Expect.equal (ok |> ValueLens.Value |> ValueLens.Value) "order-42" "an ordinary id round-trips"
+
+        // The generated form needs no guard, but must still satisfy it.
+        let generated = Fcqrs.newCid () |> ValueLens.Value |> ValueLens.Value
+        Expect.isFalse (generated.Contains "~") "a generated CID never contains the separator"
+
 let private snapshotResurrectionTest =
     testCase "facade: a same-CID re-trigger of a snapshot-covered completed saga completes the handshake"
     <| fun _ ->
@@ -2146,7 +2216,7 @@ let private cliffProbe =
 
 let tests =
     testSequenced (
-        testList "facade" [ manifestTest; roundTripTest; persistAllTest; manualSnapshotTest; telemetryTest; payloadSwitchTest; overflowTest; snapshotRecoveryTest; restartDetectionTest; filteredProjectionTest; persistIfTest; bridgeTest; pendingBridgeTest; focusShapeTest; journaledStampTest; runAsyncTest; aggregateRecoveryTest; commandTimeoutTest; concurrencyTest; stopSagaDelayedTest; timeProviderTest; dynamicConfigTest; freshStartSingleDeliveryTest; concurrentSagaStartTest; sagaStartFanoutTest; snapshotResurrectionTest; sendAwaitingTimeoutTest; slowSubscriberIsolationTest; specialCharEntityIdTest; filterThrowTest; hoconConnectionStringTest; crossTypeHandshakeTest; deferSnapshotTest; cidSeparatorTest; expectationSatisfiedTest; expectationExhaustionTest; expectationUnhandledTest; expectationRestartTest ]
+        testList "facade" [ manifestTest; roundTripTest; persistAllTest; manualSnapshotTest; telemetryTest; payloadSwitchTest; overflowTest; snapshotRecoveryTest; restartDetectionTest; filteredProjectionTest; persistIfTest; bridgeTest; pendingBridgeTest; focusShapeTest; journaledStampTest; runAsyncTest; aggregateRecoveryTest; commandTimeoutTest; concurrencyTest; stopSagaDelayedTest; timeProviderTest; dynamicConfigTest; freshStartSingleDeliveryTest; concurrentSagaStartTest; sagaStartFanoutTest; sagaTypeMismatchTest; cidGuardTest; snapshotResurrectionTest; sendAwaitingTimeoutTest; slowSubscriberIsolationTest; specialCharEntityIdTest; filterThrowTest; hoconConnectionStringTest; crossTypeHandshakeTest; deferSnapshotTest; cidSeparatorTest; expectationSatisfiedTest; expectationExhaustionTest; expectationUnhandledTest; expectationRestartTest ]
     )
 
 [<EntryPoint>]

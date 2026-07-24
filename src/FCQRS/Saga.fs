@@ -483,6 +483,21 @@ let private runSaga<'TEvent, 'SagaData, 'State when 'TEvent : not null and 'Stat
                 cont mediator
                 return! innerSet hs
             | msg when msg.GetType().Name.StartsWith("SagaStartingEvent") ->
+                // A starting event whose payload type is not this saga's 'TEvent:
+                // the two cases above did not match it. Dropping it silently left
+                // the SagaStarter's batch unsatisfied, so the originator's
+                // handshake ran to its timeout and fail-fasted the process with a
+                // message about the timeout rather than about the real cause — a
+                // saga registered against an event type it cannot receive. Name
+                // the mismatch, then release the originator: a saga that never
+                // runs is a loud misconfiguration, not a reason to kill the host.
+                log.LogError(
+                    "Saga {Saga} was started with {Actual}, but it only accepts SagaStartingEvent<Event<{Expected}>>. This saga will not run. Check the event type its registration starts on.",
+                    mailbox.Self.Path.Name,
+                    msg.GetType().Name,
+                    typeof<'TEvent>.Name)
+
+                cont mediator
                 return! innerSet hs
 
             | _ ->

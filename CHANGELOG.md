@@ -25,6 +25,16 @@ every 6.x and 5.x release.
   limit on concurrent saga starts rather than removing it: measured on 12 cores, 1000 simultaneous
   starts across distinct aggregate instances now complete and 1500 still fail-fast. The starter warns
   the first time demand exceeds the ceiling, and logs an error if the runtime refuses the raise.
+- **A saga started with the wrong event type is loud instead of fatal**: a saga whose registration
+  starts it on an event its handler cannot structurally receive dropped the starting message without
+  reporting `Continue`, so the originator's handshake ran to its timeout and killed the process,
+  reporting the timeout rather than the miswiring behind it. The saga now logs an error naming the
+  received and expected types, then releases the originator. Reachable from the raw
+  `InitializeSagaStarter` overloads and from C#'s untyped `SagaDefinition.StartingEvent`.
+- **`Fcqrs.cid`**: builds a `CID` from a string you already hold and rejects `~`, the separator FCQRS
+  builds saga entity names and pub-sub topics from — a CID containing one is parsed back wrong and
+  leaves the saga permanently deaf. C# has rejected this since `Values.CreateCID`; the F# facade had
+  no equivalent. `Fcqrs.newCid` is unaffected.
 
 ## 6.1.0 (FCQRS core)
 
