@@ -1406,6 +1406,69 @@ let private concurrentSagaStartTest =
         Expect.isTrue (sawReset.Task.Wait(TimeSpan.FromSeconds 20.0))
             "the saga completed despite a concurrent command advancing the originator"
 
+/// Fan-out across DISTINCT aggregate instances, each starting a saga.
+///
+/// The saga-start handshake blocks the originator's dispatcher thread until every
+/// saga the event starts has subscribed, and Akka's default executor is the CLR
+/// ThreadPool — so N concurrent starts hold N pool threads and the sagas that must
+/// answer them cannot be scheduled. The pool only injects ~1-2 threads/sec past
+/// its floor, so the handshake bound expired and `fatalFailFast` KILLED THE
+/// PROCESS. Measured before the SagaStarter's adaptive floor: 5/5 runs killed at
+/// this fan-out, and intermittently from ~35.
+///
+/// `concurrencyTest` cannot catch this: 30 concurrent commands to ONE aggregate
+/// serialize through one entity, so only one thread ever blocks. The fan-out has
+/// to be across distinct entity ids.
+///
+/// NOTE: a regression here does not fail this test — it aborts the whole run with
+/// SIGABRT, because that is the failure mode being guarded.
+let private sagaStartFanoutTest =
+    testCase "facade: concurrent saga starts across distinct aggregates do not starve the thread pool"
+    <| fun _ ->
+        let fanout = 50
+        registerJournalTypes ()
+
+        let db = Path.Combine(Path.GetTempPath(), sprintf "fcqrs_fanout_%s.db" (Guid.NewGuid().ToString("N")))
+
+        let api =
+            Fcqrs.actor (ConfigurationBuilder().Build()) NullLoggerFactory.Instance
+                (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite (sprintf "Data Source=%s;" db))) "FanoutSmoke"
+
+        let counter =
+            Fcqrs.aggregate api { Name = "Counter"; Initial = Counter.initial; Decide = Counter.decide; Fold = Counter.fold; Snapshots = Default }
+
+        let saga = Fcqrs.saga api (AutoReset.definition counter.Factory)
+        Fcqrs.wireSagaStarters api [ saga ]
+
+        // Subscribe before sending: each saga drives one Reset back into its own
+        // originator, so a complete run yields exactly `fanout` WasReset events.
+        let subs = Fcqrs.projection api { LastOffset = 0; Handle = projection }
+        use sawResets = subs.Subscribe(isWasReset, fanout)
+
+        let acks =
+            [ for i in 1..fanout ->
+                counter.Send (Fcqrs.newCid ()) (Fcqrs.aggregateId (sprintf "fan%d" i)) (Counter.Increment 100)
+                    (function Counter.Incremented _ -> true | _ -> false) ]
+            |> Async.Parallel
+            |> Async.RunSynchronously
+
+        Expect.equal acks.Length fanout "every concurrent saga-starting command was acknowledged"
+
+        Expect.isTrue (sawResets.Task.Wait(TimeSpan.FromSeconds 60.0))
+            "every saga completed its workflow and drove its Reset"
+
+        // The adaptive floor is the mechanism under test: the starter must have
+        // lifted the pool above the process baseline (= core count) to cover the
+        // blocked handshakes.
+        let mutable minWorkers = 0
+        let mutable minIo = 0
+        Threading.ThreadPool.GetMinThreads(&minWorkers, &minIo)
+
+        Expect.isGreaterThan minWorkers Environment.ProcessorCount
+            "the SagaStarter raised the ThreadPool floor above the default to cover blocked handshakes"
+
+        api.Stop().Wait(TimeSpan.FromSeconds 30.0) |> ignore
+
 let private bootOneShot (db: string) (lmdb: string) =
     registerJournalTypes ()
 
@@ -2043,9 +2106,47 @@ let private expectationRestartTest =
         Expect.isTrue seen "phase 2: the recovered expectation exhausted from its persisted entry time and compensated"
         api2.Stop().Wait(TimeSpan.FromSeconds 30.0) |> ignore
 
+
+let private cliffProbe =
+    testCase "PROBE: cliff"
+    <| fun _ ->
+        let n = int (Environment.GetEnvironmentVariable "FANOUT_N")
+        registerJournalTypes ()
+        let db = Path.Combine(Path.GetTempPath(), sprintf "fcqrs_cliff_%s.db" (Guid.NewGuid().ToString("N")))
+        let kv (k: string) (v: string) = Collections.Generic.KeyValuePair<string, string | null>(k, v)
+        let cap = Environment.GetEnvironmentVariable "FANOUT_CAP"
+        let cfg =
+            ConfigurationBuilder()
+                .AddInMemoryCollection(
+                    [ kv "config:akka:loglevel" "WARNING"
+                      kv "config:akka:stdout-loglevel" "WARNING"
+                      if not (String.IsNullOrEmpty cap) then kv "config:akka:fcqrs:max-worker-threads" cap ])
+                .Build()
+        let api =
+            Fcqrs.actor cfg NullLoggerFactory.Instance
+                (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite (sprintf "Data Source=%s;" db))) "CliffSmoke"
+        let counter =
+            Fcqrs.aggregate api { Name = "Counter"; Initial = Counter.initial; Decide = Counter.decide; Fold = Counter.fold; Snapshots = Default }
+        let saga = Fcqrs.saga api (AutoReset.definition counter.Factory)
+        Fcqrs.wireSagaStarters api [ saga ]
+        let sw = Diagnostics.Stopwatch.StartNew()
+        let results =
+            [ for i in 1..n ->
+                counter.Send (Fcqrs.newCid ()) (Fcqrs.aggregateId (sprintf "c%d" i)) (Counter.Increment 100)
+                    (function Counter.Incremented _ -> true | _ -> false) ]
+            |> Async.Parallel
+            |> Async.RunSynchronously
+        sw.Stop()
+        let mutable w = 0
+        let mutable io = 0
+        Threading.ThreadPool.GetMinThreads(&w, &io)
+        printfn "PROBE-RESULT: n=%d OK in %.2fs (minWorkers %d, threads %d)" results.Length sw.Elapsed.TotalSeconds w Threading.ThreadPool.ThreadCount
+        Expect.equal results.Length n "all completed"
+
+
 let tests =
     testSequenced (
-        testList "facade" [ manifestTest; roundTripTest; persistAllTest; manualSnapshotTest; telemetryTest; payloadSwitchTest; overflowTest; snapshotRecoveryTest; restartDetectionTest; filteredProjectionTest; persistIfTest; bridgeTest; pendingBridgeTest; focusShapeTest; journaledStampTest; runAsyncTest; aggregateRecoveryTest; commandTimeoutTest; concurrencyTest; stopSagaDelayedTest; timeProviderTest; dynamicConfigTest; freshStartSingleDeliveryTest; concurrentSagaStartTest; snapshotResurrectionTest; sendAwaitingTimeoutTest; slowSubscriberIsolationTest; specialCharEntityIdTest; filterThrowTest; hoconConnectionStringTest; crossTypeHandshakeTest; deferSnapshotTest; cidSeparatorTest; expectationSatisfiedTest; expectationExhaustionTest; expectationUnhandledTest; expectationRestartTest ]
+        testList "facade" [ manifestTest; roundTripTest; persistAllTest; manualSnapshotTest; telemetryTest; payloadSwitchTest; overflowTest; snapshotRecoveryTest; restartDetectionTest; filteredProjectionTest; persistIfTest; bridgeTest; pendingBridgeTest; focusShapeTest; journaledStampTest; runAsyncTest; aggregateRecoveryTest; commandTimeoutTest; concurrencyTest; stopSagaDelayedTest; timeProviderTest; dynamicConfigTest; freshStartSingleDeliveryTest; concurrentSagaStartTest; sagaStartFanoutTest; snapshotResurrectionTest; sendAwaitingTimeoutTest; slowSubscriberIsolationTest; specialCharEntityIdTest; filterThrowTest; hoconConnectionStringTest; crossTypeHandshakeTest; deferSnapshotTest; cidSeparatorTest; expectationSatisfiedTest; expectationExhaustionTest; expectationUnhandledTest; expectationRestartTest ]
     )
 
 [<EntryPoint>]

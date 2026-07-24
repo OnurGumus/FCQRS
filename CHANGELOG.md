@@ -1,5 +1,31 @@
 # Changelog
 
+## 6.2.0 (FCQRS core)
+
+FCQRS core only; the satellite packages are unchanged.
+
+This release makes FCQRS raise the host process's `ThreadPool` minimum worker count — a
+process-global setting that affects all code in the process, not only FCQRS. That is why this is a
+minor release rather than a patch, even though it carries no API or journal change. The bug it fixes
+is not new in 6.1.0: the blocking handshake dates back to at least October 2024 and is present in
+every 6.x and 5.x release.
+
+- **Concurrent saga starts no longer kill the process**: the saga-start handshake blocks the
+  originator's dispatcher thread until the starter acknowledges, and Akka's default executor is the
+  CLR thread pool — so N simultaneous starts held N pool threads, the sagas expected to acknowledge
+  them could not be scheduled, and the handshake timed out into `Environment.FailFast`. Measured
+  before the fix: 50 concurrent commands to 50 distinct aggregate instances, each starting a saga,
+  killed the process on 5 of 5 runs (intermittently from ~35). The saga starter now raises the pool's
+  minimum worker count to cover the handshakes it has outstanding, bounded by the new
+  `config:akka:fcqrs:max-worker-threads` (default `1024`). The same fan-out now completes in seconds.
+  A thread-pool minimum is a floor, not a reservation, so threads are still created only as work
+  demands them. The baseline is captured once per process, so a host running several actor systems
+  does not ratchet the floor upward.
+- New configuration key `config:akka:fcqrs:max-worker-threads` (default `1024`). This RAISES the
+  limit on concurrent saga starts rather than removing it: measured on 12 cores, 1000 simultaneous
+  starts across distinct aggregate instances now complete and 1500 still fail-fast. The starter warns
+  the first time demand exceeds the ceiling, and logs an error if the runtime refuses the raise.
+
 ## 6.1.0 (FCQRS core)
 
 - Saga expectations: a waiting state can return `StayExpecting { Resend; Deadline; RetryEvery }`

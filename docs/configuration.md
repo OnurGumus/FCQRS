@@ -68,6 +68,7 @@ The .NET configuration path uses colons. The equivalent HOCON path uses nested o
 | `config:akka:fcqrs:saga-start-timeout` | `30` | Maximum seconds allowed for the saga-start handshake before fail-fast |
 | `config:akka:fcqrs:command-timeout` | `30s` | Maximum idle wait for a command subscription's matching aggregate reply before a `TimeoutException` |
 | `config:akka:fcqrs:notification-buffer` | `1024` | Buffer used for ephemeral projection notifications |
+| `config:akka:fcqrs:max-worker-threads` | `1024` | Ceiling on the thread-pool floor the saga starter raises to cover concurrent saga-start handshakes |
 | `config:akka:loglevel` | `OFF` | Akka.NET internal log level |
 | `config:akka:stdout-loglevel` | `OFF` | Akka.NET standard-output log level |
 
@@ -81,6 +82,22 @@ that suppresses the matching notification raises `TimeoutException` instead of h
 
 The notification buffer is not a durable queue. Notifications without an active subscriber may be
 dropped, which is correct for the request-scoped read-your-writes mechanism.
+
+The saga-start handshake is synchronous, so each concurrent start holds the thread its aggregate runs
+on until the starter acknowledges. The saga starter therefore raises the CLR thread pool's minimum
+worker count to cover the handshakes it has outstanding, up to `max-worker-threads`. A minimum is a
+floor rather than a reservation: threads are created only as work demands them, so raising the ceiling
+costs nothing until a burst of saga starts arrives. The floor is captured once per process and only
+ever raised, never lowered or restored.
+
+`max-worker-threads` is a real limit, not a tuning hint. Past it, saga-start handshakes time out and
+fail-fast the process, exactly as they did before the floor was adaptive. On a 12-core machine at the
+default ceiling, 1000 simultaneous saga starts across distinct aggregate instances complete and 1500
+do not. The starter logs a warning the first time demand exceeds the ceiling, and an error if the
+runtime refuses the raise outright (a lower process maximum). Values below the captured baseline are
+ignored — the floor is never lowered. This bounds concurrent saga *starts*, not command throughput:
+commands to one aggregate serialize through one entity. See
+[Sagas: durable coordination](concepts/sagas.html) for why the handshake blocks.
 
 Snapshot policy resolves in this order:
 

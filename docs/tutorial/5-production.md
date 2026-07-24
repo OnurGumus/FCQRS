@@ -104,6 +104,9 @@ Before release, run these exercises in a non-production environment:
 - delete snapshots and confirm full replay reaches the same state;
 - restore the database backup and verify representative aggregates and projections;
 - send concurrent commands to one aggregate and verify the domain outcome;
+- start sagas from many aggregate instances at once, at your expected peak, and confirm every workflow
+  completes — concurrent starts consume threads, so this differs from loading one aggregate (see
+  [Configuration](../configuration.html));
 - restart one cluster node and confirm entity routing continues.
 
 ## Completion checklist

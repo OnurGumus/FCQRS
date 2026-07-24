@@ -999,6 +999,17 @@ module SagaStarter =
         [<Literal>]
         let private sagaBatchTtlKey = "akka.fcqrs.saga-batch-ttl"
 
+        /// The ThreadPool minimums as they stood before any FCQRS saga starter
+        /// raised them. Captured ONCE per process, not per actor system: a
+        /// per-starter capture ratchets, because a second system's starter would
+        /// read the first one's raised floor as its own baseline and add on top.
+        let internal processBaselineThreads =
+            lazy
+                (let mutable w = 0
+                 let mutable io = 0
+                 Threading.ThreadPool.GetMinThreads(&w, &io)
+                 w, io)
+
         let internal resolveSagaBatchTtl (cfg: Akka.Configuration.Config) =
             try
                 if cfg.HasPath sagaBatchTtlKey then
@@ -1085,6 +1096,77 @@ module SagaStarter =
             =
             let log = mailbox.UntypedContext.GetLogger()
             let sagaBatchTtl = resolveSagaBatchTtl mailbox.System.Settings.Config
+
+            // Adaptive ThreadPool floor.
+            // The saga-start handshake blocks the originator's dispatcher thread,
+            // and Akka's default executor is the CLR ThreadPool: N concurrent
+            // handshakes hold N pool threads, so the sagas that must answer them
+            // cannot be scheduled. This starter is the one actor that knows how
+            // many handshakes are in flight — raise the floor to cover them.
+            let baselineWorkers = fst processBaselineThreads.Value
+
+            // Ceiling on the adaptive floor: a blocked handshake costs a thread,
+            // so this bounds how much of the process a saga-start burst can take.
+            // Never below the baseline: the floor is only ever raised.
+            let maxWorkers =
+                let cfg = mailbox.System.Settings.Config
+                let key = "akka.fcqrs.max-worker-threads"
+
+                let configured =
+                    try
+                        if cfg.HasPath key then cfg.GetInt(key, 1024) else 1024
+                    with _ -> 1024
+
+                max baselineWorkers configured
+
+            let mutable ensuredMin = baselineWorkers
+            let mutable cappedWarned = false
+            // Set once SetMinThreads has refused a value. It only refuses values
+            // outside the pool's legal range, and `desired` only grows, so a
+            // refusal is permanent — retrying it on every message would spin.
+            let mutable raiseRefused = false
+
+            let ensureThreads (inFlight: int) =
+                // Overshoot deliberately. The starter learns the in-flight count
+                // one message at a time (and its own mailbox backlog is invisible
+                // to it), but the blocked originators arrive as a burst — tracking
+                // the count exactly means the floor trails the demand and the
+                // handshake bound expires during the climb. A flat first jump plus
+                // 2x headroom converges in a few messages.
+                let demanded = baselineWorkers + max 64 (inFlight * 2)
+                let desired = min maxWorkers demanded
+
+                if desired > ensuredMin && not raiseRefused then
+                    // Read the IO minimum at call time and pass it back unchanged:
+                    // capturing it once would clobber a raise another component
+                    // made after this actor started.
+                    let mutable currentWorkers = 0
+                    let mutable currentIo = 0
+                    Threading.ThreadPool.GetMinThreads(&currentWorkers, &currentIo)
+
+                    if Threading.ThreadPool.SetMinThreads(desired, currentIo) then
+                        log.Info(
+                            "SagaStarter raised ThreadPool min worker threads {0} -> {1} ({2} handshake(s) in flight)",
+                            ensuredMin, desired, inFlight)
+
+                        ensuredMin <- desired
+                    else
+                        // Silence here would leave the original starvation in place
+                        // with no diagnostic at all.
+                        raiseRefused <- true
+
+                        log.Error(
+                            "SagaStarter could not raise ThreadPool min worker threads to {0} (the runtime refused it; the process maximum may be lower). Concurrent saga starts block a dispatcher thread each and may now time out and crash the process.",
+                            desired)
+
+                // Warn on genuine saturation only — demand above the ceiling — not
+                // merely on reaching it, which is the steady state once raised.
+                if demanded > maxWorkers && not cappedWarned then
+                    cappedWarned <- true
+
+                    log.Warning(
+                        "SagaStarter reached the ThreadPool ceiling of {0} worker threads with {1} saga-start handshake(s) in flight. Handshakes block a dispatcher thread each, so beyond this point they may time out and crash the process. Raise akka.fcqrs.max-worker-threads or reduce saga-starting concurrency.",
+                        maxWorkers, inFlight)
 
             let rec set (state: Map<string, (IActorRef * (string list * Guid) list)>) =
                 let startSaga
@@ -1183,6 +1265,10 @@ module SagaStarter =
 
                         return! set newState
                     | Command(CheckSagas(o, originator, cid)) ->
+                        // Every originator waiting on a handshake is a blocked
+                        // dispatcher thread; cover them before answering.
+                        ensureThreads (state.Count + 1)
+
                         match sagaCheck o with
                         | [] ->
                             mailbox.Sender() <! SagaCheckDone

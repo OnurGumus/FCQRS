@@ -167,6 +167,33 @@ FCQRS closes that race with a saga starter handshake:
 empty F# application still calls `wireSagaStarters api []` so runtime startup follows one explicit
 path.
 
+## The handshake costs a thread per concurrent start
+
+Step 2 above is synchronous. The originator waits for the starter's acknowledgement before persisting,
+which is what closes the race, and while it waits it holds the thread its aggregate is running on.
+Akka.NET's default executor is the CLR thread pool, so N aggregates starting sagas at the same moment
+hold N pool threads.
+
+That creates a cycle: the sagas expected to acknowledge the handshake need pool threads of their own,
+and the pool only injects one or two new threads per second once its floor is reached. Below that
+floor it creates threads on demand. Left alone, the handshakes time out and FCQRS fail-fasts the
+process.
+
+The saga starter is the one component that knows how many handshakes are outstanding, so it raises the
+pool's floor to cover them: a floor is not a reservation, and threads are still created only as work
+demands them. `config:akka:fcqrs:max-worker-threads` (default `1024`) bounds how far it will go.
+
+**This raises the limit; it does not remove it.** Concurrent saga starts remain bounded by that
+ceiling, and past it the handshake still times out and fail-fasts the process. Measured on a 12-core
+machine with the default ceiling, saga starts fanned out across distinct aggregate instances: 1000
+simultaneous starts complete, 1500 do not. The starter logs a warning the first time demand exceeds
+the ceiling, which is the signal to raise it.
+
+The limit is on **concurrent saga starts**, not on throughput. Commands to one aggregate serialize
+through one entity and hold one thread between them. Commands spread across many aggregate instances
+that each start a saga are the shape that consumes threads. If you expect that many simultaneous
+starts, measure your own ceiling and set it deliberately rather than discovering it under load.
+
 ## Resumption means re-drive, not rewind
 
 FCQRS stores each accepted saga state transition. On restart it loads a snapshot if available, replays
