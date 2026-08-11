@@ -44,10 +44,14 @@ let private toStateChange (enteredAt: DateTime) state =
     StateChanged(state, enteredAt) |> box |> Persist :> Effect<obj>
 
 /// Scheduled Self-message driving a saga expectation (retry ticks, exhaustion,
-/// and exhaustion re-delivery). Tagged with the saga Version at arming so a
-/// reminder armed by an earlier state is dropped after any state transition.
+/// and exhaustion re-delivery). Tagged with the arm epoch — a per-actor counter
+/// bumped on EVERY arm — so re-arming instantly stales whatever was armed before
+/// it. The saga Version cannot serve here: arming does not cancel the previous
+/// scheduled reminder, so two arms at one version (applySideEffects runs again
+/// for the same state when the start handshake acknowledges) left two live
+/// chains, each re-sending and re-arming for the life of the state.
 /// Never persisted; it lives and dies with the scheduler.
-type internal ExpectationReminder = { ArmedVersion: int64 }
+type internal ExpectationReminder = { ArmedEpoch: int64 }
 
 /// Position within an expectation's schedule after `elapsed` time in the
 /// state: (completed retry ticks, delay until the next wake). The next wake is
@@ -110,12 +114,15 @@ let internal validateExpectation (exp: Expectation) : string option =
     else
         None
 
-let private createCommand (mailbox: Eventsourced<_>) (command: 'TCommand) cid metadata =
+// `sender` is resolved once per actor (see selfAggregateId) rather than derived
+// here: a saga's name is its originator's id plus "~Saga~" and the cid, so it can
+// exceed the Sender field's length limit even when the originator's id was legal.
+let private createCommand (mailbox: Eventsourced<_>) (sender: AggregateId option) (command: 'TCommand) cid metadata =
     { CommandDetails = command
       CreationDate = mailbox.System.Scheduler.Now.UtcDateTime
       CorrelationId = cid
       Id = Guid.CreateVersion7().ToString() |> ValueLens.CreateAsResult |> Result.value
-      Sender = mailbox.Self.Path.Name |> ValueLens.CreateAsResult |> Result.value |> Some
+      Sender = sender
       Metadata = metadata }
 
 type private ParentSaga<'SagaData, 'State> = SagaStateWithVersion<'SagaData, 'State>
@@ -399,7 +406,9 @@ let private runSaga<'TEvent, 'SagaData, 'State when 'TEvent : not null and 'Stat
                                     "Saga {Saga} changed state to {State} [cid: {CID}]",
                                     mailbox.Self.Path.Name,
                                     stateName originalState,
-                                    mailbox.Self.Path.Name |> SagaStarter.Internal.toRawGuid)
+                                    mailbox.Self.Path.Name
+                                    |> SagaStarter.Internal.entityIdOf
+                                    |> SagaStarter.Internal.toRawGuid)
 
                             // Emit activity for the persisted state change
                             emitStateChangeActivity originalState
@@ -521,8 +530,12 @@ let private actorProp<'SagaData, 'State, 'TEvent when 'TEvent : not null and 'St
     (mediator: IActorRef<_>)
     (mailbox: Eventsourced<obj>)
     =
+    // The saga's own entity id: its path name is the shard-escaped form, and every
+    // name helper below parses entity ids (see SagaStarter.Internal.entityIdOf).
+    let selfEntityId = mailbox.Self.Path.Name |> SagaStarter.Internal.entityIdOf
+
     let baseCid: CID =
-        mailbox.Self.Path.Name |> SagaStarter.Internal.toRawGuid
+        selfEntityId |> SagaStarter.Internal.toRawGuid
         |> ValueLens.CreateAsResult
         |> Result.value
 
@@ -532,6 +545,24 @@ let private actorProp<'SagaData, 'State, 'TEvent when 'TEvent : not null and 'St
     let logger = loggerFactory.CreateLogger name
     let flowLogger = loggerFactory.CreateLogger Telemetry.MessageFlowCategory
     let flowCid = baseCid |> ValueLens.Value |> ValueLens.Value
+
+    // The saga's own id, stamped as the Sender of every command it issues. A saga
+    // name is <originator id>~Saga~<cid>, so it can overrun the field's length limit
+    // even though the originator's id was itself legal — which used to throw inside
+    // dispatchCommands and take the process down with it. Nothing routes on this
+    // field (delivery uses actor refs), so degrade to None and say so once.
+    let selfAggregateId: AggregateId option =
+        match ValueLens.CreateAsResult selfEntityId with
+        | Ok id -> Some id
+        | Error _ ->
+            log.Warning(
+                "Saga name {0} is {1} characters, past the {2}-character limit of a command's Sender field; commands this saga issues will carry no sender. Keep aggregate ids under {3} characters when a saga starts from them.",
+                selfEntityId,
+                selfEntityId.Length,
+                ShortStringMaxLength,
+                ShortStringMaxLength - SAGA_Suffix.Length - 36)
+
+            None
 
     // Ref cell to hold the current saga state activity (kept alive across iterations)
     // This is at actorProp level so both runSaga and applySideEffects can access it
@@ -567,8 +598,12 @@ let private actorProp<'SagaData, 'State, 'TEvent when 'TEvent : not null and 'St
     // The expectation armed by the current state (and its effective entry time),
     // if any. In-memory on purpose: it dies with the timers it describes, and
     // recovery re-populates both from the same re-drive. Reminder staleness is
-    // decided by the Version tag, not by this cell.
+    // decided by the arm epoch below, not by this cell.
     let armedExpectationRef: (Expectation * DateTime) option ref = ref None
+    // Bumped on every arm, and on cleanup, so exactly the most recent reminder is
+    // live. An already-scheduled reminder cannot be cancelled reliably (a fired
+    // schedule is a no-op to cancel), so staleness has to be decided on receipt.
+    let armEpochRef: int64 ref = ref 0L
     // Latest starting event seen by applySideEffects, so the reminder path can
     // dispatch re-sends with the same metadata a state-entry dispatch carries.
     let lastStartingEventRef: option<SagaStarter.SagaStartingEvent<Event<'TEvent>>> ref = ref None
@@ -576,6 +611,7 @@ let private actorProp<'SagaData, 'State, 'TEvent when 'TEvent : not null and 'St
     let cleanupOnStop () =
         disposeCurrentActivity ()
         armedExpectationRef.Value <- None
+        armEpochRef.Value <- armEpochRef.Value + 1L
         cancelScheduled pendingCancelablesRef.Value
         pendingCancelablesRef.Value <- []
 
@@ -624,13 +660,12 @@ let private actorProp<'SagaData, 'State, 'TEvent when 'TEvent : not null and 'St
                             Map.empty
 
                     // Keep baseCid for pub/sub routing - changing CID breaks saga event reception
-                    let command = createCommand mailbox cmd.Command baseCid baseMetadata
+                    let command = createCommand mailbox selfAggregateId cmd.Command baseCid baseMetadata
 
                     let unboxx (msg: Command<obj>) =
                         let genericType = typedefof<Command<_>>.MakeGenericType [| baseType |]
 
-                        let actorId: AggregateId option =
-                            mailbox.Self.Path.Name |> ValueLens.CreateAsResult |> Result.value |> Some
+                        let actorId: AggregateId option = selfAggregateId
 
                         FSharpValue.MakeRecord(
                             genericType,
@@ -646,7 +681,7 @@ let private actorProp<'SagaData, 'State, 'TEvent when 'TEvent : not null and 'St
                         let name =
                             match n with
                             | Name n -> n
-                            | Originator -> mailbox.Self.Path.Name |> toOriginatorName
+                            | Originator -> selfEntityId |> toOriginatorName
 
                         let factory = factory :?> (string -> IEntityRef<obj>)
                         factory name, createFinalCommand cmd
@@ -667,7 +702,7 @@ let private actorProp<'SagaData, 'State, 'TEvent when 'TEvent : not null and 'St
                 let targetStr =
                     match cmd.TargetActor with
                     | FactoryAndName { Name = Name n } -> n
-                    | FactoryAndName { Name = Originator } -> mailbox.Self.Path.Name |> toOriginatorName
+                    | FactoryAndName { Name = Originator } -> selfEntityId |> toOriginatorName
                     | Sender -> mailbox.Sender().Path.Name
                     | ActorRef _ -> "actorRef"
                     | Self -> mailbox.Self.Path.Name
@@ -773,7 +808,7 @@ let private actorProp<'SagaData, 'State, 'TEvent when 'TEvent : not null and 'St
     // time. Ticks that elapsed while the saga was down are skipped, so a
     // recovery never fires a catch-up burst, and a crash loop cannot postpone
     // the deadline (the anchor is journaled, not the timer).
-    let armExpectationReminder (exp: Expectation) (entered: DateTime) (version: int64) (delayOverride: TimeSpan option) =
+    let armExpectationReminder (exp: Expectation) (entered: DateTime) (delayOverride: TimeSpan option) =
         let now = mailbox.System.Scheduler.Now.UtcDateTime
 
         let delay =
@@ -801,12 +836,17 @@ let private actorProp<'SagaData, 'State, 'TEvent when 'TEvent : not null and 'St
         // fire again). At or after the tick, the recompute counts it done.
         let delayMs = max 1L (int64 (ceil delay.TotalMilliseconds))
 
+        // Bump first: from here on, any reminder armed earlier is stale, whether or
+        // not its schedule has already fired.
+        armEpochRef.Value <- armEpochRef.Value + 1L
+        let epoch = armEpochRef.Value
+
         dispatchCommands
             None
             (ResizeArray())
             [ { TargetActor = Self
-                Command = { ArmedVersion = version } :> obj
-                DelayInMs = Some(delayMs, $"expectation:{name}:v{version}") } ]
+                Command = { ArmedEpoch = epoch } :> obj
+                DelayInMs = Some(delayMs, $"expectation:{name}:e{epoch}") } ]
 
     let applySideEffects
         (sagaState: ParentSaga<'SagaData, 'State>)
@@ -879,7 +919,7 @@ let private actorProp<'SagaData, 'State, 'TEvent when 'TEvent : not null and 'St
 
                  armedExpectationRef.Value <- Some(exp, entered)
                  dispatchCommands startingEvent selfDelayed exp.Resend
-                 armExpectationReminder exp entered sagaState.Version None)
+                 armExpectationReminder exp entered None)
 
             None
         | NextState newState, _ ->
@@ -918,7 +958,7 @@ let private actorProp<'SagaData, 'State, 'TEvent when 'TEvent : not null and 'St
                 match msg, sagaState with
                 | (:? ExpectationReminder as reminder), state ->
                     match armedExpectationRef.Value with
-                    | Some(exp, entered) when reminder.ArmedVersion = state.Version ->
+                    | Some(exp, entered) when reminder.ArmedEpoch = armEpochRef.Value ->
                         let now = mailbox.System.Scheduler.Now.UtcDateTime
                         let elapsed = now - entered
 
@@ -928,7 +968,7 @@ let private actorProp<'SagaData, 'State, 'TEvent when 'TEvent : not null and 'St
                             // wake. Duplicate delivery is covered by the same
                             // retry-safe contract recovery re-drives already require.
                             dispatchCommands lastStartingEventRef.Value (ResizeArray()) exp.Resend
-                            armExpectationReminder exp entered state.Version None
+                            armExpectationReminder exp entered None
                             return! state |> set innerStateDefaults
                         else
                             let attempts, _ = expectationPosition exp elapsed
@@ -971,11 +1011,12 @@ let private actorProp<'SagaData, 'State, 'TEvent when 'TEvent : not null and 'St
                                     exhausted.StateName,
                                     exp.Deadline)
 
-                                armExpectationReminder exp entered state.Version (Some exp.Deadline)
+                                armExpectationReminder exp entered (Some exp.Deadline)
                                 return! state |> set innerStateDefaults
                     | _ ->
-                        // Stale: armed by an earlier state (the version moved on) or
-                        // already cleaned up. Fired schedules are no-ops to cancel.
+                        // Stale: superseded by a later arm (the epoch moved on) or
+                        // already cleaned up. Fired schedules are no-ops to cancel,
+                        // so staleness has to be decided here, on receipt.
                         return! sagaState |> set innerStateDefaults
                 | msg, state ->
                     try

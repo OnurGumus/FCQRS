@@ -1719,6 +1719,161 @@ let private specialCharEntityIdTest =
 
             Expect.equal ev.EventDetails (Counter.Incremented 5) (sprintf "the awaited event arrived for entity id '%s'" id)
 
+/// The command-subscription path above does NOT cover saga starting: Increment 5
+/// is below the saga's threshold. Every shape here used to break the saga-start
+/// handshake, because the saga's entity id was built from the originator's ALREADY
+/// ESCAPED actor path name and the shard escaped it a second time, so the starter's
+/// batch, the saga's topic and its Originator target all disagreed. The escaping
+/// cases and the CID case fail-fasted the process; the "~Saga~" case parked the
+/// saga silently forever; the long id overran the Sender field and fail-fasted.
+/// A WasReset on the case's own CID proves the whole round trip: handshake, saga
+/// subscription, and the Originator-targeted command reaching the right entity.
+let private sagaStartNameShapesTest =
+    testCase "facade: sagas start for every legal entity-id and CID shape"
+    <| fun _ ->
+        let counter, subs = boot ()
+
+        let cases =
+            [ "plain id", "counter1", Fcqrs.newCid ()
+              "id needing actor-name escaping", "counter 1", Fcqrs.newCid ()
+              "id with '+'", "user+1", Fcqrs.newCid ()
+              "non-ASCII id", "café", Fcqrs.newCid ()
+              // toOriginatorName must take the LAST "~Saga~", not the first.
+              "id containing the saga suffix", "x~Saga~y", Fcqrs.newCid ()
+              // A caller-supplied CID is spliced into the saga name too.
+              "CID needing escaping", "cidcase", Fcqrs.cid "req 1"
+              // Legal ShortString, but +"~Saga~"+cid overruns the Sender field:
+              // the saga must still run (sender degrades to None with a warning).
+              "id longer than the Sender field allows", String.replicate 250 "a", Fcqrs.newCid () ]
+
+        for (label, id, cid) in cases do
+            use sawReset = subs.Subscribe(cid, isWasReset, 1)
+
+            counter.Send cid (Fcqrs.aggregateId id) (Counter.Increment 100)
+                (function Counter.Incremented _ -> true | _ -> false)
+            |> Async.RunSynchronously
+            |> ignore
+
+            Expect.isTrue
+                (sawReset.Task.Wait(TimeSpan.FromSeconds 30.0))
+                (sprintf "the saga started and drove its reset for %s" label)
+
+/// A saga that chains a transition exactly at a snapshot boundary. With Every 2 the
+/// journal is wrapper(seq1), Started(v1,seq2), Working(v2,seq3 -> boundary),
+/// Done(v3,seq4) — and because Working's applySideEffects returns NextState, the
+/// framework combines `set <@> persistNext <@> SaveSnapshot` in one effect. The
+/// snapshot payload is the just-confirmed Working state, so it MUST be stamped with
+/// seq 3; stamped with seq 4 (the pending event's, which Akka assigns eagerly inside
+/// Persist) recovery would skip Done and come back in Working. Nothing in FCQRS
+/// orders those two effects — that is Akkling's doing — so this pins the behaviour.
+module private Chained =
+    type State =
+        | Working
+        | Done
+
+    let private handleEvent (evt: obj) (sagaState: SagaState<_, _>) =
+        match evt, sagaState.State with
+        | :? (Event<Counter.Event>) as e, None ->
+            match e.EventDetails with
+            | Counter.Incremented n when n >= 100 -> Working |> StateChangedEvent
+            | _ -> UnhandledEvent
+        | _ -> UnhandledEvent
+
+    let private applySideEffects (sagaState: SagaState<_, _>) _recovering =
+        match sagaState.State with
+        | Working -> NextState Done, []  // the chained transition at the boundary
+        | Done -> Stay, []               // park, so the journal stops growing
+
+    let private startsOn (e: Event<Counter.Event>) =
+        match e.EventDetails with
+        | Counter.Incremented n -> n >= 100
+        | _ -> false
+
+    let definition counterFactory =
+        { Name = "Chained"
+          InitialData = ()
+          Originator = counterFactory
+          HandleEvent = handleEvent
+          ApplySideEffects = applySideEffects
+          StartOn = startsOn
+          Snapshots = Every 2 }
+
+let private bootChained (db: string) (lmdb: string) =
+    registerJournalTypes ()
+
+    let cfg =
+        ConfigurationBuilder()
+            .AddInMemoryCollection(
+                [ Collections.Generic.KeyValuePair<string, string | null>(
+                      "config:akka:cluster:distributed-data:durable:lmdb", lmdb) ])
+            .Build()
+
+    let api =
+        Fcqrs.actor cfg NullLoggerFactory.Instance
+            (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite (sprintf "Data Source=%s;" db))) "ChainedSmoke"
+
+    let counter =
+        Fcqrs.aggregate api { Name = "Counter"; Initial = Counter.initial; Decide = Counter.decide; Fold = Counter.fold; Snapshots = Default }
+
+    let saga = Fcqrs.saga api (Chained.definition counter.Factory)
+    Fcqrs.wireSagaStarters api [ saga ]
+    api, counter
+
+let private chainedSnapshotTest =
+    testCase "facade: a snapshot taken alongside a pending transition does not swallow it"
+    <| fun _ ->
+        let db = Path.Combine(Path.GetTempPath(), sprintf "fcqrs_chain_%s.db" (Guid.NewGuid().ToString("N")))
+        let lmdb = Path.Combine(Path.GetTempPath(), sprintf "fcqrs_chain_lmdb_%s" (Guid.NewGuid().ToString("N")))
+
+        let sagaRows () =
+            use conn = new Microsoft.Data.Sqlite.SqliteConnection(sprintf "Data Source=%s;" db)
+            conn.Open()
+            use cmd = conn.CreateCommand()
+            cmd.CommandText <- "SELECT COUNT(*) FROM journal WHERE persistence_id LIKE '%~Saga~%'"
+            cmd.ExecuteScalar() :?> int64
+
+        let snapshotSeq () =
+            use conn = new Microsoft.Data.Sqlite.SqliteConnection(sprintf "Data Source=%s;" db)
+            conn.Open()
+            use cmd = conn.CreateCommand()
+            cmd.CommandText <- "SELECT COALESCE(MAX(sequence_number), 0) FROM snapshot WHERE persistence_id LIKE '%~Saga~%'"
+            cmd.ExecuteScalar() :?> int64
+
+        let api1, counter1 = bootChained db lmdb
+
+        counter1.Send (Fcqrs.newCid ()) (Fcqrs.aggregateId "chain1") (Counter.Increment 100)
+            (function Counter.Incremented _ -> true | _ -> false)
+        |> Async.RunSynchronously
+        |> ignore
+
+        // Wait for the whole chain (4 rows) and its snapshot to be durable.
+        let mutable attempts = 0
+        while ((try sagaRows () with _ -> 0L) < 4L || (try snapshotSeq () with _ -> 0L) = 0L) && attempts < 80 do
+            attempts <- attempts + 1
+            Threading.Thread.Sleep 250
+
+        Expect.equal (sagaRows ()) 4L "phase 1: wrapper + Started + Working + Done are journaled"
+
+        Expect.equal
+            (snapshotSeq ())
+            3L
+            "the snapshot is stamped with the CONFIRMED event's sequence number (3), not the pending transition's (4)"
+
+        api1.Stop().Wait(TimeSpan.FromSeconds 30.0) |> ignore
+        Threading.Thread.Sleep 1000
+
+        // Recovery must land in Done. Had it landed in Working, the re-drive would
+        // return NextState Done again and journal a 5th row.
+        let api2, _ = bootChained db lmdb
+        Threading.Thread.Sleep 6000
+
+        Expect.equal
+            (sagaRows ())
+            4L
+            "phase 2: recovery resumed in Done — the pending transition survived the snapshot"
+
+        api2.Stop().Wait(TimeSpan.FromSeconds 30.0) |> ignore
+
 let private filterThrowTest =
     testCase "facade: a throwing event filter fails the caller instead of hanging the subscription"
     <| fun _ ->
@@ -2216,7 +2371,7 @@ let private cliffProbe =
 
 let tests =
     testSequenced (
-        testList "facade" [ manifestTest; roundTripTest; persistAllTest; manualSnapshotTest; telemetryTest; payloadSwitchTest; overflowTest; snapshotRecoveryTest; restartDetectionTest; filteredProjectionTest; persistIfTest; bridgeTest; pendingBridgeTest; focusShapeTest; journaledStampTest; runAsyncTest; aggregateRecoveryTest; commandTimeoutTest; concurrencyTest; stopSagaDelayedTest; timeProviderTest; dynamicConfigTest; freshStartSingleDeliveryTest; concurrentSagaStartTest; sagaStartFanoutTest; sagaTypeMismatchTest; cidGuardTest; snapshotResurrectionTest; sendAwaitingTimeoutTest; slowSubscriberIsolationTest; specialCharEntityIdTest; filterThrowTest; hoconConnectionStringTest; crossTypeHandshakeTest; deferSnapshotTest; cidSeparatorTest; expectationSatisfiedTest; expectationExhaustionTest; expectationUnhandledTest; expectationRestartTest ]
+        testList "facade" [ manifestTest; roundTripTest; persistAllTest; manualSnapshotTest; telemetryTest; payloadSwitchTest; overflowTest; snapshotRecoveryTest; restartDetectionTest; filteredProjectionTest; persistIfTest; bridgeTest; pendingBridgeTest; focusShapeTest; journaledStampTest; runAsyncTest; aggregateRecoveryTest; commandTimeoutTest; concurrencyTest; stopSagaDelayedTest; timeProviderTest; dynamicConfigTest; freshStartSingleDeliveryTest; concurrentSagaStartTest; sagaStartFanoutTest; sagaTypeMismatchTest; cidGuardTest; snapshotResurrectionTest; sendAwaitingTimeoutTest; slowSubscriberIsolationTest; specialCharEntityIdTest; sagaStartNameShapesTest; chainedSnapshotTest; filterThrowTest; hoconConnectionStringTest; crossTypeHandshakeTest; deferSnapshotTest; cidSeparatorTest; expectationSatisfiedTest; expectationExhaustionTest; expectationUnhandledTest; expectationRestartTest ]
     )
 
 [<EntryPoint>]

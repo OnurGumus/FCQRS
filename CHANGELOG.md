@@ -1,5 +1,47 @@
 # Changelog
 
+## 6.2.1 (FCQRS core)
+
+FCQRS core only; the satellite packages are unchanged.
+
+Saga naming fixes. No journal or API change: every name below is byte-identical for ids and
+correlation ids that need no escaping, so existing journals and snapshots keep reading. Every id
+shape whose saga name does change was one that previously crashed the process or left the saga
+silently dead, so no working deployment changes behaviour.
+
+- **Sagas now start for every legal entity id and correlation id.** The saga's entity id was built
+  from the originator's *actor path name*, which the shard had already written as
+  `Uri.EscapeDataString(entityId)` — so the shard escaped it a second time when it named the saga
+  actor. Everything that recovered a name from that path then disagreed with everything that stored
+  one: the saga-starter's pending batch never matched the `Continue` it was waiting for, the
+  originator's start handshake ran to `akka.fcqrs.saga-start-timeout`, and the process died in
+  `Environment.FailFast`. Any character `Uri.EscapeDataString` touches triggered it — a space, `+`,
+  `%`, `/`, or any non-ASCII character — in **either** the aggregate id or a caller-supplied CID
+  (`Fcqrs.cid` / `Values.CreateCID` reject only `~`), and a custom `PrefixConversion` could inject
+  one too. Name parsing now works on entity ids throughout, and path names are unescaped at the
+  boundary. Two further consequences went with it: the saga subscribed to a topic the originator
+  never published to, and its `Originator`-targeted commands addressed a different aggregate entity.
+- **An aggregate id containing `~Saga~` no longer kills its saga silently.** `toOriginatorName` split
+  on the *first* occurrence of the suffix, so a saga started from id `x~Saga~y` resolved its
+  originator to `x`, subscribed to the wrong topic, and parked in `Started` forever — no crash, no
+  error, the command returning success. It now splits on the last occurrence, which is always the
+  framework's own (a CID cannot contribute one).
+- **A long aggregate id no longer fail-fasts the process.** A saga's name is its originator's id plus
+  `~Saga~` and a correlation id, and that name was pushed back through the 255-character limit of a
+  command's `Sender` field; ids past roughly 213 characters threw inside the saga's command dispatch,
+  which escalated to `Environment.FailFast`. The id is resolved once per saga and degrades to no
+  sender, with a warning naming the budget, instead of taking the host down.
+- **`Fcqrs.sendAwaiting` no longer reports a write as projected when its subscription merely ended.**
+  Only a *faulted* notification stream surfaced; one completed normally — by a kill switch, or by the
+  notification hub completing during actor-system shutdown — passed silently and returned the
+  aggregate's ack as though the read model were current. It now raises unless the awaited
+  notification actually arrived.
+- **Saga expectation reminders are keyed on an arm epoch instead of the saga version.** Arming does
+  not cancel the reminder already scheduled, and two arms at one version (`applySideEffects` runs
+  again for the same state when the start handshake acknowledges — reachable through the raw
+  `InitializeSaga` API) left two live retry chains, each re-sending and re-arming for the life of the
+  state. A monotonic epoch stales the previous chain on every arm.
+
 ## 6.2.0 (FCQRS core)
 
 FCQRS core only; the satellite packages are unchanged.

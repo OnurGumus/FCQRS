@@ -203,6 +203,12 @@ module internal Internal =
     [<Literal>]
     let CID_Separator = "~"
 
+    /// FCQRS.Model.Data.ShortString's cap, mirrored so the saga naming code can
+    /// explain a length failure in terms of the budget an aggregate id has left
+    /// once "~Saga~" and a correlation id are appended to it.
+    [<Literal>]
+    let ShortStringMaxLength = 255
+
     // Internal default shard resolver
     let shardResolver = fun _ -> DEFAULT_SHARD
 
@@ -953,9 +959,27 @@ module SagaStarter =
 
     [<AutoOpen>]
     module Internal =
-        // Internal helpers for manipulating saga/originator names and CIDs
+        /// The entity id behind an actor's Path.Name. The shard names entity actors
+        /// Uri.EscapeDataString(entityId), so a path name is the ESCAPED id and does
+        /// NOT round-trip through the name helpers below: they all parse ENTITY IDS.
+        /// Feeding a path name to them straight built saga names the shard then
+        /// escaped a second time ("counter 1" -> actor "counter%201" -> saga id
+        /// "counter%201~Saga~cid" -> saga actor "counter%25201~Saga~cid"), so the
+        /// starter's batch, the saga's topic and its Originator target all disagreed
+        /// and the start handshake fail-fasted the process. Identity for ids that
+        /// need no escaping, so existing names and journals are unaffected.
+        let internal entityIdOf (pathName: string) = Uri.UnescapeDataString pathName
+
+        // Internal helpers for manipulating saga/originator names and CIDs.
+        // All of these take ENTITY IDS (see entityIdOf), never actor path names.
+
+        /// LAST occurrence, not the first: the framework's own suffix is the last
+        /// one in a saga name, so an entity id that itself contains "~Saga~" still
+        /// resolves to the right originator. A CID cannot contribute one (CIDs
+        /// reject "~"). With IndexOf, id "x~Saga~y" resolved to "x" and the saga
+        /// silently never received an event.
         let internal toOriginatorName (name: string) =
-            let index = name.IndexOf(SAGA_Suffix)
+            let index = name.LastIndexOf(SAGA_Suffix)
             if index > 0 then name.Substring(0, index) else name
 
         let internal toRawGuid (name: string) =
@@ -967,13 +991,19 @@ module SagaStarter =
             let guid = existing |> toRawGuid
             originator + CID_Separator + guid
 
-        let internal toCid name =
-            let originator = (name |> toOriginatorName)
-            let guid = name |> toRawGuid
-            originator + CID_Separator + guid
-
         let internal cidToSagaName (name: string) = name + SAGA_Suffix
         let internal isSaga (name: string) = name.Contains(SAGA_Suffix)
+
+        /// The pub-sub topic correlated events flow over: the originator's ESCAPED
+        /// entity id (i.e. its actor path name) plus the raw CID. Publisher and both
+        /// subscribers (the saga and the command awaiter) must build it identically —
+        /// this is the one place that shape is defined.
+        let internal correlationTopic (originatorEntityId: string) (cid: string) =
+            Uri.EscapeDataString originatorEntityId + CID_Separator + cid
+
+        /// The topic a saga listens on, derived from its own entity id.
+        let internal sagaTopic (sagaEntityId: string) =
+            correlationTopic (toOriginatorName sagaEntityId) (toRawGuid sagaEntityId)
 
         // Internal constants for Saga Starter actor
         [<Literal>]
@@ -1030,8 +1060,13 @@ module SagaStarter =
             (event |> box |> Unchecked.nonNull, originator, cid) |> CheckSagas |> Command
 
         let internal toSendMessage (askTimeout: TimeSpan) mediator (originator: IActorRef<_>) event =
+            // Build from the originator's ENTITY ID, not its escaped path name: the
+            // shard escapes the saga id we derive here when it names the saga actor,
+            // and everything downstream recovers the id by unescaping that name.
             let cid =
-                toCidWithExisting originator.Path.Name (event.CorrelationId |> ValueLens.Value |> ValueLens.Value)
+                toCidWithExisting
+                    (originator.Path.Name |> entityIdOf)
+                    (event.CorrelationId |> ValueLens.Value |> ValueLens.Value)
 
             let message =
                 Send(SagaStarterPath, (event, untyped originator, cid) |> toCheckSagas, true)
@@ -1060,10 +1095,12 @@ module SagaStarter =
             logger.LogDebug("sender: {sender}", sender.Path.ToString())
             logger.LogDebug("Publishing event {event} from {self}", event, self.Path.ToString())
 
-            if sender.Path.Name |> isSaga then
-                let originatorName = sender.Path.Name |> toOriginatorName
+            let senderEntityId = sender.Path.Name |> entityIdOf
 
-                if originatorName <> self.Path.Name then
+            if senderEntityId |> isSaga then
+                let originatorName = senderEntityId |> toOriginatorName
+
+                if originatorName <> (self.Path.Name |> entityIdOf) then
                     sender <! event
 
             mediator <! Akka.Cluster.Tools.PublishSubscribe.Publish(self.Path.Name, event)
@@ -1073,11 +1110,11 @@ module SagaStarter =
             mediator <! box (Send(SagaStarterPath, Continue |> Command, true))
 
         let internal subscriber (mediator: IActorRef<_>) (mailbox: Eventsourced<_>) =
-            let topic = mailbox.Self.Path.Name |> toCid
+            let topic = mailbox.Self.Path.Name |> entityIdOf |> sagaTopic
             mediator <! box (Subscribe(topic, untyped mailbox.Self))
 
         let internal (|SubscriptionAcknowledged|_|) (context: Actor<obj>) (msg: obj) : obj option =
-            let topic = context.Self.Path.Name |> toCid
+            let topic = context.Self.Path.Name |> entityIdOf |> sagaTopic
 
             match msg with
             | :? SubscribeAck as s when s.Subscribe.Topic = topic -> Some msg
@@ -1184,7 +1221,7 @@ module SagaStarter =
                                       match prefix with
                                       | PrefixConversion None -> name
                                       | PrefixConversion(Some f) ->
-                                          originator.Path.Name + SAGA_Suffix + f (name |> toRawGuid)
+                                          (originator.Path.Name |> entityIdOf) + SAGA_Suffix + f (name |> toRawGuid)
                                   |> factory
 
                               let msg = unboxx e
@@ -1217,7 +1254,9 @@ module SagaStarter =
                     match! mailbox.Receive() with
                     | Command Continue ->
                         let sender = untyped <| mailbox.Sender()
-                        let sagaName = sender.Path.Name
+                        // Batches hold ENTITY IDS (saga.EntityId below), so recover the
+                        // id from the sender's escaped path name before matching.
+                        let sagaName = sender.Path.Name |> entityIdOf
 
                         // Remove only the first occurrence (not all) to handle duplicate entity IDs
                         let removeFirst item list =
@@ -1396,20 +1435,10 @@ module CommandHandler =
                                 | Execute cd ->
                                     let cid = cd.Cmd.CorrelationId |> ValueLens.Value |> ValueLens.Value
 
-                                    // The topic must match the publisher verbatim:
-                                    // publishEvent publishes to self.Path.Name + "~" + cid,
-                                    // and the shard names entity actors
-                                    // Uri.EscapeDataString(entityId) — so the path name
-                                    // is the ESCAPED id and the subscriber must escape too.
+                                    // Same shape as the publisher and the saga: the
+                                    // originator's escaped entity id plus the raw cid.
                                     mediator
-                                    <! box (
-                                        Subscribe(
-                                            (cd.EntityRef.EntityId |> System.Uri.EscapeDataString)
-                                            + CID_Separator
-                                            + cid,
-                                            untyped mailbox.Self
-                                        )
-                                    )
+                                    <! box (Subscribe(correlationTopic cd.EntityRef.EntityId cid, untyped mailbox.Self))
 
                                     cd
 

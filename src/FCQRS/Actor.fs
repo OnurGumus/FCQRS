@@ -144,7 +144,12 @@ module internal Internal =
                         { EventDetails = AbortedEvent
                           CreationDate = mailbox.System.Scheduler.Now.UtcDateTime
                           Id = Guid.CreateVersion7().ToString() |> ValueLens.CreateAsResult |> Result.value
-                          Sender = mailbox.Self.Path.Name |> ValueLens.CreateAsResult |> Result.value |> Some
+                          Sender =
+                            mailbox.Self.Path.Name
+                            |> SagaStarter.Internal.entityIdOf
+                            |> ValueLens.CreateAsResult
+                            |> Result.value
+                            |> Some
                           CorrelationId = e.CorrelationId
                           Version = state.Version
                           Metadata = e.Metadata }
@@ -152,7 +157,7 @@ module internal Internal =
                     // do NOT broadcast via mediator — other sagas sharing this CID must
                     // not be passivated by another saga's abort.
                     let sender = mailbox.Sender()
-                    if sender.Path.Name |> SagaStarter.Internal.isSaga then
+                    if sender.Path.Name |> SagaStarter.Internal.entityIdOf |> SagaStarter.Internal.isSaga then
                         sender <! abortedEvent
                     else
                         logger.LogWarning(
@@ -422,7 +427,14 @@ module internal Internal =
                             toEvent
                                 cmd.Id
                                 cmd.CorrelationId
-                                (mailbox.Self.Path.Name |> ValueLens.CreateAsResult |> Result.value |> Some)
+                                // The entity id, not the escaped path name: escaping can
+                                // push a legal id past the field's length limit, and the
+                                // id is what callers expect to read back.
+                                (mailbox.Self.Path.Name
+                                 |> SagaStarter.Internal.entityIdOf
+                                 |> ValueLens.CreateAsResult
+                                 |> Result.value
+                                 |> Some)
                                 cmd.Metadata
                         let effect =
                             try

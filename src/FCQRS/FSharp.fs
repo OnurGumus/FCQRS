@@ -358,7 +358,18 @@ module Fcqrs =
         (filter: 'Event -> bool)
         : Async<Event<'Event>> =
         async {
-            use awaiter = subscription.Subscribe(cid, 1)
+            // Whether the awaited notification actually arrived. The awaiter's Task
+            // completes on ANY stream end — including a kill-switch shutdown or the
+            // notification hub completing during actor-system shutdown — and those
+            // complete it SUCCESSFULLY, so the task alone cannot distinguish "the
+            // projection published" from "the stream went away". Without this flag a
+            // shutdown mid-wait returned the ack as though the read model were
+            // current: a false read-your-writes.
+            let mutable notified = false
+
+            use awaiter =
+                subscription.Subscribe(cid, 1, callback = (fun _ -> notified <- true))
+
             let! evt = handle.Send cid id command filter
 
             if evt.Journaled <> Some false then
@@ -380,11 +391,17 @@ module Fcqrs =
                     |> Async.AwaitTask
 
                 if obj.ReferenceEquals(winner, awaiter.Task) then
-                    // Await the winner: a subscription that faulted or completed
-                    // early (actor-system shutdown tearing the stream down
-                    // mid-wait) must surface, not pass for a projection
-                    // notification that never arrived.
+                    // Await the winner so a FAULTED subscription surfaces its
+                    // exception rather than passing for a notification.
                     do! awaiter.Task |> Async.AwaitTask |> Async.Ignore
+
+                    // ... and a subscription that merely ENDED must not pass either.
+                    if not notified then
+                        raise (
+                            System.InvalidOperationException(
+                                "The command was journaled, but the notification subscription ended before its projection notification arrived (typically the actor system shutting down mid-wait). The read model may not reflect this write."
+                            )
+                        )
                 else
                     raise (
                         System.TimeoutException(
