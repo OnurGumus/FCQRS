@@ -8,7 +8,7 @@ index: 5
 *)
 
 (*** hide ***)
-#r "nuget: FCQRS, 6.2.0"
+#r "nuget: FCQRS, 6.2.1"
 open System
 open System.Collections.Concurrent
 open Microsoft.Extensions.Configuration
