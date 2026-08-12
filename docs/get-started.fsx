@@ -8,7 +8,7 @@ index: 2
 *)
 
 (*** hide ***)
-#r "nuget: FCQRS, 6.2.1"
+#r "nuget: FCQRS, 6.3.0"
 
 (**
 # 0. Quickstart: follow one request end to end
@@ -368,7 +368,8 @@ let run () =
                   Initial = Document.initial
                   Decide = Document.decide
                   Fold = Document.fold
-                  Snapshots = Default }
+                  Snapshots = Default
+                  Passivation = PassivationPolicy.Default }
 
         Fcqrs.wireSagaStarters api []
         let subscriptions = Fcqrs.projection api (Projection.single 0 handleProjection)

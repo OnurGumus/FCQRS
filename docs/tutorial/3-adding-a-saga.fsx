@@ -8,7 +8,7 @@ index: 5
 *)
 
 (*** hide ***)
-#r "nuget: FCQRS, 6.2.1"
+#r "nuget: FCQRS, 6.3.0"
 open System
 open System.Collections.Concurrent
 open Microsoft.Extensions.Configuration
@@ -748,7 +748,8 @@ let wire (api: IActor) =
               Initial = Document.initial
               Decide = Document.decide
               Fold = Document.fold
-              Snapshots = Default }
+              Snapshots = Default
+              Passivation = PassivationPolicy.Default }
 
     let slugs =
         Fcqrs.aggregate api
@@ -756,7 +757,8 @@ let wire (api: IActor) =
               Initial = Slug.initial
               Decide = Slug.decide
               Fold = Slug.fold
-              Snapshots = Default }
+              Snapshots = Default
+              Passivation = PassivationPolicy.Default }
 
     let publication =
         Fcqrs.saga api (PublicationSaga.definition documents.Factory slugs.Factory)

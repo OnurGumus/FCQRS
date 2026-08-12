@@ -8,7 +8,7 @@ index: 4
 *)
 
 (*** hide ***)
-#r "nuget: FCQRS, 6.2.1"
+#r "nuget: FCQRS, 6.3.0"
 open System
 open System.Collections.Concurrent
 open Microsoft.Extensions.Configuration
@@ -221,7 +221,8 @@ let run () =
                   Initial = Document.initial
                   Decide = Document.decide
                   Fold = Document.fold
-                  Snapshots = Default }
+                  Snapshots = Default
+                  Passivation = PassivationPolicy.Default }
 
         Fcqrs.wireSagaStarters api []
 

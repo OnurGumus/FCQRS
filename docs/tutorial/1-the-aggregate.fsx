@@ -8,7 +8,7 @@ index: 3
 *)
 
 (*** hide ***)
-#r "nuget: FCQRS, 6.2.1"
+#r "nuget: FCQRS, 6.3.0"
 open System
 open FCQRS.Common
 open FCQRS.Model.Data
@@ -360,7 +360,8 @@ commands. The actor lifecycle, sharding, persistence, and recovery stay outside 
               Initial = initial
               Decide = decide
               Fold = fold
-              Snapshots = Default }        // snapshot cadence: Default | NoSnapshots | Every n
+              Snapshots = Default                    // cadence: Default | NoSnapshots | Every n
+              Passivation = PassivationPolicy.Default }  // idle passivation: Default | After t | Never
 
 (**
 <div class="cs-alt"></div>
