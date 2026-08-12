@@ -112,6 +112,78 @@ A snapshot changes replay cost, not the events that define recoverable state.
 Set `config:akka:scheduler` to FCQRS's `ObservingScheduler` only in tests that control delayed saga
 commands with a virtual clock.
 
+## Passivation timing
+
+An aggregate actor that receives no message for `akka.cluster.sharding.passivate-idle-entity-after`
+is stopped and releases its in-memory state. Akka.NET's default is `120s`. Raise it for aggregates
+whose replay is expensive relative to their idle memory, lower it for a large keyspace touched once,
+and set `0` to disable idle passivation entirely.
+
+```hocon
+config.akka.cluster.sharding.passivate-idle-entity-after = 30m
+```
+
+Keys nested under the entity name override the shared block for that entity type alone:
+
+```hocon
+config.akka.cluster.sharding {
+  passivate-idle-entity-after = 30m   # every aggregate type
+  Order.passivate-idle-entity-after = 2h   # the Order aggregate only
+  Session.passivate-idle-entity-after = 30s
+}
+```
+
+The override key is the `Name` in the aggregate definition, the same string used to build the
+persistence id, so renaming an aggregate moves this key along with its journal contract.
+
+An aggregate whose idle policy belongs to the domain rather than to the deployment can carry it in
+its definition, where it outranks both configuration levels:
+
+```fsharp
+Fcqrs.aggregate api
+    { Name = "Order"
+      Initial = initial
+      Decide = decide
+      Fold = fold
+      Snapshots = Default
+      Passivation = PassivationPolicy.After(TimeSpan.FromHours 2.0) }
+```
+
+<div class="cs-alt"></div>
+
+```csharp
+public sealed class OrderAggregate : Aggregate<OrderState, OrderCommand, OrderEvent>
+{
+    public override PassivationPolicy PassivationPolicy =>
+        PassivationPolicy.NewAfter(TimeSpan.FromHours(2));
+}
+```
+
+`PassivationPolicy.Never` keeps the entity resident until the node stops or the shard moves.
+`PassivationPolicy.Default` leaves configuration in charge, so the full order is:
+
+1. the aggregate definition's `After` or `Never`;
+2. `akka.cluster.sharding.<EntityName>.passivate-idle-entity-after`;
+3. `akka.cluster.sharding.passivate-idle-entity-after`;
+4. Akka.NET's `120s`.
+
+Choosing `Never` means the entity holds memory for as long as the node runs. It bounds recovery
+cost, not memory, so it suits a small, bounded set of hot aggregates rather than an open keyspace.
+
+Two limits apply:
+
+- Only messages routed through cluster sharding count as activity. Messages an entity sends to
+  itself, and direct sends to a resolved `IActorRef`, do not reset the idle timer.
+- Sagas are never idle-passivated. FCQRS starts saga regions with remembered entities, and Akka
+  disables idle passivation whenever that is on. A saga stops when its workflow reaches `StopSaga`
+  or aborts, so a saga that never terminates stays resident by design.
+
+Passivation is not a per-instance setting: every entity of a type shares one timeout, whether it comes
+from configuration or from the definition. An individual aggregate instance cannot be given its own.
+
+[Deferring, snapshots, and passivation](concepts/aggregate-lifecycle.html) covers what passivation
+does and does not discard. Passivation costs a replay, so tune it together with the snapshot cadence.
+
 ## Overriding with HOCON
 
 Application configuration is added after the embedded HOCON, so matching application keys win. The

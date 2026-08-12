@@ -109,6 +109,13 @@ active actor -> idle -> passivated -> next command -> recover -> active actor
 This is why application code must not treat actor memory as permanent storage. Process restarts, node
 movement, and passivation all exercise the same recovery rules.
 
+The idle period is `akka.cluster.sharding.passivate-idle-entity-after`, `120s` by default. It can be
+set per aggregate type under the entity name, or on the definition itself with
+`Passivation = PassivationPolicy.After t` (or `Never`), which outranks configuration. Sagas are
+exempt: their regions remember entities, which disables idle passivation, so a saga stops at
+`StopSaga` or abort rather than on a timer. [Configuration](../configuration.html) shows each form
+and the limits that apply.
+
 ## See the three mechanisms on one timeline
 
 Consider this order history:

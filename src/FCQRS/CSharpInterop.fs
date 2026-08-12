@@ -365,7 +365,7 @@ type ActorWiring =
         applyEvent: Func<Event<'TEvent>, 'TState, 'TState>) : Akkling.Cluster.Sharding.EntityFac<obj> =
         let cmdHandler cmd state = handleCommand.Invoke(cmd, state)
         let evtApplier evt state = applyEvent.Invoke(evt, state)
-        actor.InitializeActor initialState entityName cmdHandler evtApplier SnapshotPolicy.Default
+        actor.InitializeActor initialState entityName cmdHandler evtApplier SnapshotPolicy.Default PassivationPolicy.Default
 
     /// InitActor with an explicit per-aggregate snapshot policy.
     static member InitActor<'TState, 'TCommand, 'TEvent when 'TEvent: not null>(
@@ -375,9 +375,21 @@ type ActorWiring =
         handleCommand: Func<Command<'TCommand>, 'TState, EventAction<'TEvent>>,
         applyEvent: Func<Event<'TEvent>, 'TState, 'TState>,
         snapshotPolicy: SnapshotPolicy) : Akkling.Cluster.Sharding.EntityFac<obj> =
+        ActorWiring.InitActor<'TState, 'TCommand, 'TEvent>(
+            actor, initialState, entityName, handleCommand, applyEvent, snapshotPolicy, PassivationPolicy.Default)
+
+    /// InitActor with explicit per-aggregate snapshot and idle-passivation policies.
+    static member InitActor<'TState, 'TCommand, 'TEvent when 'TEvent: not null>(
+        actor: IActor,
+        initialState: 'TState,
+        entityName: string,
+        handleCommand: Func<Command<'TCommand>, 'TState, EventAction<'TEvent>>,
+        applyEvent: Func<Event<'TEvent>, 'TState, 'TState>,
+        snapshotPolicy: SnapshotPolicy,
+        passivationPolicy: PassivationPolicy) : Akkling.Cluster.Sharding.EntityFac<obj> =
         let cmdHandler cmd state = handleCommand.Invoke(cmd, state)
         let evtApplier evt state = applyEvent.Invoke(evt, state)
-        actor.InitializeActor initialState entityName cmdHandler evtApplier snapshotPolicy
+        actor.InitializeActor initialState entityName cmdHandler evtApplier snapshotPolicy passivationPolicy
 
     /// One-call aggregate wiring: registers the aggregate (sharding region) and
     /// returns its Factory + Handler. Collapses the Init/Factory/Handler trio an
@@ -399,7 +411,21 @@ type ActorWiring =
         handleCommand: Func<Command<'TCommand>, 'TState, EventAction<'TEvent>>,
         applyEvent: Func<Event<'TEvent>, 'TState, 'TState>,
         snapshotPolicy: SnapshotPolicy) : AggregateRefs<'TCommand, 'TEvent> =
-        let fac = ActorWiring.InitActor<'TState, 'TCommand, 'TEvent>(actor, initialState, entityName, handleCommand, applyEvent, snapshotPolicy)
+        ActorWiring.InitAggregate<'TState, 'TCommand, 'TEvent>(
+            actor, initialState, entityName, handleCommand, applyEvent, snapshotPolicy, PassivationPolicy.Default)
+
+    /// InitAggregate with explicit per-aggregate snapshot and idle-passivation policies.
+    static member InitAggregate<'TState, 'TCommand, 'TEvent when 'TEvent: not null>(
+        actor: IActor,
+        initialState: 'TState,
+        entityName: string,
+        handleCommand: Func<Command<'TCommand>, 'TState, EventAction<'TEvent>>,
+        applyEvent: Func<Event<'TEvent>, 'TState, 'TState>,
+        snapshotPolicy: SnapshotPolicy,
+        passivationPolicy: PassivationPolicy) : AggregateRefs<'TCommand, 'TEvent> =
+        let fac =
+            ActorWiring.InitActor<'TState, 'TCommand, 'TEvent>(
+                actor, initialState, entityName, handleCommand, applyEvent, snapshotPolicy, passivationPolicy)
         let factory = AggregateFactory(fun entityId -> fac.RefFor DEFAULT_SHARD entityId)
         let handler =
             Handler<'TCommand, 'TEvent>(fun filter cid aggregateId command ->
@@ -420,10 +446,25 @@ type ActorWiring =
         applyEvent: Func<Event<'TEvent>, 'TState, 'TState>,
         runner: Func<obj, Task<obj>>,
         snapshotPolicy: SnapshotPolicy) : Akkling.Cluster.Sharding.EntityFac<obj> =
+        ActorWiring.InitActorWithRunner<'TState, 'TCommand, 'TEvent>(
+            actor, initialState, entityName, handleCommand, applyEvent, runner, snapshotPolicy, PassivationPolicy.Default)
+
+    /// InitActorWithRunner with an explicit idle-passivation policy. RunAsync work is
+    /// ephemeral, so an aggregate that dispatches long effects is a candidate for a
+    /// longer idle timeout: passivation drops work still in flight.
+    static member InitActorWithRunner<'TState, 'TCommand, 'TEvent when 'TEvent: not null>(
+        actor: IActor,
+        initialState: 'TState,
+        entityName: string,
+        handleCommand: Func<Command<'TCommand>, 'TState, EventAction<'TEvent>>,
+        applyEvent: Func<Event<'TEvent>, 'TState, 'TState>,
+        runner: Func<obj, Task<obj>>,
+        snapshotPolicy: SnapshotPolicy,
+        passivationPolicy: PassivationPolicy) : Akkling.Cluster.Sharding.EntityFac<obj> =
         let cmdHandler cmd state = handleCommand.Invoke(cmd, state)
         let evtApplier evt state = applyEvent.Invoke(evt, state)
         let boxedRunner: obj -> Async<obj> = fun description -> runner.Invoke description |> Async.AwaitTask
-        actor.InitializeActorWithRunner initialState entityName cmdHandler evtApplier snapshotPolicy (Some boxedRunner)
+        actor.InitializeActorWithRunner initialState entityName cmdHandler evtApplier snapshotPolicy passivationPolicy (Some boxedRunner)
 
     /// InitAggregate whose decide can return `EventActions.Dispatch(...)`. See
     /// InitActorWithRunner. Returns Factory + Handler like InitAggregate.
@@ -435,9 +476,22 @@ type ActorWiring =
         applyEvent: Func<Event<'TEvent>, 'TState, 'TState>,
         runner: Func<obj, Task<obj>>,
         snapshotPolicy: SnapshotPolicy) : AggregateRefs<'TCommand, 'TEvent> =
+        ActorWiring.InitAggregateWithEffects<'TState, 'TCommand, 'TEvent>(
+            actor, initialState, entityName, handleCommand, applyEvent, runner, snapshotPolicy, PassivationPolicy.Default)
+
+    /// InitAggregateWithEffects with an explicit idle-passivation policy.
+    static member InitAggregateWithEffects<'TState, 'TCommand, 'TEvent when 'TEvent: not null>(
+        actor: IActor,
+        initialState: 'TState,
+        entityName: string,
+        handleCommand: Func<Command<'TCommand>, 'TState, EventAction<'TEvent>>,
+        applyEvent: Func<Event<'TEvent>, 'TState, 'TState>,
+        runner: Func<obj, Task<obj>>,
+        snapshotPolicy: SnapshotPolicy,
+        passivationPolicy: PassivationPolicy) : AggregateRefs<'TCommand, 'TEvent> =
         let fac =
             ActorWiring.InitActorWithRunner<'TState, 'TCommand, 'TEvent>(
-                actor, initialState, entityName, handleCommand, applyEvent, runner, snapshotPolicy)
+                actor, initialState, entityName, handleCommand, applyEvent, runner, snapshotPolicy, passivationPolicy)
         let factory = AggregateFactory(fun entityId -> fac.RefFor DEFAULT_SHARD entityId)
         let handler =
             Handler<'TCommand, 'TEvent>(fun filter cid aggregateId command ->
@@ -837,19 +891,31 @@ type Aggregate<'TState, 'TCommand, 'TEvent when 'TEvent: not null>() =
     abstract member SnapshotPolicy: SnapshotPolicy
     default _.SnapshotPolicy = SnapshotPolicy.Default
 
+    /// Per-aggregate idle passivation. Override with PassivationPolicy.NewAfter(...)
+    /// or PassivationPolicy.Never; the default defers to
+    /// akka.cluster.sharding[.EntityName].passivate-idle-entity-after (120s).
+    abstract member PassivationPolicy: PassivationPolicy
+    default _.PassivationPolicy = PassivationPolicy.Default
+
     /// Register the aggregate with an explicit (already-resolved) snapshot policy.
     member this.Init(actorApi: IActor, snapshotPolicy: SnapshotPolicy) : AggregateRefs<'TCommand, 'TEvent> =
+        this.Init(actorApi, snapshotPolicy, this.PassivationPolicy)
+
+    /// Register the aggregate with explicit (already-resolved) snapshot and
+    /// idle-passivation policies.
+    member this.Init(actorApi: IActor, snapshotPolicy: SnapshotPolicy, passivationPolicy: PassivationPolicy) : AggregateRefs<'TCommand, 'TEvent> =
         ActorWiring.InitAggregate<'TState, 'TCommand, 'TEvent>(
             actorApi,
             this.InitialState,
             this.EntityName,
             Func<Command<'TCommand>, 'TState, EventAction<'TEvent>>(fun c s -> this.HandleCommand(c, s)),
             Func<Event<'TEvent>, 'TState, 'TState>(fun e s -> this.ApplyEvent(e, s)),
-            snapshotPolicy)
+            snapshotPolicy,
+            passivationPolicy)
 
     /// Register the aggregate and hand back its Factory + Handler.
     member this.Init(actorApi: IActor) : AggregateRefs<'TCommand, 'TEvent> =
-        this.Init(actorApi, this.SnapshotPolicy)
+        this.Init(actorApi, this.SnapshotPolicy, this.PassivationPolicy)
 
 /// C#-friendly abstract base for a saga. A concrete saga supplies InitialData,
 /// SagaName, Originator (the aggregate it starts from), HandleEvent and

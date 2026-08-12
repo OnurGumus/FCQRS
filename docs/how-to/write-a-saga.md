@@ -252,12 +252,14 @@ Register participant aggregates before constructing the saga, then wire every sa
 let documents =
     Fcqrs.aggregate api
         { Name = "Document"; Initial = Document.initial
-          Decide = Document.decide; Fold = Document.fold; Snapshots = Default }
+          Decide = Document.decide; Fold = Document.fold
+          Snapshots = Default; Passivation = PassivationPolicy.Default }
 
 let slugs =
     Fcqrs.aggregate api
         { Name = "Slug"; Initial = Slug.initial
-          Decide = Slug.decide; Fold = Slug.fold; Snapshots = Default }
+          Decide = Slug.decide; Fold = Slug.fold
+          Snapshots = Default; Passivation = PassivationPolicy.Default }
 
 let publication = Fcqrs.saga api (definition documents.Factory slugs.Factory)
 Fcqrs.wireSagaStarters api [ publication ]

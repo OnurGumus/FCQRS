@@ -43,7 +43,10 @@ type Aggregate<'State, 'Command, 'Event when 'Event: not null> =
       /// applyEvent (fold): event + current state -> next state (pure).
       Fold: Event<'Event> -> 'State -> 'State
       /// Snapshot cadence: Default (config / 30), NoSnapshots, or Every n.
-      Snapshots: SnapshotPolicy }
+      Snapshots: SnapshotPolicy
+      /// Idle passivation: PassivationPolicy.Default (configuration, then Akka's
+      /// 120s), After an idle period, or Never.
+      Passivation: PassivationPolicy }
 
 /// What you get back after registering an aggregate.
 type AggregateHandle<'Command, 'Event when 'Event: not null> =
@@ -262,7 +265,7 @@ module Fcqrs =
     /// Register an aggregate and return its typed handle. Calling this IS the
     /// registration (it initializes the sharding region).
     let aggregate (api: IActor) (def: Aggregate<'State, 'Command, 'Event>) : AggregateHandle<'Command, 'Event> =
-        let fac = api.InitializeActor def.Initial def.Name def.Decide def.Fold def.Snapshots
+        let fac = api.InitializeActor def.Initial def.Name def.Decide def.Fold def.Snapshots def.Passivation
         let factory = refFor fac
         { Factory = factory
           Send = fun cid id command filter -> api.CreateCommandSubscription factory cid id command filter None }
@@ -286,7 +289,7 @@ module Fcqrs =
                 }
 
         let fac =
-            api.InitializeActorWithRunner def.Initial def.Name def.Decide def.Fold def.Snapshots (Some boxedRunner)
+            api.InitializeActorWithRunner def.Initial def.Name def.Decide def.Fold def.Snapshots def.Passivation (Some boxedRunner)
 
         let factory = refFor fac
         { Factory = factory

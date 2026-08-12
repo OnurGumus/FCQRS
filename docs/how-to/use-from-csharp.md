@@ -114,6 +114,17 @@ public sealed class DocumentAggregate
 `EntityName` is part of persistent identity. Treat it as stable after deployment. See
 [Evolve persisted events](evolve-events.html) before renaming domain types or cases.
 
+`Aggregate<>` carries two optional operational overrides. `SnapshotPolicy` sets the snapshot cadence,
+and `PassivationPolicy` sets the idle timeout after which the entity is stopped and its next command
+replays:
+
+```csharp
+public override PassivationPolicy PassivationPolicy =>
+    PassivationPolicy.NewAfter(TimeSpan.FromHours(2));   // or PassivationPolicy.Never
+```
+
+Both default to configuration; [Configuration](../configuration.html) gives the resolution order.
+
 ## 3. Register the runtime
 
 The host starts aggregates first, then sagas, the saga starter, and finally the projection. Register

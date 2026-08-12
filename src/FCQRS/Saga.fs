@@ -1107,4 +1107,7 @@ let internal init<'SagaData, 'State, 'TEvent when 'TEvent : not null and 'State 
      <| propsPersist (
          actorProp initialState name handleEvent applySideEffects apply snapshotPolicy actorApi (typed actorApi.Mediator)
      )
+     // Sagas remember entities, which disables idle passivation in Akka.NET: a saga
+     // ends at StopSaga or abort, never on a timer.
+     <| PassivationPolicy.Default
      <| true

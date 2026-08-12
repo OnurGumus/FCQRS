@@ -53,7 +53,8 @@ let fold (event: Event<Event>) state =
 let register (api: IActor) =
     Fcqrs.aggregate api
         { Name = "Document"; Initial = initial; Decide = decide; Fold = fold
-          Snapshots = Default }        // snapshot cadence: Default | NoSnapshots | Every n
+          Snapshots = Default                      // cadence: Default | NoSnapshots | Every n
+          Passivation = PassivationPolicy.Default }  // idle passivation: Default | After t | Never
 ```
 
 Every `Command` case is covered above, so no catch-all is needed. When you do add one, choose
@@ -129,6 +130,12 @@ services
   does not wait for a projection; use [Read your writes](read-your-writes.html) for that.
 - **`.Factory`:** an entity-ref factory passed to a [saga](write-a-saga.html) so it can target this
   aggregate.
+
+`Snapshots` and `Passivation` are the two operational fields. Both default to configuration, and
+`Default` in each is the right answer until a measurement says otherwise: `Snapshots` sets how much
+of the journal a recovery replays, `Passivation` how often a recovery happens at all. In C# they are
+the overridable `SnapshotPolicy` and `PassivationPolicy` properties on `Aggregate<>`. See
+[Configuration](../configuration.html) for the resolution order and the configuration-only forms.
 
 ## Choose the action
 

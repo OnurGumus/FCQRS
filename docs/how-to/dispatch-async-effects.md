@@ -73,7 +73,8 @@ The runner maps every outcome to a command. Catch service failures and timeouts 
 ```fsharp
 let notes =
     Fcqrs.aggregateWithEffects api
-        { Name = "Note"; Initial = Note.initial; Decide = decide; Fold = fold; Snapshots = Default }
+        { Name = "Note"; Initial = Note.initial; Decide = decide; Fold = fold
+          Snapshots = Default; Passivation = PassivationPolicy.Default }
         (fun (SummarizeText text) -> async {
             try
                 let! summary = ai.Summarize text

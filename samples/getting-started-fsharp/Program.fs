@@ -50,7 +50,8 @@ let run () =
                   Initial = initial
                   Decide = decide
                   Fold = fold
-                  Snapshots = Default }
+                  Snapshots = Default
+                  Passivation = PassivationPolicy.Default }
 
         Fcqrs.wireSagaStarters api []
         let subscriptions = Fcqrs.projection api (Projection.single 0 handleProjection)

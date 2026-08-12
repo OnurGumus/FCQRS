@@ -565,6 +565,25 @@ type SnapshotPolicy =
     /// Snapshot every N versions (N > 0; invalid values fall back to Default).
     | Every of int
 
+/// Idle passivation for an aggregate type, set per entity at registration.
+/// Passivation stops an idle actor and releases its in-memory state; the next
+/// command recovers it from the journal. Only messages routed through cluster
+/// sharding count as activity.
+///
+/// Sagas ignore this: their shard regions remember entities, which disables
+/// idle passivation in Akka.NET. A saga stops at StopSaga or abort instead.
+[<RequireQualifiedAccess>]
+type PassivationPolicy =
+    /// Use configuration: `akka.cluster.sharding.<EntityName>.passivate-idle-entity-after`,
+    /// then `akka.cluster.sharding.passivate-idle-entity-after`, then Akka.NET's 120s.
+    | Default
+    /// Passivate after this idle period, overriding configuration. A non-positive
+    /// value means Never.
+    | After of TimeSpan
+    /// Never passivate on idle. The entity stays resident until the node stops or
+    /// the shard moves, so recovery cost is traded for memory held indefinitely.
+    | Never
+
 /// Represents the name identifying a target actor for a command, typically used within sagas.
 type TargetName =
     /// Identify the target by its string name (entity ID).
@@ -728,9 +747,17 @@ type IActor =
     /// <param name="name">The shard type name for this aggregate.</param>
     /// <param name="handleCommand">The command handler function: `Command -> State -> EventAction`.</param>
     /// <param name="apply">The event handler function: `Event -> State -> State`.</param>
+    /// <param name="snapshotPolicy">Snapshot cadence for this aggregate.</param>
+    /// <param name="passivationPolicy">Idle passivation for this aggregate; `Default` defers to configuration.</param>
     /// <returns>An entity factory (`EntityFac<obj>`) for creating instances of this actor.</returns>
     abstract InitializeActor:
-        'a -> string -> (Command<'c> -> 'a -> EventAction<'b>) -> (Event<'b> -> 'a -> 'a) -> SnapshotPolicy -> EntityFac<obj> when 'b: not null
+        'a ->
+        string ->
+        (Command<'c> -> 'a -> EventAction<'b>) ->
+        (Event<'b> -> 'a -> 'a) ->
+        SnapshotPolicy ->
+        PassivationPolicy ->
+            EntityFac<obj> when 'b: not null
 
     /// Like InitializeActor, plus a runner for the `RunAsync` effect: it maps a
     /// boxed effect description to a boxed command (self-dispatched, re-entering
@@ -742,6 +769,7 @@ type IActor =
         (Command<'c> -> 'a -> EventAction<'b>) ->
         (Event<'b> -> 'a -> 'a) ->
         SnapshotPolicy ->
+        PassivationPolicy ->
         (obj -> Async<obj>) option ->
             EntityFac<obj> when 'b: not null
 

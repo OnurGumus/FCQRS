@@ -290,7 +290,7 @@ let private bootWithRunner () =
             (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite (sprintf "Data Source=%s;" db))) "RunAsyncSmoke"
     let counter =
         Fcqrs.aggregateWithEffects api
-            { Name = "Counter"; Initial = Counter.initial; Decide = Counter.decide; Fold = Counter.fold; Snapshots = Default }
+            { Name = "Counter"; Initial = Counter.initial; Decide = Counter.decide; Fold = Counter.fold; Snapshots = Default; Passivation = PassivationPolicy.Default }
             counterRunner
     Fcqrs.wireSagaStarters api []
     counter
@@ -302,7 +302,7 @@ let private boot () =
         Fcqrs.actor (ConfigurationBuilder().Build()) NullLoggerFactory.Instance
             (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite (sprintf "Data Source=%s;" db))) "FacadeSmoke"
     let counter =
-        Fcqrs.aggregate api { Name = "Counter"; Initial = Counter.initial; Decide = Counter.decide; Fold = Counter.fold; Snapshots = Default }
+        Fcqrs.aggregate api { Name = "Counter"; Initial = Counter.initial; Decide = Counter.decide; Fold = Counter.fold; Snapshots = Default; Passivation = PassivationPolicy.Default }
     let saga = Fcqrs.saga api (AutoReset.definition counter.Factory)
     Fcqrs.wireSagaStarters api [ saga ]
     // The projection stream invokes the handler sequentially, so a plain incr is safe.
@@ -318,9 +318,9 @@ let private bootDual () =
         Fcqrs.actor (ConfigurationBuilder().Build()) NullLoggerFactory.Instance
             (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite (sprintf "Data Source=%s;" db))) "DualSmoke"
     let counterA =
-        Fcqrs.aggregate api { Name = "Counter"; Initial = Counter.initial; Decide = Counter.decide; Fold = Counter.fold; Snapshots = Default }
+        Fcqrs.aggregate api { Name = "Counter"; Initial = Counter.initial; Decide = Counter.decide; Fold = Counter.fold; Snapshots = Default; Passivation = PassivationPolicy.Default }
     let counterB =
-        Fcqrs.aggregate api { Name = "CounterB"; Initial = CounterB.initial; Decide = CounterB.decide; Fold = CounterB.fold; Snapshots = Default }
+        Fcqrs.aggregate api { Name = "CounterB"; Initial = CounterB.initial; Decide = CounterB.decide; Fold = CounterB.fold; Snapshots = Default; Passivation = PassivationPolicy.Default }
     let sagaA = Fcqrs.saga api (DualStart.definitionA counterA.Factory)
     let sagaB = Fcqrs.saga api (DualStart.definitionB counterB.Factory)
     Fcqrs.wireSagaStarters api [ sagaA; sagaB ]
@@ -352,7 +352,7 @@ let private bootParked (db: string) (lmdb: string) =
             (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite (sprintf "Data Source=%s;" db))) "SnapshotSmoke"
 
     let counter =
-        Fcqrs.aggregate api { Name = "Counter"; Initial = Counter.initial; Decide = Counter.decide; Fold = Counter.fold; Snapshots = Default }
+        Fcqrs.aggregate api { Name = "Counter"; Initial = Counter.initial; Decide = Counter.decide; Fold = Counter.fold; Snapshots = Default; Passivation = PassivationPolicy.Default }
 
     let saga = Fcqrs.saga api (Parked.definition counter.Factory)
     Fcqrs.wireSagaStarters api [ saga ]
@@ -374,7 +374,7 @@ let private bootAbort (db: string) (lmdb: string) =
             (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite (sprintf "Data Source=%s;" db))) "AbortSmoke"
 
     let counter =
-        Fcqrs.aggregate api { Name = "Counter"; Initial = Counter.initial; Decide = Counter.decide; Fold = Counter.fold; Snapshots = Default }
+        Fcqrs.aggregate api { Name = "Counter"; Initial = Counter.initial; Decide = Counter.decide; Fold = Counter.fold; Snapshots = Default; Passivation = PassivationPolicy.Default }
 
     let saga = Fcqrs.saga api (Handshake.definition counter.Factory)
     Fcqrs.wireSagaStarters api [ saga ]
@@ -571,7 +571,7 @@ let private manualSnapshotTest =
             Fcqrs.actor (ConfigurationBuilder().Build()) NullLoggerFactory.Instance
                 (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite (sprintf "Data Source=%s;" db))) "ManualSnapSmoke"
         let counter =
-            Fcqrs.aggregate api { Name = "Counter"; Initial = Counter.initial; Decide = Counter.decide; Fold = Counter.fold; Snapshots = Default }
+            Fcqrs.aggregate api { Name = "Counter"; Initial = Counter.initial; Decide = Counter.decide; Fold = Counter.fold; Snapshots = Default; Passivation = PassivationPolicy.Default }
         Fcqrs.wireSagaStarters api []
 
         let snapshotCount () =
@@ -712,7 +712,7 @@ let private overflowTest =
                 (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite (sprintf "Data Source=%s;" db))) "OverflowSmoke"
 
         let counter =
-            Fcqrs.aggregate api { Name = "Counter"; Initial = Counter.initial; Decide = Counter.decide; Fold = Counter.fold; Snapshots = Default }
+            Fcqrs.aggregate api { Name = "Counter"; Initial = Counter.initial; Decide = Counter.decide; Fold = Counter.fold; Snapshots = Default; Passivation = PassivationPolicy.Default }
 
         Fcqrs.wireSagaStarters api []
         let subs = Fcqrs.projection api { LastOffset = 0; Handle = projection }
@@ -1009,7 +1009,7 @@ let private bootCapped (db: string) =
             (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite (sprintf "Data Source=%s;" db))) "RecoverySmoke"
 
     let capped =
-        Fcqrs.aggregate api { Name = "Capped"; Initial = Capped.initial; Decide = Capped.decide; Fold = Capped.fold; Snapshots = Default }
+        Fcqrs.aggregate api { Name = "Capped"; Initial = Capped.initial; Decide = Capped.decide; Fold = Capped.fold; Snapshots = Default; Passivation = PassivationPolicy.Default }
 
     Fcqrs.wireSagaStarters api []
     api, capped
@@ -1069,7 +1069,7 @@ let private commandTimeoutTest =
                 (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite (sprintf "Data Source=%s;" db))) "CmdTimeoutSmoke"
 
         let counter =
-            Fcqrs.aggregate api { Name = "Counter"; Initial = Counter.initial; Decide = Counter.decide; Fold = Counter.fold; Snapshots = Default }
+            Fcqrs.aggregate api { Name = "Counter"; Initial = Counter.initial; Decide = Counter.decide; Fold = Counter.fold; Snapshots = Default; Passivation = PassivationPolicy.Default }
 
         Fcqrs.wireSagaStarters api []
 
@@ -1116,7 +1116,7 @@ let private stopSagaDelayedTest =
                 (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite (sprintf "Data Source=%s;" db))) "FinalPingSmoke"
 
         let counter =
-            Fcqrs.aggregate api { Name = "Counter"; Initial = Counter.initial; Decide = Counter.decide; Fold = Counter.fold; Snapshots = Default }
+            Fcqrs.aggregate api { Name = "Counter"; Initial = Counter.initial; Decide = Counter.decide; Fold = Counter.fold; Snapshots = Default; Passivation = PassivationPolicy.Default }
 
         let saga = Fcqrs.saga api (FinalPing.definition counter.Factory)
         Fcqrs.wireSagaStarters api [ saga ]
@@ -1361,7 +1361,7 @@ let private freshStartSingleDeliveryTest =
                 (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite (sprintf "Data Source=%s;" db))) "CountingSmoke"
 
         let counter =
-            Fcqrs.aggregate api { Name = "Counter"; Initial = Counter.initial; Decide = Counter.decide; Fold = Counter.fold; Snapshots = Default }
+            Fcqrs.aggregate api { Name = "Counter"; Initial = Counter.initial; Decide = Counter.decide; Fold = Counter.fold; Snapshots = Default; Passivation = PassivationPolicy.Default }
 
         let saga = Fcqrs.saga api (CountingSaga.definition counter.Factory)
         Fcqrs.wireSagaStarters api [ saga ]
@@ -1435,7 +1435,7 @@ let private sagaStartFanoutTest =
                 (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite (sprintf "Data Source=%s;" db))) "FanoutSmoke"
 
         let counter =
-            Fcqrs.aggregate api { Name = "Counter"; Initial = Counter.initial; Decide = Counter.decide; Fold = Counter.fold; Snapshots = Default }
+            Fcqrs.aggregate api { Name = "Counter"; Initial = Counter.initial; Decide = Counter.decide; Fold = Counter.fold; Snapshots = Default; Passivation = PassivationPolicy.Default }
 
         let saga = Fcqrs.saga api (AutoReset.definition counter.Factory)
         Fcqrs.wireSagaStarters api [ saga ]
@@ -1488,7 +1488,7 @@ let private bootOneShot (db: string) (lmdb: string) =
             (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite (sprintf "Data Source=%s;" db))) "OneShotSmoke"
 
     let counter =
-        Fcqrs.aggregate api { Name = "Counter"; Initial = Counter.initial; Decide = Counter.decide; Fold = Counter.fold; Snapshots = Default }
+        Fcqrs.aggregate api { Name = "Counter"; Initial = Counter.initial; Decide = Counter.decide; Fold = Counter.fold; Snapshots = Default; Passivation = PassivationPolicy.Default }
 
     let saga = Fcqrs.saga api (OneShot.definition counter.Factory)
     Fcqrs.wireSagaStarters api [ saga ]
@@ -1513,7 +1513,7 @@ let private sagaTypeMismatchTest =
                 (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite (sprintf "Data Source=%s;" db))) "MismatchSmoke"
 
         let counter =
-            Fcqrs.aggregate api { Name = "Counter"; Initial = Counter.initial; Decide = Counter.decide; Fold = Counter.fold; Snapshots = Default }
+            Fcqrs.aggregate api { Name = "Counter"; Initial = Counter.initial; Decide = Counter.decide; Fold = Counter.fold; Snapshots = Default; Passivation = PassivationPolicy.Default }
 
         // AutoReset's saga accepts Event<Counter.Event>; the raw starter API hands
         // it a bare string instead. This is what the C# SagaDefinition surface
@@ -1632,7 +1632,7 @@ let private sendAwaitingTimeoutTest =
                 (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite (sprintf "Data Source=%s;" db))) "AwaitTimeoutSmoke"
 
         let counter =
-            Fcqrs.aggregate api { Name = "Counter"; Initial = Counter.initial; Decide = Counter.decide; Fold = Counter.fold; Snapshots = Default }
+            Fcqrs.aggregate api { Name = "Counter"; Initial = Counter.initial; Decide = Counter.decide; Fold = Counter.fold; Snapshots = Default; Passivation = PassivationPolicy.Default }
 
         Fcqrs.wireSagaStarters api []
 
@@ -1675,7 +1675,7 @@ let private slowSubscriberIsolationTest =
                 (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite (sprintf "Data Source=%s;" db))) "SlowSubSmoke"
 
         let counter =
-            Fcqrs.aggregate api { Name = "Counter"; Initial = Counter.initial; Decide = Counter.decide; Fold = Counter.fold; Snapshots = Default }
+            Fcqrs.aggregate api { Name = "Counter"; Initial = Counter.initial; Decide = Counter.decide; Fold = Counter.fold; Snapshots = Default; Passivation = PassivationPolicy.Default }
 
         Fcqrs.wireSagaStarters api []
         let subs = Fcqrs.projection api { LastOffset = 0; Handle = projection }
@@ -1813,7 +1813,7 @@ let private bootChained (db: string) (lmdb: string) =
             (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite (sprintf "Data Source=%s;" db))) "ChainedSmoke"
 
     let counter =
-        Fcqrs.aggregate api { Name = "Counter"; Initial = Counter.initial; Decide = Counter.decide; Fold = Counter.fold; Snapshots = Default }
+        Fcqrs.aggregate api { Name = "Counter"; Initial = Counter.initial; Decide = Counter.decide; Fold = Counter.fold; Snapshots = Default; Passivation = PassivationPolicy.Default }
 
     let saga = Fcqrs.saga api (Chained.definition counter.Factory)
     Fcqrs.wireSagaStarters api [ saga ]
@@ -1951,7 +1951,7 @@ let private bootDeferSnap (db: string) =
         Fcqrs.actor (ConfigurationBuilder().Build()) NullLoggerFactory.Instance
             (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite (sprintf "Data Source=%s;" db))) "DeferSnapSmoke"
     let counter =
-        Fcqrs.aggregate api { Name = "Counter"; Initial = Counter.initial; Decide = Counter.decide; Fold = Counter.fold; Snapshots = Every 2 }
+        Fcqrs.aggregate api { Name = "Counter"; Initial = Counter.initial; Decide = Counter.decide; Fold = Counter.fold; Snapshots = Every 2; Passivation = PassivationPolicy.Default }
     Fcqrs.wireSagaStarters api []
     api, counter
 
@@ -2141,7 +2141,7 @@ let private bootExpecting (systemName: string) (sagaName: string) deadline retry
             (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite (sprintf "Data Source=%s;" db))) systemName
 
     let counter =
-        Fcqrs.aggregate api { Name = "Counter"; Initial = Counter.initial; Decide = Counter.decide; Fold = Counter.fold; Snapshots = Default }
+        Fcqrs.aggregate api { Name = "Counter"; Initial = Counter.initial; Decide = Counter.decide; Fold = Counter.fold; Snapshots = Default; Passivation = PassivationPolicy.Default }
 
     let saga = Fcqrs.saga api (Expecting.definition sagaName deadline retry counter.Factory)
     Fcqrs.wireSagaStarters api [ saga ]
@@ -2250,7 +2250,7 @@ let private expectationUnhandledTest =
                 (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite (sprintf "Data Source=%s;" db))) "ExpectIgnSmoke"
 
         let counter =
-            Fcqrs.aggregate api { Name = "Counter"; Initial = Counter.initial; Decide = Counter.decide; Fold = Counter.fold; Snapshots = Default }
+            Fcqrs.aggregate api { Name = "Counter"; Initial = Counter.initial; Decide = Counter.decide; Fold = Counter.fold; Snapshots = Default; Passivation = PassivationPolicy.Default }
 
         let saga = Fcqrs.saga api (ExpectIgnored.definition counter.Factory)
         Fcqrs.wireSagaStarters api [ saga ]
@@ -2332,6 +2332,145 @@ let private expectationRestartTest =
         api2.Stop().Wait(TimeSpan.FromSeconds 30.0) |> ignore
 
 
+/// Per-entity-type sharding config: `akka.cluster.sharding.<EntityName>.<key>` overrides
+/// the shared block for that type alone. Counter opts into a 1s idle timeout; CounterB,
+/// booted in the same system with no override, keeps the shared default (120s) and stays
+/// resident — which is what makes this an override rather than a global change.
+let private perTypePassivationTest =
+    testCase "sharding: passivate-idle-entity-after is overridable per entity type"
+    <| fun _ ->
+        registerJournalTypes ()
+        let db = Path.Combine(Path.GetTempPath(), sprintf "fcqrs_passivate_%s.db" (Guid.NewGuid().ToString("N")))
+
+        let cfg =
+            ConfigurationBuilder()
+                .AddInMemoryCollection(
+                    [ Collections.Generic.KeyValuePair<string, string | null>(
+                          "config:akka:cluster:sharding:Counter:passivate-idle-entity-after", "1s") ])
+                .Build()
+
+        let api =
+            Fcqrs.actor cfg NullLoggerFactory.Instance
+                (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite (sprintf "Data Source=%s;" db))) "PassivateSmoke"
+
+        let counter =
+            Fcqrs.aggregate api { Name = "Counter"; Initial = Counter.initial; Decide = Counter.decide; Fold = Counter.fold; Snapshots = Default; Passivation = PassivationPolicy.Default }
+        let counterB =
+            Fcqrs.aggregate api { Name = "CounterB"; Initial = CounterB.initial; Decide = CounterB.decide; Fold = CounterB.fold; Snapshots = Default; Passivation = PassivationPolicy.Default }
+        Fcqrs.wireSagaStarters api []
+
+        // Live entities as the shard region itself reports them: no path guessing,
+        // and no dependence on how shard ids are derived.
+        let liveEntities (name: string) =
+            let region = Akka.Cluster.Sharding.ClusterSharding.Get(api.System).ShardRegion name
+            let state =
+                Akka.Actor.Futures.Ask<Akka.Cluster.Sharding.CurrentShardRegionState>(
+                    region,
+                    Akka.Cluster.Sharding.GetShardRegionState.Instance,
+                    Nullable(TimeSpan.FromSeconds 10.0))
+                |> Async.AwaitTask
+                |> Async.RunSynchronously
+            state.Shards |> Seq.collect (fun s -> s.EntityIds) |> Seq.length
+
+        counter.Send (Fcqrs.newCid ()) (Fcqrs.aggregateId "idle") (Counter.Increment 1)
+            (function Counter.Incremented _ -> true | _ -> false)
+        |> Async.RunSynchronously
+        |> ignore
+
+        counterB.Send (Fcqrs.newCid ()) (Fcqrs.aggregateId "idle") (CounterB.Increment 1)
+            (function CounterB.Incremented _ -> true)
+        |> Async.RunSynchronously
+        |> ignore
+
+        Expect.isGreaterThan (liveEntities "Counter") 0 "the Counter entity is resident right after its command"
+
+        // Akka checks for idle entities every passivate-idle-entity-after / 2, so
+        // 1s idle means passivation lands within ~1.5s. Poll rather than sleep.
+        let deadline = DateTime.UtcNow.AddSeconds 20.0
+        let mutable passivated = false
+
+        while not passivated && DateTime.UtcNow < deadline do
+            if liveEntities "Counter" = 0 then passivated <- true else Threading.Thread.Sleep 250
+
+        Expect.isTrue passivated "Counter passivated after its own 1s idle timeout"
+        Expect.isGreaterThan (liveEntities "CounterB") 0 "CounterB kept the shared default and stayed resident"
+
+        api.Stop().Wait(TimeSpan.FromSeconds 30.0) |> ignore
+
+/// The definition's PassivationPolicy outranks both config levels, in both directions:
+/// Counter passivates on `After 1s` while config says 10m, and CounterB stays resident
+/// on `Never` while config says 1s. Asserting CounterB only after Counter has passivated
+/// means the idle timer demonstrably ran, so "still resident" is a real negative.
+let private definitionPassivationTest =
+    testCase "sharding: a definition's PassivationPolicy overrides configuration"
+    <| fun _ ->
+        registerJournalTypes ()
+        let db = Path.Combine(Path.GetTempPath(), sprintf "fcqrs_passivate_def_%s.db" (Guid.NewGuid().ToString("N")))
+        let kv (k: string) (v: string) = Collections.Generic.KeyValuePair<string, string | null>(k, v)
+
+        let cfg =
+            ConfigurationBuilder()
+                .AddInMemoryCollection(
+                    [ kv "config:akka:cluster:sharding:Counter:passivate-idle-entity-after" "10m"
+                      kv "config:akka:cluster:sharding:CounterB:passivate-idle-entity-after" "1s" ])
+                .Build()
+
+        let api =
+            Fcqrs.actor cfg NullLoggerFactory.Instance
+                (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite (sprintf "Data Source=%s;" db))) "PassivateDefSmoke"
+
+        let counter =
+            Fcqrs.aggregate api
+                { Name = "Counter"
+                  Initial = Counter.initial
+                  Decide = Counter.decide
+                  Fold = Counter.fold
+                  Snapshots = Default
+                  Passivation = PassivationPolicy.After(TimeSpan.FromSeconds 1.0) }
+
+        let counterB =
+            Fcqrs.aggregate api
+                { Name = "CounterB"
+                  Initial = CounterB.initial
+                  Decide = CounterB.decide
+                  Fold = CounterB.fold
+                  Snapshots = Default
+                  Passivation = PassivationPolicy.Never }
+
+        Fcqrs.wireSagaStarters api []
+
+        let liveEntities (name: string) =
+            let region = Akka.Cluster.Sharding.ClusterSharding.Get(api.System).ShardRegion name
+            let state =
+                Akka.Actor.Futures.Ask<Akka.Cluster.Sharding.CurrentShardRegionState>(
+                    region,
+                    Akka.Cluster.Sharding.GetShardRegionState.Instance,
+                    Nullable(TimeSpan.FromSeconds 10.0))
+                |> Async.AwaitTask
+                |> Async.RunSynchronously
+            state.Shards |> Seq.collect (fun s -> s.EntityIds) |> Seq.length
+
+        counter.Send (Fcqrs.newCid ()) (Fcqrs.aggregateId "idle") (Counter.Increment 1)
+            (function Counter.Incremented _ -> true | _ -> false)
+        |> Async.RunSynchronously
+        |> ignore
+
+        counterB.Send (Fcqrs.newCid ()) (Fcqrs.aggregateId "idle") (CounterB.Increment 1)
+            (function CounterB.Incremented _ -> true)
+        |> Async.RunSynchronously
+        |> ignore
+
+        let deadline = DateTime.UtcNow.AddSeconds 20.0
+        let mutable passivated = false
+
+        while not passivated && DateTime.UtcNow < deadline do
+            if liveEntities "Counter" = 0 then passivated <- true else Threading.Thread.Sleep 250
+
+        Expect.isTrue passivated "After 1s beat the 10m configured for this entity type"
+        Expect.isGreaterThan (liveEntities "CounterB") 0 "Never beat the 1s configured for this entity type"
+
+        api.Stop().Wait(TimeSpan.FromSeconds 30.0) |> ignore
+
 let private cliffProbe =
     testCase "PROBE: cliff"
     <| fun _ ->
@@ -2351,7 +2490,7 @@ let private cliffProbe =
             Fcqrs.actor cfg NullLoggerFactory.Instance
                 (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite (sprintf "Data Source=%s;" db))) "CliffSmoke"
         let counter =
-            Fcqrs.aggregate api { Name = "Counter"; Initial = Counter.initial; Decide = Counter.decide; Fold = Counter.fold; Snapshots = Default }
+            Fcqrs.aggregate api { Name = "Counter"; Initial = Counter.initial; Decide = Counter.decide; Fold = Counter.fold; Snapshots = Default; Passivation = PassivationPolicy.Default }
         let saga = Fcqrs.saga api (AutoReset.definition counter.Factory)
         Fcqrs.wireSagaStarters api [ saga ]
         let sw = Diagnostics.Stopwatch.StartNew()
@@ -2371,7 +2510,7 @@ let private cliffProbe =
 
 let tests =
     testSequenced (
-        testList "facade" [ manifestTest; roundTripTest; persistAllTest; manualSnapshotTest; telemetryTest; payloadSwitchTest; overflowTest; snapshotRecoveryTest; restartDetectionTest; filteredProjectionTest; persistIfTest; bridgeTest; pendingBridgeTest; focusShapeTest; journaledStampTest; runAsyncTest; aggregateRecoveryTest; commandTimeoutTest; concurrencyTest; stopSagaDelayedTest; timeProviderTest; dynamicConfigTest; freshStartSingleDeliveryTest; concurrentSagaStartTest; sagaStartFanoutTest; sagaTypeMismatchTest; cidGuardTest; snapshotResurrectionTest; sendAwaitingTimeoutTest; slowSubscriberIsolationTest; specialCharEntityIdTest; sagaStartNameShapesTest; chainedSnapshotTest; filterThrowTest; hoconConnectionStringTest; crossTypeHandshakeTest; deferSnapshotTest; cidSeparatorTest; expectationSatisfiedTest; expectationExhaustionTest; expectationUnhandledTest; expectationRestartTest ]
+        testList "facade" [ manifestTest; roundTripTest; persistAllTest; manualSnapshotTest; telemetryTest; payloadSwitchTest; overflowTest; snapshotRecoveryTest; restartDetectionTest; filteredProjectionTest; persistIfTest; bridgeTest; pendingBridgeTest; focusShapeTest; journaledStampTest; runAsyncTest; aggregateRecoveryTest; commandTimeoutTest; concurrencyTest; stopSagaDelayedTest; timeProviderTest; dynamicConfigTest; freshStartSingleDeliveryTest; concurrentSagaStartTest; sagaStartFanoutTest; sagaTypeMismatchTest; cidGuardTest; snapshotResurrectionTest; sendAwaitingTimeoutTest; slowSubscriberIsolationTest; specialCharEntityIdTest; sagaStartNameShapesTest; chainedSnapshotTest; filterThrowTest; hoconConnectionStringTest; crossTypeHandshakeTest; deferSnapshotTest; cidSeparatorTest; expectationSatisfiedTest; expectationExhaustionTest; expectationUnhandledTest; expectationRestartTest; perTypePassivationTest; definitionPassivationTest ]
     )
 
 [<EntryPoint>]

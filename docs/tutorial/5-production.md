@@ -72,6 +72,13 @@ recovery for representative large aggregates before changing it.
 Snapshots do not replace events, and they do not make an impure fold safe. The recovered result must be
 the same with or without a snapshot.
 
+Passivation decides how often that recovery happens. An aggregate idle for
+`akka.cluster.sharding.passivate-idle-entity-after` (`120s` by default) is stopped, and its next
+command replays. Aggregate types differ here, so the timeout can be set per type — under the entity
+name in configuration, or as `Passivation` on the definition when it is a property of the domain
+rather than the deployment. A long-lived account touched all day is worth keeping resident; a
+one-shot request identity is not. [Configuration](../configuration.html) shows each form.
+
 ## 5. Configure diagnostics before an incident
 
 Send FCQRS logs through the host's `ILoggerFactory` and register its `ActivitySource` names with

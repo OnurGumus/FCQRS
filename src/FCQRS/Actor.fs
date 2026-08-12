@@ -610,7 +610,7 @@ module internal Internal =
         let ex = Execute e
         ex |> actorApi.SubscribeForCommand
 
-    let init config loggerFactory initialState name toEvent (actorApi: IActor) handleCommand apply snapshotPolicy effectRunner =
+    let init config loggerFactory initialState name toEvent (actorApi: IActor) handleCommand apply snapshotPolicy passivationPolicy effectRunner =
         AkklingHelpers.Internal.entityFactoryFor actorApi.System shardResolver name
         <| propsPersist (
             actorProp
@@ -625,6 +625,7 @@ module internal Internal =
                 effectRunner
                 (typed actorApi.Mediator)
         )
+        <| passivationPolicy
         <| false
 
 /// Custom configuration provider for in-memory HOCON strings
@@ -850,13 +851,13 @@ let api (config: IConfiguration) (loggerFactory: ILoggerFactory) (connection: Co
         ///         userEventApplier)
         /// </code>
         /// </example>
-        member this.InitializeActor initialState name handleCommand apply snapshotPolicy =
+        member this.InitializeActor initialState name handleCommand apply snapshotPolicy passivationPolicy =
             let toEvent mid ci sender metadata version event = toEvent system.Scheduler (Some mid) ci sender version metadata event
-            init config loggerFactory initialState name toEvent this handleCommand apply snapshotPolicy None
+            init config loggerFactory initialState name toEvent this handleCommand apply snapshotPolicy passivationPolicy None
 
-        member this.InitializeActorWithRunner initialState name handleCommand apply snapshotPolicy effectRunner =
+        member this.InitializeActorWithRunner initialState name handleCommand apply snapshotPolicy passivationPolicy effectRunner =
             let toEvent mid ci sender metadata version event = toEvent system.Scheduler (Some mid) ci sender version metadata event
-            init config loggerFactory initialState name toEvent this handleCommand apply snapshotPolicy effectRunner
+            init config loggerFactory initialState name toEvent this handleCommand apply snapshotPolicy passivationPolicy effectRunner
         
         /// <summary>
         /// Initializes a saga to manage a long-running business process across multiple actors.

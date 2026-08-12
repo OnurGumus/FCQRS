@@ -1,5 +1,30 @@
 # Changelog
 
+## 6.3.0 (FCQRS core)
+
+FCQRS core only; the satellite packages are unchanged. No journal change: passivation stops an idle
+actor, it does not touch events, snapshots, or entity identity.
+
+- **Idle passivation is now settable per aggregate type, in configuration and at registration.**
+  Every shard region previously took `ClusterShardingSettings.Create(system)`, so Akka's single
+  `akka.cluster.sharding.passivate-idle-entity-after` (120s) governed every aggregate in the process.
+  Two levers replace that: keys nested under the entity name
+  (`akka.cluster.sharding.Order.passivate-idle-entity-after`) override the shared block for one type,
+  and a definition's `PassivationPolicy` overrides both. Resolution runs
+  definition → per-type config → shared config → Akka's 120s.
+- **Sagas are unaffected by either lever.** Saga regions remember entities, which disables idle
+  passivation in Akka.NET; a saga still ends at `StopSaga` or abort.
+
+### Breaking
+
+- `Aggregate` (F# facade) gains a required `Passivation: PassivationPolicy` field. Existing
+  definitions compile again by adding `Passivation = PassivationPolicy.Default`, which keeps the
+  previous behaviour exactly.
+- `IActor.InitializeActor` and `IActor.InitializeActorWithRunner` take a `PassivationPolicy` after the
+  `SnapshotPolicy`. C# callers of `ActorWiring.InitActor` / `InitAggregate` / `InitActorWithRunner` /
+  `InitAggregateWithEffects` are unaffected: the existing overloads remain and pass
+  `PassivationPolicy.Default`. The C# `Aggregate<>` base gains an overridable `PassivationPolicy`.
+
 ## 6.2.1 (FCQRS core)
 
 FCQRS core only; the satellite packages are unchanged.
