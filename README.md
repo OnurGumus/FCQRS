@@ -14,62 +14,46 @@ subscriptions around them.
 
 ![Commands enter aggregates, events are stored and projected into read models, and sagas issue follow-up commands](docs/img/architecture.svg)
 
-## The model in one example
+## Save your first document
 
-An order receives `CancelOrder`. Its aggregate checks the current state and returns one outcome:
+The [getting-started guide](https://onurgumus.github.io/FCQRS/get-started.html) runs a document store
+on stable .NET 10 in either F# or C#. Save a document, try creating it again with different content,
+then restart with the same ID. The guide explains the result at each step.
 
-- `OrderCancelled` is persisted when cancellation is allowed.
-- `OrderAlreadyShipped` is returned without persistence when the order can no longer be cancelled.
+```text
+stored version 1; query returned 'first event'
+repeat reply version 1; document contains 'first event'
+```
 
-The decision is made by one actor for that order. Commands for the same order run sequentially, which
-eliminates race conditions within the aggregate. Other order actors can run concurrently.
-
-Persisted events rebuild the aggregate after passivation or restart. They also feed projections. One
-projection can maintain an order page while another maintains a customer history. A saga coordinates
-work that crosses aggregate boundaries, such as reserving stock and taking payment.
-
-## What you write
-
-An aggregate is centred on two pure functions. `decide` maps a command and current state to an action.
-`fold` maps a stored event and current state to the next state.
+A create request cannot overwrite an existing document. The aggregate owns that rule for one document
+ID. Its decision function chooses whether to store a new event or return the existing document:
 
 ```fsharp
 open FCQRS.Common
 
-type State = NotPlaced | Placed | Cancelled | Shipped
+type Document = { Id: string; Title: string; Content: string }
+type DocumentState = { Document: Document option }
+type DocumentCommand = CreateDocument of Document
+type DocumentEvent = DocumentCreated of Document
 
-type Command =
-    | PlaceOrder
-    | CancelOrder
-    | ShipOrder
+let decide (command: Command<DocumentCommand>) (state: DocumentState) =
+    match command.CommandDetails, state.Document with
+    | CreateDocument document, None -> DocumentCreated document |> PersistEvent
+    | CreateDocument _, Some existing -> DocumentCreated existing |> DeferEvent
 
-type Event =
-    | OrderPlaced
-    | OrderCancelled
-    | OrderShipped
-    | OrderAlreadyShipped
-
-let decide (command: FCQRS.Common.Command<Command>) state =
-    match command.CommandDetails, state with
-    | PlaceOrder, NotPlaced -> OrderPlaced |> PersistEvent
-    | CancelOrder, Placed -> OrderCancelled |> PersistEvent
-    | CancelOrder, Shipped -> OrderAlreadyShipped |> DeferEvent
-    | ShipOrder, Placed -> OrderShipped |> PersistEvent
-    | _ -> UnhandledEvent
-
-let fold (event: FCQRS.Common.Event<Event>) state =
+let fold (event: Event<DocumentEvent>) (_state: DocumentState) =
     match event.EventDetails with
-    | OrderPlaced -> Placed
-    | OrderCancelled -> Cancelled
-    | OrderShipped -> Shipped
-    | OrderAlreadyShipped -> state
+    | DocumentCreated document -> { Document = Some document }
 ```
 
-`PersistEvent` appends a fact, increments the aggregate version, folds it into state, and publishes it.
-`DeferEvent` publishes and folds a reply without storing it or incrementing the persisted version. For
-a rejection or repeated verdict, write the fold so that this reply leaves state unchanged. Any state
-change caused only by a deferred event is lost on recovery because the event is absent from the
-journal. The functions contain no actor or database code and can be tested directly.
+`PersistEvent` stores the event and applies it to state. `DeferEvent` applies and publishes a reply
+without storing it or increasing the persisted version. Here that reply contains the existing
+document, so the fold leaves state unchanged. State changes caused only by deferred replies would
+vanish on recovery.
+
+FCQRS runs commands for one document sequentially. Stored events rebuild its state after restart and
+feed projections that maintain query data. The [quickstart](https://onurgumus.github.io/FCQRS/get-started.html)
+follows the complete path and explains why the program waits for its projection before reading.
 
 ## What FCQRS guarantees
 
@@ -109,9 +93,8 @@ cd MyApp
 dotnet add package FCQRS
 ```
 
-C# support uses C# 15 union types. While the feature remains in preview, use a .NET 11 preview SDK and
-`<LangVersion>preview</LangVersion>`. Teams that need a stable C# compiler can define the event-sourced
-domain in a small F# project and consume it from a C# host.
+The complete learning path uses ordinary C# records on stable .NET 10, including editing and sagas.
+Some optional reference pages also show preview union syntax; the tutorial does not require it.
 
 ## When FCQRS fits
 

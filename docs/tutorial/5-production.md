@@ -1,19 +1,17 @@
 ---
-title: 5. Preparing for production
+title: 6. Preparing for production
 category: Learn FCQRS
 categoryindex: 2
-index: 7
+index: 8
 ---
 
-# 5. Preparing for production
+# 6. Preparing for production
 
-The domain model does not change when the application moves from a laptop to production. The operating
-environment does. Production readiness means deciding what happens when storage is slow, a projection
-fails, an external service accepts a request twice, or a node stops during a workflow.
+DocStore now saves documents, reserves slugs, and recovers interrupted publication. Before deploying
+it, decide how to retain those histories, rebuild its query data, and find workflows that need help.
 
-> **Course position:** the earlier chapters established the domain and its recovery rules. This final
-> stage turns those rules into operational decisions. Complete the checklist once without leaving the
-> course, then use Apply and Reference while configuring a real deployment.
+Use the same two owners throughout this review: a document owns its content and publication status;
+a slug owns its reservation. The publication saga coordinates their separate decisions.
 
 ## 1. Put the journal on durable storage
 
@@ -28,6 +26,9 @@ shortens replay; losing snapshots does not lose business history. Losing journal
 See [Configure the database](../how-to/configure-the-database.html).
 
 ## 2. Make every projection restart-safe
+
+DocStore rebuilds its dictionary from offset zero on every startup. A durable document index needs
+to retain both its query data and its progress through the journal.
 
 Commit the read-model update and its offset in the same database transaction whenever they share a
 store. Separate writes fail in one of two ways after a crash: an offset committed first skips an
@@ -47,9 +48,10 @@ See [Add a projection](../how-to/add-a-projection.html) and
 An external service and the saga journal do not share a transaction. The service may accept a request
 just before the process loses its connection or stops. Retrying can therefore repeat the request.
 
-> **Motivation:** Durable state solves only the part of a failure that happened before the last commit.
-> Production design must make the uncertain work after that boundary observable, repeatable, or safe to
-> resolve manually.
+In DocStore, `ReservationUncertain` and `ReportUncertain` retain an unknown outcome after the retry
+deadline. Expose these states in an operational view. A person investigating one needs the document
+ID, slug, last recorded step, and the other aggregate's observed outcome. Reconcile those facts before
+issuing a retry or compensation; a delayed original answer can still arrive.
 
 For every external command, decide:
 
@@ -74,10 +76,9 @@ the same with or without a snapshot.
 
 Passivation decides how often that recovery happens. An aggregate idle for
 `akka.cluster.sharding.passivate-idle-entity-after` (`120s` by default) is stopped, and its next
-command replays. Aggregate types differ here, so the timeout can be set per type — under the entity
-name in configuration, or as `Passivation` on the definition when it is a property of the domain
-rather than the deployment. A long-lived account touched all day is worth keeping resident; a
-one-shot request identity is not. [Configuration](../configuration.html) shows each form.
+command replays. Aggregate types differ here, so the timeout can be set per type under the entity name in
+configuration, or as `Passivation` on the definition when it is a property of the domain. Measure
+frequently edited documents separately from slugs that are reserved once and rarely read. [Configuration](../configuration.html) shows each form.
 
 ## 5. Configure diagnostics before an incident
 
@@ -106,13 +107,13 @@ Before release, run these exercises in a non-production environment:
 
 - stop the process after an event is persisted and confirm aggregate recovery;
 - stop it while a saga is waiting and confirm the workflow resumes safely;
-- make an external dependency time out and confirm retry and terminal-failure behaviour;
+- make a dependency time out and confirm retries, escalation with an unknown outcome, and late-answer handling;
 - break a projection and confirm the failure is visible, then rebuild its read model;
 - delete snapshots and confirm full replay reaches the same state;
 - restore the database backup and verify representative aggregates and projections;
 - send concurrent commands to one aggregate and verify the domain outcome;
 - start sagas from many aggregate instances at once, at your expected peak, and confirm every workflow
-  completes — concurrent starts consume threads, so this differs from loading one aggregate (see
+  completes; concurrent starts consume threads, so this differs from loading one aggregate (see
   [Configuration](../configuration.html));
 - restart one cluster node and confirm entity routing continues.
 
@@ -131,9 +132,9 @@ You are ready to use FCQRS effectively when you can answer these questions for y
 - How are the journal, snapshots, and read models backed up and restored?
 - Which logs, traces, and alerts reveal a stuck saga or failed projection?
 
-## You have completed the learning path
+## Choose the next implementation task
 
-You can now move through the rest of the documentation without following another fixed order:
+Use the supporting references for the task your application needs next:
 
 - Use [Understand](../concepts/index.html) when you need to reason more deeply about a guarantee,
   recovery boundary, or design choice.

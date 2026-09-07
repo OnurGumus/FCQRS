@@ -1,20 +1,41 @@
-# Getting started with FCQRS and C#
+# Build the document store with C#
 
-Run from the repository root with the stable .NET 10 SDK:
+From the repository root, using the .NET 10 SDK selected by `global.json`:
 
-```bash
+```text
 dotnet run --project samples/getting-started-csharp
 ```
 
-Expected output:
-
 ```text
-stored version 1; query returned 'created from C#'
+stored version 1; query returned 'first event'
+repeat reply version 1; document contains 'first event'
+document id: <generated id>
+journal: <database path>
 ```
 
-The program uses one concrete command and event type, so the first project does not require preview C#
-union syntax. It stores the journal beside the built executable, uses a new aggregate id on each run,
-and rebuilds its in-memory read model from offset zero.
+Keep the printed ID. Replace `DOCUMENT_ID` below and run the commands in order:
 
-Continue with [Use FCQRS from C#](../../docs/how-to/use-from-csharp.md) when the domain needs multiple
-command and event cases, deferred replies, durable projections, or sagas.
+```text
+dotnet run --project samples/getting-started-csharp -- --check
+dotnet run --project samples/getting-started-csharp -- --recover DOCUMENT_ID
+dotnet run --project samples/getting-started-csharp -- --edit DOCUMENT_ID "second draft"
+dotnet run --project samples/getting-started-csharp -- --edit DOCUMENT_ID "second draft"
+dotnet run --project samples/getting-started-csharp -- --publish DOCUMENT_ID guides/fcqrs
+```
+
+The edit stores version `2`; repeating that edit keeps version `2`. Publication stores its request and
+result at versions `3` and `4`, and the query returns `second draft`. Another document claiming the
+same slug is rejected. Editing closes when publication starts.
+
+`--check` runs pure domain, replay, and serialization checks. `--pause-publication ID SLUG` pauses a
+new publication after its reservation result is stored; restart with `--publish ID SLUG` promptly to
+observe saga recovery before its five-minute deadline. An elapsed deadline remains an unknown outcome
+and requires investigation; it is not a rejection.
+
+Ordinary runs generate new IDs. `--recover` sends a create to the supplied ID and returns the current
+document; an unknown ID creates a document with `replacement attempt`. Each language keeps its own
+SQLite journal beside the executable and rebuilds its in-memory projection from offset zero.
+Keep the same build configuration throughout the course.
+
+Follow the [getting-started guide](https://onurgumus.github.io/FCQRS/get-started.html) for explanations,
+predictions, and expected output at each stage. The full course uses stable .NET 10.

@@ -1,6 +1,6 @@
 (**
 ---
-title: 1. The aggregate
+title: 1. Make one document decision
 category: Learn FCQRS
 categoryindex: 2
 index: 3
@@ -9,426 +9,160 @@ index: 3
 
 (*** hide ***)
 #r "nuget: FCQRS, 6.3.0"
-open System
-open FCQRS.Common
-open FCQRS.Model.Data
-open FCQRS.FSharp
+#load "../../samples/getting-started-fsharp/Document.fs"
+#load "../../samples/getting-started-fsharp/Publication.fs"
+#load "../../samples/getting-started-fsharp/Checks.fs"
 
 (**
-# 1. The aggregate
+# 1. Make one document decision
 
-Most applications store the current document. Saving a new body replaces the old one. An event-sourced
-document stores facts such as `DocumentCreated` and `ContentEdited`, then derives the current document
-by applying those facts in order.
+The first create saved `first event`. The second create asked for `replacement attempt`, but returned
+`first event` at the same version. Keep the sample from the [quickstart](../get-started.html) open.
 
-This chapter models that write side. It uses no actor system or database yet. You will define the
-domain values, separate requests from recorded outcomes, and write the two pure functions FCQRS runs
-inside an aggregate.
+The rule is **the first create wins for a document ID**. A create cannot overwrite an existing document.
 
-> **Course position:** the quickstart showed the whole request path. This chapter isolates its first
-> part, the aggregate decision. By the end you will be able to explain and test command, event, state,
-> `decide`, and `fold` without running Akka.NET.
+## Name the three values
 
-This wireframe is the chapter's result: validated values, message types, and three functions with
-their bodies left unimplemented. The rest of the chapter fills them in.
+| Value | Example | Meaning |
+|---|---|---|
+| Command | `CreateDocument` carrying a document | A request that may or may not change history. |
+| Event | `DocumentCreated` carrying that document | The outcome recorded when creation succeeds. |
+| State | A document, or no document yet | The value used to decide the next request. |
 
+In F#, `None` means there is no document and `Some document` means one is present. C# uses a nullable
+document for the same distinction. Both versions start with no document.
+
+`DocumentCommand` groups the requests the document understands. `DocumentEvent` groups its replies
+and recorded outcomes. The sample includes editing and publication cases for later chapters; start
+with the two create cases below.
+
+## Read the decision before the setup
+
+Find `decide` in F#, or `HandleCommand` in C#. These create cases inspect the request, current document,
+and publication status. `_` means that a value does not affect this decision. In C#, `{ } existing`
+matches a non-null document and gives it the name `existing`.
+
+<!-- sample: fsharp Document.fs create -->
 ```fsharp
-// Values: Title and Content, validated string types that reject illegal values.
-// Document.Root, State, Command, and Event: the document and its message types.
-
-module Document =
-    let decide (cmd: Command<Command>) (state: State) : EventAction<Event> =
-        failwith "not written yet"
-
-    let fold (event: Event<Event>) (state: State) : State =
-        failwith "not written yet"
-
-    let register (api: IActor) : AggregateHandle<Command, Event> =
-        failwith "not written yet"
+| CreateDocument document, None, _ -> DocumentCreated document |> PersistEvent
+| CreateDocument _, Some existing, _ -> DocumentCreated existing |> DeferEvent
 ```
 
 <div class="cs-alt"></div>
 
+<!-- sample: csharp Document.cs create -->
 ```csharp
-// Title and Content: validated string types that reject illegal values.
-// Document, DocumentState, DocumentCommand, and DocumentEvent: the document
-// and its message types.
-
-public sealed class DocumentAggregate
-    : Aggregate<DocumentState, DocumentCommand, DocumentEvent>
-{
-    public override DocumentState InitialState =>
-        throw new NotImplementedException();
-    public override string EntityName => "Document";
-
-    public override EventAction<DocumentEvent> HandleCommand(
-        Command<DocumentCommand> cmd, DocumentState state) =>
-        throw new NotImplementedException();
-
-    public override DocumentState ApplyEvent(
-        Event<DocumentEvent> evt, DocumentState state) =>
-        throw new NotImplementedException();
-}
+(CreateDocument create, null, _) => EventActions.Persist<DocumentEvent>(new DocumentCreated(create.Document)),
+(CreateDocument, { } existing, _) => EventActions.Defer<DocumentEvent>(new DocumentCreated(existing)),
 ```
 
-## Commands and events are not the same thing
 
-A **command** asks the system to do something, such as `CreateOrUpdate`. The aggregate may accept or
-reject it. An **event** records an outcome, such as `Updated` or `Rejected`. A stored event is already a
-fact and is not edited when a later command arrives.
+| Current document | Incoming content | Reply content | New event stored? |
+|---|---|---|---|
+| Absent | `first event` | `first event` | Yes |
+| Contains `first event` | `replacement attempt` | **first event** | No |
 
-Commands and events are different types because one request can have several outcomes. Keeping them
-separate also lets the publication workflow in chapter 3 add a new outcome without pretending that
-every command succeeds.
+The second case returns the existing document. Returning the incoming payload there would let a
+repeated create change state without recording the change.
 
-> **Motivation:** A command records intent; an event records what the domain decided. Keeping those
-> moments separate makes rejection explicit and prevents an unaccepted request from entering history
-> as though it were a fact.
+`Command<T>` and `Event<T>` are FCQRS **envelopes** around your values. They carry context such as
+correlation id and version. The decision reads the request from `CommandDetails`; the fold reads the
+outcome from `EventDetails`. The runtime constructs these envelopes for the application.
 
-An **aggregate** owns the state and rules needed to make decisions about one entity. FCQRS runs each
-aggregate as an actor that handles one command at a time. Sequential handling eliminates races within
-that aggregate. Rules spanning several aggregates require coordination, which chapter 3 introduces.
+## Storing and replying have different effects
 
-Open `Program.fs` in the project from the [tutorial intro](index.html) and follow along. The opens
-first:
+`PersistEvent` (`EventActions.Persist` in C#) appends the event to the **journal**, the ordered event
+history. FCQRS increments the version, folds the event into state, and publishes it.
 
+`DeferEvent` (`EventActions.Defer`) folds and publishes a reply without storing it or increasing the
+persisted version. Here it returns `DocumentCreated` with the existing document as a repeated verdict.
+It does not record another creation.
+
+The creation case in `fold` / `ApplyEvent` puts that document into state. Returning the same document
+on the deferred path therefore leaves state unchanged. A state change caused only by a deferred
+reply would disappear on recovery because the journal contains no record of it.
+
+## Check the rule without a database
+
+Both functions are **pure**: their results depend on their inputs, without database or network work.
+Run the sample's checks from the repository root:
+
+```text
+dotnet run --project samples/getting-started-fsharp -- --check
+```
+
+<div class="cs-alt" data-fs="text" data-cs="text"></div>
+
+```text
+dotnet run --project samples/getting-started-csharp -- --check
+```
+
+
+```text
+All document, replay, and saga checks passed.
+```
+
+The checks also cover later chapters. Start with the creation checks in `Checks.fs` / `Checks.cs`:
+
+<!-- sample: fsharp Checks.fs checks -->
 ```fsharp
-open System
-open FCQRS.Common
-open FCQRS.Model.Data
-open FCQRS.FSharp
+let original = { Id = "notes"; Title = "FCQRS notes"; Content = "first event" }
+let replacement = { original with Content = "replacement attempt" }
+equal (PersistEvent(DocumentCreated original))
+    (decide (command (CreateDocument original)) initial) "First create must store"
+let created = fold (event 1L (DocumentCreated original)) initial
+equal (DeferEvent(DocumentCreated original))
+    (decide (command (CreateDocument replacement)) created) "Repeated create must preserve the original"
+equal created (fold (event 1L (DocumentCreated original)) created) "Repeated reply must not change state"
 ```
 
 <div class="cs-alt"></div>
 
+<!-- sample: csharp Checks.cs checks -->
 ```csharp
-using System;
-using System.Diagnostics.CodeAnalysis;
-using FCQRS;
-using static FCQRS.Common;
-using static FCQRS.CSharp;
-using static FCQRS.Model.CSharp;
-using static FCQRS.Model.Data;
+var original = new Document("notes", "FCQRS notes", "first event");
+var replacement = original with { Content = "replacement attempt" };
+Equal(EventActions.Persist<DocumentEvent>(new DocumentCreated(original)),
+    aggregate.HandleCommand(Command(new CreateDocument(original)), DocumentState.Initial), "First create must store");
+var created = aggregate.ApplyEvent(Event(new DocumentCreated(original)), DocumentState.Initial);
+Equal(EventActions.Defer<DocumentEvent>(new DocumentCreated(original)),
+    aggregate.HandleCommand(Command(new CreateDocument(replacement)), created), "Repeated create must preserve the original");
+Equal(created, aggregate.ApplyEvent(Event(new DocumentCreated(original)), created), "Repeated reply must not change state");
 ```
 
-## Make the illegal values impossible to type
 
-A title and document body have different meaning even though both arrive as strings. Separate domain
-types prevent them from being swapped and provide one place to reject invalid input. FCQRS provides
-validated `ShortString` and `LongString` values through `ValueLens`; the document wraps them as `Title`
-and `Content`.
+`command` / `Command` and `event` / `Event` are helpers in that file using `TestEnvelope` to supply
+the framework fields. `equal` / `Equal` throws when the actual result differs from the expected one.
+
+**Try it:** change the repeated-create branch to return the incoming document. Run `--check` again.
+The repeated-create check fails. Restore the branch and confirm that the checks pass.
+
+## Recover the same decision
+
+FCQRS runs `fold` / `ApplyEvent` both after storing a new event and when recovering an aggregate.
+Applying the same recorded history must produce the same state. This is **event sourcing**: state is
+derived from retained events.
+
+The fold must not read the clock, generate random values, or fetch external data. Record a needed
+value in the event so replay uses the original value.
+
+**Predict:** replay the original creation into empty state, then try a create with different content.
+The second row of the table applies, just as it did before the program exited.
+
+## Where the rule holds
+
+One actor processes one document's commands sequentially. Two concurrent creates for the same
+aggregate ID cannot both make their decision from empty state during normal processing. Different
+document IDs have different actors and can run concurrently.
+
+The sample treats repeated creates as requests to return the current document. An application that
+must distinguish identical retries from conflicting requests needs an explicit conflict reply.
+Input validation is also an application responsibility; the initial strings here are fixed sample data.
+
+Continue to [2. Restart, project, and query](2-running-it.html) to check the recovery prediction.
+
 *)
 
-module Values =
-    type DocumentId =
-        | DocumentId of Guid
-
-        static member OfGuid g = DocumentId g
-        member this.Value = let (DocumentId g) = this in g
-        override this.ToString() = let (DocumentId g) = this in g.ToString()
-
-    type Title =
-        | Title of ShortString
-
-        static member TryCreate s =
-            match ValueLens.TryCreate s with
-            | Ok ss -> Ok(Title ss)
-            | Error _ -> Error "Invalid title"
-
-        member this.Value = let (Title s) = this in ValueLens.Value s
-
-    type Content =
-        | Content of LongString
-
-        static member TryCreate s =
-            match ValueLens.TryCreate s with
-            | Ok ss -> Ok(Content ss)
-            | Error _ -> Error "Invalid content"
-
-        member this.Value = let (Content s) = this in ValueLens.Value s
-
-(**
-<div class="cs-alt"></div>
-
-```csharp
-// C#: validated value objects wrap FCQRS's ShortString / LongString.
-public readonly record struct DocumentId(Guid Value)
-{
-    public static DocumentId OfGuid(Guid g) => new(g);
-    public override string ToString() => Value.ToString();
-}
-
-public readonly record struct Title(ShortString Value)
-{
-    public static bool TryCreate(string s, [NotNullWhen(true)] out Title result)
-    {
-        if (StringTypes.TryCreateShortString(s, out var v)) { result = new Title(v); return true; }
-        result = default; return false;
-    }
-}
-
-public readonly record struct Content(LongString Value)
-{
-    public static bool TryCreate(string s, [NotNullWhen(true)] out Content result)
-    {
-        if (StringTypes.TryCreateLongString(s, out var v)) { result = new Content(v); return true; }
-        result = default; return false;
-    }
-}
-```
-*)
-
-(**
-`TryCreate` returns a `Result`, so invalid input is handled where raw strings enter the application.
-After construction, `Title` and `Content` carry validated values and the aggregate does not repeat the
-same validation.
-
-## State, command, event
-
-`Root.TryCreate` validates the title and content together and returns either a complete document or one
-error. Commands therefore carry a complete `Root`, not a mixture of raw and validated fields.
-*)
-
-module Document =
-    open Values
-
-    type Root =
-        { Id: DocumentId; Title: Title; Content: Content }
-
-        static member TryCreate(guid, title, content) =
-            match Title.TryCreate title, Content.TryCreate content with
-            | Ok t, Ok c -> Ok { Id = DocumentId.OfGuid guid; Title = t; Content = c }
-            | Error e, _ -> Error e
-            | _, Error e -> Error e
-
-(**
-<div class="cs-alt"></div>
-
-```csharp
-public sealed record Document(DocumentId Id, Title Title, Content Content)
-{
-    public static bool TryCreate(
-        Guid id,
-        string title,
-        string content,
-        [NotNullWhen(true)] out Document? result,
-        [NotNullWhen(false)] out string? error)
-    {
-        if (!Title.TryCreate(title, out var validTitle))
-        {
-            result = null;
-            error = "Invalid title";
-            return false;
-        }
-
-        if (!Content.TryCreate(content, out var validContent))
-        {
-            result = null;
-            error = "Invalid content";
-            return false;
-        }
-
-        result = new Document(DocumentId.OfGuid(id), validTitle, validContent);
-        error = null;
-        return true;
-    }
-}
-```
-
-`State` is the value FCQRS keeps in the actor and rebuilds during recovery. Before any event has been
-stored, the document is absent:
-*)
-
-    type State = { Document: Root option }
-    let initial = { Document = None }
-
-(**
-<div class="cs-alt"></div>
-
-```csharp
-public sealed record DocumentState(Document? Document = null)
-{
-    public static readonly DocumentState Initial = new();
-}
-```
-
-The first model has one command and one event. Chapter 3 adds a separate `Publish` request with several
-possible outcomes. Defining commands and events separately now leaves room for that growth.
-*)
-
-    type Command = CreateOrUpdate of Root
-
-    type Event = Updated of Root
-
-(**
-<div class="cs-alt"></div>
-
-```csharp
-// C#: commands and events are separate C# union types.
-public union DocumentCommand(DocumentCommand.CreateOrUpdate)
-{
-    public record CreateOrUpdate(Document Document);
-}
-
-public union DocumentEvent(DocumentEvent.Updated)
-{
-    public record Updated(Document Document);
-}
-```
-*)
-
-(**
-## Decide what the command means
-
-`decide` receives a command envelope and the current state. The envelope carries the command payload,
-creation time, correlation id, and metadata. The function returns an `EventAction` describing what
-FCQRS should do. It performs no mutation or I/O itself.
-*)
-
-    let decide (cmd: Command<Command>) state =
-        match cmd.CommandDetails with
-        | CreateOrUpdate doc -> Updated doc |> PersistEvent
-
-(**
-<div class="cs-alt"></div>
-
-```csharp
-// C#: decide is the aggregate's HandleCommand method (a switch expression).
-public override EventAction<DocumentEvent> HandleCommand(
-    Command<DocumentCommand> cmd, DocumentState state) =>
-    cmd.CommandDetails switch
-    {
-        DocumentCommand.CreateOrUpdate c =>
-            EventActions.Persist<DocumentEvent>(new DocumentEvent.Updated(c.Document)),
-        _ => EventActions.Ignore<DocumentEvent>()
-    };
-```
-*)
-
-(**
-The common actions are:
-
-- `PersistEvent event`: append the event, increment the aggregate version, fold it into state, and
-  publish it.
-- `DeferEvent reply`: publish and fold a reply without storing it or incrementing the persisted
-  version. Use this for a rejection or idempotent response whose fold leaves state unchanged. Any
-  state change made only by a deferred event disappears on recovery.
-- `IgnoreEvent`: produce no reply or state change.
-- `UnhandledEvent`: report that the command is not valid for this handler or state.
-
-Persist only facts needed to reconstruct the aggregate. Operational auditing of rejected attempts
-belongs in logs or a separate audit model unless the rejection itself changes the domain.
-
-## `fold`: rebuild the present from the past
-
-FCQRS calls `fold` after persisting a new event and again when replaying stored events during recovery.
-The same event sequence must produce the same state in both cases.
-*)
-
-    let fold (event: Event<Event>) state =
-        match event.EventDetails with
-        | Updated doc -> { Document = Some doc }
-
-(**
-<div class="cs-alt"></div>
-
-```csharp
-// C#: fold is the aggregate's ApplyEvent method.
-public override DocumentState ApplyEvent(Event<DocumentEvent> evt, DocumentState state) =>
-    evt.EventDetails switch
-    {
-        DocumentEvent.Updated e => state with { Document = e.Document },
-        _ => state
-    };
-```
-*)
-
-(**
-`fold` must not read the clock, generate random values, or perform I/O. If a decision needs the current
-time, read the creation time from the command and include the relevant value in the event. Recovery then
-uses the value that was recorded when the decision was made.
-
-## Bind the functions to an actor
-
-`Fcqrs.aggregate` registers the functions with the actor system and returns a typed handle used to send
-commands. The actor lifecycle, sharding, persistence, and recovery stay outside the domain functions.
-*)
-
-    let register (api: IActor) =
-        Fcqrs.aggregate api
-            { Name = "Document"
-              Initial = initial
-              Decide = decide
-              Fold = fold
-              Snapshots = Default                    // cadence: Default | NoSnapshots | Every n
-              Passivation = PassivationPolicy.Default }  // idle passivation: Default | After t | Never
-
-(**
-<div class="cs-alt"></div>
-
-```csharp
-// C#: HandleCommand/ApplyEvent live on a class deriving Aggregate<>, registered
-// through the DI host-builder (the C# counterpart of Fcqrs.aggregate).
-public sealed class DocumentAggregate : Aggregate<DocumentState, DocumentCommand, DocumentEvent>
-{
-    public override DocumentState InitialState => DocumentState.Initial;
-    public override string EntityName => "Document";
-    // HandleCommand and ApplyEvent as shown above.
-}
-
-services
-    .AddFcqrs("Data Source=tutorial.db;", "tutorial")
-    .AddAggregate<DocumentAggregate, DocumentState, DocumentCommand, DocumentEvent>();
-```
-*)
-
-(**
-`Name`, `Initial`, `Decide`, `Fold`, and `Snapshots` form the aggregate definition. The domain functions
-do not depend on the actor implementation.
-
-## What you now understand
-
-The write model now has four distinct parts: a command requests a change, `decide` chooses an action, a
-persisted event records the result, and `fold` derives state from stored events. You can test each
-decision with ordinary function calls:
-
-```fsharp
-let doc = Document.Root.TryCreate(System.Guid.NewGuid(), "Spec", "draft") |> Result.value
-// decide returns an action, so the test asserts on that value.
-let action = Document.decide (cmd (Document.CreateOrUpdate doc)) Document.initial
-// => PersistEvent (Updated doc)
-```
-
-<div class="cs-alt"></div>
-
-```csharp
-Document.TryCreate(Guid.NewGuid(), "Spec", "draft", out var doc, out _);
-var aggregate = new DocumentAggregate();
-
-var action = aggregate.HandleCommand(
-    TestEnvelope.Command<DocumentCommand>(
-        new DocumentCommand.CreateOrUpdate(doc!)),
-    DocumentState.Initial);
-
-Assert.Equal(
-    EventActions.Persist<DocumentEvent>(new DocumentEvent.Updated(doc!)),
-    action);
-```
-
-## Common mistakes
-
-- **Reading changing values in `fold`.** Capture time and generated ids before persistence and carry
-  them in the event.
-- **Persisting rejections.** Use `DeferEvent` when the reply does not represent a state change.
-- **Passing raw strings through the domain.** Parse them into domain values at the application edge.
-- **Treating aggregate state as stored data.** It is derived from the event history during recovery.
-
-## Continue the learning path
-
-Next, [run the aggregate and project its events](2-running-it.html). Chapter 2 uses the domain model
-you just built and introduces the runtime, journal, projection, and query path.
-
-After completing chapter 2, use [Aggregates and the write side](../concepts/aggregates.html) for a
-deeper boundary-design discussion or [Define an aggregate](../how-to/define-an-aggregate.html) as the
-short implementation recipe. Neither is required before continuing.
-*)
+(*** hide ***)
+Checks.documentChecks ()
+printfn "Evaluated docs/tutorial/1-the-aggregate.fsx"

@@ -32,8 +32,17 @@ jobs:
       - name: Build code
         run: dotnet build -c Release FCQRS.sln
 
+      - name: Evaluate the getting-started pages
+        run: |
+          python3 scripts/check-learning-snippets.py
+          dotnet fsi --exec docs/get-started.fsx
+          dotnet fsi --exec docs/tutorial/1-the-aggregate.fsx
+          dotnet fsi --exec docs/tutorial/2-running-it.fsx
+          dotnet fsi --exec docs/tutorial/3-edit-your-document.fsx
+          dotnet fsi --exec docs/tutorial/3-adding-a-saga.fsx
+
       - name: Generate documentation
-        run: dotnet fsdocs build --properties Configuration=Release
+        run: dotnet fsdocs build --eval --strict --properties Configuration=Release
 
       - name: Upload documentation artifact
         uses: actions/upload-pages-artifact@v3

@@ -5,82 +5,36 @@ categoryindex: 2
 index: 1
 ---
 
-# Learn FCQRS: one path from zero to production
+# Learn FCQRS by building a document store
 
-This is the beginner path. Stay inside these numbered pages on the first pass. Each stage introduces
-the vocabulary and reasoning it needs, builds on the previous stage, and ends with one clear next
-step. You do not need to open a concept page or how-to guide to complete the course.
+Save a document, try to create it twice, restart it, edit it, and publish it under a unique URL slug.
+Each result introduces the next part of FCQRS through something you can run and inspect.
 
-The course builds one document application. Documents can be created and edited. Publishing requires
-a unique URL slug, so the application eventually adds a second aggregate and a resumable saga. The
-domain is intentionally small so state, events, projection progress, retries, and recovery remain
-visible.
+You need Git, basic F# or C#, and the .NET 10 SDK selected by `global.json`. Both language paths use
+stable .NET 10 throughout. No previous experience with CQRS, event sourcing, actors, or sagas is needed.
 
-<pre>
-0. See one complete request
-        |
-1. Model one decision
-        |
-2. Persist, project, and query
-        |
-3. Coordinate two owners
-        |
-4. Prove replay and compatibility
-        |
-5. Prepare the system for failure
-</pre>
+**[Start here: save your first document](../get-started.html).** Choose one language and keep the same
+project, document ID, and SQLite database as you move through the course. The later commands are
+already included in the runnable sample; each chapter activates and explains one more part.
 
-## Follow the stages in order
+| Stage | Experiment | What the result explains |
+|---|---|---|
+| [0. Save your first document](../get-started.html) | Save a document and read it back. | Command, event, projection, and query. |
+| [1. Make one document decision](1-the-aggregate.html) | Create the same document with different content. | State, rules, and replies that do not add events. |
+| [2. Restart, project, and query](2-running-it.html) | Reuse its ID in a new process. | Recovery and waiting for query data. |
+| [3. Edit your document](3-edit-your-document.html) | Edit, repeat, and restart again. | New event cases and unchanged-content replies. |
+| [4. Publish under a unique URL](3-adding-a-saga.html) | Publish two documents under the same slug. | Independent owners and a durable saga. |
+| [5. Test changes and recovery](4-testing-and-evolution.html) | Pause a workflow and recover it. | Retry safety, serialized contracts, and old histories. |
+| [6. Preparing for production](5-production.html) | Prepare for failures and deployment. | Storage, diagnostics, backups, and recovery rehearsals. |
 
-| Stage | Question answered | What you build |
-|---:|---|---|
-| [0. Quickstart](../get-started.html) | What does one FCQRS request do end to end? | One command, stored event, projection, and query |
-| [1. The aggregate](1-the-aggregate.html) | Where does a business decision live? | Validated values, command, event, `decide`, and `fold` |
-| [2. Wiring and running it](2-running-it.html) | How does durable state become query data? | SQLite journal, actor runtime, projection, and read-your-writes |
-| [3. Adding a saga](3-adding-a-saga.html) | How do independent owners coordinate safely? | Slug aggregate and resumable publication workflow |
-| [4. Testing and evolution](4-testing-and-evolution.html) | How can this system change without breaking history? | Decision, replay, retry, and compatibility tests |
-| [5. Preparing for production](5-production.html) | What must survive or become visible in production? | Storage, recovery, diagnostics, backup, and deployment checklist |
+Predict a result before running a command, compare it with the output, then follow the explanation.
+Python 3 is optional for running the complete repository smoke test in stage 5.
 
-Start at stage 0 even if you know CQRS. It gives the names used throughout the rest of the course. If
-you already ran one of the repository samples, stage 0 will be a short review.
+## Look up a topic when you need it
 
-## What you need
+- [Understand](../concepts/index.html) explains a model or guarantee in more depth.
+- [Apply](../how-to/index.html) gives instructions for a specific implementation task.
+- [Configuration](../configuration.html) and the API reference describe settings and calls.
 
-- The **.NET 10 SDK**. `dotnet --version` should print `10.*`.
-- A scratch project for the executable course:
-
-```bash
-dotnet new console -lang F# -n DocStore
-cd DocStore
-dotnet add package FCQRS
-```
-
-<div class="cs-alt" data-fs="bash" data-cs="bash"></div>
-
-```bash
-dotnet new console -n DocStore
-cd DocStore
-dotnet add package FCQRS
-```
-
-Run the project at any point with `dotnet run`. Chapter 2 creates `tutorial.db`, which contains the
-event journal and snapshots. Delete `tutorial.db*` only when you intentionally want to discard that
-history and begin again.
-
-Every teaching block has an adjacent F# and C# tab. The executable F# is checked during the docs build.
-The fuller C# examples use preview discriminated unions; the stable .NET 10
-[C# sample](https://github.com/OnurGumus/FCQRS/tree/main/samples/getting-started-csharp) uses ordinary
-concrete message types. The course explains the architectural model identically in both languages.
-
-## Use the other sections after the course introduces a topic
-
-- **Understand** explains guarantees and failure boundaries in greater depth. These pages are optional
-  during the first pass.
-- **Apply** contains short task recipes for work in your own application. Use it after the matching
-  course stage.
-- **Reference** lists configuration keys and API details. Consult it when choosing exact options.
-
-This separation is deliberate: the learning path teaches in dependency order; the other sections help
-you deepen or reuse something you have already encountered.
-
-Continue to [0. Quickstart](../get-started.html).
+These are supporting references. Begin with [your first document](../get-started.html) and follow the
+next-page link at the end of each stage.

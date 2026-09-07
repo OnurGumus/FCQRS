@@ -30,26 +30,36 @@ should produce a compiler-visible place to update decisions, folds, tests, and s
 
 F# discriminated unions express the model directly. Current C# compilers have two practical paths.
 
-## Path 1: stable C# with concrete message types
+## Path 1: stable C# with record hierarchies
 
-The getting-started C# sample uses ordinary records and one concrete command and event type. This runs
-on stable .NET 10 and is a good way to learn the runtime without preview syntax.
+The complete [learning path](../tutorial/index.html) uses stable .NET 10 C#, from the first document
+through editing, publication, and saga recovery. Ordinary derived records represent the message cases.
+For example, the creation and editing events share a base record:
 
 ```csharp
-public sealed record CreateDocument(string Id, string Title, string Content);
-public sealed record DocumentCreated(string Id, string Title, string Content);
-public sealed record DocumentState(string? Id = null, string? Title = null);
+[JsonPolymorphic(TypeDiscriminatorPropertyName = "$case")]
+[JsonDerivedType(typeof(DocumentCreated), "created")]
+[JsonDerivedType(typeof(DocumentEdited), "edited")]
+public abstract record DocumentEvent;
+public sealed record DocumentCreated(Document Document) : DocumentEvent;
+public sealed record DocumentEdited(string Id, string Content) : DocumentEvent;
 ```
 
-An aggregate class derives from `Aggregate<TState,TCommand,TEvent>`, implements `HandleCommand`, and
-implements `ApplyEvent`. This path is simplest when an aggregate has one command family represented by
-a conventional class hierarchy or when a team prefers stable compiler features.
+This excerpt needs `System.Text.Json.Serialization`; the runnable sample also registers rejection and
+publication cases. The discriminator names are serialized contracts. Keep each case registered and
+test serialization through the base type, which is the type the journal envelope carries.
+
+An aggregate derives from `Aggregate<TState,TCommand,TEvent>`, implements `HandleCommand`, and
+implements `ApplyEvent`. Pattern matching selects the derived case. C# does not enforce an exhaustive
+closed set for this hierarchy, so a new case needs explicit decision, fold, projection, and test updates.
 
 The runnable project is [`samples/getting-started-csharp`](https://github.com/OnurGumus/FCQRS/tree/main/samples/getting-started-csharp).
+Its [compatibility chapter](../tutorial/4-testing-and-evolution.html) also covers reading the original
+sample's `Event<DocumentCreated>` envelopes after introducing the common base type.
 
 ## Path 2: C# union types for closed cases
 
-The fuller documentation examples use C# union syntax:
+Some reference and how-to examples use the optional C# union syntax:
 
 ```csharp
 public union DocumentCommand(DocumentCommand.Create, DocumentCommand.Edit)

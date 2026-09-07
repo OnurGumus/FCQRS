@@ -1,219 +1,142 @@
 ---
-title: 4. Testing and evolution
+title: 5. Test changes and recovery
 category: Learn FCQRS
 categoryindex: 2
-index: 6
+index: 7
 ---
 
-# 4. Testing and evolution
+# 5. Test changes and recovery
 
-The running application now has two aggregates and a saga. Before adding infrastructure, make the
-domain safe to change. Event-sourced code has four behaviours worth testing separately:
+The same document has moved from creation through editing to publication. Its event history explains
+its current content and publication status. Checks should protect those observable results when the
+code changes.
 
-1. a command and state produce the expected action;
-2. an event and state produce the expected next state;
-3. replaying an event history produces the expected recovered state;
-4. retrying a command does not repeat a business effect.
+## Run the checks you already have
 
-None of these tests requires Akka.NET or a database.
-
-> **Course position:** chapters 1 through 3 built the write side, read side, and saga. This chapter
-> freezes their important guarantees as tests before discussing changes to durable event contracts.
-> By the end you will know what to test before changing an event-sourced system.
-
-## Test decisions as a table
-
-The important cases for the document aggregate are states and commands, not methods and mocks. Write
-the cases down before writing the assertions:
-
-| Publication state | Command | Expected action |
-|---|---|---|
-| document exists, no publication requested | `Publish "guides/fcqrs"` | persist `PublicationRequested` |
-| waiting for the same slug | the same `Publish` again | defer `PublicationRequested` |
-| waiting for the slug | `FinishPublication Published` | persist `PublicationFinished Published` |
-| already published | `FinishPublication Published` again | defer `PublicationFinished Published` |
-
-The last row is a retry case. The reply still tells the saga that the document is published, but the
-aggregate does not store a second publication.
-
-> **Motivation:** These tests protect the recovery contract, not an implementation detail. If the same
-> inputs always select the same action and rebuild the same state, runtime restarts can safely reuse
-> the domain logic you tested.
-
-Use envelope helpers and call `decide` directly. These are the same helpers as in
-[Test your domain](../how-to/test-your-domain.html) (`ValueLens` comes from `FCQRS.Model.Data`), and
-the assertions use Expecto's `Expect.equal` — substitute your test framework's equality check:
-
-```fsharp
-let fixedTime = DateTime(2026, 1, 1, 12, 0, 0, DateTimeKind.Utc)
-
-let command details : Command<_> =
-    { CommandDetails = details
-      CreationDate = fixedTime
-      Id = Guid.CreateVersion7().ToString() |> ValueLens.CreateAsResult |> Result.value
-      Sender = None
-      CorrelationId = Fcqrs.newCid ()
-      Metadata = Map.empty }
-
-let event version details : Event<_> =
-    { EventDetails = details
-      CreationDate = fixedTime
-      Id = Guid.CreateVersion7().ToString() |> ValueLens.CreateAsResult |> Result.value
-      Sender = None
-      CorrelationId = Fcqrs.newCid ()
-      Version = version |> ValueLens.TryCreate |> Result.value
-      Metadata = Map.empty }
-
-let doc =
-    Document.Root.TryCreate(Guid.NewGuid(), "Spec", "draft") |> Result.value
-
-let publishedState: Document.State =
-    { Document = Some doc
-      Publication = Document.Finished("guides/fcqrs", Document.Published) }
-
-let action =
-    Document.decide
-        (command (Document.FinishPublication Document.Published))
-        publishedState
-
-Expect.equal
-    action
-    (DeferEvent(
-        Document.PublicationFinished(doc.Id, "guides/fcqrs", Document.Published)))
-    "repeating the result defers the existing publication outcome"
+```text
+dotnet run --project samples/getting-started-fsharp -- --check
 ```
 
-<div class="cs-alt"></div>
+<div class="cs-alt" data-fs="text" data-cs="text"></div>
 
-```csharp
-var fixedTime = new FakeTimeProvider(
-    new DateTimeOffset(2026, 1, 1, 12, 0, 0, TimeSpan.Zero));
-var aggregate = new PublicationDocumentAggregate();
-
-Document.TryCreate(Guid.NewGuid(), "Spec", "draft", out var doc, out _);
-var publishedState = new DocumentState(
-    doc, new PublicationProgress.Finished("guides/fcqrs", PublicationResult.Published));
-
-var action = aggregate.HandleCommand(
-    TestEnvelope.Command<DocumentCommand>(
-        new DocumentCommand.FinishPublication(PublicationResult.Published),
-        fixedTime),
-    publishedState);
-
-Assert.Equal(
-    EventActions.Defer<DocumentEvent>(new DocumentEvent.PublicationFinished(
-        doc!.Id, "guides/fcqrs", PublicationResult.Published)),
-    action);
+```text
+dotnet run --project samples/getting-started-csharp -- --check
 ```
 
-Use fixed timestamps in test envelopes even when the current rule does not read time. Stable inputs
-make failures reproducible and keep future time-dependent rules deterministic. The C# example uses
-`FakeTimeProvider` from the `Microsoft.Extensions.TimeProvider.Testing` package.
-
-## Test folds with histories
-
-A single fold assertion verifies one transition. A replay test verifies that the transitions compose:
-
-```fsharp
-let recovered =
-    [ Document.PublicationRequested(doc.Id, "guides/fcqrs")
-      Document.PublicationFinished(doc.Id, "guides/fcqrs", Document.Published) ]
-    |> List.mapi (fun index details -> event (int64 index + 1L) details)
-    |> List.fold (fun state stored -> Document.fold stored state) Document.initial
-
-Expect.equal
-    recovered.Publication
-    (Document.Finished("guides/fcqrs", Document.Published))
-    "replay recovers the finished publication"
+```text
+All document, replay, and saga checks passed.
 ```
 
-<div class="cs-alt"></div>
+These checks run without an actor system. `Checks.fs` / `Checks.cs` tests decisions, folds, complete
+histories, serialized values, and saga transitions. The helpers throw on a mismatch in Debug and Release.
 
-```csharp
-var history = new DocumentEvent[]
-{
-    new DocumentEvent.PublicationRequested(doc!.Id, "guides/fcqrs"),
-    new DocumentEvent.PublicationFinished(
-        doc.Id, "guides/fcqrs", PublicationResult.Published)
-};
+| Check | Bug it catches |
+|---|---|
+| Create twice with different content | A repeated create overwrites the document. |
+| Edit, then repeat that edit | An unchanged edit adds a duplicate event. |
+| Replay creation, edit, request, and result | The fold rebuilds a different state. |
+| Repeat `FinishPublication` | Saga recovery stores a second completion. |
+| Exhaust a deadline, then deliver a late success | The saga wrongly treats an unknown outcome as rejection. |
+| Round-trip every event, command, and saga state | A C# case is missing its JSON discriminator registration, or a persisted shape stops reading. |
+| Read a saved creation fixture | A change breaks the earlier sample's event history. |
 
-var recovered = history
-    .Select((details, index) =>
-        TestEnvelope.Event<DocumentEvent>(details, index + 1, fixedTime))
-    .Aggregate(DocumentState.Initial,
-        (state, stored) => aggregate.ApplyEvent(stored, state));
+**Try it:** remove the C# `JsonDerivedType` registration for `DocumentEdited`, or change the F# fold
+so a deferred rejection changes state. The checks should fail. Restore the code before continuing.
 
-Assert.Equal(
-    new PublicationProgress.Finished("guides/fcqrs", PublicationResult.Published),
-    recovered.Publication);
+## Restart between the two owners
+
+Create a third document with the ordinary quickstart command. Use its printed ID below. This exercise
+pauses the sample after the slug reservation result is stored in the saga, before the saga reports
+that result to the document.
+
+```text
+dotnet run --project samples/getting-started-fsharp -- --pause-publication THIRD_DOCUMENT_ID guides/recovery
 ```
 
-This test is the executable definition of recovery. If a fold reads the clock, generates an id, or
-performs I/O, the same history can produce a different result on another run. Put those values in the
-command or event instead.
+<div class="cs-alt" data-fs="text" data-cs="text"></div>
 
-## Test the saga at each state
-
-Test a saga in two layers:
-
-- `handleEvent` maps an incoming event and current saga state to a persisted state action;
-- `applySideEffects` maps the resulting state to commands and a saga transition.
-
-For `ReservingSlug(documentId, "guides/fcqrs")`, assert that the saga sends one `Reserve` command to the
-slug aggregate identified by `guides/fcqrs`. For `ReportingResult Published`, assert that it sends
-`FinishPublication Published` to the originating document. Call `applySideEffects` with
-`recovering = true` and verify that it returns a command safe for re-delivery or a recovery-specific
-status check. Do not assume the original command was either delivered or lost when the process
-stopped.
-
-## Treat persisted events as contracts
-
-An event outlives the process and often outlives the code version that wrote it. Renaming a type,
-removing a union case, changing a field's meaning, or changing its serialized representation can make
-old journal rows unreadable or change the state produced by replay.
-
-Use these rules when events evolve:
-
-- Add a new event case for a new fact. Do not reinterpret an old case to mean something different.
-- Keep old cases readable until every stored instance has an explicit migration path.
-- Prefer adding optional data or a new versioned event over changing the meaning of a required field.
-- Test recovery from a history written by the previous release.
-- Deploy readers that understand the new shape before deploying writers that produce it when versions
-  overlap during a rolling deployment.
-
-Register stable journal names so moving a CLR type does not change the stored manifest:
-
-```fsharp
-Fcqrs.journalTypes [ journalType<Document.Event> "document.event" ]
+```text
+dotnet run --project samples/getting-started-csharp -- --pause-publication THIRD_DOCUMENT_ID guides/recovery
 ```
 
-<div class="cs-alt"></div>
+The program prints `publication paused after the reservation`, followed by the command arguments for
+resuming, then stops its actor system. This pause is an explicit exercise hook; normal publication
+sends the next command as soon as progress is stored.
 
-```csharp
-builder.WithJournalTypes(types => types.Type<DocumentEvent>("document.event"));
+Run the next command promptly, within the five-minute reporting deadline:
+
+```text
+dotnet run --project samples/getting-started-fsharp -- --publish THIRD_DOCUMENT_ID guides/recovery
 ```
 
-Stable names solve type location changes. They do not migrate the fields inside an event. Field and
-meaning changes still need compatibility code and replay tests.
+<div class="cs-alt" data-fs="text" data-cs="text"></div>
 
-## Rebuild a projection deliberately
+```text
+dotnet run --project samples/getting-started-csharp -- --publish THIRD_DOCUMENT_ID guides/recovery
+```
 
-A projection is derived from the journal. To verify a projection change:
+```text
+publication version 3; guides/recovery -> Published
+query returned 'first event'
+```
 
-1. stop the projection;
-2. create a fresh read model or clear the old one;
-3. reset that projection's offset to the beginning;
-4. replay the journal with the new handler;
-5. compare counts and representative records before switching queries to the rebuilt model.
+The third document was not edited, so it has three events. The recovered saga re-drives
+`FinishPublication` from its stored `ReportingResult` state. It does not reserve a different slug or
+start the workflow from scratch. The command remains safe if a previous attempt was already delivered.
 
-Do not delete or edit journal rows to repair a projection. Correct the projection and rebuild its
-output.
+If the persisted deadline has elapsed, the saga moves to `ReportUncertain`. It still accepts a late
+matching completion, but the sample does not automatically restart its retry budget or declare failure.
+Its CLI wait can time out. The pure checks exercise both this escalation and the late-answer path.
 
-## Continue the learning path
+## Check the complete path against real storage
 
-Next, [prepare the system for production](5-production.html). The final stage applies the recovery
-model you just tested to storage, projections, diagnostics, backups, and deployment.
+With Python 3 installed, run the repository's end-to-end check from its root:
 
-After finishing the course, [Test your domain](../how-to/test-your-domain.html), [Evolve persisted
-events](../how-to/evolve-events.html), and [Rebuild a read
-model](../how-to/rebuild-a-read-model.html) provide the shorter repeatable procedures.
+```text
+python3 scripts/check-learning-path.py
+```
+
+The script runs both projects in temporary databases, using the same CLI commands as the course. It
+checks output, versions, repeated requests, competing documents, a paused saga's recovery, and both old
+journal and old snapshot recovery. It rebuilds the in-memory projection from mixed old and new events
+and verifies that the old creation row remains byte-for-byte unchanged.
+
+The `DOCSTORE_DATABASE` environment variable selects those isolated test stores. Normal runs use the
+database path printed by each sample.
+
+## Keep the recorded contracts readable
+
+Adding editing preserves `DocumentCreated` and adds `DocumentEdited`; it does not reinterpret a create
+as an edit. The document's entity name and identity remain stable across the whole course.
+
+F# retains the `Program.DocumentEvent` union's existing creation case and fields. `Document.fs` keeps
+its original `Program` module name because earlier journal manifests include that name. Publication
+state is an optional addition, so an old snapshot without it recovers with no publication requested.
+
+The original C# sample stored `Event<DocumentCreated>`. The expanded sample handles the common
+`Event<DocumentEvent>` envelope. `LegacyCreationReader.cs` adapts the old envelope when replaying,
+retaining its payload, ID, version, timestamp, correlation id, and metadata. The projection uses the
+same reader for old query-journal entries. The old `DocumentCreated` record and its fields remain
+present. The adapter leaves stored rows untouched; its use follows Akka.NET's
+[event-adapter mechanism](https://getakka.net/articles/persistence/event-adapters.html).
+
+This reader solves this specific envelope change. It is not a general payload migration. A deployment
+with old and new application versions running together must introduce compatible readers before
+writing the new event cases. Keep fixtures from each retained format, then check mixed histories,
+aggregate recovery, projection rebuilds, and saga recovery before release.
+
+The four fixtures in `samples/fixtures` were captured from the previous samples' serialized events
+and snapshots. New-format round-trip checks complement those fixtures; they do not replace them.
+
+## Rebuild query data without rewriting history
+
+The sample rebuilds its dictionary from offset zero at startup. A durable projection needs to commit
+its data updates and source offset together when they share a store. To change a projection, replay
+into a separate view and compare its results before switching queries to it. Keep the journal intact.
+
+Stable journal names can protect future CLR type moves. They do not migrate changed fields or turn
+one envelope type into another. [Evolve persisted events](../how-to/evolve-events.html) explains those
+choices, and [Add a projection](../how-to/add-a-projection.html) covers transactional progress.
+
+Continue to [6. Preparing for production](5-production.html). It applies the same document, slug,
+and publication workflow to storage, monitoring, recovery, and deployment decisions.

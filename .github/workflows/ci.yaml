@@ -28,8 +28,14 @@ jobs:
         run: |
           dotnet build samples/getting-started-fsharp -c Release
           dotnet build samples/getting-started-csharp -c Release
+          dotnet run --project samples/getting-started-fsharp -c Release --no-build -- --check
+          dotnet run --project samples/getting-started-csharp -c Release --no-build -- --check
           dotnet build sample -c Release
           dotnet build saga_sample -c Release
+      - name: Learning path and persisted compatibility
+        run: |
+          python3 scripts/check-learning-snippets.py
+          python3 scripts/check-learning-path.py --configuration Release --no-build
 
   publish:
     needs: test

@@ -14,12 +14,16 @@ adds base classes, action factories, delegates, and host-builder registration ar
 This guide uses the current host-builder API. The lower-level `ActorApi` and `ActorWiring` APIs remain
 available for custom composition, but most applications do not need them.
 
-## Compiler requirement
+The complete [learning path](../tutorial/index.html) and
+[C# sample](https://github.com/OnurGumus/FCQRS/tree/main/samples/getting-started-csharp) use ordinary
+record hierarchies on stable .NET 10, including editing and sagas. Start there for a runnable project.
+
+## Compiler requirement for this guide
 
 The examples use C# discriminated unions. At the time of writing, the `union` keyword requires a .NET
 11 preview SDK and `<LangVersion>preview</LangVersion>`. FCQRS targets `net10.0` and can run in a
-`net11.0` host. If preview language features are not acceptable for your project, define the domain in
-an F# class library and keep the host, endpoints, and projections in C#.
+`net11.0` host. For stable C#, use the record hierarchies shown in the learning path or define the
+domain in an F# class library and keep the host, endpoints, and projections in C#.
 
 FCQRS writes an explicit case discriminator for unions in the journal. Do not replace its event
 serializer with a caseless union representation: two cases can have the same field shape but different

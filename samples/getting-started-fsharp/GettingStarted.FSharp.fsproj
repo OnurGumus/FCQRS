@@ -6,9 +6,15 @@
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="Document.fs" />
+    <Compile Include="Publication.fs" />
+    <Compile Include="Checks.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\src\FCQRS\FCQRS.fsproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="../fixtures/*.json" Link="fixtures/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

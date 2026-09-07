@@ -1,6 +1,6 @@
 (**
 ---
-title: 2. Wiring and running it
+title: 2. Restart, project, and query
 category: Learn FCQRS
 categoryindex: 2
 index: 4
@@ -9,331 +9,180 @@ index: 4
 
 (*** hide ***)
 #r "nuget: FCQRS, 6.3.0"
-open System
-open System.Collections.Concurrent
-open Microsoft.Extensions.Configuration
-open Microsoft.Extensions.Logging
-open FCQRS.Common
-open FCQRS.Model.Data
-open FCQRS.FSharp
-
-module Values =
-    type DocumentId =
-        | DocumentId of Guid
-        static member OfGuid g = DocumentId g
-        member this.Value = let (DocumentId g) = this in g
-        override this.ToString() = let (DocumentId g) = this in g.ToString()
-    type Title =
-        | Title of ShortString
-        static member TryCreate s =
-            match ValueLens.TryCreate s with
-            | Ok ss -> Ok(Title ss)
-            | Error _ -> Error "Invalid title"
-        member this.Value = let (Title s) = this in ValueLens.Value s
-    type Content =
-        | Content of LongString
-        static member TryCreate s =
-            match ValueLens.TryCreate s with
-            | Ok ss -> Ok(Content ss)
-            | Error _ -> Error "Invalid content"
-        member this.Value = let (Content s) = this in ValueLens.Value s
-
-module Document =
-    open Values
-    type Root =
-        { Id: DocumentId; Title: Title; Content: Content }
-        static member TryCreate(guid, title, content) =
-            match Title.TryCreate title, Content.TryCreate content with
-            | Ok t, Ok c -> Ok { Id = DocumentId.OfGuid guid; Title = t; Content = c }
-            | Error e, _ -> Error e
-            | _, Error e -> Error e
-    type State = { Document: Root option }
-    let initial = { Document = None }
-    type Command = CreateOrUpdate of Root
-    type Event = Updated of Root
-    let decide (cmd: Command<Command>) state =
-        match cmd.CommandDetails with
-        | CreateOrUpdate doc -> Updated doc |> PersistEvent
-    let fold (event: Event<Event>) state =
-        match event.EventDetails with
-        | Updated doc -> { Document = Some doc }
+#load "../../samples/getting-started-fsharp/Document.fs"
+#load "../../samples/getting-started-fsharp/Publication.fs"
+#load "../../samples/getting-started-fsharp/Checks.fs"
 
 (**
-# 2. Wiring and running it
+# 2. Restart, project, and query
 
-Chapter 1 produced a document aggregate as pure functions. This chapter registers those functions with
-FCQRS, stores their events in SQLite, projects the events into query data, and sends a command through
-the complete path. Continue in the same `Program.fs`.
+The getting-started program has exited, but SQLite still holds its `DocumentCreated` event. Start a
+new process and ask it to create the **same document ID** with different content.
 
-> **Course position:** chapter 1 defined a pure aggregate. This chapter runs it and follows one stored
-> event into a query model. By the end you will understand the journal, projection offset,
-> correlation id, and subscribe-before-send ordering from one working request.
+## Run the restart experiment
 
-This chapter adds three pieces around chapter 1's aggregate. Each `failwith` message names the
-section that implements it.
+Use the ID printed by your previous run, replacing `PASTE_DOCUMENT_ID` below. Keep the same language,
+build configuration, and project: each sample keeps its own database beside its executable.
 
-```fsharp
-let buildApi () : IActor =
-    failwith "create the actor system"
-
-let handle (offset: int64) (message: obj) : unit =
-    failwith "build the query side"
-
-let run () : Async<unit> =
-    failwith "send a command and read your own write"
+```text
+dotnet run --project samples/getting-started-fsharp -- --recover PASTE_DOCUMENT_ID
 ```
 
-<div class="cs-alt"></div>
+<div class="cs-alt" data-fs="text" data-cs="text"></div>
 
-```csharp
-// "Create the actor system": the host-builder replaces buildApi.
-var builder = WebApplication.CreateBuilder(args);
-
-// "Build the query side": the projection handler.
-void Handle(long offset, object message) =>
-    throw new NotImplementedException("build the query side");
-
-// "Send a command and read your own write": top-level statements after Build().
+```text
+dotnet run --project samples/getting-started-csharp -- --recover PASTE_DOCUMENT_ID
 ```
 
-## Two paths, on purpose: writing and reading
+Before running, predict the content and version. The recovery branch sends a create with
+`replacement attempt`. For the document saved in the quickstart, the result is:
 
-The application has two paths:
+```text
+recovery reply version 1; document contains 'first event'
+```
+
+If you changed the initial content in the quickstart, that original content appears instead.
+
+The process began with empty memory. FCQRS recovered the original document from its persisted history
+before handling this command. The decision found an existing document and returned it with
+`DeferEvent`, so the version stayed at `1`.
+
+**Try it:** run the recovery command again with the same ID. The answer stays the same.
+
+If you see `replacement attempt`, check the ID and printed journal path. An ID with no stored history
+is a new aggregate: this create stores its first event. `--recover` is an experiment that sends a
+command, not a read-only lookup. An ordinary run prints a fresh ID and starts a fresh document.
+
+## Aggregate state and query data are separate
+
+The recovery experiment prints the **aggregate reply**. The ordinary run also reads a dictionary.
+These are different paths:
 
 <pre>
-                decide / fold
-  command  ---------------------->  JOURNAL   (append-only events; the truth)
-                                       |
-                                       v
-                                   projection
-                                       |
-                                       v
-                                  read model   (a derived view; disposable)
+                              DocumentCreated in SQLite
+                                /                 \
+                               v                   v
+                      fold / ApplyEvent     handleProjection
+                               |                   |
+                               v                   v
+                       aggregate state       query dictionary
+                       used for decisions    used for lookups
 </pre>
 
-Commands flow through the aggregate and append events to the journal. Projections consume those events
-and update read models. Application queries use the read model, not the aggregate state or journal.
+An aggregate's state contains what its decisions need. A **read model** contains what a query needs.
+The sample uses the same document shape for both so the data movement is visible. A different
+projection could produce a list of document titles or a count, using the same recorded events.
 
-> **Motivation:** Two paths let query shapes evolve without widening the aggregate, and let business
-> rules evolve without redesigning every query. The stored events are the stable handoff between them.
+Separating command handling from querying is **CQRS** (Command Query Responsibility Segregation).
+Here the command decides and stores an outcome; the query reads a separately maintained view.
 
-## Create the actor system
+## Follow an event into the dictionary
 
-`Fcqrs.actor` builds the Akka.NET system. The connection configures the journal, query journal, and
-snapshot store. The embedded defaults configure serialization, sharding, and a one-node cluster.
-*)
+The projection receives events from the journal and updates an in-memory dictionary. The dictionary
+is concurrent because projection updates and application reads can happen on different threads.
 
-let buildApi () : IActor =
-    let config = ConfigurationBuilder().Build()
-    let loggerFactory = LoggerFactory.Create(fun _ -> ())
-    let connection =
-        Fcqrs.connect FCQRS.Actor.DBType.Sqlite "Data Source=tutorial.db;"
-    Fcqrs.actor config loggerFactory (Some connection) "tutorial"
+The projection handles `DocumentCreated` by placing the document into the dictionary. In the same
+handler, `DocumentEdited` replaces its content after checking that creation was already projected.
+Open `handleProjection` / `HandleProjection` in `Program` to follow both cases.
 
-(**
-<div class="cs-alt"></div>
+The callback accepts `obj` (`object`) because a journal can contain events for different aggregates.
+The type check selects this sample's events. `_offset` is the event's position in the projection's
+source stream; it is not the version of one document.
 
-```csharp
-// C#: the DI host-builder creates the actor system and registers the aggregate;
-// config and logger come from the container, so there's no explicit buildApi.
-var builder = WebApplication.CreateBuilder(args);
-builder.Services
-    .AddFcqrs("Data Source=tutorial.db;", "tutorial")
-    .AddAggregate<DocumentAggregate, DocumentState, DocumentCommand, DocumentEvent>();
-```
-*)
+The sample registers this handler at offset `0`. Each ordinary run starts with an empty dictionary
+and replays the stored history. Saving an offset while discarding the dictionary would skip the very
+events needed to rebuild it.
 
-(**
-The empty `IConfiguration` accepts every embedded default. User configuration is merged over those
-defaults when an application needs different Akka.NET settings. `tutorial.db` outlives the process, so
-the next run can recover the aggregate and replay the projection. See
-[Configure the database](../how-to/configure-the-database.html) for other providers.
+## Wait for the view you are about to read
 
-## Build the query side
-
-This tutorial uses an in-memory dictionary for query data. The projection starts at offset zero and
-replays all stored `Updated` events on every run. A production projection instead persists its read
-model and, in the same database transaction, the offset of the last event it applied. The shared
-transaction is what makes a crash safe: with separate writes, an offset saved first skips an event
-forever, and data saved first applies an event twice on restart. The in-memory version here keeps the
-event-to-query transformation visible.
-*)
-
-let readModel = ConcurrentDictionary<string, Document.Root>()
-
-let handle (_offset: int64) (message: obj) =
-    match message with
-    | :? Event<Document.Event> as event ->
-        match event.EventDetails with
-        | Document.Updated document -> readModel[document.Id.ToString()] <- document
-    | _ -> ()
-
-(**
-<div class="cs-alt"></div>
-
-```csharp
-// C#: the same in-memory read model and projection.
-var readModel = new ConcurrentDictionary<string, Document>();
-
-void Handle(long offset, object message)
-{
-    if (message is Event<DocumentEvent> { EventDetails: DocumentEvent.Updated updated })
-        readModel[updated.Document.Id.ToString()] = updated.Document;
-}
-
-builder.Services.AddProjection((offset, ev) => Handle(offset, ev));
-```
-*)
-
-(**
-`Projection.single` publishes an aggregate event to subscribers after `handle` returns. A caller can
-therefore wait until this projection has applied a specific command's event. See
-[Add a projection](../how-to/add-a-projection.html) for transactional offset storage.
-
-## Send a command and read your own write
-
-The aggregate acknowledges its stored event before the projection necessarily updates the read model.
-A query sent immediately after the command can therefore return the previous view. FCQRS carries a
-**correlation id (CID)** through the command, event, and projection notification:
-
-<pre>
-  mint a CID
-      |
-      v
-  SUBSCRIBE to that CID    &lt;-- before sending, so the answer can't slip past
-      |
-      v
-  send command  -->  aggregate  -->  journal  -->  projection re-publishes  -->  your wait wakes
-</pre>
-
-Subscribe before sending. Subscribing afterward creates a race in which the projection can publish the
-notification before the subscription exists. `.Send` accepts the CID, aggregate id, command, and a
-predicate selecting the aggregate reply.
-*)
-
-let run () =
-    async {
-        let api = buildApi ()
-
-        let documents =
-            Fcqrs.aggregate api
-                { Name = "Document"
-                  Initial = Document.initial
-                  Decide = Document.decide
-                  Fold = Document.fold
-                  Snapshots = Default
-                  Passivation = PassivationPolicy.Default }
-
-        Fcqrs.wireSagaStarters api []
-
-        let subs = Fcqrs.projection api (Projection.single 0 handle)
-
-        let cid = Fcqrs.newCid ()
-        let id = Fcqrs.aggregateId "11111111-1111-1111-1111-111111111111"
-
-        // Subscribe to this CID *before* sending so the confirmation can't be missed.
-        use awaiter = subs.Subscribe(cid, 1)
-
-        match Document.Root.TryCreate(Guid "11111111-1111-1111-1111-111111111111", "Welcome", "draft") with
-        | Error e -> printfn "rejected: %s" e
-        | Ok doc ->
-            let! event =
-                documents.Send cid id (Document.CreateOrUpdate doc)
-                    (fun e ->
-                        match e with
-                        | Document.Updated _ -> true)
-
-            do! awaiter.Task |> Async.AwaitTask
-            let projected = readModel[doc.Id.ToString()]
-            printfn "saved version %A; query returned '%s'" event.Version projected.Title.Value
-    }
-
-(**
-<div class="cs-alt"></div>
-
-```csharp
-// C#: resolve the command handler + subscription from DI, then the same
-// subscribe-before-send, read-your-writes flow.
-using var app = builder.Build();
-await app.StartAsync();
-var documents = app.Services.GetRequiredService<Handler<DocumentCommand, DocumentEvent>>();
-var subs = app.Services.GetRequiredService<ISubscribe>();
-
-var cid = Values.NewCID();
-var id = Values.CreateAggregateId("11111111-1111-1111-1111-111111111111");
-
-using var awaiter = subs.SubscribeForFirst(cid);   // subscribe BEFORE sending
-if (Document.TryCreate(Guid.Parse("11111111-1111-1111-1111-111111111111"), "Welcome", "draft", out var doc, out var err))
-{
-    var ev = await documents(
-        e => e is DocumentEvent.Updated,
-        cid, id, new DocumentCommand.CreateOrUpdate(doc));
-    await awaiter.Task;
-    Console.WriteLine($"saved version {ev.Version}; query returned '{readModel[doc.Id.ToString()].Title}'");
-}
-
-await app.StopAsync();
-```
-*)
-
-(**
-Wire it to your entry point:
+The new document ID in an ordinary run ensures the first create stores an event. The request path is:
 
 ```fsharp
-[<EntryPoint>]
-let main _ =
-    run () |> Async.RunSynchronously
-    0
+let correlationId = Fcqrs.newCid ()
+use projected = subscriptions.Subscribe(correlationId, 1)
+let! stored =
+    documents.Send correlationId aggregateId (CreateDocument document) (fun _ -> true)
+do! projected.Task.WaitAsync(TimeSpan.FromSeconds 30.) |> Async.AwaitTask
+let queried = readModel[documentId]
 ```
 
 <div class="cs-alt"></div>
 
 ```csharp
-// Nothing to wire: the top-level statements are the entry point, and the
-// StartAsync and StopAsync calls shown above form its lifecycle.
+var correlationId = Values.NewCID();
+using var projected = subscriptions.SubscribeForFirst(correlationId);
+var stored = await documents(_ => true, correlationId, aggregateId, new CreateDocument(document));
+await projected.Task.WaitAsync(TimeSpan.FromSeconds(30));
+var queried = readModel[documentId];
 ```
 
-## Run it, then run it again
+Read these lines in order:
 
-Run the program twice without deleting `tutorial.db`:
+1. Create a correlation id for this request.
+2. Subscribe to the projection's notification **before sending**. Subscribing later can miss it.
+3. Send the create and await the aggregate reply. The `true` predicate accepts all reply types. The runner then inspects the reply; the editing chapter handles success and
+   rejection separately.
+4. Wait until this projection has applied the event and published its notification.
+5. Query the dictionary.
 
-```bash
-dotnet run
-# saved version 1; query returned 'Welcome'
+This is **read-your-writes** for the selected projection. It does not establish that every projection
+or external service is current. The subscription is in-memory coordination, not a durable client queue.
 
-dotnet run
-# saved version 2; query returned 'Welcome'
-```
+**Predict:** remove the projection wait. Will the query always fail? No. It might find the document,
+or it might run before the dictionary contains it. One successful run would not prove that the
+ordering is safe. Keep the wait in the program.
 
-The second process starts with empty memory. FCQRS replays the first `Updated` event through `fold`, then
-handles the new command and stores version 2. The projection also starts with an empty dictionary and
-replays from offset zero before applying the new event.
+The repeated create has no new journal event. Waiting on its new correlation id would time out even
+though the aggregate replied successfully. That is why the repeated and recovery paths inspect the
+aggregate reply directly.
 
-Delete `tutorial.db*` and run again to start a new event history at version 1. In production, deleting a
-read model and resetting its offset is a rebuild operation; deleting the journal discards the source of
-truth.
+## Find the runtime setup in the sample
 
-## What you now understand
+Now return to the host setup in the complete program:
 
-A command produced a stored event. The aggregate recovered its state by replaying stored events, and a
-separate projection rebuilt query data from the same history. Subscribing to the CID before sending
-coordinated the query with that projection.
+| Setting or call | Role in this run |
+|---|---|
+| SQLite connection | Stores the event journal and snapshots in the printed database file. |
+| `Fcqrs.actor` / `AddFcqrs` | Starts the actor runtime with the framework's defaults. |
+| Aggregate registration | Connects the initial state, decision, fold, and persisted entity name. |
+| `Fcqrs.wireSagaStarters` / `AddSaga` | Registers the publication workflow used in chapter 4. A create does not start it. |
+| `Projection.single 0` / `AddProjection(..., lastOffset: 0)` | Rebuilds the dictionary and publishes a notification after its handler returns. |
+| `api.Stop()` / `host.StopAsync()` | Stops the runtime after the experiment. |
 
-## Common mistakes
+The aggregate is registered before commands are sent. In an ordinary run the projection is also
+registered before the first request. The recovery command inspects the aggregate reply directly.
 
-- **Querying without waiting for the required projection.** The read model may still contain the old
-  view.
-- **Subscribing after sending.** The notification can pass before the subscription exists.
-- **Starting a durable projection at offset zero on every run.** Persist the offset with the read-model
-  update instead.
-- **Forgetting `Fcqrs.wireSagaStarters`.** Wire an empty list when the application has no sagas.
+Snapshots can shorten aggregate replay; they do not replace or repair the journal. The sample uses
+the default snapshot and passivation settings. [Aggregate lifecycle](../concepts/aggregate-lifecycle.html)
+explains these options when you need to choose them.
 
-## Continue the learning path
+## Make a read model survive a crash
 
-Next, add a [saga](3-adding-a-saga.html) for a publication rule that spans a document and its URL slug.
-The next chapter assumes you understand the two paths and the projection timing shown here.
+The dictionary is a teaching choice. For a durable read model, store its update and the source offset
+in the **same transaction** when they share a database. A transaction commits both or neither.
 
-For optional depth after chapter 3, [The read side](../concepts/read-models.html) explains transactional
-offsets and rebuilds, while [Add a projection](../how-to/add-a-projection.html) is the short production
-recipe.
+| If the process crashes between separate writes | What the restart can do |
+|---|---|
+| Offset saved, data not saved | Skip an event whose update is missing. |
+| Data saved, offset not saved | Apply an event again; a counter could increment twice. |
+
+The quickstart avoids a saved-offset mismatch by rebuilding its entire in-memory view from zero.
+As history grows, a durable view with transactional progress avoids that full rebuild on every run.
+See [Add a projection](../how-to/add-a-projection.html) for the implementation.
+
+## Check your understanding
+
+- **Same ID after restart:** the existing document returns and no new creation is stored.
+- **New ID:** a new aggregate starts at version `1`.
+- **Dictionary lost:** replay can rebuild it from the journal.
+- **Journal lost:** a dictionary is not a substitute for the missing event history.
+- **Projection wait timed out:** the outcome is uncertain; do not assume the command failed.
+
+Your document is still at version `1`. Continue to [3. Edit your document](3-edit-your-document.html)
+to change its content deliberately, using the same ID and database.
+
 *)
+
+(*** hide ***)
+Checks.documentChecks ()
+printfn "Evaluated docs/tutorial/2-running-it.fsx"

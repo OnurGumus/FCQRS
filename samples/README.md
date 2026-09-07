@@ -1,17 +1,19 @@
-# FCQRS getting-started projects
+# FCQRS document-store samples
 
-These two projects run the same FCQRS flow on .NET 10:
+Both projects follow the same path on stable .NET 10: create, repeat, recover, edit, publish, and
+recover an interrupted publication workflow. Keep the same document ID and database between stages.
 
-1. send `CreateDocument` to a document aggregate;
-2. persist `DocumentCreated` in SQLite;
-3. project the stored event into an in-memory read model;
-4. wait for that projection by correlation id;
-5. query and print the projected document.
+- [F# sample](getting-started-fsharp/)
+- [C# sample](getting-started-csharp/)
+- [Start the course](https://onurgumus.github.io/FCQRS/get-started.html)
 
-Choose the language you want to start with:
+`Document` contains the domain rules, `Publication` the slug aggregate and saga, `Program` the CLI
+exercises, and `Checks` the executable checks. The C# `LegacyCreationReader` retains compatibility
+with the original sample's event envelope. `fixtures` contains captured old event and snapshot data.
 
-- [F# getting started](getting-started-fsharp/)
-- [C# getting started](getting-started-csharp/)
+Both projects reference the FCQRS source project. An application outside this repository should use
+`dotnet add package FCQRS` instead. `DOCSTORE_DATABASE` optionally selects a database path for isolated
+checks; normal runs print the path beside the executable.
 
-Both projects reference the FCQRS source project so they always compile against the repository version.
-An application outside this repository should use `dotnet add package FCQRS` instead.
+Run the entire path, including old-history recovery, with `python3 scripts/check-learning-path.py`
+from the repository root.

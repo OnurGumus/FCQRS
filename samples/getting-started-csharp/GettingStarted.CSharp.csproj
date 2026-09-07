@@ -10,4 +10,7 @@
     <ProjectReference Include="..\..\src\FCQRS\FCQRS.fsproj" />
     <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.2" />
   </ItemGroup>
+  <ItemGroup>
+    <None Include="../fixtures/*.json" Link="fixtures/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
 </Project>

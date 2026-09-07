@@ -1,0 +1,41 @@
+{
+  "persistenceId": "GettingStartedFSharpDocument/default-shard/a46bac2e40944d37acb3936ec0cad2d2",
+  "manifest": "FCQRS.Common+Event`1[[Program+DocumentEvent, GettingStarted.FSharp, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null]], FCQRS, Version=6.3.0.0, Culture=neutral, PublicKeyToken=null",
+  "payload": {
+    "EventDetails": {
+      "Case": "DocumentCreated",
+      "Item": {
+        "Id": "a46bac2e40944d37acb3936ec0cad2d2",
+        "Title": "FCQRS notes",
+        "Content": "first event"
+      }
+    },
+    "CreationDate": "2026-09-07T19:15:27.303353Z",
+    "Id": {
+      "Case": "MessageId",
+      "Item": {
+        "Case": "ShortString",
+        "Item": "01a07d4b-fb40-732b-bc82-e98b98303e19"
+      }
+    },
+    "Sender": {
+      "Case": "AggregateId",
+      "Item": {
+        "Case": "ShortString",
+        "Item": "a46bac2e40944d37acb3936ec0cad2d2"
+      }
+    },
+    "CorrelationId": {
+      "Case": "CID",
+      "Item": {
+        "Case": "ShortString",
+        "Item": "01a07d4b-fb33-7cdc-8ba9-35a9c600d26d"
+      }
+    },
+    "Version": {
+      "Case": "Version",
+      "Item": 1
+    },
+    "Metadata": {}
+  }
+}

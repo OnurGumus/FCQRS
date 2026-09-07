@@ -1,0 +1,1 @@
+{"manifest":"FCQRS.Actor\u002BInternal\u002BState\u00601[[DocumentState, GettingStarted.CSharp, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null]], FCQRS, Version=6.3.0.0, Culture=neutral, PublicKeyToken=null","payload":{"Version":{"Case":"Version","Item":1},"State":{"Document":{"Id":"d0f6f71c902c4e218ce94ea660f927f7","Title":"FCQRS notes","Content":"first event"}}}}

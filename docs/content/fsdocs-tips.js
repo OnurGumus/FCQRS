@@ -383,18 +383,12 @@ window.Clipboard_CopyTo = Clipboard_CopyTo;
 (function () {
     const lessons = {
         "overview.html": ["See why command decisions and screen queries need different models", "Place aggregates, projections, sagas, and correlation ids in one system", "Decide whether FCQRS fits the rules and failure modes of your application"],
-        "get-started.html": ["Send a command to one aggregate and persist its event", "Project that event into query-shaped data", "Wait for the projection before reading the result"],
-        "tutorial/1-the-aggregate.html": ["Model validated domain values, commands, events, and state", "Write pure decision and fold functions", "Explain which consistency boundary the aggregate protects"],
-        "tutorial/2-running-it.html": ["Host an aggregate and projection in one actor system", "Follow one correlation id through write and read paths", "Run the application twice and observe recovery"],
-        "tutorial/3-adding-a-saga.html": ["Split rules between two independent aggregates", "Coordinate them with a durable saga", "Make repeated commands safe during recovery"],
-        "tutorial/4-testing-and-evolution.html": ["Test decisions, folds, histories, and saga states", "Change persisted contracts without losing old events", "Rebuild derived data deliberately"],
-        "tutorial/5-production.html": ["Choose durable storage and restart-safe projections", "Prepare diagnostics, backups, and failure rehearsals", "Know when a single node is ready to become a cluster"],
         "concepts/cqrs-and-event-sourcing.html": ["Separate the model that decides from the model that answers queries", "Explain why events, rather than current state, are the source of truth", "Trace what crosses the write and read boundary"],
         "concepts/aggregates.html": ["Explain how an aggregate serializes decisions for one entity", "Distinguish persisted, deferred, and ignored outcomes", "Keep event replay deterministic"],
         "concepts/read-models.html": ["Turn journal events into query-shaped data", "Keep projection data and offsets in one transaction", "Explain why read models are disposable"],
         "concepts/sagas.html": ["Recognize work that crosses aggregate boundaries", "Model a saga as a durable state machine", "Design repeated commands and recovery safely"],
         "concepts/consistency-and-recovery.html": ["Use correlation ids for read-your-writes coordination", "Distinguish journal versions, offsets, and snapshots", "Reason about restarts and eventual consistency"],
-        "concepts/csharp-interop.html": ["Represent FCQRS messages with C# union types", "Understand how F# and C# messages are serialized", "Choose the language boundary deliberately"],
+        "concepts/csharp-interop.html": ["Represent FCQRS messages with C# records or unions", "Understand how F# and C# messages are serialized", "Choose the language boundary deliberately"],
         "how-to/define-an-aggregate.html": ["Choose an aggregate boundary and its domain types", "Implement the decision and fold functions", "Select the correct event action and snapshot policy"],
         "how-to/test-your-domain.html": ["Test a decision table without Akka.NET", "Verify folds against complete histories", "Cover replay and retry behaviour"],
         "how-to/evolve-events.html": ["Keep existing journal entries readable", "Choose an event-change strategy", "Prove compatibility before deployment"],
@@ -410,9 +404,10 @@ window.Clipboard_CopyTo = Clipboard_CopyTo;
     };
 
     const tutorialSteps = [
-        ["get-started.html", "Quickstart"],
-        ["tutorial/1-the-aggregate.html", "Model"],
-        ["tutorial/2-running-it.html", "Run"],
+        ["get-started.html", "Save"],
+        ["tutorial/1-the-aggregate.html", "Decide"],
+        ["tutorial/2-running-it.html", "Recover"],
+        ["tutorial/3-edit-your-document.html", "Edit"],
         ["tutorial/3-adding-a-saga.html", "Coordinate"],
         ["tutorial/4-testing-and-evolution.html", "Test"],
         ["tutorial/5-production.html", "Operate"]
@@ -490,8 +485,8 @@ window.Clipboard_CopyTo = Clipboard_CopyTo;
             if (index === current) a.setAttribute("aria-current", "step");
             nav.appendChild(a);
         });
-        const panel = root.querySelector(".learning-outcomes");
-        if (panel) panel.parentNode.insertBefore(nav, panel);
+        const anchor = root.querySelector(".learning-outcomes") || root.querySelector("h2");
+        if (anchor) anchor.parentNode.insertBefore(nav, anchor);
     }
 
     function addCodeCopy(root) {
