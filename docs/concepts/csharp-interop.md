@@ -32,8 +32,7 @@ F# discriminated unions express the model directly. Current C# compilers have tw
 
 ## Path 1: stable C# with record hierarchies
 
-The complete [learning path](../tutorial/index.html) uses stable .NET 10 C#, from the first document
-through editing, publication, and saga recovery. Ordinary derived records represent the message cases.
+The [registration quickstart](../get-started.html) uses stable .NET 10 C#. Ordinary derived records represent the message cases.
 For example, the creation and editing events share a base record:
 
 ```csharp
@@ -45,17 +44,16 @@ public sealed record DocumentCreated(Document Document) : DocumentEvent;
 public sealed record DocumentEdited(string Id, string Content) : DocumentEvent;
 ```
 
-This excerpt needs `System.Text.Json.Serialization`; the runnable sample also registers rejection and
-publication cases. The discriminator names are serialized contracts. Keep each case registered and
+This excerpt needs `System.Text.Json.Serialization`; a hierarchy must register each derived event case. The discriminator names are serialized contracts. Keep each case registered and
 test serialization through the base type, which is the type the journal envelope carries.
 
 An aggregate derives from `Aggregate<TState,TCommand,TEvent>`, implements `HandleCommand`, and
 implements `ApplyEvent`. Pattern matching selects the derived case. C# does not enforce an exhaustive
 closed set for this hierarchy, so a new case needs explicit decision, fold, projection, and test updates.
 
-The runnable project is [`samples/getting-started-csharp`](https://github.com/OnurGumus/FCQRS/tree/main/samples/getting-started-csharp).
-Its [compatibility chapter](../tutorial/4-testing-and-evolution.html) also covers reading the original
-sample's `Event<DocumentCreated>` envelopes after introducing the common base type.
+Run [`samples/registration-csharp`](https://github.com/OnurGumus/FCQRS/tree/main/samples/registration-csharp)
+for an example with one command and event type. It needs no polymorphic event hierarchy.
+[Evolve persisted events](../how-to/evolve-events.html) covers serialized compatibility when adding cases.
 
 ## Path 2: C# union types for closed cases
 
@@ -164,7 +162,7 @@ application belongs in C#.
 The architecture and persistence responsibilities are identical in all three options. The choice is
 about source representation, not a different FCQRS runtime.
 
-Run the [C# getting-started project](../get-started.html#Run-a-complete-sample), then follow
+Run the [C# getting-started project](../get-started.html#Run-it), then follow
 [Use FCQRS from C#](../how-to/use-from-csharp.html) for aggregates, hosting, commands, and isolated
 tests. Read [Evolve persisted events](../how-to/evolve-events.html) before changing a deployed message
 contract.

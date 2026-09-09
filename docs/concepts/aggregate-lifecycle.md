@@ -148,8 +148,8 @@ only appears in a deferred fold or a mutable object held by the actor, it is not
 
 ## Put it into practice
 
-Chapter 1 of the [tutorial](../tutorial/1-the-aggregate.html) introduces persisted and deferred actions.
-Chapter 2 demonstrates recovery after running the application again. Use [Define an
+The [registration example](../get-started.html) introduces persisted and deferred actions and
+demonstrates recovery after running the application again. Use [Define an
 aggregate](../how-to/define-an-aggregate.html) for the complete action table and
 [Configuration](../configuration.html) for snapshot cadence and Akka.NET settings. [Consistency and
 recovery](consistency-and-recovery.html) places aggregate recovery beside projections, sagas, and

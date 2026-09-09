@@ -12,117 +12,68 @@ before writing the types: every rule that must be decided atomically needs to fi
 one aggregate instance. FCQRS processes its commands sequentially, eliminating races within that
 boundary.
 
-> **Motivation:** Choose the boundary before the code because sequential handling can protect only the
-> facts inside it. No handler implementation can make an invariant atomic after its required state has
-> been split across independent aggregates.
+The [registration example](../get-started.html) gives each account one registered name. Define the
+messages and the two functions in `Account.fs`, or the aggregate class in `Account.cs`:
 
-The implementation has three domain types and two pure functions. This example extends the tutorial's
-document aggregate with a `Delete` command so all three common actions appear:
-
+<!-- sample: fsharp Account.fs messages -->
 ```fsharp
+module Account
+
 open FCQRS.Common
 open FCQRS.FSharp
 
-type State = { Document: Root option }
-let initial = { Document = None }
-
-type Command =
-    | CreateOrUpdate of Root
-    | Delete
-
-type Event =
-    | Updated of Root
-    | Deleted
-    | DocumentNotFound
-
-// decide (handleCommand): command + state -> action
-let decide (cmd: Command<Command>) state =
-    match cmd.CommandDetails, state.Document with
-    | CreateOrUpdate doc, _ -> Updated doc |> PersistEvent
-    | Delete, Some _ -> Deleted |> PersistEvent
-    | Delete, None -> DocumentNotFound |> DeferEvent
-
-// fold (applyEvent): event -> new state
-let fold (event: Event<Event>) state =
-    match event.EventDetails with
-    | Updated doc -> { Document = Some doc }
-    | Deleted -> { Document = None }
-    | DocumentNotFound -> state
-
-// Registering the aggregate returns its typed handle.
-let register (api: IActor) =
-    Fcqrs.aggregate api
-        { Name = "Document"; Initial = initial; Decide = decide; Fold = fold
-          Snapshots = Default                      // cadence: Default | NoSnapshots | Every n
-          Passivation = PassivationPolicy.Default }  // idle passivation: Default | After t | Never
+type RegisterUser = RegisterUser of name: string
+type UserRegistered = UserRegistered of name: string
 ```
-
-Every `Command` case is covered above, so no catch-all is needed. When you do add one, choose
-`UnhandledEvent` for "this command is not valid here" (the caller's wait times out with a
-`TimeoutException`) and `IgnoreEvent` when producing no reply is the intended outcome.
 
 <div class="cs-alt"></div>
 
+<!-- sample: csharp Account.cs messages -->
 ```csharp
-// In C# the same aggregate is a class deriving Aggregate<>; commands/events are
-// C# 15 unions (the preview-union setup in C# interop and serialization), and
-// it's wired via the DI host-builder.
-using static FCQRS.Common;     // Command<>, Event<>, EventAction<>
-using static FCQRS.CSharp;      // Aggregate<>, EventActions
-using Microsoft.Extensions.DependencyInjection;
+using static FCQRS.Common;
+using static FCQRS.CSharp;
 
-public union DocumentCommand(DocumentCommand.CreateOrUpdate, DocumentCommand.Delete)
-{
-    public record CreateOrUpdate(Root Document);
-    public record Delete;
-}
-
-public union DocumentEvent(DocumentEvent.Updated, DocumentEvent.Deleted, DocumentEvent.DocumentNotFound)
-{
-    public record Updated(Root Document);
-    public record Deleted;
-    public record DocumentNotFound;
-}
-
-public record DocumentState(Root? Document = null)
-{
-    public static readonly DocumentState Initial = new();
-}
-
-public sealed class DocumentAggregate : Aggregate<DocumentState, DocumentCommand, DocumentEvent>
-{
-    public override DocumentState InitialState => DocumentState.Initial;
-    public override string EntityName => "Document";
-
-    // decide
-    public override EventAction<DocumentEvent> HandleCommand(
-        Command<DocumentCommand> cmd, DocumentState state) =>
-        (cmd.CommandDetails, state.Document) switch
-        {
-            (DocumentCommand.CreateOrUpdate c, _) =>
-                EventActions.Persist<DocumentEvent>(new DocumentEvent.Updated(c.Document)),
-            (DocumentCommand.Delete, { }) =>
-                EventActions.Persist<DocumentEvent>(new DocumentEvent.Deleted()),
-            (DocumentCommand.Delete, null) =>
-                EventActions.Defer<DocumentEvent>(new DocumentEvent.DocumentNotFound()),
-            _ => EventActions.Ignore<DocumentEvent>()
-        };
-
-    // fold
-    public override DocumentState ApplyEvent(Event<DocumentEvent> evt, DocumentState state) =>
-        evt.EventDetails switch
-        {
-            DocumentEvent.Updated e => state with { Document = e.Document },
-            DocumentEvent.Deleted => state with { Document = null },
-            _ => state
-        };
-}
-
-// Register it through the DI host-builder (FCQRS owns startup ordering):
-services
-    .AddFcqrs(connString, "MyCluster")
-    .AddAggregate<DocumentAggregate>();
+public sealed record RegisterUser(string Name);
+public sealed record UserRegistered(string Name);
+public sealed record AccountState(string? Name = null);
 ```
+
+<!-- sample: fsharp Account.fs rules -->
+```fsharp
+let decide (command: Command<RegisterUser>) (state: string option) =
+    let (RegisterUser name) = command.CommandDetails
+    persistIf state.IsNone (UserRegistered(defaultArg state name))
+
+let fold (event: Event<UserRegistered>) (_state: string option) =
+    let (UserRegistered name) = event.EventDetails
+    Some name
+```
+
+<div class="cs-alt"></div>
+
+<!-- sample: csharp Account.cs rules -->
+```csharp
+public sealed class Account : Aggregate<AccountState, RegisterUser, UserRegistered>
+{
+    public override string EntityName => "RegistrationCSharpAccount";
+    public override AccountState InitialState => new();
+
+    public override EventAction<UserRegistered> HandleCommand(
+        Command<RegisterUser> command, AccountState state) =>
+        EventActions.PersistConditionally(state.Name is null,
+            new UserRegistered(state.Name ?? command.CommandDetails.Name));
+
+    public override AccountState ApplyEvent(Event<UserRegistered> stored, AccountState state) =>
+        new(stored.EventDetails.Name);
+}
+```
+
+The condition persists the first registration and defers subsequent replies using the saved name.
+The fold applies either outcome; replay applies only stored events.
+
+[Register the aggregate with the runtime](../tutorial/2-running-it.html#Connect-it-to-FCQRS) before
+sending commands. F# supplies the initial state and functions in the registration record; C# supplies
+them through the `Aggregate<,,>` base class.
 
 `Fcqrs.aggregate` registers the sharding region and returns an `AggregateHandle` with two members:
 
@@ -167,7 +118,7 @@ command envelope, including `CreationDate`, but should not perform I/O. Use a
 
 ## Keep identities stable
 
-The aggregate `Name` identifies its sharding and persistence type. Keep it stable after events have
+The aggregate `Name` / `EntityName` identifies its sharding and persistence type. Keep it stable after events have
 been written. Each entity id identifies one aggregate instance, so route every command for the same
 business entity with the same id.
 

@@ -405,6 +405,5 @@ commands are therefore safe to issue again.
 Do not return no command merely because `recovering` is true. If the process stopped before delivery,
 that leaves the workflow waiting forever. Add a timeout for every event that may never arrive.
 
-The complete runnable version is chapter 3 of the
-[tutorial](../tutorial/3-adding-a-saga.html). Use [Test your domain](test-your-domain.html) to test the
+Use [Test your domain](test-your-domain.html) to test the
 event-to-state and state-to-command functions independently.

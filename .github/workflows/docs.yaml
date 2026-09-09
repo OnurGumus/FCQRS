@@ -38,8 +38,6 @@ jobs:
           dotnet fsi --exec docs/get-started.fsx
           dotnet fsi --exec docs/tutorial/1-the-aggregate.fsx
           dotnet fsi --exec docs/tutorial/2-running-it.fsx
-          dotnet fsi --exec docs/tutorial/3-edit-your-document.fsx
-          dotnet fsi --exec docs/tutorial/3-adding-a-saga.fsx
 
       - name: Generate documentation
         run: dotnet fsdocs build --eval --strict --properties Configuration=Release

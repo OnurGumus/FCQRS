@@ -132,6 +132,6 @@ Start from a consumer and a query, not from the event types. Write the result sh
 like to receive in one read. Then determine which events create and update it, which fields need
 indexes, and how the projection handles missing or out-of-order facts.
 
-Chapter 2 of the [tutorial](../tutorial/2-running-it.html) builds the complete write-to-read loop. Use
+[Query a registered user](../tutorial/2-running-it.html) shows a projection in the runnable sample. Use
 [Add a projection](../how-to/add-a-projection.html), [Read your writes](../how-to/read-your-writes.html),
 and [Rebuild a read model](../how-to/rebuild-a-read-model.html) for focused implementation recipes.

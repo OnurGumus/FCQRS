@@ -1,156 +1,171 @@
 (**
 ---
-title: 0. Save your first document
+title: Register a user
 category: Learn FCQRS
 categoryindex: 2
 index: 2
 ---
 *)
-
 (*** hide ***)
 #r "nuget: FCQRS, 6.3.0"
-#load "../samples/getting-started-fsharp/Document.fs"
-#load "../samples/getting-started-fsharp/Publication.fs"
-#load "../samples/getting-started-fsharp/Checks.fs"
+#load "../samples/registration-fsharp/Account.fs"
 
 (**
-# 0. Save your first document
+# Register a user
 
-DocStore saves a document titled **FCQRS notes** and reads its content back. Then it tries to create
-that same document again with different content. The original survives.
+Register Alice, save the event in SQLite, and query her name. Each account can register once;
+later requests return the saved name. [Jump to the runnable sample](#Run-it).
 
-Run it first. You need Git, the .NET 10 SDK selected by the repository's `global.json`, and basic F#
-or C#. The first run restores packages, so it needs an internet connection. Both samples use stable
-.NET 10 and create their own SQLite database; no separate database server is needed.
+## Define the messages
 
-## Run a complete sample
+<!-- sample: fsharp Account.fs messages -->
+```fsharp
+module Account
 
-If you already have the repository, open a terminal at its root. Otherwise:
+open FCQRS.Common
+open FCQRS.FSharp
+
+type RegisterUser = RegisterUser of name: string
+type UserRegistered = UserRegistered of name: string
+```
+
+<div class="cs-alt"></div>
+
+<!-- sample: csharp Account.cs messages -->
+```csharp
+using static FCQRS.Common;
+using static FCQRS.CSharp;
+
+public sealed record RegisterUser(string Name);
+public sealed record UserRegistered(string Name);
+public sealed record AccountState(string? Name = null);
+```
+
+`RegisterUser` is a **command**: a request to register a name. `UserRegistered` is an **event**:
+the recorded result. The account's **state** holds the registered name, starting with `None` in F#
+or `null` in C#.
+
+## Decide what to save
+
+`Account.fs` / `Account.cs` contains the rule. FCQRS passes the command and current state to
+`decide` / `HandleCommand`:
+
+<!-- sample: fsharp Account.fs rules -->
+```fsharp
+let decide (command: Command<RegisterUser>) (state: string option) =
+    let (RegisterUser name) = command.CommandDetails
+    persistIf state.IsNone (UserRegistered(defaultArg state name))
+
+let fold (event: Event<UserRegistered>) (_state: string option) =
+    let (UserRegistered name) = event.EventDetails
+    Some name
+```
+
+<div class="cs-alt"></div>
+
+<!-- sample: csharp Account.cs rules -->
+```csharp
+public sealed class Account : Aggregate<AccountState, RegisterUser, UserRegistered>
+{
+    public override string EntityName => "RegistrationCSharpAccount";
+    public override AccountState InitialState => new();
+
+    public override EventAction<UserRegistered> HandleCommand(
+        Command<RegisterUser> command, AccountState state) =>
+        EventActions.PersistConditionally(state.Name is null,
+            new UserRegistered(state.Name ?? command.CommandDetails.Name));
+
+    public override AccountState ApplyEvent(Event<UserRegistered> stored, AccountState state) =>
+        new(stored.EventDetails.Name);
+}
+```
+
+- **First registration:** the name is absent, so `persistIf` / `PersistConditionally` saves the event.
+- **Repeat registration:** the condition is false, so FCQRS returns a deferred reply without saving
+  another event. `defaultArg state name` / `state.Name ?? command.CommandDetails.Name` keeps the existing name.
+- **Apply the event:** `fold` / `ApplyEvent` copies its name into state. FCQRS also runs this during
+  recovery to rebuild the account from saved events.
+
+This state and its rules form an **aggregate**. FCQRS processes one account's commands one at a time.
+`RegisterUser` and `UserRegistered` are your payloads; the `Command<T>` and `Event<T>` wrappers add
+FCQRS metadata such as the request ID and event version.
+
+## Send the request
+
+`Program.fs` / `Program.cs` [registers the aggregate](tutorial/2-running-it.html#Connect-it-to-FCQRS)
+and obtains `accounts`, the handle used to send it commands:
+
+<!-- sample: fsharp Program.fs send -->
+```fsharp
+let! reply = accounts.Send (Fcqrs.newCid ()) id (RegisterUser "Alice") (fun _ -> true)
+```
+
+<div class="cs-alt"></div>
+
+<!-- sample: csharp Program.cs send -->
+```csharp
+var accounts = host.Services.GetRequiredService<Handler<RegisterUser, UserRegistered>>();
+var reply = await accounts(_ => true, Values.NewCID(), id, new RegisterUser("Alice"));
+```
+
+`id` selects the account `alice`. The correlation ID identifies this request; the predicate
+accepts its reply. Awaiting the call gives you the aggregate's result.
+
+The sample also builds a query view from the saved event and waits for it before printing `Query: Alice`.
+[The query page](tutorial/2-running-it.html) shows that handler.
+
+## Run it
+
+With **.NET 10** and Git installed:
 
 ```text
 git clone https://github.com/OnurGumus/FCQRS.git
 cd FCQRS
 ```
 
-Choose a language. Use the same project and database throughout the course.
+Choose a language. The first run restores the NuGet packages.
 
 ```text
-dotnet run --project samples/getting-started-fsharp
+dotnet run --project samples/registration-fsharp
 ```
 
 <div class="cs-alt" data-fs="text" data-cs="text"></div>
 
 ```text
-dotnet run --project samples/getting-started-csharp
+dotnet run --project samples/registration-csharp
 ```
-
-Both programs print these result lines, followed by a generated document ID and the database path:
 
 ```text
-stored version 1; query returned 'first event'
-repeat reply version 1; document contains 'first event'
-document id: <your generated id>
-journal: <path to the sample database>
+Registered: Alice (version 1)
+Query: Alice
 ```
 
-Keep the document ID for the restart experiment in chapter 2.
+Run the same command again:
 
-The second request tried to replace the content with `replacement attempt`. The version stayed at
-`1` and the content stayed `first event`: a create request cannot overwrite an existing document.
+```text
+Already registered: Alice (version 1)
+Query: Alice
+```
 
-## Follow the first request
+The stored registration survived the restart. The repeated request left the version at `1`.
+The event history, called the **journal**, is in `bin/Debug/net10.0/registration.db` inside the sample folder.
+This example registers a profile; it does not implement passwords or login sessions.
 
-Open the sample folder in your editor:
+To start your own project, copy just `Account`, `Program`, and the project file (`.fsproj` / `.csproj`)
+from your chosen sample into an empty folder, then run `dotnet run` there.
 
-- [F# sample](https://github.com/OnurGumus/FCQRS/tree/main/samples/getting-started-fsharp)
-- [C# sample](https://github.com/OnurGumus/FCQRS/tree/main/samples/getting-started-csharp)
-
-`Document.fs` / `Document.cs` contains the document and its rules. `Program.fs` / `Program.cs` runs
-the exercises. `Publication.fs` / `Publication.cs` adds the workflow introduced later, and `Checks.fs` / `Checks.cs`
-contains runnable checks. Start with the create path; return to the other commands when the course
-uses them. You do not need to assemble excerpts into a second project.
-
-| In the program | What happens to this document |
-|---|---|
-| `CreateDocument` | Requests that FCQRS create **FCQRS notes**. A request is a **command**. |
-| `decide` / `HandleCommand` | Checks whether this document already exists. |
-| `PersistEvent` / `EventActions.Persist` | Stores `DocumentCreated` in SQLite. This recorded outcome is an **event**. |
-| `fold` / `ApplyEvent` | Applies that event to the document's current state. |
-| `HandleProjection` / `handleProjection` | Copies the stored document into a dictionary for lookup. This transformation is a **projection**. |
-| `readModel[documentId]` | Reads the document from that dictionary, the **read model**. |
-
-<pre>
-CreateDocument
-      |
-      v
-Does this document exist? -- yes --> reply with the existing document
-      |
-      no
-      |
-      v
-store DocumentCreated --> apply it to aggregate state
-      |
-      v
-projection updates dictionary --> query returns 'first event'
-</pre>
-
-The decision belongs to an **aggregate**: the state and rules for one document. FCQRS gives each
-document its own actor, a runtime component that processes that document's commands one at a time.
-Two commands for this document cannot race over its state. Commands for different documents can run
-concurrently.
-
-## Two waits, two different results
-
-The sample waits for the aggregate's reply and then for the projection. They answer different questions:
-
-| Wait | What it establishes here |
-|---|---|
-| `documents.Send` in F#, or `await documents(...)` in C# | The aggregate returned the matching reply. For the first create, the event was stored. |
-| `projected.Task` | This projection has updated its dictionary and published the matching notification. The query can now see the document. |
-
-The subscription is created **before** the command is sent. Otherwise the projection might finish
-before the program starts listening. A **correlation id** connects this request with its notification.
-It identifies the request; the document ID identifies the document across requests.
-
-The repeated create returns a reply without storing another event. There is no new journal event for
-the projection to process, so the sample does not wait for a projection notification for that reply.
-
-## Try a change
-
-In the program, change the initial content from `first event` to `my first document`. Keep
-`replacement attempt` as it is. Before running, predict both content lines.
-
-Run the same command again. Both lines now contain `my first document`, and both versions are `1`.
-Each ordinary run uses a new document ID, so it begins a separate document history. The repeated create
-still preserves that run's original content.
-
-Restore `first event` before following the printed examples in the next chapters.
-
-## If your run stops early
-
-- **SDK error:** run `dotnet --version` at the repository root and check that .NET 10 is installed.
-- **Restore error:** the first build needs access to NuGet. Resolve that error before investigating FCQRS.
-- **Projection timeout:** the sample stops waiting after 30 seconds. A timeout means the confirmation
-  did not arrive in time; it does not prove that the command failed or that the event was not stored.
-- **SQLite locked:** let a previous run finish before running the same project again. The printed
-  journal path identifies the file that this sample uses.
-
-SQLite retains the event history after the program exits. The dictionary lives only in memory and is
-rebuilt from that history on ordinary runs. This is suitable for the exercise; a durable read model
-needs to save its progress with its updates, which chapter 2 explains.
-
-## Next: explain the repeated create
-
-Continue to [1. Make one document decision](tutorial/1-the-aggregate.html). You will trace the two
-functions that make the second line stay at version `1`, then check them without a database.
-
-
-The later editing and publication commands are already included in the sample. The next chapters
-activate them one at a time using the document ID you just saved. The initial document, its history,
-and its database remain the same.
+Complete source: [F#](https://github.com/OnurGumus/FCQRS/tree/main/samples/registration-fsharp) ·
+[C#](https://github.com/OnurGumus/FCQRS/tree/main/samples/registration-csharp).
+Next, [change the name, then the account ID](tutorial/1-the-aggregate.html).
 
 *)
 
 (*** hide ***)
-Checks.documentChecks ()
-printfn "Evaluated docs/get-started.fsx"
+open FCQRS.Common
+open FCQRS.CSharp
+open Account
+let registered = fold (TestEnvelope.Event(UserRegistered "Alice", 1L)) None
+assert (decide (TestEnvelope.Command(RegisterUser "Alice")) None = PersistEvent(UserRegistered "Alice"))
+assert (decide (TestEnvelope.Command(RegisterUser "Bob")) registered = DeferEvent(UserRegistered "Alice"))
+assert (fold (TestEnvelope.Event(UserRegistered "Alice", 1L)) registered = registered)
+printfn "Registration example checked."

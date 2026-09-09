@@ -178,6 +178,6 @@ identity. Then ask whether two instances may decide independently. If they canno
 inside the same aggregate boundary. If the rule truly spans independent owners, model the temporary
 inconsistency and coordinate it with a saga.
 
-Chapter 1 of the [tutorial](../tutorial/1-the-aggregate.html) builds this model step by step. Use
+The [registration example](../get-started.html) puts these rules into code. Use
 [Define an aggregate](../how-to/define-an-aggregate.html) for the implementation recipe and
 [Test your domain](../how-to/test-your-domain.html) for the test shapes.

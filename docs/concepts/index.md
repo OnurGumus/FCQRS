@@ -7,10 +7,8 @@ index: 1
 
 # Concepts: build the mental model
 
-This section deepens topics introduced by the numbered [learning path](../tutorial/index.html). If you
-are new to FCQRS, finish the matching course stage before opening its concept page. The course already
-contains the reasoning required to continue; these pages are for questions that need a wider design or
-failure model.
+These pages explain FCQRS decisions and guarantees. Start with the [registration example](../get-started.html)
+for code you can run, or choose a question below.
 
 <img src="../img/architecture.svg" alt="A command enters an aggregate, stored events flow through the journal to projections and sagas, and queries read a purpose-built read model" width="900"/>
 
@@ -51,16 +49,16 @@ read-model rows are not three names for the same data.
 
 ## Choose by the question you are asking
 
-| Question | Read | Course prerequisite |
-|---|---|---|
-| Why separate decisions, history, and queries? | [CQRS and event sourcing](cqrs-and-event-sourcing.html) | Quickstart |
-| Where should one business rule live? | [Aggregates and the write side](aggregates.html) | Chapter 1 |
-| How do projections, offsets, and query models differ? | [The read side](read-models.html) | Chapter 2 |
-| How does one request wait for the correct projection? | [Correlation IDs and read-your-writes](correlation-ids.html) | Chapter 2 |
-| How do independent owners coordinate after failures? | [Sagas](sagas.html) | Chapter 3 |
-| What do defer, snapshot, and passivation each do? | [Deferring, snapshots, and passivation](aggregate-lifecycle.html) | Chapter 2 |
-| What is durable at each point in the complete flow? | [Consistency and recovery](consistency-and-recovery.html) | Chapter 3 |
-| How should C# messages cross the persistence boundary? | [C# interop and serialization](csharp-interop.html) | Quickstart |
+| Question | Read |
+|---|---|
+| Why separate decisions, history, and queries? | [CQRS and event sourcing](cqrs-and-event-sourcing.html) |
+| Where should one business rule live? | [Aggregates and the write side](aggregates.html) |
+| How do projections, offsets, and query models differ? | [The read side](read-models.html) |
+| How does one request wait for the correct projection? | [Correlation IDs and read-your-writes](correlation-ids.html) |
+| How do independent owners coordinate after failures? | [Sagas](sagas.html) |
+| What do defer, snapshot, and passivation each do? | [Deferring, snapshots, and passivation](aggregate-lifecycle.html) |
+| What is durable at each point in the complete flow? | [Consistency and recovery](consistency-and-recovery.html) |
+| How should C# messages cross the persistence boundary? | [C# interop and serialization](csharp-interop.html) |
 
 ## How to use a concept page
 

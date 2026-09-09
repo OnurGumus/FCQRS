@@ -266,7 +266,6 @@ Use a saga when work crosses independent consistency boundaries and its progress
 Use an aggregate command when one owner can decide the rule. Use an async effect for best-effort work
 that may safely be lost and does not need durable progress.
 
-Chapter 3 of the [tutorial](../tutorial/3-adding-a-saga.html) builds the publication workflow from a
-document and a slug aggregate. [Write a saga](../how-to/write-a-saga.html) is the compact F# and C#
+[Write a saga](../how-to/write-a-saga.html) is the compact F# and C#
 recipe. [Consistency and recovery](consistency-and-recovery.html) places saga resumption beside the
 other durable boundaries.

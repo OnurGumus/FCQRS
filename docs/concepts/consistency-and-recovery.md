@@ -120,8 +120,8 @@ For every step, ask: what is the last fact known to be durable, and what could h
 That question leads to the correct recovery action more reliably than assuming a process stopped
 between two convenient source-code lines.
 
-Chapter 2 of the [tutorial](../tutorial/2-running-it.html) demonstrates aggregate and projection
-recovery. Chapters 3 and 4 cover saga retry and compatibility. Use
+The [registration sample](../get-started.html#Run-it) demonstrates recovery after a restart.
+[Write a saga](../how-to/write-a-saga.html) covers workflow retries. Use
 [Read your writes](../how-to/read-your-writes.html),
 [Define an aggregate](../how-to/define-an-aggregate.html),
 [Rebuild a read model](../how-to/rebuild-a-read-model.html), and

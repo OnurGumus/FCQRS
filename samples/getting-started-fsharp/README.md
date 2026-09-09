@@ -1,3 +1,5 @@
+> Archived document-store example. For the quickstart, use [registration](../registration-fsharp/).
+
 # Build the document store with F#
 
 From the repository root, using the .NET 10 SDK selected by `global.json`:

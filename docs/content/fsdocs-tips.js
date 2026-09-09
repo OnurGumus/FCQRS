@@ -376,13 +376,12 @@ window.Clipboard_CopyTo = Clipboard_CopyTo;
 })();
 
 // ---------------------------------------------------------------------------
-// Course navigation and learning aids. This runs on authored and generated API
+// Documentation navigation and learning aids. This runs on authored and generated API
 // pages, keeping the whole documentation site consistent without duplicating
 // presentation markup in every source page.
 // ---------------------------------------------------------------------------
 (function () {
     const lessons = {
-        "overview.html": ["See why command decisions and screen queries need different models", "Place aggregates, projections, sagas, and correlation ids in one system", "Decide whether FCQRS fits the rules and failure modes of your application"],
         "concepts/cqrs-and-event-sourcing.html": ["Separate the model that decides from the model that answers queries", "Explain why events, rather than current state, are the source of truth", "Trace what crosses the write and read boundary"],
         "concepts/aggregates.html": ["Explain how an aggregate serializes decisions for one entity", "Distinguish persisted, deferred, and ignored outcomes", "Keep event replay deterministic"],
         "concepts/read-models.html": ["Turn journal events into query-shaped data", "Keep projection data and offsets in one transaction", "Explain why read models are disposable"],
@@ -403,27 +402,17 @@ window.Clipboard_CopyTo = Clipboard_CopyTo;
         "configuration.html": ["Understand what the embedded defaults configure", "Override persistence, diagnostics, and snapshot settings", "Prepare consistent configuration for multiple nodes"]
     };
 
-    const tutorialSteps = [
-        ["get-started.html", "Save"],
-        ["tutorial/1-the-aggregate.html", "Decide"],
-        ["tutorial/2-running-it.html", "Recover"],
-        ["tutorial/3-edit-your-document.html", "Edit"],
-        ["tutorial/3-adding-a-saga.html", "Coordinate"],
-        ["tutorial/4-testing-and-evolution.html", "Test"],
-        ["tutorial/5-production.html", "Operate"]
-    ];
-
     function pageKey() {
         let path = location.pathname.replace(/^.*?\/FCQRS\//, "").replace(/^\//, "");
         return path || "index.html";
     }
 
     function pageKind(key) {
-        if (/^tutorial\/\d-/.test(key)) return "Tutorial chapter";
+        if (/^tutorial\/\d-/.test(key)) return "Example";
         if (key === "tutorial/index.html") return "Learning path";
         if (/^concepts\//.test(key)) return key.endsWith("index.html") ? "Concept map" : "Concept";
         if (/^how-to\//.test(key)) return key.endsWith("index.html") ? "Task library" : "How-to guide";
-        if (key === "get-started.html") return "Course stage 0";
+        if (key === "get-started.html") return "Quickstart";
         if (key === "overview.html") return "Orientation";
         if (key === "configuration.html") return "Reference";
         if (/reference\//.test(key)) return "API reference";
@@ -438,6 +427,7 @@ window.Clipboard_CopyTo = Clipboard_CopyTo;
     }
 
     function addMeta(root, key) {
+        if (key === "get-started.html" || key.startsWith("tutorial/")) return;
         const isApi = key.indexOf("reference/") >= 0;
         const h1 = root.querySelector("h1") || (isApi ? root.querySelector("h2") : null);
         if (!h1) return;
@@ -466,27 +456,6 @@ window.Clipboard_CopyTo = Clipboard_CopyTo;
         const firstH2 = root.querySelector("h2");
         if (firstH2) root.insertBefore(panel, firstH2);
         else root.appendChild(panel);
-    }
-
-    function addTutorialProgress(root, key) {
-        const current = tutorialSteps.findIndex(function (step) { return step[0] === key; });
-        if (current < 0) return;
-        const inTutorialDirectory = key.indexOf("tutorial/") === 0;
-        const nav = document.createElement("nav");
-        nav.className = "tutorial-progress";
-        nav.setAttribute("aria-label", "Tutorial progress");
-        tutorialSteps.forEach(function (step, index) {
-            const a = document.createElement("a");
-            a.href = inTutorialDirectory
-                ? (step[0] === "get-started.html" ? "../get-started.html" : step[0].replace("tutorial/", ""))
-                : step[0];
-            a.dataset.step = String(index);
-            a.textContent = step[1];
-            if (index === current) a.setAttribute("aria-current", "step");
-            nav.appendChild(a);
-        });
-        const anchor = root.querySelector(".learning-outcomes") || root.querySelector("h2");
-        if (anchor) anchor.parentNode.insertBefore(nav, anchor);
     }
 
     function addCodeCopy(root) {
@@ -584,7 +553,6 @@ window.Clipboard_CopyTo = Clipboard_CopyTo;
         document.body.classList.add("page-" + pageKind(key).toLowerCase().replace(/[^a-z0-9]+/g, "-"));
         addMeta(root, key);
         addOutcomes(root, key);
-        addTutorialProgress(root, key);
         addCodeCopy(root);
         linkSectionIndexes();
         addLessonNav(root);

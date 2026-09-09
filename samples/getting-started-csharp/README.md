@@ -1,3 +1,5 @@
+> Archived document-store example. For the quickstart, use [registration](../registration-csharp/).
+
 # Build the document store with C#
 
 From the repository root, using the .NET 10 SDK selected by `global.json`:

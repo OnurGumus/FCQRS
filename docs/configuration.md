@@ -242,4 +242,4 @@ Cluster sharding routes an aggregate or saga id to its current node, so domain d
 change. Before deploying several nodes, verify rolling-version compatibility, shared storage, node
 discovery, coordinated shutdown, and monitoring for cluster membership and unreachable nodes.
 
-The [production tutorial](tutorial/5-production.html) provides the operational checklist.
+[Observe your system](how-to/observability.html) covers runtime diagnostics.

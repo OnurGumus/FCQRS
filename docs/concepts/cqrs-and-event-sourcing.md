@@ -148,5 +148,5 @@ For one feature in your domain, write down the command, the minimum state needed
 persisted event, and two different queries derived from that event. If the decision state and query
 shapes are identical and the history has no value, CQRS and event sourcing may not earn their cost.
 
-Next, learn how [aggregates](aggregates.html) protect one decision boundary. Chapter 1 of the
-[tutorial](../tutorial/1-the-aggregate.html) implements the command, event, decision, and fold.
+Next, learn how [aggregates](aggregates.html) protect one decision boundary. The
+[registration example](../get-started.html) implements the command, event, decision, and fold.

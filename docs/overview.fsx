@@ -10,124 +10,37 @@ index: 1
 (**
 # FCQRS
 
-A functional CQRS and event-sourcing framework built on Akka.NET, with first-class F# and C# APIs.
+FCQRS runs event-sourced applications on Akka.NET, with F# and C# APIs. Your code decides which events
+to save and how they change state. FCQRS stores those events and rebuilds state after a restart.
 
-<figure style="margin: 1.5rem 0;">
-  <img src="img/two-models.png" alt="The same order domain shown in two ways: one shared model on the left, and separate decision-making and query models on the right." style="width: 100%; height: auto; border: 1px solid var(--line, #d7e1ef); border-radius: 12px;"/>
-  <figcaption style="margin-top: .6rem; font-size: .9rem; color: var(--muted, #4d5f7d); text-align: center;">The same domain represented by one shared model and by separate write and read models.</figcaption>
-</figure>
+**[Register a user](get-started.html)** shows the code and runs it with SQLite on .NET 10.
 
-## Why two models?
+## Follow one registration
 
-The information you need to make a decision is usually not the same information you want to show on a
-screen.
+1. `RegisterUser("Alice")` asks one account to register a name. This request is a **command**.
+2. The account's rule checks its current state and returns `UserRegistered("Alice")`, an **event**.
+3. FCQRS stores that event in the **journal**, the account's event history, and applies it to state.
+4. A **projection** reads the saved event and fills a query view. The sample queries that view for Alice's name.
 
-Take an order cancellation. To decide whether an order can be cancelled, the system may only need to
-know whether it has been paid, shipped, or cancelled already.
+The account's state and rules form an **aggregate**. Its commands run one at a time; different accounts
+can run independently. A query view updates asynchronously, so the sample waits for that view before
+reading it.
 
-The order page needs something different. It may show the customer's name, the products they bought,
-prices, delivery details, payment status, and a timeline of everything that happened.
+<img src="img/architecture.svg" alt="A command enters an aggregate; stored events rebuild its state and feed projections and sagas; queries read a projection's view." width="900"/>
 
-These are two different jobs. One model helps the system make correct decisions. The other helps people
-find and understand information.
+## Continue with a task
 
-You can force both jobs into one model. Many systems begin that way because it looks simpler. Over time,
-every new screen and every new rule pulls that model in a different direction. Queries become tangled
-with business rules, and changing one side risks breaking the other.
+- [Try another registration](tutorial/1-the-aggregate.html): change the name and account ID.
+- [Query a registered user](tutorial/2-running-it.html): see the projection and runtime setup.
+- [Test your domain](how-to/test-your-domain.html): check registration and replay without a database.
+- [Register over HTTP](tutorial/http-api.html), optional: add POST and GET endpoints.
+- [Task guides](how-to/index.html): add durable query storage, workflows, or operational configuration.
+- [Concepts](concepts/index.html): understand the guarantees and their boundaries.
 
-CQRS separates them.
+## When to use FCQRS
 
-> **Motivation:** Separating the models is extra work, but it is worthwhile when decision rules and
-> query needs change for different reasons. Each model can then stay small instead of making every
-> screen and rule negotiate one shared shape.
-
-The **write model** handles decisions and protects the rules of the system. The **read model** presents
-the information people and applications need. Each can then stay simple in its own way.
-
-## How FCQRS works
-
-FCQRS is a functional framework for building the two models with Akka.NET actors and event sourcing,
-usable from F# and C# alike.
-
-Every command for an order goes to one **actor** identified by that order's id. This decision-making
-actor represents an **aggregate**: the state and rules for one order. It handles one command at a time.
-If two cancellation requests arrive together, one is decided first and changes the order's state
-before the second is considered. The cancellation rule therefore has one place to run and one current
-state to inspect. Other order aggregates can proceed at the same time, on the same server or elsewhere
-in the cluster.
-
-The decision is an ordinary function. It receives the command and the current state, then returns an
-event such as `OrderCancelled` or a rejection such as `OrderAlreadyShipped`. A rejection is returned to
-the caller but is not stored, so it must not change recoverable state. A second function folds a stored
-event into the state. These functions contain the business rules but no database or actor code, so they
-can be tested on their own.
-
-Stored events form the order's history. If the actor has been dropped from memory while idle, or the
-process restarts, FCQRS replays those events to recover the current state. The state held by the actor
-is derived from the events; it is not a row that the actor overwrites.
-
-The same events feed **projections** on the read side. One projection can maintain the order page while
-another maintains a customer history or a reporting table. A projection chooses the data structure
-that fits its query. It does not have to copy the shape of the write model.
-
-A **saga** coordinates work that crosses aggregate boundaries. For example, an `OrderPlaced` event can
-start a process that reserves stock with the inventory aggregate, takes payment with the payment
-aggregate, and reports the outcome to the order. The saga stores its progress so it can resume the next
-unfinished step after a restart.
-
-Every command and event carries a [**correlation id**](concepts/correlation-ids.html). A client can
-subscribe to that id before sending a command and wait until the projection publishes the matching
-event. The signal tells the client when the new data is available to query, without polling or an
-arbitrary delay.
-
-FCQRS supplies the actor lifecycle, cluster sharding, event storage and replay, saga coordination,
-projection stream, and correlation subscriptions around the functions that define the domain.
-
-<img src="img/architecture.svg" alt="How FCQRS fits together" width="900"/>
-
-## What FCQRS handles at a glance
-
-* **One command at a time per aggregate.** Decisions about the same entity do not run concurrently
-  inside the aggregate, eliminating race conditions within that boundary.
-* **An append-only event history.** Persisted changes can be replayed to recover state or build a new
-  read model.
-* **Independent read models.** Each projection can store data in the shape its queries need.
-* **Read-your-writes coordination.** Correlation subscriptions provide a signal when a projection has
-  handled a command's event.
-* **Durable workflows.** Sagas record their progress while coordinating commands across aggregates.
-* **Isolated domain tests.** Decision and fold functions can be tested without starting the actor
-  system or a database.
-* **Local and clustered operation.** The same aggregate code runs in a single-node or multi-node Akka.NET
-  cluster.
-* **F# and C# APIs.** Both languages can define aggregates, projections, sagas, and subscriptions.
-
-## Find your path
-
-Choose one path based on what you need now:
-
-| Your situation | Start here | Stay there until |
-|---|---|---|
-| You are learning FCQRS | [Learn FCQRS](tutorial/index.html) | you finish the numbered course |
-| You finished the course and want deeper reasoning | [Understand](concepts/index.html) | the guarantee or failure boundary is clear |
-| You know the model and need to implement one task | [Apply](how-to/index.html) | the task is complete |
-| You need an exact setting or API member | [Configuration](configuration.html) or API reference | you have the required value |
-
-The beginner path includes the quickstart. It does not require you to alternate between tutorial,
-concept, and how-to pages. Those other sections become useful after the course has introduced their
-topic.
-
-## When FCQRS is a good fit, and when it isn't
-
-FCQRS is useful when the system must protect business rules, preserve the order of changes, or keep a
-history that may be queried again later. It also fits when several users or processes can issue
-commands for the same entity, or when one action starts a workflow that must survive a restart.
-
-The cost is an event journal, separate read models, asynchronous projections, and an actor system to
-operate. That cost has little return for data with no behaviour beyond create, read, update, and delete.
-A small internal directory or a table maintained by one user may be clearer as a conventional database
-application.
-
-The choice depends on the rules and failure modes in the application, not its current number of users.
-The [concepts](concepts/index.html) section explains the guarantees and the responsibilities that remain
-with the application.
+FCQRS is useful when several callers can change the same entity, decisions depend on its history,
+or workflows must recover after a restart. It adds an event journal, asynchronous query views, and an
+actor runtime to operate. For an application that only edits and reads rows, a conventional database
+application may need less infrastructure.
 *)

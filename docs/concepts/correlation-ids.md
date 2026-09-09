@@ -128,7 +128,7 @@ work caused by that request.
 
 ## Put it into practice
 
-Chapter 2 of the [tutorial](../tutorial/2-running-it.html) runs a complete command, projection, and
-query flow. [Read your writes](../how-to/read-your-writes.html) provides the F# and C# APIs, including
+The [registration sample](../get-started.html) waits for one immutable registration to appear in its
+query view. For coordination tied to a particular write, [Read your writes](../how-to/read-your-writes.html) provides the F# and C# APIs, including
 filters, multiple notifications, cancellation, and `sendAwaiting`. [Observe your
 system](../how-to/observability.html) shows how the same CID appears in logs and traces.

@@ -477,53 +477,6 @@ body.content {
 .learning-outcomes li { line-height: 1.5; }
 .learning-outcomes li::marker { color: var(--link-color); }
 
-.tutorial-progress {
-    display: grid;
-    grid-template-columns: repeat(7, minmax(0, 1fr));
-    gap: 0.38rem;
-    margin: 1.8rem 0 2.25rem;
-}
-
-.tutorial-progress a {
-    position: relative;
-    min-width: 0;
-    padding: 0.68rem 0.55rem 0.62rem;
-    border: 1px solid var(--nav-item-border-color);
-    border-radius: 10px;
-    color: var(--menu-color);
-    background: var(--aside-background);
-    font-size: 0.72rem;
-    line-height: 1.25;
-    text-align: center;
-    text-decoration: none;
-}
-
-.tutorial-progress a::before {
-    content: attr(data-step);
-    display: grid;
-    width: 1.55rem;
-    height: 1.55rem;
-    margin: 0 auto 0.4rem;
-    place-items: center;
-    border: 1px solid var(--nav-item-border-color);
-    border-radius: 50%;
-    background: var(--background);
-    font-weight: 800;
-}
-
-.tutorial-progress a:hover,
-.tutorial-progress a[aria-current="step"] {
-    color: var(--link-color);
-    border-color: color-mix(in srgb, var(--link-color) 40%, var(--nav-item-border-color));
-    background: color-mix(in srgb, var(--link-color) 9%, var(--background));
-}
-
-.tutorial-progress a[aria-current="step"]::before {
-    color: white;
-    border-color: var(--link-color);
-    background: var(--link-color);
-}
-
 #content table:not(.pre) {
     width: 100%;
     margin: 1.4rem 0 2rem;
@@ -658,7 +611,6 @@ table.pre:hover .copy-code,
 
 @media (max-width: 900px) {
     #content { max-width: none; }
-    .tutorial-progress { grid-template-columns: repeat(7, 5.2rem); overflow-x: auto; padding-bottom: 0.35rem; }
 }
 
 @media (max-width: 640px) {
