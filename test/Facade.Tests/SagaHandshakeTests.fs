@@ -165,11 +165,15 @@ let private continuationFixtureTest =
             Expect.equal (Text.Encoding.UTF8.GetString bytes) expected
                 "the readiness payload has the existing union cases and fields"
             let manifest = serializer.Manifest(continueMessage)
-            Expect.isTrue (manifest.StartsWith("FCQRS.Common+SagaStarter+Internal+Message+Command, FCQRS,"))
-                "existing readers resolve the existing message type"
+            Expect.equal manifest "FCQRS.Common+SagaStarter+Internal+Message+Command, FCQRS"
+                "existing readers resolve the message without requiring the sender's newer assembly version"
             let fixture = Text.Encoding.UTF8.GetBytes(expected)
             Expect.equal (serializer.FromBinary(fixture, manifest)) continueMessage
                 "the current reader accepts the unchanged published-reader fixture"
+            let legacyManifest =
+                "FCQRS.Common+SagaStarter+Internal+Message+Command, FCQRS, Version=6.3.0.0, Culture=neutral, PublicKeyToken=null"
+            Expect.equal (serializer.FromBinary(fixture, legacyManifest)) continueMessage
+                "the current reader also accepts the previous version-qualified manifest"
         finally
             terminate system
 

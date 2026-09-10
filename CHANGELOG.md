@@ -11,7 +11,8 @@ snapshot formats, and entity names are unchanged.
 - **Saga acknowledgments reach the coordinator waiting for them across cluster nodes.** Start
   coordination stays on the aggregate's node; sagas reply directly to that coordinator, or broadcast
   readiness after recovery has lost the transient coordinator reference. The acknowledgment uses
-  the existing F# serializer and retains a message shape readable by the released 6.3.0 serializer.
+  the existing F# serializer with a version-independent type manifest, so a published 6.3.0 host can
+  read it during a rolling upgrade to 6.3.1.
 - **Projection subscriptions register before returning.** Immediate publications cannot overtake
   registration. Each subscriber has a bounded queue, so a slow callback drops its own oldest
   notifications without blocking other subscribers. Disposing or cancelling an incomplete awaiter

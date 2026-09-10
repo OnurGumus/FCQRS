@@ -130,12 +130,22 @@ type STJSerializer(system: ExtendedActorSystem) =
             failwith "unreachable" // FailFast never returns; satisfies the compiler
 
     override _.Manifest(o: obj) : string =
-        match Manifests.tryEncode (o.GetType()) with
-        | Some encoded -> Manifests.Prefix + encoded
-        | None ->
-            // Legacy manifest for unregistered types (also what every pre-existing
-            // journal row carries) — readable forever via the fallback below.
-            o.GetType().AssemblyQualifiedName |> Unchecked.nonNull
+        match o with
+        | :? SagaStarter.Internal.Message ->
+            // Readiness can reach a node still running the previous package.
+            // Its existing Type.GetType reader accepts the CLR type and simple
+            // assembly name, whereas a newer assembly version cannot bind to an
+            // older loaded assembly. Keep this transient protocol version-free;
+            // journal and public message manifests retain their existing rules.
+            let typ = o.GetType()
+            $"{typ.FullName}, {typ.Assembly.GetName().Name}"
+        | _ ->
+            match Manifests.tryEncode (o.GetType()) with
+            | Some encoded -> Manifests.Prefix + encoded
+            | None ->
+                // Legacy manifest for unregistered types (also what every pre-existing
+                // journal row carries) — readable forever via the fallback below.
+                o.GetType().AssemblyQualifiedName |> Unchecked.nonNull
 
     override _.FromBinary(bytes: byte[], manifest: string) : obj =
         try
