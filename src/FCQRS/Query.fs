@@ -10,10 +10,14 @@ open System.Diagnostics
 open System.Threading
 open System
 open System.Threading.Tasks
+open System.Threading.Channels
+open System.Collections.Generic
 
 type IAwaitable =
     abstract member Task: Task
 
+/// A subscription whose Task succeeds after the requested callbacks complete. Cancellation, disposal, or projection shutdown before that count
+/// cancels the Task; a filter or callback exception faults it.
 type IAwaitableDisposable =
     inherit IDisposable
     inherit IAwaitable
@@ -24,6 +28,8 @@ open FCQRS.Model.Data
 type ISubscribe<'TDataEvent when 'TDataEvent :> IMessageWithCID> =
     /// <summary>
     /// Subscribes to all events and invokes the specified callback for each event.
+    /// Registration is complete when this method returns. Callbacks run in order
+    /// on a separate worker; a full subscriber queue drops its oldest notification.
     /// </summary>
     /// <param name="callback">Function invoked for each event, e.g. printing or processing the event.</param>
     /// <param name="cancellationToken">An optional cancellation token to cancel the subscription.</param>
@@ -42,6 +48,8 @@ type ISubscribe<'TDataEvent when 'TDataEvent :> IMessageWithCID> =
     /// <summary>
     /// Subscribes to events using a filter. Only events for which the predicate returns true
     /// are processed, and the callback is invoked for each matching event up to a specified count.
+    /// Registration is complete when this method returns. The Task succeeds only
+    /// after that count is reached; cancellation or disposal before then cancels it.
     /// </summary>
     /// <param name="filter">
     /// Predicate function to determine if an event should be processed, e.g.
@@ -174,59 +182,133 @@ module internal Internal =
             .ReadJournalFor<SqlReadJournal>
             SqlReadJournal.Identifier
 
-    let subscribeToStream source mat (sink: Sink<'TDataEvent, _>) =
-        source
-        |> Source.viaMat KillSwitch.single Keep.right
-        |> Source.toMat sink Keep.both
-        |> Graph.run mat
+    /// Each subscriber owns a bounded queue and one callback worker. Registration
+    /// and publication share a lock, but user code never runs under that lock.
+    /// A slow callback therefore sheds only its own queued notifications.
+    type private NotificationSubscription<'T>
+        (bufferSize: int, filter: 'T -> bool, take: int option, callback: 'T -> unit,
+         token: CancellationToken, unregister: unit -> unit, logger: ILogger) =
+        let options = BoundedChannelOptions(bufferSize)
+        do
+            options.FullMode <- BoundedChannelFullMode.DropOldest
+            options.SingleReader <- true
+            options.AllowSynchronousContinuations <- false
 
-    let subscribeCmd<'TDataEvent> (source: Source<'TDataEvent, unit>) (isolationBuffer: int) (actorApi: IActor) =
-        fun (cb: 'TDataEvent -> unit) ->
-            let sink = Sink.forEach (fun event -> cb event)
-            // Per-consumer DropHead buffer: the BroadcastHub advances at the pace
-            // of its SLOWEST consumer, so without this a single blocking callback
-            // pinned the hub and silently starved every other subscriber. With it,
-            // a stalled consumer sheds its own backlog instead. The Async()
-            // boundary is load-bearing: without it the buffer fuses into the same
-            // island as the sink, and a blocking callback freezes the buffer too.
-            let source =
-                (source |> Source.buffer OverflowStrategy.DropHead isolationBuffer).Async()
-            let ks, completion = subscribeToStream source actorApi.Materializer sink
+        let channel = Channel.CreateBounded<'T>(options)
+        let completion = TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+        let mutable stopped = 0
+        let registrationGate = obj ()
+        let mutable registration: CancellationTokenRegistration option = None
 
-            // The completion is the only place a callback exception surfaces;
-            // discarding it made the subscription die permanently and silently.
-            let logger = actorApi.LoggerFactory.CreateLogger "Query"
+        let finish complete =
+            if Interlocked.Exchange(&stopped, 1) = 0 then
+                unregister ()
+                channel.Writer.TryComplete() |> ignore
+                lock registrationGate (fun () ->
+                    registration |> Option.iter (fun r -> r.Unregister() |> ignore)
+                    registration <- None)
+                complete ()
 
-            Async.Start(
-                async {
+        member _.Publish(evt: 'T) =
+            channel.Writer.TryWrite evt |> ignore
+
+        member _.Cancel() =
+            finish (fun () -> completion.TrySetCanceled(token) |> ignore)
+
+        member this.Start() =
+            let reg = token.Register(fun () -> this.Cancel())
+            // Cancellation can run synchronously inside Register, and the worker
+            // can finish concurrently. Neither path may leave a registration behind.
+            lock registrationGate (fun () ->
+                if Volatile.Read(&stopped) = 0 then registration <- Some reg
+                else reg.Unregister() |> ignore)
+
+            // Task.Run also keeps callbacks off the subscribing/publishing thread
+            // when a notification was queued before this worker starts.
+            Task.Run(Func<Task>(fun () ->
+                task {
                     try
-                        do! completion |> Async.Ignore
+                        let mutable remaining = take
+                        if remaining = Some 0 then
+                            finish (fun () -> completion.TrySetResult() |> ignore)
+
+                        while Volatile.Read(&stopped) = 0 do
+                            let! available = channel.Reader.WaitToReadAsync().AsTask()
+                            if available then
+                                let mutable evt = Unchecked.defaultof<'T>
+                                while Volatile.Read(&stopped) = 0 && channel.Reader.TryRead(&evt) do
+                                    if filter evt then
+                                        callback evt
+                                        match remaining with
+                                        | Some 1 -> finish (fun () -> completion.TrySetResult() |> ignore)
+                                        | Some count -> remaining <- Some(count - 1)
+                                        | None -> ()
                     with ex ->
-                        logger.LogError(
-                            ex,
-                            "Notification subscriber stream failed; this subscription is dead and will receive no further events")
-                })
+                        finish (fun () ->
+                            completion.TrySetException ex |> ignore
+                            if take.IsNone then
+                                completion.Task.Exception |> ignore
+                                logger.LogError(ex, "Notification subscriber failed; this subscription is dead and will receive no further events"))
+                } :> Task))
+            |> ignore
 
-            ks :> IKillSwitch
+        interface IAwaitableDisposable with
+            member _.Task = completion.Task
+            member this.Dispose() = this.Cancel()
 
-    let subscribeCmdWithFilter<'TDataEvent> (source: Source<'TDataEvent, unit>) (isolationBuffer: int) (actorApi: IActor) =
-        fun filter take cb ->
-            // cb is now a required parameter (it will be provided as default if needed)
-            let subscribeToStream source filter take mat (sink: Sink<'TDataEvent, _>) =
-                // Same slow-consumer isolation as subscribeCmd, including the
-                // fusion-breaking Async() boundary (see above).
-                (source |> Source.buffer OverflowStrategy.DropHead isolationBuffer)
-                    .Async()
-                |> Source.viaMat KillSwitch.single Keep.right
-                |> Source.filter filter
-                |> Source.take take
-                |> Source.toMat sink Keep.both
-                |> Graph.run mat
+    /// Synchronous registration closes the subscribe-before-send race: publishing
+    /// after Subscribe returns always sees the new subscriber. Queue workers may
+    /// start later without losing the notifications already addressed to them.
+    type NotificationHub<'TDataEvent when 'TDataEvent :> IMessageWithCID>
+        (bufferSize: int, logger: ILogger, notificationTimeout: TimeSpan) =
+        let gate = obj ()
+        let subscribers = Dictionary<int64, NotificationSubscription<'TDataEvent>>()
+        let mutable nextId = 0L
+        let mutable stopped = false
 
-            let sink = Sink.forEach (fun event -> cb event)
-            let ks, d = subscribeToStream source filter take actorApi.Materializer sink
-            let d = d |> Async.Ignore
-            ks :> IKillSwitch, d
+        member private _.Subscribe(filter, take, callback, token) =
+            take |> Option.iter (fun count -> if count < 0 then invalidArg "take" "The event count must not be negative.")
+            let subscriber =
+                lock gate (fun () ->
+                    if stopped then invalidOp "The projection notification subscription has stopped."
+                    nextId <- nextId + 1L
+                    let id = nextId
+                    let remove () = lock gate (fun () -> subscribers.Remove id |> ignore)
+                    let subscriber = new NotificationSubscription<'TDataEvent>(bufferSize, filter, take, callback, token, remove, logger)
+                    subscribers.Add(id, subscriber)
+                    subscriber)
+            subscriber.Start()
+            subscriber :> IAwaitableDisposable
+
+        member _.Publish(evt: 'TDataEvent) =
+            lock gate (fun () ->
+                for subscriber in subscribers.Values do
+                    subscriber.Publish evt)
+
+        member _.Stop() =
+            let active =
+                lock gate (fun () ->
+                    stopped <- true
+                    let active = subscribers.Values |> Seq.toArray
+                    subscribers.Clear()
+                    active)
+            for subscriber in active do subscriber.Cancel()
+
+        interface ISubscribe<'TDataEvent> with
+            member this.Subscribe(callback, ?cancellationToken) =
+                this.Subscribe((fun _ -> true), None, callback, defaultArg cancellationToken CancellationToken.None) :> IDisposable
+
+            member this.Subscribe(filter: 'TDataEvent -> bool, take: int, ?callback, ?cancellationToken) =
+                this.Subscribe(filter, Some take, defaultArg callback ignore, defaultArg cancellationToken CancellationToken.None)
+
+            member this.Subscribe(cid: CID, take: int, ?callback, ?cancellationToken) =
+                (this :> ISubscribe<'TDataEvent>).Subscribe((fun e -> e.CID = cid), take, ?callback = callback, ?cancellationToken = cancellationToken)
+
+            member this.Subscribe(cid: CID, filter: 'TDataEvent -> bool, take: int, ?callback, ?cancellationToken) =
+                (this :> ISubscribe<'TDataEvent>).Subscribe((fun e -> e.CID = cid && filter e), take, ?callback = callback, ?cancellationToken = cancellationToken)
+
+        interface IHasNotificationTimeout with
+            member _.Timeout = notificationTimeout
 
 
 let private activitySource = new ActivitySource(Telemetry.QueryActivitySourceName)
@@ -235,11 +317,9 @@ let init<'TDataEvent, 'TPredicate, 't when 'TDataEvent :> IMessageWithCID> (acto
     let logger = actorApi.LoggerFactory.CreateLogger "Query"
     logger.LogInformation "Query started"
 
-    // Read-your-writes notifications are ephemeral: if nobody is subscribed,
-    // dropping the oldest is correct. OverflowStrategy.Fail here used to fault
-    // the offer once the buffer filled with no consumers attached - which the
-    // handler's catch then escalated to a process kill. Buffer size:
-    // config:akka:fcqrs:notification-buffer (default 1024).
+    // Each active subscriber has its own bounded, ephemeral notification queue.
+    // Publications without subscribers are discarded; a full subscriber queue
+    // drops its oldest item without blocking projection or other subscribers.
     let bufferSize =
         let s: string | null = actorApi.Configuration["config:akka:fcqrs:notification-buffer"]
 
@@ -247,22 +327,10 @@ let init<'TDataEvent, 'TPredicate, 't when 'TDataEvent :> IMessageWithCID> (acto
         | true, v when v > 0 -> v
         | _ -> 1024
 
-    // The queue accepts any positive size — make it as large as you like.
-    // The BroadcastHub does NOT: its buffer must be a power of two (and is a
-    // per-consumer smoothing window, not the shedding point), so it gets the
-    // configured value rounded down to a power of two, clamped to [8, 4096].
-    let hubBufferSize =
-        let clamped = max 8 (min bufferSize 4096)
-        let mutable p = 8
-        while p * 2 <= clamped do p <- p * 2
-        p
-
-    let subQueue = Source.queue OverflowStrategy.DropHead bufferSize
-    let subSink = Sink.broadcastHub hubBufferSize
-
-    let runnableGraph = subQueue |> Source.toMat subSink Keep.both
-
-    let queue, subRunnable = runnableGraph |> Graph.run actorApi.Materializer
+    let notificationTimeout =
+        CommandHandler.Internal.resolveCommandTimeout actorApi.System.Settings.Config
+    let notifications = NotificationHub<'TDataEvent>(bufferSize, logger, notificationTimeout)
+    actorApi.System.RegisterOnTermination(Action(fun () -> notifications.Stop()))
 
     // A journal-read error must never silently complete the projection stream
     // (frozen read models in a healthy-looking process). Restart the source
@@ -316,14 +384,7 @@ let init<'TDataEvent, 'TPredicate, 't when 'TDataEvent :> IMessageWithCID> (acto
 
             let res = handler offsetValue envelop.Event
 
-            // Notifications are ephemeral by contract; a failed offer (e.g. a
-            // StreamDetachedException when the notification queue stops first
-            // during actor-system shutdown) must not escalate to the projection
-            // FailFast below — the read-model update has already committed.
-            try
-                res |> List.iter (fun x -> queue.OfferAsync(x).Wait())
-            with offerEx ->
-                logger.LogWarning(offerEx, "Projection notification dropped (ephemeral by contract)")
+            res |> List.iter notifications.Publish
 
             lastProcessedOffset <- offsetValue
         with ex ->
@@ -335,49 +396,4 @@ let init<'TDataEvent, 'TPredicate, 't when 'TDataEvent :> IMessageWithCID> (acto
             fatalFailFast null "Process terminated due to query projection error" ex)
     |> Async.Start
 
-    let subscribeCmd = subscribeCmd subRunnable hubBufferSize actorApi
-    let subscribeCmdWithFilter = subscribeCmdWithFilter subRunnable hubBufferSize actorApi
-
-    // Same key and unit rule as the command subscription bound; the facade's
-    // sendAwaiting reads it through IHasNotificationTimeout.
-    let notificationTimeout =
-        CommandHandler.Internal.resolveCommandTimeout actorApi.System.Settings.Config
-
-    { new ISubscribe<'TDataEvent> with
-        override _.Subscribe(callback, ?cancellationToken) =
-            let token = defaultArg cancellationToken CancellationToken.None
-            let ks = subscribeCmd callback
-            let reg = token.Register(fun _ -> ks.Shutdown())
-
-            { new IDisposable with
-                member __.Dispose() =
-                    reg.Dispose()
-                    // Unconditional: Shutdown is idempotent, and gating it on
-                    // IsCancellationRequested raced a concurrent cancel whose
-                    // registration was disposed before it ran — neither side then
-                    // shut the stream down and the consumer leaked.
-                    ks.Shutdown() }
-
-        override _.Subscribe(filter: 'TDataEvent -> bool, take: int, ?callback, ?cancellationToken) =
-            let token = defaultArg cancellationToken CancellationToken.None
-            let cb = defaultArg callback ignore
-            let ks, res = subscribeCmdWithFilter filter take cb
-            let reg = token.Register(fun _ -> ks.Shutdown())
-            let task = Async.StartImmediateAsTask(res, token) :> Task
-
-            { new IAwaitableDisposable with
-                member __.Task = task
-
-                member __.Dispose() =
-                    reg.Dispose()
-                    // Unconditional for the same race as the callback overload above.
-                    ks.Shutdown() }
-
-        override this.Subscribe(cid: CID, take: int, ?callback, ?cancellationToken) =
-            this.Subscribe((fun e -> e.CID = cid), take, ?callback = callback, ?cancellationToken = cancellationToken)
-
-        override this.Subscribe(cid: CID, filter: 'TDataEvent -> bool, take: int, ?callback, ?cancellationToken) =
-            this.Subscribe((fun e -> e.CID = cid && filter e), take, ?callback = callback, ?cancellationToken = cancellationToken)
-
-      interface IHasNotificationTimeout with
-          member _.Timeout = notificationTimeout }
+    notifications :> ISubscribe<'TDataEvent>

@@ -1,5 +1,34 @@
 # Changelog
 
+## 6.3.1 (FCQRS core)
+
+FCQRS core only; the satellite packages remain at 6.0.0. Public signatures, persisted event shapes,
+snapshot formats, and entity names are unchanged.
+
+- **Saga startup waits for each distinct saga type and entity.** Duplicate acknowledgments cannot
+  satisfy another saga's readiness. A saga acknowledges only after its starting event is persisted
+  and its subscription is acknowledged, including completed sagas restored from snapshots.
+- **Saga acknowledgments reach the coordinator waiting for them across cluster nodes.** Start
+  coordination stays on the aggregate's node; sagas reply directly to that coordinator, or broadcast
+  readiness after recovery has lost the transient coordinator reference. The acknowledgment uses
+  the existing F# serializer and retains a message shape readable by the released 6.3.0 serializer.
+- **Projection subscriptions register before returning.** Immediate publications cannot overtake
+  registration. Each subscriber has a bounded queue, so a slow callback drops its own oldest
+  notifications without blocking other subscribers. Disposing or cancelling an incomplete awaiter
+  cancels its task instead of reporting that the requested notifications arrived.
+- **Command replies are checked against the publishing aggregate's type and entity.** Sharing a CID,
+  entity ID, and event type across aggregate registrations no longer lets one aggregate satisfy
+  another aggregate's caller.
+- **Command timeouts are fixed deadlines.** `akka.fcqrs.command-timeout` now bounds the wait from
+  subscription setup; nonmatching events cannot keep extending it as they could with an idle timeout.
+- **Hosted-service constructors can inject handlers, aggregate references, and subscriptions.** The
+  injected handles resolve before startup and delegate operations to the runtime after FCQRS starts.
+- **Journal type registration is atomic.** Concurrent conflicting registrations cannot both succeed,
+  and a rejected registration leaves all names and aliases unchanged.
+
+Fourteen regression tests cover these failures, including two-node coordination and the existing
+acknowledgment wire format. The complete facade suite passes 57 tests, with 2 ignored.
+
 ## 6.3.0 (FCQRS core)
 
 FCQRS core only; the satellite packages are unchanged. No journal change: passivation stops an idle

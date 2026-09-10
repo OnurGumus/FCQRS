@@ -164,6 +164,9 @@ type internal Handshake<'TEvent when 'TEvent : not null> =
       Subscribed: bool
       /// The mediator acknowledged the CID subscription.
       SubscriptionAcked: bool
+      /// Transient reply destinations captured before the starting event is
+      /// persisted. The persisted event and snapshot contracts stay unchanged.
+      Coordinators: Akka.Actor.IActorRef list
       Incarnation: Incarnation }
 
 let private runSaga<'TEvent, 'SagaData, 'State when 'TEvent : not null and 'State : not null>
@@ -175,7 +178,11 @@ let private runSaga<'TEvent, 'SagaData, 'State when 'TEvent : not null and 'Stat
     (set: _ -> ParentSaga<'SagaData, 'State> -> _)
     (state: ParentSaga<'SagaData, 'State>)
     (applySideEffects:
-        ParentSaga<'SagaData, 'State> -> option<SagaStarter.SagaStartingEvent<Event<'TEvent>>> -> bool -> 'State option)
+        ParentSaga<'SagaData, 'State>
+            -> option<SagaStarter.SagaStartingEvent<Event<'TEvent>>>
+            -> bool
+            -> (unit -> unit)
+            -> 'State option)
     (applyNewState: SagaState<'SagaData, 'State> -> SagaState<'SagaData, 'State>)
     (wrapper: 'State -> ParentSaga<'SagaData, 'State>)
     body
@@ -191,6 +198,20 @@ let private runSaga<'TEvent, 'SagaData, 'State when 'TEvent : not null and 'Stat
 
         actor {
             let! msg = mailbox.Receive()
+
+            let signalReady handshake =
+                acknowledgeReady
+                    (untyped mediator)
+                    (untyped mailbox.Self)
+                    handshake.Coordinators
+                    handshake.Subscribed
+                    handshake.SubscriptionAcked
+
+            let rememberCoordinator () =
+                let coordinator = untyped (mailbox.Sender())
+
+                if hs.Coordinators |> List.contains coordinator then hs
+                else { hs with Coordinators = coordinator :: hs.Coordinators }
 
             // Emit a state-change activity (kept alive until the next transition so
             // sub-activities become children). Parent: the starting event's metadata
@@ -319,9 +340,12 @@ let private runSaga<'TEvent, 'SagaData, 'State when 'TEvent : not null and 'Stat
             | SubscriptionAcknowledged mailbox _ ->
                 // notify saga starter about the subscription completed
                 let nextInner =
-                    { hs with
-                        Subscribed = true
-                        SubscriptionAcked = true }
+                    { hs with SubscriptionAcked = true }
+
+                // A recovered terminal state can stop in its side effects. Release
+                // a live starter as soon as the persisted wrapper and subscription
+                // are ready, before that StopSaga passivates the entity.
+                signalReady nextInner
 
                 match startingEvent with
                 | Some _ ->
@@ -333,7 +357,7 @@ let private runSaga<'TEvent, 'SagaData, 'State when 'TEvent : not null and 'Stat
                     // subscriber) or, if the originator had already moved on,
                     // falsely aborted a live saga. The fresh-start Continue is
                     // signalled by the (Stay, false) branch of applySideEffects.
-                    let newState = applySideEffects state startingEvent hs.Incarnation.IsRecovery
+                    let newState = applySideEffects state startingEvent hs.Incarnation.IsRecovery (fun () -> signalReady nextInner)
 
                     match newState with
                     | Some newState ->
@@ -353,7 +377,7 @@ let private runSaga<'TEvent, 'SagaData, 'State when 'TEvent : not null and 'Stat
                     // until poked from outside. IsRecovery, not = RecoveredFromSnapshot:
                     // events replayed after such a snapshot flip the incarnation to
                     // RecoveredFromJournal, and the re-drive must still run for them.
-                    let newState = applySideEffects state None true
+                    let newState = applySideEffects state None true (fun () -> signalReady nextInner)
 
                     match newState with
                     | Some newState ->
@@ -377,13 +401,15 @@ let private runSaga<'TEvent, 'SagaData, 'State when 'TEvent : not null and 'Stat
                             StartingEvent = Some e
                             Subscribed = true }
 
+                    signalReady nextInner
+
                     if startingEvent.IsNone then
                         // A live wrapper persist is always a fresh start (replayed
                         // wrappers arrive through the Recovering branch), so this is
                         // never a recovery re-drive. Passing SubscriptionAcked here
                         // spuriously sent ContinueOrAbort when the mediator ack won
                         // the race against the wrapper persist.
-                        let newState = applySideEffects state (Some e) false
+                        let newState = applySideEffects state (Some e) false (fun () -> signalReady nextInner)
 
                         match newState with
                         | Some newState ->
@@ -430,7 +456,7 @@ let private runSaga<'TEvent, 'SagaData, 'State when 'TEvent : not null and 'Stat
                                     // deadlines for this state measure from here.
                                     StateEnteredAt = enteredAt }
 
-                            let newState = applySideEffects parentState startingEvent false
+                            let newState = applySideEffects parentState startingEvent false (fun () -> signalReady hs)
 
                             let dueForSnapshot =
                                 match snapshotEvery with
@@ -487,10 +513,12 @@ let private runSaga<'TEvent, 'SagaData, 'State when 'TEvent : not null and 'Stat
                     return! state |> set hs
 
             | :? (SagaStarter.SagaStartingEvent<Event<'TEvent>>) as e when startingEvent.IsNone ->
-                return! SagaStartingEventWrapper e |> box |> Persist
+                let nextInner = rememberCoordinator ()
+                return! SagaStartingEventWrapper e |> box |> Persist <@> innerSet nextInner
             | :? (SagaStarter.SagaStartingEvent<Event<'TEvent>>) when subscribed ->
-                cont mediator
-                return! innerSet hs
+                let nextInner = rememberCoordinator ()
+                signalReady nextInner
+                return! innerSet nextInner
             | msg when msg.GetType().Name.StartsWith("SagaStartingEvent") ->
                 // A starting event whose payload type is not this saga's 'TEvent:
                 // the two cases above did not match it. Dropping it silently left
@@ -506,7 +534,7 @@ let private runSaga<'TEvent, 'SagaData, 'State when 'TEvent : not null and 'Stat
                     msg.GetType().Name,
                     typeof<'TEvent>.Name)
 
-                cont mediator
+                cont (untyped mediator) (untyped mailbox.Self) [ untyped (mailbox.Sender()) ]
                 return! innerSet hs
 
             | _ ->
@@ -852,6 +880,7 @@ let private actorProp<'SagaData, 'State, 'TEvent when 'TEvent : not null and 'St
         (sagaState: ParentSaga<'SagaData, 'State>)
         (startingEvent: option<SagaStartingEvent<Event<'TEvent>>>)
         recovering
+        (continueSaga: unit -> unit)
         : 'State option =
         let transition, (cmds: ExecuteCommand list) =
             try
@@ -882,7 +911,7 @@ let private actorProp<'SagaData, 'State, 'TEvent when 'TEvent : not null and 'St
         match transition, recovering with
         | Stay, false ->
             // This handles the old ResumeFirstEvent case
-            cont mediator
+            continueSaga ()
             None
         | Stay, true ->
             // A saga resurrected mid-handshake (persist failure + remember-entities,
@@ -891,13 +920,13 @@ let private actorProp<'SagaData, 'State, 'TEvent when 'TEvent : not null and 'St
             // ContinueOrAbort sat unprocessed in the originator's stalled mailbox:
             // a process-local deadlock. Continue is idempotent at the starter
             // (duplicates and untracked batches are tolerated), so always re-signal.
-            cont mediator
+            continueSaga ()
             None
         | StayExpecting exp, _ ->
             // Same handshake as Stay in both directions: a fresh entry signals
             // Continue, and a resurrected saga must re-signal it — skipping that
             // re-creates the originator deadlock documented on the Stay branch.
-            cont mediator
+            continueSaga ()
 
             (match validateExpectation exp with
              | Some reason ->
@@ -1080,6 +1109,7 @@ let private actorProp<'SagaData, 'State, 'TEvent when 'TEvent : not null and 'St
         { StartingEvent = None
           Subscribed = false
           SubscriptionAcked = false
+          Coordinators = []
           Incarnation = Fresh }
         initialState
 

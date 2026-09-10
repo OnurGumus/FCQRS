@@ -57,8 +57,6 @@ module internal Internal =
         (body: BodyInput<'TEvent> -> _)
         : Effect<obj> =
 
-        let mediatorS = retype mediator
-
         // Aggregates are eternal: a fold that throws means the journal and the
         // code no longer agree, and an Akka actor restart would just drop the
         // message and hide it. Same policy as sagas — kill the process.
@@ -261,7 +259,7 @@ module internal Internal =
 
                 return! newState |> set
             | _ ->
-                let starter = SagaStarter.Internal.toSendMessage sagaStartTimeout mediatorS mailbox.Self
+                let starter = SagaStarter.Internal.toSendMessage sagaStartTimeout mailbox.System mailbox.Self
 
                 let bodyInput =
                     {   Message = msg

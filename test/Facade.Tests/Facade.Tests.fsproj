@@ -11,6 +11,10 @@
 
   <ItemGroup>
     <Compile Include="BridgeSteps.fs" />
+    <Compile Include="CommandSubscriptionTests.fs" />
+    <Compile Include="SagaHandshakeTests.fs" />
+    <Compile Include="ProjectionSubscriptionTests.fs" />
+    <Compile Include="HostingAndRegistryTests.fs" />
     <Compile Include="Tests.fs" />
   </ItemGroup>
 
@@ -28,6 +32,7 @@
     <PackageReference Include="Expecto" Version="10.*" />
     <PackageReference Include="TickSpec" Version="2.*" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.*" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.*" />
   </ItemGroup>
 
 </Project>

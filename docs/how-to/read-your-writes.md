@@ -95,6 +95,10 @@ if reply.Journaled <> Some false then
 The ordering is part of correctness. Subscribing after `.Send` creates a race in which the projection
 can publish before the subscription exists.
 
+`Subscribe` registers the listener before returning. Disposing or cancelling an awaitable subscription
+before it receives the requested number of notifications cancels its task; disposal does not report
+that the projection has caught up.
+
 <div class="cs-alt"></div>
 
 ```csharp

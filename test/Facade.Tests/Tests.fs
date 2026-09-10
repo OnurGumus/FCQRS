@@ -2514,4 +2514,13 @@ let tests =
     )
 
 [<EntryPoint>]
-let main argv = runTestsWithCLIArgs [] argv tests
+let main argv =
+    let allTests =
+        testSequenced (testList "FCQRS" [
+            tests
+            CommandSubscriptionTests.tests
+            SagaHandshakeTests.tests
+            ProjectionSubscriptionTests.tests
+            HostingAndRegistryTests.tests
+        ])
+    runTestsWithCLIArgs [] argv allTests

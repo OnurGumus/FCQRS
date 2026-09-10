@@ -66,8 +66,8 @@ The .NET configuration path uses colons. The equivalent HOCON path uses nested o
 |---|---:|---|
 | `config:akka:persistence:snapshot-version-count` | `30` | Snapshot interval used by `SnapshotPolicy.Default` |
 | `config:akka:fcqrs:saga-start-timeout` | `30` | Maximum seconds allowed for the saga-start handshake before fail-fast |
-| `config:akka:fcqrs:command-timeout` | `30s` | Maximum idle wait for a command subscription's matching aggregate reply before a `TimeoutException` |
-| `config:akka:fcqrs:notification-buffer` | `1024` | Buffer used for ephemeral projection notifications |
+| `config:akka:fcqrs:command-timeout` | `30s` | Deadline from command subscription setup to its matching aggregate reply; nonmatching events do not extend it |
+| `config:akka:fcqrs:notification-buffer` | `1024` | Maximum queued notifications per subscriber; a full subscriber queue drops its oldest notification |
 | `config:akka:fcqrs:max-worker-threads` | `1024` | Ceiling on the thread-pool floor the saga starter raises to cover concurrent saga-start handshakes |
 | `config:akka:loglevel` | `OFF` | Akka.NET internal log level |
 | `config:akka:stdout-loglevel` | `OFF` | Akka.NET standard-output log level |

@@ -499,40 +499,44 @@ let internal fatalFailFast (heldActivity: Activity | null) (message: string) (ex
 /// renamed or moved freely (update the mapping, old journal rows keep reading).
 /// Unregistered types fall back to the legacy AQN manifest.
 type JournalTypes private () =
-    static let byName = Collections.Concurrent.ConcurrentDictionary<string, Type>()
-    static let byType = Collections.Concurrent.ConcurrentDictionary<Type, string>()
+    static let gate = obj ()
+    static let byName = Collections.Generic.Dictionary<string, Type>()
+    static let byType = Collections.Generic.Dictionary<Type, string>()
 
     static let validateName (name: string) =
         if String.IsNullOrWhiteSpace name || name.IndexOfAny [| '('; ')'; ','; ':' |] >= 0 then
             invalidArg "name" $"Journal type name '%s{name}' must be non-empty and must not contain '(', ')', ',' or ':'"
 
     static member private MapCore(payloadType: Type, name: string, aliases: string[], allowReplace: bool) =
+        let aliases = Array.copy aliases
         validateName name
         aliases |> Array.iter validateName
 
-        // Check EVERY conflict before the first write: a rejected registration
-        // must leave the registry untouched. Writing name-by-name meant a late
-        // conflict left earlier names already pointing at the new type — a
-        // half-applied mapping invisible to the caller who saw the exception.
-        let checkName (n: string) =
-            match byName.TryGetValue n with
-            | true, existing when existing <> payloadType && not allowReplace ->
-                invalidOp $"Journal name '%s{n}' is already mapped to %s{existing.FullName}; use Remap to replace it deliberately"
+        // Both indexes form one registry: concurrent registrations must not pass
+        // the same conflict check, and readers must not observe a partial write.
+        lock gate (fun () ->
+            // Validate every conflict before changing either index, so a rejected
+            // registration leaves all primary names and aliases untouched.
+            let checkName (n: string) =
+                match byName.TryGetValue n with
+                | true, existing when existing <> payloadType && not allowReplace ->
+                    invalidOp $"Journal name '%s{n}' is already mapped to %s{existing.FullName}; use Remap to replace it deliberately"
+                | _ -> ()
+
+            checkName name
+            aliases |> Array.iter checkName
+
+            match byType.TryGetValue payloadType with
+            | true, existing when existing <> name && not allowReplace ->
+                invalidOp $"%s{payloadType.FullName} is already mapped to '%s{existing}'; use Remap to replace it deliberately"
             | _ -> ()
 
-        checkName name
-        aliases |> Array.iter checkName
-
-        match byType.TryGetValue payloadType with
-        | true, existing when existing <> name && not allowReplace ->
-            invalidOp $"%s{payloadType.FullName} is already mapped to '%s{existing}'; use Remap to replace it deliberately"
-        | _ -> ()
-
-        byName[name] <- payloadType
-        aliases |> Array.iter (fun n -> byName[n] <- payloadType)
-        byType[payloadType] <- name
+            byName[name] <- payloadType
+            aliases |> Array.iter (fun n -> byName[n] <- payloadType)
+            byType[payloadType] <- name)
 
     /// Map a payload type to its stable journal name (plus optional read-side aliases).
+    /// Concurrent registrations are serialized; a rejected mapping changes no names.
     static member Map(payloadType: Type, name: string, [<ParamArray>] aliases: string[]) =
         JournalTypes.MapCore(payloadType, name, aliases, false)
 
@@ -546,14 +550,16 @@ type JournalTypes private () =
         JournalTypes.MapCore(payloadType, name, aliases, true)
 
     static member internal TryGetName(t: Type) : string option =
-        match byType.TryGetValue t with
-        | true, n -> Some n
-        | _ -> None
+        lock gate (fun () ->
+            match byType.TryGetValue t with
+            | true, n -> Some n
+            | _ -> None)
 
     static member internal TryGetType(name: string) : Type option =
-        match byName.TryGetValue name with
-        | true, t -> Some t
-        | _ -> None
+        lock gate (fun () ->
+            match byName.TryGetValue name with
+            | true, t -> Some t
+            | _ -> None)
 
 /// Snapshot cadence for an aggregate or saga, set per entity at registration.
 type SnapshotPolicy =
@@ -1083,11 +1089,17 @@ module SagaStarter =
             | Command of Command
             | Event of Event
 
+            // Continue can cross nodes when a saga replies to its starter or
+            // re-signals readiness after recovery. The default Newtonsoft
+            // serializer cannot construct these private F# union cases; use
+            // the existing F# serializer and unchanged message shape instead.
+            interface ISerializable
+
         // Internal helpers for Saga Starter communication
         let internal toCheckSagas (event, originator, cid) =
             (event |> box |> Unchecked.nonNull, originator, cid) |> CheckSagas |> Command
 
-        let internal toSendMessage (askTimeout: TimeSpan) mediator (originator: IActorRef<_>) event =
+        let internal toSendMessage (askTimeout: TimeSpan) (system: ActorSystem) (originator: IActorRef<_>) event =
             // Build from the originator's ENTITY ID, not its escaped path name: the
             // shard escapes the saga id we derive here when it names the saga actor,
             // and everything downstream recovers the id by unescaping that name.
@@ -1096,8 +1108,12 @@ module SagaStarter =
                     (originator.Path.Name |> entityIdOf)
                     (event.CorrelationId |> ValueLens.Value |> ValueLens.Value)
 
-            let message =
-                Send(SagaStarterPath, (event, untyped originator, cid) |> toCheckSagas, true)
+            // Start coordination belongs to the aggregate's own node. Every
+            // host registers this local actor, even when its start rules are
+            // empty. CheckSagas carries a local originator ref and never crosses
+            // the wire; only saga readiness replies may cross nodes.
+            let message = (event, untyped originator, cid) |> toCheckSagas
+            let coordinator = system.ActorSelection(SagaStarterPath)
 
             // Deliberately synchronous: the aggregate blocks here until every saga
             // this event starts is journaled and subscribed, so the event published
@@ -1106,9 +1122,7 @@ module SagaStarter =
             // parks this entity (and its dispatcher thread) forever. If the
             // handshake cannot complete, crash the process — fail-fast policy.
             try
-                (mediator: IActorRef<obj>).Ask(message, Some askTimeout)
-                |> Async.RunSynchronously
-                |> ignore
+                coordinator.Ask<obj>(message, askTimeout).GetAwaiter().GetResult() |> ignore
             with ex ->
                 fatalFailFast
                     null
@@ -1134,8 +1148,27 @@ module SagaStarter =
             mediator <! Akka.Cluster.Tools.PublishSubscribe.Publish(self.Path.Name, event)
             mediator <! Akka.Cluster.Tools.PublishSubscribe.Publish(self.Path.Name + CID_Separator + cid, event)
 
-        let internal cont mediator =
-            mediator <! box (Send(SagaStarterPath, Continue |> Command, true))
+        // The starting message's sender is the coordinator that owns the batch.
+        // Reply directly: the saga and originator may run on different nodes,
+        // each with its own /user/SagaStarter. Recovery loses these transient
+        // refs, so broadcast the existing Continue message in that case. Each
+        // coordinator only accepts readiness for the exact saga it is tracking.
+        let internal cont
+            (mediator: Akka.Actor.IActorRef)
+            (saga: Akka.Actor.IActorRef)
+            (coordinators: Akka.Actor.IActorRef list)
+            =
+            let message = Continue |> Command
+
+            match coordinators with
+            | [] -> mediator.Tell(SendToAll(SagaStarterPath, message, false), saga)
+            | coordinators ->
+                for coordinator in coordinators do
+                    coordinator.Tell(message, saga)
+
+        let internal acknowledgeReady mediator saga coordinators startingEventPersisted subscriptionAcked =
+            if startingEventPersisted && subscriptionAcked then
+                cont mediator saga coordinators
 
         let internal subscriber (mediator: IActorRef<_>) (mailbox: Eventsourced<_>) =
             let topic = mailbox.Self.Path.Name |> entityIdOf |> sagaTopic
@@ -1233,7 +1266,10 @@ module SagaStarter =
                         "SagaStarter reached the ThreadPool ceiling of {0} worker threads with {1} saga-start handshake(s) in flight. Handshakes block a dispatcher thread each, so beyond this point they may time out and crash the process. Raise akka.fcqrs.max-worker-threads or reduce saga-starting concurrency.",
                         maxWorkers, inFlight)
 
-            let rec set (state: Map<string, (IActorRef * (string list * Guid) list)>) =
+            // Different saga types share an entity id when the same event starts
+            // them. Readiness belongs to the (type, entity) pair, and a repeated
+            // Continue from one saga must never stand in for another saga.
+            let rec set (state: Map<string, (IActorRef * (Set<string * string> * Guid) list)>) =
                 let startSaga
                     cid
                     (originator: IActorRef)
@@ -1254,7 +1290,8 @@ module SagaStarter =
 
                               let msg = unboxx e
                               saga <! msg //box (ShardRegion.StartEntity(saga.EntityId))
-                              yield saga.EntityId ]
+                              yield saga.TypeName, saga.EntityId ]
+                        |> Set.ofList
 
                     // Key by the full originator path, not the bare entity id: two
                     // aggregate types can share an entity id (Order and OrderPayment
@@ -1282,34 +1319,24 @@ module SagaStarter =
                     match! mailbox.Receive() with
                     | Command Continue ->
                         let sender = untyped <| mailbox.Sender()
-                        // Batches hold ENTITY IDS (saga.EntityId below), so recover the
-                        // id from the sender's escaped path name before matching.
-                        let sagaName = sender.Path.Name |> entityIdOf
+                        // Sharded entity paths end in <type>/<shard>/<entity>.
+                        // Both actor names are URI-escaped by cluster sharding.
+                        let sagaIdentity =
+                            sender.Path.Parent.Parent.Name |> entityIdOf,
+                            sender.Path.Name |> entityIdOf
 
-                        // Remove only the first occurrence (not all) to handle duplicate entity IDs
-                        let removeFirst item list =
-                            let rec loop acc =
-                                function
-                                | [] -> List.rev acc
-                                | x :: xs when x = item -> List.rev acc @ xs
-                                | x :: xs -> loop (x :: acc) xs
-
-                            loop [] list
-
-                        // One saga can be tracked by batches of several originators:
-                        // different aggregate types sharing an entity id start sagas
-                        // for the same CID, and one subscribed saga satisfies every
-                        // handshake waiting on it. Scan all entries and count this
-                        // Continue toward each batch that tracks this saga.
+                        // A saga can satisfy several originators waiting on that
+                        // same (type, entity), but never another saga type with an
+                        // equal entity id. Removing from a set is idempotent.
                         let newState, tracked =
                             ((state, false), state)
                             ||> Seq.fold (fun (acc, tracked) kvp ->
                                 let (originator, batches) = kvp.Value
 
-                                match batches |> List.tryFind (fun (lst, _) -> lst |> List.contains sagaName) with
+                                match batches |> List.tryFind (fun (pending, _) -> pending |> Set.contains sagaIdentity) with
                                 | None -> acc, tracked
                                 | Some(targetList, batchId) ->
-                                    let newList = removeFirst sagaName targetList
+                                    let newList = Set.remove sagaIdentity targetList
                                     let otherBatches = batches |> List.filter (fun (_, bid) -> bid <> batchId)
 
                                     if newList.IsEmpty then
@@ -1328,7 +1355,7 @@ module SagaStarter =
                             // land here too.
                             log.Debug(
                                 "Saga {0} sent Continue but no batch tracks it (recovered saga re-signal, pruned batch, or duplicate delivery)",
-                                sagaName)
+                                sagaIdentity)
 
                         return! set newState
                     | Command(CheckSagas(o, originator, cid)) ->
@@ -1354,11 +1381,13 @@ module SagaStarter =
                                 log.Warning(
                                     "Pruning stale saga batch for originator {0} after TTL ({1} saga(s) never reported Continue)",
                                     originName,
-                                    List.length staleSagas)
+                                    Set.count staleSagas)
                                 log.Debug(
-                                    "Stale saga entity IDs for originator {0}: {1}",
+                                    "Stale sagas for originator {0}: {1}",
                                     originName,
-                                    System.String.Join(", ", staleSagas))
+                                    staleSagas
+                                    |> Seq.map (fun (typeName, entityId) -> typeName + "/" + entityId)
+                                    |> fun names -> System.String.Join(", ", names))
                                 let remaining = batches |> List.filter (fun (_, bid) -> bid <> batchId)
                                 if remaining.IsEmpty then
                                     return! set <| state.Remove originName
@@ -1405,10 +1434,14 @@ module CommandHandler =
             { EntityId: string
               Cid: string }
 
+        /// One scheduled deadline per request. Unlike ReceiveTimeout, unrelated
+        /// or nonmatching events cannot postpone it.
+        type internal CommandDeadlineElapsed = CommandDeadlineElapsed
+
         /// Internal marker replied to the asker when the event filter throws.
         /// The ask must fail loudly with the real exception: letting it escape
         /// the subscriber actor restarts the incarnation without its Execute
-        /// message or receive timeout, hanging the caller forever.
+        /// message or deadline, hanging the caller forever.
         type internal CommandSubscriptionFilterError =
             { EntityId: string
               Cid: string
@@ -1443,6 +1476,22 @@ module CommandHandler =
             let actorProp mediator (mailbox: Actor<obj>) =
                 let log = mailbox.UntypedContext.GetLogger()
                 let commandTimeout = resolveCommandTimeout mailbox.System.Settings.Config
+                let mutable deadline: ICancelable option = None
+                let mutable commandSent = false
+
+                let cancelDeadline () =
+                    deadline |> Option.iter (fun timer -> timer.Cancel())
+                    deadline <- None
+
+                let matchesTarget (target: IEntityRef<obj>) =
+                    // DistributedPubSub preserves the publishing actor as Sender.
+                    // Topics are intentionally unchanged for existing sagas and
+                    // rolling deployments; the publisher identifies the aggregate
+                    // type as well as the entity, even when event types are shared.
+                    let path = mailbox.Sender().Path
+                    entityIdOf path.Name = target.EntityId
+                    && entityIdOf path.Parent.Name = target.ShardId
+                    && entityIdOf path.Parent.Parent.Name = target.TypeName
 
                 let rec set (state: State<'Command, 'Event> option) =
                     actor {
@@ -1450,9 +1499,15 @@ module CommandHandler =
 
                         match box msg |> Unchecked.nonNull with
                         // On SubscribeAck, send the actual command to the target entity
-                        | SubscriptionAcknowledged _ ->
-                            let cmd = state.Value.CommandDetails.Cmd |> box
-                            state.Value.CommandDetails.EntityRef <! cmd
+                        | SubscriptionAcknowledged ack ->
+                            match state with
+                            | Some s when not commandSent ->
+                                let cd = s.CommandDetails
+                                let cid = cd.Cmd.CorrelationId |> ValueLens.Value |> ValueLens.Value
+                                if ack.Subscribe.Topic = correlationTopic cd.EntityRef.EntityId cid then
+                                    commandSent <- true
+                                    cd.EntityRef <! box cd.Cmd
+                            | _ -> ()
                             return! set state
                         // When receiving the initial Execute command, store details and subscribe
                         | :? Command<'Command, 'Event> as s ->
@@ -1470,10 +1525,16 @@ module CommandHandler =
 
                                     cd
 
-                            // Bounded wait: if no matching event ever arrives the
-                            // ReceiveTimeout branch below fails the asker instead
-                            // of hanging forever.
-                            mailbox.UntypedContext.SetReceiveTimeout(Nullable commandTimeout)
+                            // Schedule once from request acceptance. ReceiveTimeout
+                            // measures inactivity and is reset by every rejected
+                            // event, so it cannot bound the lifetime of this request.
+                            cancelDeadline ()
+                            deadline <-
+                                Some(mailbox.System.Scheduler.ScheduleTellOnceCancelable(
+                                    commandTimeout,
+                                    untyped mailbox.Self,
+                                    CommandDeadlineElapsed,
+                                    ActorRefs.NoSender))
 
                             return!
                                 Some
@@ -1483,7 +1544,8 @@ module CommandHandler =
                         // The awaited event never arrived: fail the asker and stop,
                         // so an UnhandledEvent/IgnoreEvent decision or a filter that
                         // never matches cannot hang the caller or leak this actor.
-                        | :? Akka.Actor.ReceiveTimeout ->
+                        | :? CommandDeadlineElapsed ->
+                            cancelDeadline ()
                             match state with
                             | Some s ->
                                 let cid = s.CommandDetails.Cmd.CorrelationId |> ValueLens.Value |> ValueLens.Value
@@ -1501,19 +1563,24 @@ module CommandHandler =
                             | None -> ()
 
                             return! Stop
-                        // When receiving an Event, check TraceId (CID may change due to span propagation)
+                        // A CID can cross aggregate types. Only accept an event
+                        // published by the aggregate instance this request targets.
                         | :? (Event<'Event>) as e ->
                             match state with
-                            | Some s when sameTrace e.CorrelationId s.CommandDetails.Cmd.CorrelationId ->
+                            | Some s when commandSent
+                                          && sameTrace e.CorrelationId s.CommandDetails.Cmd.CorrelationId
+                                          && matchesTarget s.CommandDetails.EntityRef ->
                                 match (try Choice1Of2(s.CommandDetails.Filter e.EventDetails) with ex -> Choice2Of2 ex) with
                                 | Choice1Of2 true ->
+                                    cancelDeadline ()
                                     s.Sender.Tell e // Send event back to original asker
                                     return! Stop // Stop the temporary subscription actor
                                 | Choice1Of2 false -> return! set state // Continue waiting
                                 | Choice2Of2 ex ->
+                                    cancelDeadline ()
                                     // A filter exception must not escape the actor: the
                                     // default supervisor would restart this incarnation,
-                                    // dropping the consumed Execute and the receive timeout
+                                    // dropping the consumed Execute and the deadline
                                     // armed with it — hanging the caller's ask forever.
                                     // Fail the asker loudly with the real exception instead.
                                     let cid =
@@ -1538,6 +1605,9 @@ module CommandHandler =
                                 // Different trace, or a restarted incarnation that lost
                                 // its state: keep waiting for the matching event.
                                 return! set state
+                        | LifecycleEvent PostStop ->
+                            cancelDeadline ()
+                            return! Ignore
                         | LifecycleEvent _ -> return! Ignore // Ignore actor lifecycle events
                         | _ ->
                             log.Error("Unexpected message in subscriber: {msg}", msg)

@@ -73,7 +73,8 @@ type FcqrsRuntime(actor: IActor) =
 
 /// Fluent registration builder. Each AddXxx records a step to run at startup and,
 /// where relevant, registers the resolved piece (Handler, refs, subscription) in
-/// DI. Returned by IServiceCollection.AddFcqrs.
+/// DI. These services support constructor injection before startup; use their
+/// operations after FCQRS's hosted service starts. Returned by IServiceCollection.AddFcqrs.
 type FcqrsBuilder internal (services: IServiceCollection, connectionString: string, clusterName: string) =
     let aggregateSteps = ResizeArray<IServiceProvider -> IActor -> FcqrsRuntime -> unit>()
     let sagaSteps = ResizeArray<IServiceProvider -> IActor -> FcqrsRuntime -> unit>()
@@ -96,11 +97,31 @@ type FcqrsBuilder internal (services: IServiceCollection, connectionString: stri
     // AddProjection call. The subscription itself is created at startup.
     member private _.RegisterSubscriptionResolver() =
         if projectionStep.IsNone then
-            // The canonical, non-generic ISubscribe.
+            // The host constructs all hosted services before starting any of them.
+            // A worker can inject this forwarding subscription in its constructor;
+            // resolve the live projection only when it actually subscribes.
             services.AddSingleton<FCQRS.Query.ISubscribe>(fun (sp: IServiceProvider) ->
-                match sp.GetRequiredService<FcqrsRuntime>().Subscription with
-                | null -> failwith "Projection subscription is not initialized yet (the host has not started)."
-                | s -> s)
+                let runtime = sp.GetRequiredService<FcqrsRuntime>()
+                let current () =
+                    match runtime.Subscription with
+                    | null -> failwith "Projection subscription is not initialized yet (the host has not started)."
+                    | s -> s
+
+                { new FCQRS.Query.ISubscribe with
+                    member _.Subscribe(callback: IMessageWithCID -> unit, ?cancellationToken: CancellationToken) : IDisposable =
+                        (current ()).Subscribe(callback, ?cancellationToken = cancellationToken)
+                    member _.Subscribe(filter: IMessageWithCID -> bool, take: int, ?callback: IMessageWithCID -> unit, ?cancellationToken: CancellationToken) : FCQRS.Query.IAwaitableDisposable =
+                        (current ()).Subscribe(filter, take, ?callback = callback, ?cancellationToken = cancellationToken)
+                    member _.Subscribe(cid: CID, take: int, ?callback: IMessageWithCID -> unit, ?cancellationToken: CancellationToken) : FCQRS.Query.IAwaitableDisposable =
+                        (current ()).Subscribe(cid, take, ?callback = callback, ?cancellationToken = cancellationToken)
+                    member _.Subscribe(cid: CID, filter: IMessageWithCID -> bool, take: int, ?callback: IMessageWithCID -> unit, ?cancellationToken: CancellationToken) : FCQRS.Query.IAwaitableDisposable =
+                        (current ()).Subscribe(cid, filter, take, ?callback = callback, ?cancellationToken = cancellationToken)
+
+                  interface FCQRS.Query.IHasNotificationTimeout with
+                      member _.Timeout =
+                          match box (current ()) with
+                          | :? FCQRS.Query.IHasNotificationTimeout as t -> t.Timeout
+                          | _ -> TimeSpan.FromSeconds 30.0 })
             |> ignore
             // The closed generic, for consumers that inject ISubscribe<IMessageWithCID>
             // (resolves to the same instance, since ISubscribe : ISubscribe<IMessageWithCID>).
@@ -167,7 +188,8 @@ type FcqrsBuilder internal (services: IServiceCollection, connectionString: stri
 
     /// Register an aggregate. The shard is constructed via DI (ctor args resolved
     /// from the container) and Init'd at startup; its Handler and AggregateRefs are
-    /// registered so endpoints/sagas can resolve them.
+    /// registered so endpoints/sagas can resolve them. Hosted services may inject
+    /// these handles in their constructors and invoke them after FCQRS starts.
     member this.AddAggregate<'TShard, 'TState, 'TCommand, 'TEvent
             when 'TShard :> Aggregate<'TState, 'TCommand, 'TEvent>
             and 'TShard: not struct
@@ -207,23 +229,29 @@ type FcqrsBuilder internal (services: IServiceCollection, connectionString: stri
             if pairToShards.[pair].Count > 1 then
                 ambiguityError ()
 
-            sp.GetRequiredService<FcqrsRuntime>().Refs<'TCommand, 'TEvent>(shardType))
+            sp.GetRequiredKeyedService<AggregateRefs<'TCommand, 'TEvent>>(shardType))
         |> ignore
 
         services.AddSingleton<Handler<'TCommand, 'TEvent>>(fun (sp: IServiceProvider) ->
             if pairToShards.[pair].Count > 1 then
                 ambiguityError ()
 
-            sp.GetRequiredService<FcqrsRuntime>().Refs<'TCommand, 'TEvent>(shardType).Handler)
+            sp.GetRequiredKeyedService<AggregateRefs<'TCommand, 'TEvent>>(shardType).Handler)
         |> ignore
 
-        // Keyed-by-shard registrations are always unambiguous.
+        // Keyed-by-shard registrations are always unambiguous. Keep these handles
+        // resolvable while the host constructs its services; actual operations
+        // delegate to the wiring installed by FcqrsHostedService.StartAsync.
         services.AddKeyedSingleton<AggregateRefs<'TCommand, 'TEvent>>(shardType, fun (sp: IServiceProvider) (_: obj) ->
-            sp.GetRequiredService<FcqrsRuntime>().Refs<'TCommand, 'TEvent>(shardType))
+            let runtime = sp.GetRequiredService<FcqrsRuntime>()
+            { Factory = AggregateFactory(fun entityId -> runtime.Factory(shardType).Invoke(entityId))
+              Handler =
+                  Handler<'TCommand, 'TEvent>(fun filter cid aggregateId command ->
+                      runtime.Refs<'TCommand, 'TEvent>(shardType).Handler.Invoke(filter, cid, aggregateId, command)) })
         |> ignore
 
         services.AddKeyedSingleton<Handler<'TCommand, 'TEvent>>(shardType, fun (sp: IServiceProvider) (_: obj) ->
-            sp.GetRequiredService<FcqrsRuntime>().Refs<'TCommand, 'TEvent>(shardType).Handler)
+            sp.GetRequiredKeyedService<AggregateRefs<'TCommand, 'TEvent>>(shardType).Handler)
         |> ignore
 
         this

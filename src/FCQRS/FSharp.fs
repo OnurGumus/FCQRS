@@ -361,13 +361,9 @@ module Fcqrs =
         (filter: 'Event -> bool)
         : Async<Event<'Event>> =
         async {
-            // Whether the awaited notification actually arrived. The awaiter's Task
-            // completes on ANY stream end — including a kill-switch shutdown or the
-            // notification hub completing during actor-system shutdown — and those
-            // complete it SUCCESSFULLY, so the task alone cannot distinguish "the
-            // projection published" from "the stream went away". Without this flag a
-            // shutdown mid-wait returned the ack as though the read model were
-            // current: a false read-your-writes.
+            // FCQRS cancels an incomplete awaiter on shutdown. Keep this callback
+            // check for custom ISubscribe implementations whose task may complete
+            // successfully without delivering the requested notification.
             let mutable notified = false
 
             use awaiter =
