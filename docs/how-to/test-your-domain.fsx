@@ -7,7 +7,7 @@ index: 8
 ---
 *)
 (*** hide ***)
-#r "nuget: FCQRS, 6.4.0"
+#r "nuget: FCQRS, 6.5.0"
 #r "nuget: Expecto, 10.2.3"
 #load "../../samples/registration-fsharp/Account.fs"
 
