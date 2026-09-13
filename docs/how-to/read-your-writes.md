@@ -19,6 +19,10 @@ gap by waiting for the required projection before the query runs.
 Read [Correlation IDs and read-your-writes](../concepts/correlation-ids.html) first if you need the
 mental model behind the sequence, projection boundary, and ephemeral notification.
 
+To wait for every event already committed across the journal, use a transactional projection's
+`CatchUpAsync`. [Catch up projections](catch-up-projections.html) shows the registration and the
+snapshot boundary. A matching correlation notification alone does not establish that boundary.
+
 ## Use the combined F# helper
 
 `Fcqrs.sendAwaiting` subscribes before sending, sends the command, and waits for one projection

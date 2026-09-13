@@ -3,7 +3,7 @@
 title: Test your domain
 category: Apply
 categoryindex: 4
-index: 6
+index: 7
 ---
 *)
 (*** hide ***)

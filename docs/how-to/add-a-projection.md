@@ -11,6 +11,10 @@ A projection receives journal events in order and updates data designed for quer
 offset identifying the last event it committed. This page's single most important rule: commit the
 read-model update and the new offset in the same database transaction.
 
+For a handler that receives a library-owned transaction and can wait for a journal snapshot, follow
+[Catch up projections](catch-up-projections.html). The offset-based registration on this page remains
+available when the application manages its own progress and transaction.
+
 The rule matters because a crash can land between any two separate writes, and each ordering fails
 differently:
 
@@ -166,10 +170,10 @@ updates commit.
 
 ## Handle failures visibly
 
-Do not catch a storage exception and advance the offset. Let the handler fail. FCQRS terminates the
-process when a projection handler fails so the stream cannot stop silently while the host appears
-healthy. The process supervisor can restart it from the last committed offset after the storage problem
-or handler bug is corrected.
+Do not catch a storage exception and advance the offset. Let the handler fail. For the offset-based
+registration on this page, FCQRS terminates the process when a handler fails so the stream cannot stop
+silently while the host appears healthy. The process supervisor can restart it from the last committed
+offset after the storage problem or handler bug is corrected.
 
 A projection writing to several stores cannot use one local transaction for all updates. Make each
 destination idempotent and record enough progress to retry safely.

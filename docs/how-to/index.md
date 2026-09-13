@@ -17,6 +17,7 @@ Choose the task you need. For a first working application, start with [registrat
 | Expose registration and queries over HTTP | [Register over HTTP](../tutorial/http-api.html) |
 | Project events into query data | [Add a projection](add-a-projection.html) |
 | Wait before querying your own change | [Read your writes](read-your-writes.html) |
+| Wait until a projection has processed a journal snapshot | [Catch up projections](catch-up-projections.html) |
 | Coordinate several aggregate owners | [Write a saga](write-a-saga.html) |
 | Test decisions, replay, and retries | [Test your domain](test-your-domain.html) |
 | Change stored event contracts safely | [Evolve persisted events](evolve-events.html) |

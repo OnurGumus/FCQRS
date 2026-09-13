@@ -393,6 +393,7 @@ window.Clipboard_CopyTo = Clipboard_CopyTo;
         "how-to/evolve-events.html": ["Keep existing journal entries readable", "Choose an event-change strategy", "Prove compatibility before deployment"],
         "how-to/add-a-projection.html": ["Apply events and advance the offset atomically", "Resume from the last committed position", "Expose projection failures instead of hiding them"],
         "how-to/read-your-writes.html": ["Subscribe before sending a command", "Wait for the projection that serves the next query", "Avoid treating notification delivery as durable messaging"],
+        "how-to/catch-up-projections.html": ["Capture a fixed journal snapshot after a command reply", "Commit read-model changes and projection progress together", "Distinguish completion from ordering across aggregates"],
         "how-to/rebuild-a-read-model.html": ["Prepare the journal and schema for replay", "Choose an in-place or side-by-side rebuild", "Detect and recover from replay failure"],
         "how-to/write-a-saga.html": ["Define saga state, reactions, and command targets", "Register a durable cross-aggregate workflow", "Make recovery commands retry-safe"],
         "how-to/dispatch-async-effects.html": ["Dispatch best-effort work outside event replay", "Register and test the effect runner", "Choose this only when work may safely be lost"],

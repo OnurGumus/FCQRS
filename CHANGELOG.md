@@ -1,5 +1,33 @@
 # Changelog
 
+## 6.4.0 (FCQRS core)
+
+FCQRS core adds transactional projections for SQLite and PostgreSQL. The satellite packages remain
+at 6.0.0. Existing projection registrations, persisted event shapes, snapshots, and entity names
+are unchanged.
+
+- **Wait for a projection across the entire journal.** `IProjection.CatchUpAsync` captures the highest
+  committed sequence number for each persistence identity in one database snapshot, then waits for
+  this projection to commit every event through those targets. Call it after the aggregate's
+  persistence acknowledgment to include that command's event. Later writes do not extend the target;
+  ordering is preserved within each identity, with no ordering guarantee between identities.
+- **Commit read-model changes and checkpoints together.** Register with
+  `Fcqrs.transactionalProjection` in F# or `AddTransactionalProjection` in C#. The handler receives
+  the connection and transaction used to store its progress. Durable checkpoints support restart
+  and competing instances; missing journal history fails instead of being skipped. The new runner
+  requires retained history and does not support Akka event adapters.
+- **Configure discovery and bounded waits.** Background journal-head polling defaults to one second.
+  Each catch-up call captures its target immediately and has a configurable timeout and cancellation
+  support. A timeout ends that caller's wait without undoing committed work. Processing errors fault
+  `IProjection.Completion` and require the application to correct the cause and restart the runner.
+- **Configure PostgreSQL from C#.** `AddFcqrs` and `ActorApi.Create` now have overloads accepting the
+  database type. The existing overloads continue to select SQLite.
+
+Fourteen catch-up tests cover SQLite and PostgreSQL, including transaction rollback, recovery,
+concurrent instances, commit order, ambient transactions, cancellation, and shutdown. CI runs the
+PostgreSQL integration cases. See [Catch up projections](docs/how-to/catch-up-projections.md) for
+equivalent F# and C# examples and the guarantee's boundaries.
+
 ## 6.3.1 (FCQRS core)
 
 FCQRS core only; the satellite packages remain at 6.0.0. Public signatures, persisted event shapes,

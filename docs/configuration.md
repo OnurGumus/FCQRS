@@ -83,6 +83,12 @@ that suppresses the matching notification raises `TimeoutException` instead of h
 The notification buffer is not a durable queue. Notifications without an active subscriber may be
 dropped, which is correct for the request-scoped read-your-writes mechanism.
 
+Transactional projections use `TransactionalProjectionOptions` for background discovery
+(`PollInterval`, default 1s), per-identity batch size (`BatchSize`, default 500), and the complete
+catch-up deadline (`CatchUpTimeout`, default 30s). These are registration options rather than HOCON
+keys. See [Catch up projections](how-to/catch-up-projections.html) for their transaction and snapshot
+boundaries.
+
 The saga-start handshake is synchronous, so each concurrent start holds the thread its aggregate runs
 on until the starter acknowledges. The saga starter therefore raises the CLR thread pool's minimum
 worker count to cover the handshakes it has outstanding, up to `max-worker-threads`. A minimum is a

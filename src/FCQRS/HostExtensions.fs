@@ -334,6 +334,41 @@ type FcqrsBuilder internal (services: IServiceCollection, connectionString: stri
         this.SetProjectionStep(fun sp actor -> QueryApi.Init(actor, lastOffset.Invoke sp, handler.Invoke sp))
         this
 
+    /// Register a transactional projection with journal-wide CatchUpAsync support.
+    /// The handler must write through the supplied connection and transaction and
+    /// await all database work. FCQRS commits updates with durable contiguous progress.
+    /// Resolve FCQRS.Projections.IProjection from DI to wait after an aggregate reply.
+    /// Ordering is per persistence ID, and unprocessed journal history must be retained.
+    member this.AddTransactionalProjection(
+            options: FCQRS.Projections.TransactionalProjectionOptions,
+            handler: Func<System.Data.Common.DbConnection, System.Data.Common.DbTransaction, Akka.Persistence.Query.EventEnvelope, Task>) : FcqrsBuilder =
+        if isNull (box handler) then nullArg (nameof handler)
+        this.RegisterSubscriptionResolver()
+        this.SetProjectionStep(fun _sp actor ->
+            FCQRS.Projections.start actor options (fun connection transaction envelope -> handler.Invoke(connection, transaction, envelope))
+            :> FCQRS.Query.ISubscribe)
+        services.AddSingleton<FCQRS.Projections.IProjection>(fun (sp: IServiceProvider) ->
+            let runtime = sp.GetRequiredService<FcqrsRuntime>()
+            let current () =
+                match runtime.Subscription with
+                | :? FCQRS.Projections.IProjection as projection -> projection
+                | _ -> invalidOp "Transactional projection is not initialized yet (the host has not started)."
+            let subs = sp.GetRequiredService<FCQRS.Query.ISubscribe>()
+            { new FCQRS.Projections.IProjection with
+                member _.CatchUpAsync() = (current ()).CatchUpAsync()
+                member _.CatchUpAsync(ct) = (current ()).CatchUpAsync(ct)
+                member _.Completion = (current ()).Completion
+                member _.Dispose() =
+                    match runtime.Subscription with
+                    | :? FCQRS.Projections.IProjection as projection -> projection.Dispose()
+                    | _ -> ()
+                member _.Subscribe(callback, ?cancellationToken) = subs.Subscribe(callback, ?cancellationToken = cancellationToken)
+                member _.Subscribe(filter: IMessageWithCID -> bool, take, ?callback, ?cancellationToken) = subs.Subscribe(filter, take, ?callback = callback, ?cancellationToken = cancellationToken)
+                member _.Subscribe(cid: CID, take, ?callback, ?cancellationToken) = subs.Subscribe(cid, take, ?callback = callback, ?cancellationToken = cancellationToken)
+                member _.Subscribe(cid: CID, filter: IMessageWithCID -> bool, take, ?callback, ?cancellationToken) = subs.Subscribe(cid, filter, take, ?callback = callback, ?cancellationToken = cancellationToken) })
+        |> ignore
+        this
+
 /// The single startup step: creates the actor system (via the IActor singleton),
 /// runs the recorded registration steps in order, wires the saga-starter from all
 /// registered sagas, and starts the projection. Stops the actor system on shutdown.
@@ -372,6 +407,9 @@ type internal FcqrsHostedService(sp: IServiceProvider, builder: FcqrsBuilder, ru
             Task.CompletedTask
 
         member _.StopAsync(_ct: CancellationToken) : Task =
+            match runtime.Subscription with
+            | :? FCQRS.Projections.IProjection as projection -> projection.Dispose()
+            | _ -> ()
             runtime.Actor.Stop()
 
 /// `services.AddFcqrs(...)` and `serviceProvider.Aggregate&lt;T&gt;()`.
@@ -383,6 +421,12 @@ type FcqrsServiceCollectionExtensions =
     /// IConfiguration and ILoggerFactory are taken from the container.
     [<Extension>]
     static member AddFcqrs(services: IServiceCollection, connectionString: string, clusterName: string) : FcqrsBuilder =
+        FcqrsServiceCollectionExtensions.AddFcqrs(services, connectionString, clusterName, Actor.DBType.Sqlite)
+
+    /// Register FCQRS with the selected SQL journal provider and startup wiring.
+    /// Install the application's ADO.NET provider, such as Npgsql for PostgreSQL.
+    [<Extension>]
+    static member AddFcqrs(services: IServiceCollection, connectionString: string, clusterName: string, databaseType: Actor.DBType) : FcqrsBuilder =
         let builder = FcqrsBuilder(services, connectionString, clusterName)
 
         services.AddSingleton<IActor>(fun (sp: IServiceProvider) ->
@@ -405,7 +449,7 @@ type FcqrsServiceCollectionExtensions =
                     :> IConfiguration
                 | None -> baseConfig
 
-            ActorApi.Create(config, loggerFactory, connectionString, clusterName))
+            ActorApi.Create(config, loggerFactory, connectionString, clusterName, databaseType))
         |> ignore
 
         services.AddSingleton<FcqrsRuntime>(fun (sp: IServiceProvider) -> FcqrsRuntime(sp.GetRequiredService<IActor>()))

@@ -2,7 +2,7 @@
 title: Evolve persisted events
 category: Apply
 categoryindex: 4
-index: 7
+index: 8
 ---
 
 # Evolve persisted events

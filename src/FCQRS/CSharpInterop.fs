@@ -242,16 +242,25 @@ type PrefixConversions =
 
 /// C#-friendly Actor API
 type ActorApi =
+    /// Create an actor system using the selected SQL journal provider.
+    /// Install that provider's ADO.NET driver in the application (for example Npgsql for PostgreSQL).
+    static member Create(
+        configuration: Microsoft.Extensions.Configuration.IConfiguration,
+        loggerFactory: Microsoft.Extensions.Logging.ILoggerFactory,
+        connectionString: string,
+        clusterName: string,
+        databaseType: Actor.DBType) : IActor =
+        let connection : Actor.Connection =
+            { ConnectionString = Values.CreateShortString connectionString; DBType = databaseType }
+        Actor.api configuration loggerFactory (Some connection) (Values.CreateShortString clusterName)
+
     /// Create the actor system with SQLite connection
     static member Create(
         configuration: Microsoft.Extensions.Configuration.IConfiguration,
         loggerFactory: Microsoft.Extensions.Logging.ILoggerFactory,
         sqliteConnectionString: string,
         clusterName: string) : IActor =
-        let connString = Values.CreateShortString sqliteConnectionString
-        let connection : Actor.Connection = { ConnectionString = connString; DBType = Actor.DBType.Sqlite }
-        let name = Values.CreateShortString clusterName
-        Actor.api configuration loggerFactory (Some connection) name
+        ActorApi.Create(configuration, loggerFactory, sqliteConnectionString, clusterName, Actor.DBType.Sqlite)
 
 /// C#-friendly Query API
 type QueryApi =

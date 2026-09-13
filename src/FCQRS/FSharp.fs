@@ -338,6 +338,18 @@ module Fcqrs =
     let projection (api: IActor) (p: Projection) : FCQRS.Query.ISubscribe =
         FCQRS.Query.init api p.LastOffset p.Handle |> FCQRS.Query.asDefaultSubscribe
 
+    /// Starts a transactional projection with journal-wide CatchUpAsync support.
+    /// Write the read model through the supplied connection and transaction; FCQRS
+    /// commits those updates and contiguous per-persistence-ID progress together.
+    /// Retain unprocessed journal history. Events have per-persistence-ID ordering,
+    /// with no ordering between different persistence IDs. See TransactionalProjectionOptions.
+    let transactionalProjection
+        (api: IActor)
+        (options: FCQRS.Projections.TransactionalProjectionOptions)
+        (handler: System.Data.Common.DbConnection -> System.Data.Common.DbTransaction -> Akka.Persistence.Query.EventEnvelope -> System.Threading.Tasks.Task)
+        : FCQRS.Projections.IProjection =
+        FCQRS.Projections.start api options handler
+
     /// Read-your-writes in one call: subscribe on the CID BEFORE sending, send,
     /// then await the projection ONLY if the delivered ack was journaled. A
     /// deferred (rejection-style) ack never reaches the journal, so a naive

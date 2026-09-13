@@ -2521,6 +2521,7 @@ let main argv =
             CommandSubscriptionTests.tests
             SagaHandshakeTests.tests
             ProjectionSubscriptionTests.tests
+            ProjectionCatchUpTests.tests
             HostingAndRegistryTests.tests
         ])
     runTestsWithCLIArgs [] argv allTests

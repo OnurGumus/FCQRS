@@ -13,6 +13,20 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: fcqrs
+          POSTGRES_PASSWORD: fcqrs-test
+          POSTGRES_DB: fcqrs_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U fcqrs -d fcqrs_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
@@ -23,6 +37,8 @@ jobs:
       - name: Build
         run: dotnet build src/FCQRS/FCQRS.fsproj -c Release
       - name: Facade tests
+        env:
+          FCQRS_TEST_POSTGRES: "Host=localhost;Port=5432;Database=fcqrs_test;Username=fcqrs;Password=fcqrs-test"
         run: dotnet run --project test/Facade.Tests -c Release
       - name: Samples build
         run: |
