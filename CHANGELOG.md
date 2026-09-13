@@ -1,5 +1,34 @@
 # Changelog
 
+## 6.5.0 (FCQRS core)
+
+FCQRS core adds conditional commands and event upcasting. The satellite packages remain at 6.0.0.
+Existing journal rows, event envelopes, snapshot formats, and entity names are unchanged.
+
+- **Reject a command when its aggregate version has changed.** `Fcqrs.sendIfVersion` in F# and
+  `ActorWiring.SendIfVersionAsync` in C# compare the expected persisted version inside the aggregate
+  before running its handler. A mismatch raises `AggregateVersionConflictException` with the
+  expected and actual versions. Deferred replies do not advance the version; persisted batches
+  advance it once per event. Stashed commands and asynchronous continuations recheck the condition.
+  This does not deduplicate commands or wait for a projection, and a timeout does not undo a write.
+  Upgrade every destination node before sending these new conditional-command wire messages.
+- **Convert readable historical events for current consumers.** Register one-to-one conversions
+  with `Fcqrs.withEventUpcaster<Old, New>` or C# `WithEventUpcaster<Old, New>`. Chains run during
+  aggregate and saga recovery and both projection read paths. They preserve envelope identities,
+  metadata, versions, and journal positions without rewriting stored data. Registration is scoped
+  to an actor system and freezes before its first consumer starts. Duplicate sources, cycles,
+  null results, and failed conversions cannot silently skip history.
+- **Keep compatibility boundaries explicit.** Old payload types must still deserialize. Live
+  messages and application-owned snapshot state are not converted. FCQRS upgrades its own saga
+  wrappers around historical originator events while retaining workflow state and data. Converter
+  failures follow the consumer's failure policy; a transactional projection rolls back the event
+  and leaves its checkpoint before that event.
+
+The full suite passes 103 tests with SQLite and PostgreSQL enabled, with 2 existing tests ignored.
+Thirteen upcasting cases cover historical fixtures, chained conversion, mixed replay, projections,
+and aggregate/saga snapshots. See [Send only at an expected version](docs/how-to/send-if-version.md)
+and [Evolve persisted events](docs/how-to/evolve-events.md) for F# and C# examples and rollout guidance.
+
 ## 6.4.0 (FCQRS core)
 
 FCQRS core adds transactional projections for SQLite and PostgreSQL. The satellite packages remain

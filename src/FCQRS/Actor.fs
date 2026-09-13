@@ -89,6 +89,23 @@ module internal Internal =
         actor {
             let! msg = mailbox.Receive()
 
+            let msg =
+                if mailbox.IsRecovering() then
+                    try
+                        let converted = EventUpcasting.Internal.upcastEvent mailbox.System msg
+                        let originalType = msg.GetType()
+                        if originalType.IsGenericType
+                           && originalType.GetGenericTypeDefinition() = typedefof<Common.Event<_>>
+                           && not (converted :? Common.Event<'TEvent>) then
+                            invalidOp $"Aggregate '{mailbox.Self.Path.Name}' recovered {converted.GetType().FullName}, but its fold requires Event<{typeof<'TEvent>.FullName}>. Register a complete event-upcast chain before starting the aggregate."
+                        converted
+                    with error ->
+                        logger.LogError(error, "Fatal error upcasting aggregate history for {Aggregate}.", mailbox.Self.Path.ToString())
+                        fatalFailFast null "Process terminated due to aggregate event-upcast error" error
+                        failwith "unreachable"
+                else
+                    msg
+
             match msg with
             | PersistentLifecycleEvent _
             | :? Persistence.SaveSnapshotSuccess
@@ -388,11 +405,25 @@ module internal Internal =
 
         let rec set (state: State<'State>) =
             let body (bodyInput: BodyInput<'Event>) =
-                let msg = bodyInput.Message
+                let condition, msg =
+                    match bodyInput.Message with
+                    | :? ConditionalCommand as conditional -> Some conditional, conditional.Command
+                    | message -> None, message
 
                 actor {
                     match msg, state with
                     | :? Persistence.RecoveryCompleted, _ -> return! state |> set
+                    | :? (Common.Command<'Command>) as cmd, _
+                        when condition |> Option.exists (fun c -> c.ExpectedVersion <> (state.Version |> ValueLens.Value)) ->
+                        let conditional = condition.Value
+                        conditional.ReplyTo.Tell(
+                            { ExpectedVersion = conditional.ExpectedVersion
+                              ActualVersion = state.Version |> ValueLens.Value
+                              CommandId = cmd.Id
+                              CorrelationId = cmd.CorrelationId
+                              AggregateId = mailbox.Self.Path.Name |> SagaStarter.Internal.entityIdOf },
+                            untyped mailbox.Self)
+                        return! set state
                     | :? (Common.Command<'Command>) as cmd, _ ->
                         // Span only when someone is listening: the payload
                         // formatting and context parsing are not free.
@@ -527,19 +558,24 @@ module internal Internal =
                                     run description,
                                     (fun (boxedCommand: obj) ->
                                         disposeActivity ()
-                                        // Reuse the originating envelope (CID, metadata) with a
-                                        // fresh id and the runner's command payload, then
-                                        // self-dispatch: re-enters decide, re-validated.
+                                        // Conditional continuations retain their request ID and
+                                        // recheck the original version after the async work.
                                         let selfCmd =
                                             { cmd with
                                                 CommandDetails = unbox boxedCommand
                                                 Id =
-                                                    Guid.CreateVersion7().ToString()
-                                                    |> ValueLens.CreateAsResult
-                                                    |> Result.value
+                                                    match condition with
+                                                    | Some _ -> cmd.Id
+                                                    | None ->
+                                                        Guid.CreateVersion7().ToString()
+                                                        |> ValueLens.CreateAsResult
+                                                        |> Result.value
                                                 Sender = None }
 
-                                        mailbox.Self <! box selfCmd),
+                                        match condition with
+                                        | Some conditional ->
+                                            mailbox.Self <! box { conditional with Command = box selfCmd |> Unchecked.nonNull }
+                                        | None -> mailbox.Self <! box selfCmd),
                                     (fun (ex: exn) ->
                                         match dispatchActivity with
                                         | null -> ()
@@ -575,7 +611,7 @@ module internal Internal =
 
 
 
-    let createCommandSubscription (actorApi: IActor) factory (cid: CID) (id: AggregateId) command filter (metadata: Map<string, string> option) =
+    let private createCommandSubscriptionCore (actorApi: IActor) factory (cid: CID) (id: AggregateId) command filter (metadata: Map<string, string> option) expectedVersion =
         let actor = factory (id |> ValueLens.Value |> ValueLens.Value)
 
         // Stamp the ambient trace context (if any) so spans downstream — the
@@ -605,10 +641,24 @@ module internal Internal =
                 EntityRef = actor
                 Filter = filter }
 
-        let ex = Execute e
-        ex |> actorApi.SubscribeForCommand
+        match expectedVersion with
+        | Some version ->
+            Common.CommandHandler.Internal.subscribeForConditionalCommand
+                version actorApi.System (typed actorApi.Mediator) (Execute e)
+        | None -> Execute e |> actorApi.SubscribeForCommand
+
+    let createCommandSubscription actorApi factory cid id command filter metadata =
+        createCommandSubscriptionCore actorApi factory cid id command filter metadata None
+
+    let createConditionalCommandSubscription actorApi factory expectedVersion cid id command filter =
+        async {
+            if expectedVersion < 0L then
+                invalidArg (nameof expectedVersion) "An expected aggregate version must be nonnegative."
+            return! createCommandSubscriptionCore actorApi factory cid id command filter None (Some expectedVersion)
+        }
 
     let init config loggerFactory initialState name toEvent (actorApi: IActor) handleCommand apply snapshotPolicy passivationPolicy effectRunner =
+        EventUpcasting.Internal.freeze actorApi.System
         AkklingHelpers.Internal.entityFactoryFor actorApi.System shardResolver name
         <| propsPersist (
             actorProp

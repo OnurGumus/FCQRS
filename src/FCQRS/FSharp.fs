@@ -270,6 +270,24 @@ module Fcqrs =
         { Factory = factory
           Send = fun cid id command filter -> api.CreateCommandSubscription factory cid id command filter None }
 
+    /// Send only if the aggregate's persisted version equals expectedVersion (initially zero).
+    /// A mismatch raises AggregateVersionConflictException before the domain handler or filter runs.
+    /// The check and handler run in the same actor turn. Deferred replies do not advance the
+    /// version; a persisted batch advances it once per event. Stashed commands and RunAsync
+    /// result commands recheck the original expected version. This is not command deduplication
+    /// or a projection wait. Cancellation or timeout after dispatch does not undo a write.
+    /// A caller-built PublishEvent reply must retain the incoming command's Id and CorrelationId.
+    let sendIfVersion
+        (api: IActor)
+        (handle: AggregateHandle<'Command, 'Event>)
+        (expectedVersion: int64)
+        (cid: CID)
+        (id: AggregateId)
+        (command: 'Command)
+        (filter: 'Event -> bool)
+        : Async<Event<'Event>> =
+        FCQRS.Actor.Internal.createConditionalCommandSubscription api handle.Factory expectedVersion cid id command filter
+
     /// Register an aggregate whose `decide` uses `dispatch` (the RunAsync
     /// effect), supplying the runner that turns an effect DESCRIPTION into a
     /// command sent back to the aggregate. `decide` stays pure; the oracle or
@@ -333,6 +351,19 @@ module Fcqrs =
     let journalTypes (mappings: (System.Type * string) list) : unit =
         for t, name in mappings do
             JournalTypes.Map(t, name)
+
+    /// Register a deterministic, one-to-one historical event conversion for this actor system.
+    /// Call after creating the actor API and before registering any aggregate, saga, or projection.
+    /// Chains follow the envelope's declared payload type; duplicate sources and cycles are rejected.
+    /// FCQRS converts journal events during recovery and projection reads, preserving every envelope
+    /// field except EventDetails. Stored events, live messages, and application-owned snapshot state
+    /// remain unchanged. Historical payloads must still deserialize before conversion can run.
+    /// Converters may run concurrently across consumers and must be thread-safe.
+    let withEventUpcaster<'Old, 'New when 'Old: not null and 'New: not null>
+        (api: IActor) (convert: 'Old -> 'New) : IActor =
+        if isNull (box convert) then nullArg (nameof convert)
+        FCQRS.EventUpcasting.Internal.register api.System (System.Func<'Old, 'New>(convert))
+        api
 
     /// Register the read-model projection and return the subscription stream.
     let projection (api: IActor) (p: Projection) : FCQRS.Query.ISubscribe =

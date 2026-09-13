@@ -94,6 +94,9 @@ the C# host performs that step during startup.
 `Fcqrs.aggregate` returns `accounts` in F#. In C#, `AddAggregate<Account>()` registers the
 `Handler<RegisterUser, UserRegistered>` that `Program` obtains from the host.
 
+For mutable data, [send an edit at the version the caller observed](../how-to/send-if-version.html)
+to reject stale commands before they reach the domain decision function.
+
 For a durable query database, [save the data and its offset together](../how-to/add-a-projection.html).
 To check the registration rule without starting FCQRS, [test your domain](../how-to/test-your-domain.html).
 To call it from an HTTP client, try the optional [registration API](http-api.html).

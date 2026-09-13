@@ -4,8 +4,11 @@ open Akkling
 open Akka.Actor
 open Akka.Serialization
 open System
+open System.IO
+open System.Text
 open System.Text.Json
 open FCQRS.Common
+open FCQRS.Model.Data
 open FCQRS.Serialization
 
 /// Journal manifests.
@@ -167,3 +170,139 @@ type STJSerializer(system: ExtendedActorSystem) =
             eprintfn "%s" msg
             fatalFailFast null "Process terminated due to deserialization error" ex
             failwith "unreachable" // FailFast never returns; satisfies the compiler
+
+/// Serializes the transient expected-version protocol separately from persisted messages.
+/// A node without this serializer rejects the transport message instead of passing an
+/// unknown wrapper type to the journal serializer. Install readers on every node before
+/// sending conditional commands during a rolling deployment.
+type ConditionalCommandSerializer(system: ExtendedActorSystem) =
+    inherit SerializerWithStringManifest(system)
+
+    let commandManifest = "fcqrs:conditional-command:1"
+    let conflictManifest = "fcqrs:conditional-conflict:1"
+    let utf8 = UTF8Encoding(false, true)
+
+    let invalidData message = raise (InvalidDataException message)
+
+    let validateVersion (version: int64) =
+        if version < 0L then invalidData "A conditional command version must be nonnegative."
+
+    let validateCommand (command: obj) =
+        if isNull (box command) then invalidData "A conditional command must contain a command envelope."
+        let commandType = command.GetType()
+        if not commandType.IsGenericType || commandType.GetGenericTypeDefinition() <> typedefof<Command<_>> then
+            invalidData "A conditional command must contain a Command envelope."
+
+    let writeBytes (writer: BinaryWriter) (bytes: byte array) =
+        writer.Write(bytes.Length)
+        writer.Write(bytes)
+
+    let writeText (writer: BinaryWriter) (value: string) =
+        if isNull (box value) then invalidData "A conditional command field cannot be null."
+        writeBytes writer (utf8.GetBytes value)
+
+    let readBytes (reader: BinaryReader) =
+        let length = reader.ReadInt32()
+        if length < 0 || int64 length > reader.BaseStream.Length - reader.BaseStream.Position then
+            invalidData "A conditional command contains an invalid field length."
+        reader.ReadBytes length
+
+    let readText (reader: BinaryReader) = utf8.GetString(readBytes reader)
+
+    let requireEnd (reader: BinaryReader) =
+        if reader.BaseStream.Position <> reader.BaseStream.Length then
+            invalidData "A conditional command contains trailing bytes."
+
+    let messageId (value: string) : MessageId =
+        match ValueLens.CreateAsResult value with
+        | Ok value -> value
+        | Error _ -> invalidData "A conditional conflict contains an invalid command ID."
+
+    let correlationId (value: string) : CID =
+        match ValueLens.CreateAsResult value with
+        | Ok value -> value
+        | Error _ -> invalidData "A conditional conflict contains an invalid correlation ID."
+
+    override _.Identifier = 1714
+
+    override _.Manifest(value: obj) =
+        match value with
+        | :? ConditionalCommand -> commandManifest
+        | :? ConditionalCommandConflict -> conflictManifest
+        | _ -> invalidArg (nameof value) "The conditional command serializer only accepts its protocol messages."
+
+    override _.ToBinary(value: obj) =
+        use stream = new MemoryStream()
+        use writer = new BinaryWriter(stream, utf8, true)
+        match value with
+        | :? ConditionalCommand as command ->
+            validateVersion command.ExpectedVersion
+            validateCommand command.Command
+            if isNull (box command.ReplyTo) then invalidData "A conditional command requires a reply actor."
+            let serializer = system.Serialization.FindSerializerFor command.Command
+            writer.Write(command.ExpectedVersion)
+            writer.Write(serializer.Identifier)
+            writeText writer (Akka.Serialization.Serialization.ManifestFor(serializer, command.Command))
+            writeBytes writer (serializer.ToBinary command.Command)
+            writeText writer (Akka.Serialization.Serialization.SerializedActorPath command.ReplyTo)
+        | :? ConditionalCommandConflict as conflict ->
+            validateVersion conflict.ExpectedVersion
+            validateVersion conflict.ActualVersion
+            if isNull (box conflict.CommandId) || not conflict.CommandId.IsValid then
+                invalidData "A conditional conflict requires a valid command ID."
+            if isNull (box conflict.CorrelationId) || not conflict.CorrelationId.IsValid then
+                invalidData "A conditional conflict requires a valid correlation ID."
+            if String.IsNullOrWhiteSpace conflict.AggregateId then
+                invalidData "A conditional conflict requires an aggregate ID."
+            writer.Write(conflict.ExpectedVersion)
+            writer.Write(conflict.ActualVersion)
+            writeText writer (conflict.CommandId.ToString())
+            writeText writer (conflict.CorrelationId.ToString())
+            writeText writer conflict.AggregateId
+        | _ -> invalidArg (nameof value) "The conditional command serializer only accepts its protocol messages."
+        writer.Flush()
+        stream.ToArray()
+
+    override _.FromBinary(bytes: byte array, manifest: string) : obj =
+        if isNull (box bytes) then nullArg (nameof bytes)
+        use stream = new MemoryStream(bytes, false)
+        use reader = new BinaryReader(stream, utf8, true)
+        match manifest with
+        | value when value = commandManifest ->
+            let expectedVersion = reader.ReadInt64()
+            validateVersion expectedVersion
+            let serializerId = reader.ReadInt32()
+            if serializerId = 1714 then invalidData "Conditional command wrappers cannot be nested."
+            let nestedManifest = readText reader
+            let nestedBytes = readBytes reader
+            let replyPath = readText reader
+            if String.IsNullOrWhiteSpace replyPath then invalidData "A conditional command requires a reply actor path."
+            requireEnd reader
+            let command =
+                match system.Serialization.Deserialize(nestedBytes, serializerId, nestedManifest) with
+                | null -> invalidData "A conditional command must contain a command envelope."
+                | command -> command
+            validateCommand command
+            box
+                { ConditionalCommand.ExpectedVersion = expectedVersion
+                  Command = command
+                  ReplyTo = system.Provider.ResolveActorRef replyPath }
+            |> Unchecked.nonNull
+        | value when value = conflictManifest ->
+            let expectedVersion = reader.ReadInt64()
+            let actualVersion = reader.ReadInt64()
+            validateVersion expectedVersion
+            validateVersion actualVersion
+            let commandId = readText reader |> messageId
+            let cid = readText reader |> correlationId
+            let aggregateId = readText reader
+            if String.IsNullOrWhiteSpace aggregateId then invalidData "A conditional conflict requires an aggregate ID."
+            requireEnd reader
+            box
+                { ConditionalCommandConflict.ExpectedVersion = expectedVersion
+                  ActualVersion = actualVersion
+                  CommandId = commandId
+                  CorrelationId = cid
+                  AggregateId = aggregateId }
+            |> Unchecked.nonNull
+        | _ -> invalidData "Unsupported conditional command protocol manifest."

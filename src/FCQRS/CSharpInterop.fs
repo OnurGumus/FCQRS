@@ -309,6 +309,19 @@ type QueryApi =
 /// composition, prefer the host-builder API (AddFcqrs/AddAggregate/AddSaga).
 [<Extension>]
 type ActorWiring =
+    /// Register a deterministic, one-to-one historical event conversion for this actor system.
+    /// Register every conversion before initializing any aggregate, saga, or projection. Chains
+    /// follow the envelope's declared payload type; duplicate sources and cycles are rejected.
+    /// Applies during FCQRS journal recovery and projection reads. Envelope metadata and stored
+    /// bytes are preserved; live messages and application-owned snapshot state are not converted.
+    /// Keep historical payload types readable. A converter must not return null.
+    /// Converters may run concurrently across consumers and must be thread-safe.
+    [<Extension>]
+    static member WithEventUpcaster<'Old, 'New when 'Old: not null and 'New: not null>(
+        actor: IActor, convert: Func<'Old, 'New>) : IActor =
+        FCQRS.EventUpcasting.Internal.register actor.System convert
+        actor
+
     /// Initialize saga starter with no sagas (for simple scenarios)
     [<Extension>]
     static member InitializeSagaStarterEmpty(actor: IActor) : unit =
@@ -520,6 +533,40 @@ type ActorWiring =
         let filterF = fun e -> filter.Invoke(e)
         actor.CreateCommandSubscription factory cid aggregateId command filterF None
         |> Async.StartAsTask
+
+    /// Send only when the aggregate's persisted version equals expectedVersion (initially zero).
+    /// A mismatch faults with AggregateVersionConflictException before the handler or filter runs.
+    /// The check and handler run in one actor turn. Deferred replies do not advance the version;
+    /// persisted batches advance it per event. Stash and RunAsync continuations recheck the version.
+    /// This does not deduplicate commands or wait for a projection. A timeout does not undo a write.
+    /// A caller-built PublishEvent reply must retain the incoming command's Id and CorrelationId.
+    [<Extension>]
+    static member SendIfVersionAsync<'TEvent, 'TCommand when 'TEvent: not null>(
+        actor: IActor,
+        entityFactory: AggregateFactory,
+        expectedVersion: int64,
+        cid: CID,
+        aggregateId: AggregateId,
+        command: 'TCommand,
+        filter: Func<'TEvent, bool>) : Task<Event<'TEvent>> =
+        ActorWiring.SendIfVersionAsync(actor, entityFactory, expectedVersion, cid, aggregateId, command, filter,
+            System.Threading.CancellationToken.None)
+
+    /// Send a conditional command with cancellation of the caller's wait. An already-canceled
+    /// token prevents starting the request. Once started, cancellation does not undo processing.
+    /// A mismatch faults with AggregateVersionConflictException independently of the event filter.
+    [<Extension>]
+    static member SendIfVersionAsync<'TEvent, 'TCommand when 'TEvent: not null>(
+        actor: IActor,
+        entityFactory: AggregateFactory,
+        expectedVersion: int64,
+        cid: CID,
+        aggregateId: AggregateId,
+        command: 'TCommand,
+        filter: Func<'TEvent, bool>,
+        cancellationToken: System.Threading.CancellationToken) : Task<Event<'TEvent>> =
+        FCQRS.Actor.Internal.createConditionalCommandSubscription actor entityFactory.Invoke expectedVersion cid aggregateId command filter.Invoke
+        |> fun work -> Async.StartAsTask(work, cancellationToken = cancellationToken)
 
     /// C#-friendly CreateCommandSubscription that returns FSharpAsync (for use with Handler delegate)
     static member CreateCommand<'TEvent, 'TCommand when 'TEvent: not null>(

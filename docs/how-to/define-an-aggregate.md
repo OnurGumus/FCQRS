@@ -82,6 +82,10 @@ them through the `Aggregate<,,>` base class.
 - **`.Factory`:** an entity-ref factory passed to a [saga](write-a-saga.html) so it can target this
   aggregate.
 
+For an edit based on a previously observed version, use `Fcqrs.sendIfVersion` in F# or
+`SendIfVersionAsync` in C#. [Send at an expected version](send-if-version.html) shows how to reject a
+stale command before the decision function runs and handle the version conflict.
+
 `Snapshots` and `Passivation` are the two operational fields. Both default to configuration, and
 `Default` in each is the right answer until a measurement says otherwise: `Snapshots` sets how much
 of the journal a recovery replays, `Passivation` how often a recovery happens at all. In C# they are
@@ -121,6 +125,10 @@ command envelope, including `CreationDate`, but should not perform I/O. Use a
 The aggregate `Name` / `EntityName` identifies its sharding and persistence type. Keep it stable after events have
 been written. Each entity id identifies one aggregate instance, so route every command for the same
 business entity with the same id.
+
+When a stored event payload changes shape, register `Fcqrs.withEventUpcaster` before the aggregate in
+F# or `WithEventUpcaster` on the C# host builder. [Evolve persisted events](evolve-events.html) shows a
+conversion chain and explains why journal recovery, live messages, and snapshots need separate checks.
 
 See [Aggregates and the write side](../concepts/aggregates.html) for the reasoning, and
 [Test your domain](test-your-domain.html) to test these two functions directly.

@@ -14,6 +14,7 @@ Choose the task you need. For a first working application, start with [registrat
 | Task | Guide |
 |---|---|
 | Model commands, events, decisions, and folds | [Define an aggregate](define-an-aggregate.html) |
+| Reject a command based on an older aggregate version | [Send at an expected version](send-if-version.html) |
 | Expose registration and queries over HTTP | [Register over HTTP](../tutorial/http-api.html) |
 | Project events into query data | [Add a projection](add-a-projection.html) |
 | Wait before querying your own change | [Read your writes](read-your-writes.html) |

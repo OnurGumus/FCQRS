@@ -81,6 +81,10 @@ be deterministic and free of side effects. Recovery may happen after a crash, af
 when sharding activates the identity on another node. Snapshots change how much history is replayed,
 not the state that recovery must produce.
 
+An [event upcaster](../how-to/evolve-events.html) can adapt historical journal payloads before replay.
+It does not recompute state already loaded from a snapshot. A change to how old events affect state
+therefore needs compatible snapshot state or a tested plan to recover the complete history.
+
 A projection recovers differently. It loads its committed offset and resumes the event stream after
 that point. Its read-model data and offset must share a transaction or another explicit reliability
 mechanism.

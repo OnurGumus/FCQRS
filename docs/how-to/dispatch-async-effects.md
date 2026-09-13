@@ -2,7 +2,7 @@
 title: Dispatch a best-effort async effect
 category: Apply
 categoryindex: 4
-index: 10
+index: 11
 ---
 
 # Dispatch a best-effort async effect
@@ -115,6 +115,11 @@ state that existed when the request began.
 
 Several effects can complete out of order. Include a request id or expected state in the description and
 result command when an older result must not overwrite newer work.
+
+With [Send at an expected version](send-if-version.html), FCQRS checks the expected version before
+starting the effect and again when its result command returns. A result that finds a different
+version conflicts before its decision function runs. The check does not undo external work that the
+runner has already performed.
 
 `Fcqrs.total (fun _exception -> GiveUp) (async { ... })` provides the same exception-to-command mapping.
 

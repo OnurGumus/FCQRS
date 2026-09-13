@@ -72,6 +72,7 @@ let start
     validateDuration "PollInterval" options.PollInterval
     validateDuration "CatchUpTimeout" options.CatchUpTimeout
     if options.BatchSize < 1 then invalidArg "BatchSize" "BatchSize must be positive."
+    FCQRS.EventUpcasting.Internal.freeze actor.System
 
     let name, store = options.Name, options.Store
     let interval, batchSize, timeout = options.PollInterval, int64 options.BatchSize, options.CatchUpTimeout
@@ -150,6 +151,10 @@ let start
         if envelope.SequenceNr > position then
             if position = Int64.MaxValue || envelope.SequenceNr <> position + 1L then
                 invalidOp $"Projection '{name}' found a journal gap for '{envelope.PersistenceId}' after sequence {position}. Retain or restore its journal history."
+            let event = FCQRS.EventUpcasting.Internal.upcastEvent actor.System envelope.Event
+            let envelope =
+                if obj.ReferenceEquals(event, envelope.Event) then envelope
+                else EventEnvelope(envelope.Offset, envelope.PersistenceId, envelope.SequenceNr, event, envelope.Timestamp, envelope.Tags)
             do! handler connection transaction envelope
             do! store.WritePositionAsync(connection, transaction, name, envelope.PersistenceId, position, envelope.SequenceNr, lifetime.Token)
             do! transaction.CommitAsync(lifetime.Token)

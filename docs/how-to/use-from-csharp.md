@@ -2,7 +2,7 @@
 title: Use FCQRS from C#
 category: Apply
 categoryindex: 4
-index: 13
+index: 14
 ---
 
 # Use FCQRS from C#
@@ -117,6 +117,12 @@ public sealed class DocumentAggregate
 `EntityName` is part of persistent identity. Treat it as stable after deployment. See
 [Evolve persisted events](evolve-events.html) before renaming domain types or cases.
 
+For a readable old payload that needs a new representation, register
+`WithEventUpcaster<OldEvent, CurrentEvent>(convert)` on the host builder before startup. Conversions
+apply to journal reads and can form a chain. They do not convert live published messages or migrate
+application snapshot state. The [event-evolution guide](evolve-events.html) shows the complete C#
+registration and rollout requirements.
+
 `Aggregate<>` carries two optional operational overrides. `SnapshotPolicy` sets the snapshot cadence,
 and `PassivationPolicy` sets the idle timeout after which the entity is stopped and its next command
 replays:
@@ -198,6 +204,12 @@ public sealed class DocumentService(
 After `projected.Task` completes, query the read model maintained by this subscription. Use a bounded
 cancellation policy because projection subscriptions are in-memory request coordination, not a durable
 queue. The complete ordering and notification rules are in [Read your writes](read-your-writes.html).
+
+When editing data read earlier, pass its aggregate version to `runtime.Actor.SendIfVersionAsync`.
+Inject `FcqrsRuntime` and the aggregate's `AggregateRefs<DocumentCommand, DocumentEvent>` to obtain
+the actor API and factory. [Send at an expected version](send-if-version.html) gives the complete
+service example and handles `AggregateVersionConflictException` when another command has changed
+the aggregate.
 
 ## 5. Test without starting the host
 

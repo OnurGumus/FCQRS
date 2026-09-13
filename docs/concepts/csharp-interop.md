@@ -140,6 +140,12 @@ Do not casually rename persisted event cases, change their meaning, remove requi
 the serializer with a representation that cannot distinguish cases. New application code must still
 read every retained journal event needed for recovery and rebuilds.
 
+`WithEventUpcaster<OldPayload, NewPayload>` adapts an already-readable payload on FCQRS journal reads.
+Its source type must match the envelope's declared payload type, including a base record or union
+when the event is stored through that type. The converter can feed another converter in a chain.
+[Evolve persisted events](../how-to/evolve-events.html) covers registration, live-message limits, and
+snapshot compatibility.
+
 ## Keep mixed-language boundaries boring
 
 A practical mixed solution can use:

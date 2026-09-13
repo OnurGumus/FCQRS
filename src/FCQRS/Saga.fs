@@ -140,6 +140,114 @@ type internal SagaSnapshot<'SagaData, 'State, 'TEvent when 'TEvent : not null> =
       StartingEvent: SagaStartingEvent<Event<'TEvent>> option }
     interface ISerializable
 
+/// Changes only FCQRS's event-bearing saga wrappers. Domain state and data are
+/// retained as the original objects; this is not a general snapshot migration.
+module internal ReadUpcasting =
+    let private flags = Reflection.BindingFlags.Public ||| Reflection.BindingFlags.NonPublic
+
+    let rec private constructed definition (actual: Type) =
+        if actual.IsGenericType && actual.GetGenericTypeDefinition() = definition then Some actual
+        else
+            match actual.BaseType with
+            | null -> None
+            | parent -> constructed definition parent
+
+    let isShape definition (value: obj) = constructed definition (value.GetType()) |> Option.isSome
+
+    let private field name (value: obj) =
+        match value.GetType().GetProperty(name, flags ||| Reflection.BindingFlags.Instance) with
+        | null -> invalidOp $"The historical saga wrapper has no '{name}' field."
+        | property -> property.GetValue(value) |> Unchecked.nonNull
+
+    let private record typ (fields: (obj | null) array) = FSharpValue.MakeRecord(typ, fields, flags) |> Unchecked.nonNull
+
+    let private union typ tag (fields: (obj | null) array) =
+        let case = FSharpType.GetUnionCases(typ, flags) |> Array.find (fun case -> case.Tag = tag)
+        FSharpValue.MakeUnion(case, fields, flags) |> Unchecked.nonNull
+
+    let private startingEvent system (value: obj) =
+        if not (isShape typedefof<SagaStartingEvent<_>> value) then
+            invalidOp "A historical saga starting event has an unsupported shape."
+        let event = field "Event" value |> EventUpcasting.Internal.upcastEvent system
+        if not (isShape typedefof<Event<_>> event) then
+            invalidOp "A historical saga starting event must contain an aggregate event."
+        record (typedefof<SagaStartingEvent<_>>.MakeGenericType [| event.GetType() |]) [| event |]
+
+    let private stateType system (typ: Type) =
+        match constructed typedefof<SagaBuilder.SagaStateWrapper<_, _>> typ with
+        | Some wrapped ->
+            let arguments = wrapped.GetGenericArguments()
+            typedefof<SagaBuilder.SagaStateWrapper<_, _>>.MakeGenericType
+                [| arguments.[0]; EventUpcasting.Internal.targetType system arguments.[1] |]
+        | None -> typ
+
+    let private state system declaredType (value: obj) =
+        match constructed typedefof<SagaBuilder.SagaStateWrapper<_, _>> declaredType with
+        | Some wrapped ->
+            let case, fields = FSharpValue.GetUnionFields(value, wrapped, flags)
+            let fields: (obj | null) array =
+                match case.Name with
+                | "Started" -> [| startingEvent system (fields.[0] |> Unchecked.nonNull) |]
+                | "NotStarted"
+                | "UserDefined" -> fields
+                | other -> invalidOp $"Unsupported historical saga state wrapper case '{other}'."
+            union (stateType system wrapped) case.Tag fields
+        | None -> value
+
+    let private parent system (value: obj) =
+        let typ =
+            match constructed typedefof<SagaStateWithVersion<_, _>> (value.GetType()) with
+            | Some typ -> typ
+            | None -> invalidOp "A historical saga snapshot has an unsupported parent shape."
+        let arguments = typ.GetGenericArguments()
+        let nextStateType = stateType system arguments.[1]
+        let original = field "SagaState" value
+        let sagaState =
+            record (typedefof<SagaState<_, _>>.MakeGenericType [| arguments.[0]; nextStateType |])
+                [| field "Data" original; state system arguments.[1] (field "State" original) |]
+        record (typedefof<SagaStateWithVersion<_, _>>.MakeGenericType [| arguments.[0]; nextStateType |])
+            [| sagaState; field "Version" value; field "StateEnteredAt" value |]
+
+    let upcastStored system (value: obj) =
+        let typ = value.GetType()
+        match constructed typedefof<SagaStartingEventWrapper<_>> typ with
+        | Some wrapper ->
+            let case, fields = FSharpValue.GetUnionFields(value, wrapper, flags)
+            let event = startingEvent system (fields.[0] |> Unchecked.nonNull)
+            let payloadType = (field "Event" event).GetType().GetGenericArguments().[0]
+            union (typedefof<SagaStartingEventWrapper<_>>.MakeGenericType [| payloadType |]) case.Tag [| event |]
+        | None ->
+            match constructed typedefof<SagaEvent<_>> typ with
+            | Some eventType ->
+                let declaredState = eventType.GetGenericArguments().[0]
+                let case, fields = FSharpValue.GetUnionFields(value, eventType, flags)
+                if case.Name <> "StateChanged" || fields.Length <> 2 then
+                    invalidOp "A historical saga state-change event has an unsupported shape."
+                union (typedefof<SagaEvent<_>>.MakeGenericType [| stateType system declaredState |]) case.Tag
+                    [| state system declaredState (fields.[0] |> Unchecked.nonNull); fields.[1] |]
+            | None ->
+                match constructed typedefof<SagaSnapshot<_, _, _>> typ with
+                | Some snapshotType ->
+                    let arguments = snapshotType.GetGenericArguments()
+                    let targetEvent = EventUpcasting.Internal.targetType system arguments.[2]
+                    let nextSnapshotType =
+                        typedefof<SagaSnapshot<_, _, _>>.MakeGenericType
+                            [| arguments.[0]; stateType system arguments.[1]; targetEvent |]
+                    let starting = field "StartingEvent" value
+                    let starting =
+                        if isNull (box starting) then starting
+                        else
+                            let _, fields = FSharpValue.GetUnionFields(starting, starting.GetType(), flags)
+                            let event = startingEvent system (fields.[0] |> Unchecked.nonNull)
+                            let optionType =
+                                match nextSnapshotType.GetProperty("StartingEvent", flags ||| Reflection.BindingFlags.Instance) with
+                                | null -> invalidOp "The saga snapshot has no starting-event field."
+                                | property -> property.PropertyType
+                            union optionType 1 [| event |]
+                    record nextSnapshotType [| parent system (field "Parent" value); starting |]
+                | None when isShape typedefof<SagaStateWithVersion<_, _>> value -> parent system value
+                | None -> EventUpcasting.Internal.upcastEvent system value
+
 /// How this incarnation of the saga came to exist. Only a recovered saga
 /// re-drives its side effects: a fresh start signals Continue through the
 /// (Stay, false) branch of applySideEffects, and re-driving there instead
@@ -190,6 +298,22 @@ let private runSaga<'TEvent, 'SagaData, 'State when 'TEvent : not null and 'Stat
     (currentSagaActivityRef: (Activity | null) ref)
     (cleanupOnStop: unit -> unit)
     =
+    let upcastHistory (message: obj) =
+        try
+            let converted = ReadUpcasting.upcastStored mailbox.System message
+            let requireShape definition (expected: Type) =
+                if ReadUpcasting.isShape definition message && not (expected.IsInstanceOfType converted) then
+                    invalidOp $"Saga '{mailbox.Self.Path.Name}' recovered {converted.GetType().FullName}, but requires {expected.FullName}. Register the complete originator-event upcast chain. Changing domain saga state or data requires a separate migration."
+            requireShape typedefof<SagaStartingEventWrapper<_>> typeof<SagaStartingEventWrapper<'TEvent>>
+            requireShape typedefof<SagaEvent<_>> typeof<SagaEvent<'State>>
+            requireShape typedefof<SagaSnapshot<_, _, _>> typeof<SagaSnapshot<'SagaData, 'State, 'TEvent>>
+            requireShape typedefof<SagaStateWithVersion<_, _>> typeof<SagaStateWithVersion<'SagaData, 'State>>
+            converted
+        with error ->
+            log.LogError(error, "Fatal error upcasting saga history for {Saga}.", mailbox.Self.Path.ToString())
+            fatalFailFast currentSagaActivityRef.Value "Process terminated due to saga event-upcast error" error
+            failwith "unreachable"
+
     let rec innerSet (hs: Handshake<'TEvent>) =
         let { StartingEvent = startingEvent
               Subscribed = subscribed
@@ -198,6 +322,7 @@ let private runSaga<'TEvent, 'SagaData, 'State when 'TEvent : not null and 'Stat
 
         actor {
             let! msg = mailbox.Receive()
+            let msg = if mailbox.IsRecovering() then upcastHistory msg else msg
 
             let signalReady handshake =
                 acknowledgeReady
@@ -314,6 +439,7 @@ let private runSaga<'TEvent, 'SagaData, 'State when 'TEvent : not null and 'Stat
                 // SubscriptionAcknowledged signals).
                 return! innerSet hs
             | SnapshotOffer(snapState: obj) ->
+                let snapState = upcastHistory snapState
                 let hs = { hs with Incarnation = RecoveredFromSnapshot }
 
                 // Subscribed = true in both branches: the wrapper is journal seq 1,
@@ -1126,6 +1252,7 @@ let internal init<'SagaData, 'State, 'TEvent when 'TEvent : not null and 'State 
     name
     (snapshotPolicy: SnapshotPolicy)
     =
+    EventUpcasting.Internal.freeze actorApi.System
     let initialState =
         { Version = 0L
           SagaState = initialState

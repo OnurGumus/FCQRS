@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <TargetFrameworks>net10.0</TargetFrameworks>
-    <Version>6.4.0</Version>
+    <Version>6.5.0</Version>
     <Nullable>enable</Nullable>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <FablePackageType>library</FablePackageType>
@@ -18,6 +18,7 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="Common.fs" />
+    <Compile Include="EventUpcasting.fs" />
     <Compile Include="DynamicConfig.fs" />
     <Compile Include="Scheduler.fs" />
     <Compile Include="SchedulerController.fs" />

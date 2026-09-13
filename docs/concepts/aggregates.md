@@ -25,6 +25,11 @@ produces an event, and changes current state. The second command sees that new s
 The guarantee is local to one aggregate identity. It does not lock all orders, and it does not make a
 rule spanning an order, a warehouse item, and a payment account atomic.
 
+When a caller's edit depends on an earlier version, use
+[Send at an expected version](../how-to/send-if-version.html). FCQRS compares that version with the
+aggregate's persisted version before deciding the command, so a stale edit can be rejected even if
+it would otherwise satisfy the domain rules.
+
 > **Motivation:** Routing one identity through one queue turns “check the rule, then save” into one
 > ordered decision. The second command cannot make its choice from the state that existed before the
 > first command completed.

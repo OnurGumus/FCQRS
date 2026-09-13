@@ -15,6 +15,9 @@
     <Compile Include="SagaHandshakeTests.fs" />
     <Compile Include="ProjectionSubscriptionTests.fs" />
     <Compile Include="ProjectionCatchUpTests.fs" />
+    <Compile Include="ExpectedVersionTests.fs" />
+    <Compile Include="ConditionalCommandSerializationTests.fs" />
+    <Compile Include="EventUpcastingTests.fs" />
     <Compile Include="HostingAndRegistryTests.fs" />
     <Compile Include="Tests.fs" />
   </ItemGroup>

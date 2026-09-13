@@ -314,6 +314,7 @@ module internal Internal =
 let private activitySource = new ActivitySource(Telemetry.QueryActivitySourceName)
 
 let init<'TDataEvent, 'TPredicate, 't when 'TDataEvent :> IMessageWithCID> (actorApi: IActor) offsetCount handler =
+    FCQRS.EventUpcasting.Internal.freeze actorApi.System
     let logger = actorApi.LoggerFactory.CreateLogger "Query"
     logger.LogInformation "Query started"
 
@@ -350,18 +351,19 @@ let init<'TDataEvent, 'TPredicate, 't when 'TDataEvent :> IMessageWithCID> (acto
     |> Source.runForEach actorApi.Materializer (fun envelop ->
         try
             let offsetValue = (envelop.Offset :?> Sequence).Value
-            logger.LogTrace("data event : {@dataevent}", envelop.Event)
+            let event = FCQRS.EventUpcasting.Internal.upcastEvent actorApi.System envelop.Event
+            logger.LogTrace("data event : {@dataevent}", event)
 
             // Projection span: closes the trace end-to-end (command -> event ->
             // projection). Parent comes from the event's metadata traceparent.
             use activity =
                 if activitySource.HasListeners() then
-                    match envelop.Event with
+                    match event with
                     | :? FCQRS.Model.Data.IMessage as msg ->
                         let cidStr = msg.CID |> ValueLens.Value |> ValueLens.Value
 
                         let payloadName =
-                            match envelop.Event with
+                            match event with
                             | :? IEnvelope as env -> env.Payload.GetType().Name
                             | other -> other.GetType().Name
 
@@ -382,7 +384,7 @@ let init<'TDataEvent, 'TPredicate, 't when 'TDataEvent :> IMessageWithCID> (acto
                 else
                     null
 
-            let res = handler offsetValue envelop.Event
+            let res = handler offsetValue event
 
             res |> List.iter notifications.Publish
 

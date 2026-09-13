@@ -74,6 +74,32 @@ type IEnvelope =
     /// The command/event details, boxed.
     abstract member Payload: obj
 
+/// The aggregate rejected a conditional command before running its handler because
+/// its persisted version differed from the caller's expected version.
+type AggregateVersionConflictException(aggregateId: string, expectedVersion: int64, actualVersion: int64) =
+    inherit InvalidOperationException(
+        $"Aggregate '{aggregateId}' has persisted version {actualVersion}; expected {expectedVersion}.")
+    /// The target aggregate's entity ID.
+    member _.AggregateId = aggregateId
+    /// The persisted version required by the caller.
+    member _.ExpectedVersion = expectedVersion
+    /// The persisted version observed when the aggregate checked the command.
+    member _.ActualVersion = actualVersion
+
+// Dedicated transient wire messages. Do not implement ISerializable: older
+// receivers must reject their serializer instead of executing an unguarded command.
+type internal ConditionalCommand =
+    { ExpectedVersion: int64
+      Command: obj
+      ReplyTo: Akka.Actor.IActorRef }
+
+type internal ConditionalCommandConflict =
+    { ExpectedVersion: int64
+      ActualVersion: int64
+      CommandId: MessageId
+      CorrelationId: CID
+      AggregateId: string }
+
 /// Represents a command to be processed by an aggregate actor.
 /// <typeparam name="'CommandDetails">The specific type of the command payload.</typeparam>
 type Command<'CommandDetails> =
@@ -1472,7 +1498,7 @@ module CommandHandler =
                     defaultCommandTimeout
             with _ -> defaultCommandTimeout
 
-        let subscribeForCommand<'Command, 'Event when 'Event : not null> system mediator (command: Command<'Command, 'Event>) =
+        let private subscribeForCommandCore<'Command, 'Event when 'Event : not null> expectedVersion system mediator (command: Command<'Command, 'Event>) =
             let actorProp mediator (mailbox: Actor<obj>) =
                 let log = mailbox.UntypedContext.GetLogger()
                 let commandTimeout = resolveCommandTimeout mailbox.System.Settings.Config
@@ -1506,7 +1532,13 @@ module CommandHandler =
                                 let cid = cd.Cmd.CorrelationId |> ValueLens.Value |> ValueLens.Value
                                 if ack.Subscribe.Topic = correlationTopic cd.EntityRef.EntityId cid then
                                     commandSent <- true
-                                    cd.EntityRef <! box cd.Cmd
+                                    match expectedVersion with
+                                    | None -> cd.EntityRef <! box cd.Cmd
+                                    | Some version ->
+                                        cd.EntityRef <! box {
+                                            ExpectedVersion = version
+                                            Command = box cd.Cmd |> Unchecked.nonNull
+                                            ReplyTo = untyped mailbox.Self }
                             | _ -> ()
                             return! set state
                         // When receiving the initial Execute command, store details and subscribe
@@ -1515,15 +1547,11 @@ module CommandHandler =
 
                             let cd =
                                 match s with
-                                | Execute cd ->
-                                    let cid = cd.Cmd.CorrelationId |> ValueLens.Value |> ValueLens.Value
+                                | Execute cd -> cd
 
-                                    // Same shape as the publisher and the saga: the
-                                    // originator's escaped entity id plus the raw cid.
-                                    mediator
-                                    <! box (Subscribe(correlationTopic cd.EntityRef.EntityId cid, untyped mailbox.Self))
-
-                                    cd
+                            let cid = cd.Cmd.CorrelationId |> ValueLens.Value |> ValueLens.Value
+                            mediator
+                            <! box (Subscribe(correlationTopic cd.EntityRef.EntityId cid, untyped mailbox.Self))
 
                             // Schedule once from request acceptance. ReceiveTimeout
                             // measures inactivity and is reset by every rejected
@@ -1563,12 +1591,25 @@ module CommandHandler =
                             | None -> ()
 
                             return! Stop
+                        | :? ConditionalCommandConflict as conflict ->
+                            match state with
+                            | Some s when commandSent
+                                          && expectedVersion = Some conflict.ExpectedVersion
+                                          && conflict.CommandId = s.CommandDetails.Cmd.Id
+                                          && conflict.CorrelationId = s.CommandDetails.Cmd.CorrelationId
+                                          && conflict.AggregateId = s.CommandDetails.EntityRef.EntityId
+                                          && matchesTarget s.CommandDetails.EntityRef ->
+                                cancelDeadline ()
+                                s.Sender.Tell(conflict, untyped mailbox.Self)
+                                return! Stop
+                            | _ -> return! set state
                         // A CID can cross aggregate types. Only accept an event
                         // published by the aggregate instance this request targets.
                         | :? (Event<'Event>) as e ->
                             match state with
                             | Some s when commandSent
                                           && sameTrace e.CorrelationId s.CommandDetails.Cmd.CorrelationId
+                                          && (expectedVersion.IsNone || e.Id = s.CommandDetails.Cmd.Id)
                                           && matchesTarget s.CommandDetails.EntityRef ->
                                 match (try Choice1Of2(s.CommandDetails.Filter e.EventDetails) with ex -> Choice2Of2 ex) with
                                 | Choice1Of2 true ->
@@ -1621,6 +1662,9 @@ module CommandHandler =
                 let! res = spawnAnonymous system (props (actorProp mediator)) <? box command
 
                 match box res with
+                | :? ConditionalCommandConflict as conflict ->
+                    return raise (AggregateVersionConflictException(
+                        conflict.AggregateId, conflict.ExpectedVersion, conflict.ActualVersion))
                 | :? CommandSubscriptionFilterError as f ->
                     return
                         raise (
@@ -1639,6 +1683,11 @@ module CommandHandler =
                 | r -> return r |> nonNull :?> Event<'Event> // Return the awaited event
             }
 
+        let subscribeForCommand system mediator command =
+            subscribeForCommandCore None system mediator command
+
+        let internal subscribeForConditionalCommand expectedVersion system mediator command =
+            subscribeForCommandCore (Some expectedVersion) system mediator command
 
     // Internal types for command subscription actor state -> Made public for Command DU
     type CommandDetails<'Command, 'Event> =

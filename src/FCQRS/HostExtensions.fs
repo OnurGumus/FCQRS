@@ -76,6 +76,7 @@ type FcqrsRuntime(actor: IActor) =
 /// DI. These services support constructor injection before startup; use their
 /// operations after FCQRS's hosted service starts. Returned by IServiceCollection.AddFcqrs.
 type FcqrsBuilder internal (services: IServiceCollection, connectionString: string, clusterName: string) =
+    let upcasters = FCQRS.EventUpcasting.Internal.Registry()
     let aggregateSteps = ResizeArray<IServiceProvider -> IActor -> FcqrsRuntime -> unit>()
     let sagaSteps = ResizeArray<IServiceProvider -> IActor -> FcqrsRuntime -> unit>()
     let sagaStarters = ResizeArray<obj -> AggregateFactory option>()
@@ -143,6 +144,22 @@ type FcqrsBuilder internal (services: IServiceCollection, connectionString: stri
     member this.WithJournalTypes(configure: Action<JournalTypeMapBuilder>) : FcqrsBuilder =
         configure.Invoke(JournalTypeMapBuilder())
         this
+
+    /// Register a deterministic, one-to-one historical event conversion. Chained conversions
+    /// follow declared envelope payload types. Duplicate source registrations and cycles fail.
+    /// The host installs these conversions before initializing aggregates, sagas, or projections.
+    /// Each actor system has its own registry, fixed for its lifetime. Only FCQRS journal reads
+    /// are converted; stored envelopes, live messages, and application-owned snapshot state are
+    /// unchanged. Keep old payload types readable and register readers before deploying writers.
+    /// Finish builder registrations before building or resolving the host; resolving IActor fixes
+    /// this configuration. Converters may run concurrently and must be thread-safe.
+    member this.WithEventUpcaster<'Old, 'New when 'Old: not null and 'New: not null>(
+        convert: Func<'Old, 'New>) : FcqrsBuilder =
+        upcasters.Register convert
+        this
+
+    member internal _.InstallUpcasters(actor: IActor) =
+        FCQRS.EventUpcasting.Internal.install actor.System upcasters
 
     /// Enable Akka's internal logging (FCQRS ships it OFF). `level` maps to
     /// akka.loglevel; by default akka.stdout-loglevel is set to the same value.
@@ -449,7 +466,13 @@ type FcqrsServiceCollectionExtensions =
                     :> IConfiguration
                 | None -> baseConfig
 
-            ActorApi.Create(config, loggerFactory, connectionString, clusterName, databaseType))
+            let actor = ActorApi.Create(config, loggerFactory, connectionString, clusterName, databaseType)
+            try
+                builder.InstallUpcasters actor
+                actor
+            with _ ->
+                actor.Stop().GetAwaiter().GetResult()
+                reraise ())
         |> ignore
 
         services.AddSingleton<FcqrsRuntime>(fun (sp: IServiceProvider) -> FcqrsRuntime(sp.GetRequiredService<IActor>()))

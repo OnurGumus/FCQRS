@@ -2,7 +2,7 @@
 title: Add a projection
 category: Apply
 categoryindex: 4
-index: 3
+index: 4
 ---
 
 # Add a projection

@@ -2,13 +2,17 @@
 title: Rebuild a read model
 category: Apply
 categoryindex: 4
-index: 9
+index: 10
 ---
 
 # Rebuild a read model
 
 Rebuild a read model when a projection bug produced incorrect rows, a new query needs a different
 shape, or an index must be recreated. The journal remains unchanged throughout the operation.
+
+If the rebuild needs [event upcasters](evolve-events.html), register the complete conversion chain
+before initializing the projection. Both FCQRS projection styles apply the registered chain to
+journal events; rows already processed before that registration are not converted in place.
 
 ## Before rebuilding
 

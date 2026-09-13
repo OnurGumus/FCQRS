@@ -2,7 +2,7 @@
 title: Write a saga
 category: Apply
 categoryindex: 4
-index: 6
+index: 7
 ---
 
 # Write a saga

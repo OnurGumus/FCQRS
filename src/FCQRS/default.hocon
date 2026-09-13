@@ -44,10 +44,13 @@ config {
                serializers {
                     json = "Akka.Serialization.NewtonSoftJsonSerializer"
                     stj = "FCQRS.ActorSerialization+STJSerializer, FCQRS"
+                    fcqrs-conditional = "FCQRS.ActorSerialization+ConditionalCommandSerializer, FCQRS"
                }
                serialization-bindings {
                     "System.Object" = json
                     "FCQRS.Common+ISerializable, FCQRS" = stj
+                    "FCQRS.Common+ConditionalCommand, FCQRS" = fcqrs-conditional
+                    "FCQRS.Common+ConditionalCommandConflict, FCQRS" = fcqrs-conditional
                }
           }
           remote {
