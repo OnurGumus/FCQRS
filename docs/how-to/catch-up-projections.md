@@ -26,6 +26,8 @@ await projection.CatchUpAsync(cancellationToken);
 // Inspect the command outcome, then query the projected documents.
 ```
 
+These transactional projection APIs are available in FCQRS 6.4.0 and later.
+
 `CatchUpAsync` captures one **journal snapshot**: the highest committed sequence number for each
 persistence identity visible in one database read. A persistence identity identifies one actor's
 journal history. The call succeeds after this projection has committed every event through those
