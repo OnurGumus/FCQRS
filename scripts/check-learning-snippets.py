@@ -6,7 +6,7 @@ import textwrap
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-PATTERN = re.compile(r'(<!-- sample: ((?:http-)?(?:fsharp|csharp)) ([\w.]+) ([\w-]+) -->\n```(?:fsharp|csharp)\n)(.*?)(^```[ \t]*$)', re.S | re.M)
+PATTERN = re.compile(r'(<!-- sample: ((?:http-)?(?:fsharp|csharp)) ([\w.]+) ([\w-]+) -->\n```(?:fsharp|csharp)[^\n]*\n)(.*?)(^```[ \t]*$)', re.S | re.M)
 
 def region(language, filename, name):
     source = (ROOT / f'samples/registration-{language}' / filename).read_text()

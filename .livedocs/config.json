@@ -1,0 +1,52 @@
+{
+  "siteName": "FCQRS",
+  "repoUrl": "https://github.com/OnurGumus/FCQRS",
+  "logoPath": "img/fcqrs-mark.svg",
+  "stylesheet": "content/site.css",
+  "themes": [
+    "light",
+    "dark"
+  ],
+  "navigation": [
+    {
+      "label": "Get started",
+      "href": "get-started.html"
+    },
+    {
+      "label": "Task guides",
+      "href": "how-to/index.html"
+    },
+    {
+      "label": "API",
+      "href": "api/index.html"
+    },
+    {
+      "label": "GitHub",
+      "href": "https://github.com/OnurGumus/FCQRS"
+    }
+  ],
+  "projects": [
+    "src/FCQRS/FCQRS.fsproj",
+    "src/FCQRS.Model/FCQRS.Model.fsproj",
+    "src/FCQRS.Serialization/FCQRS.Serialization.fsproj",
+    "src/FCQRS.SQLProvider/FCQRS.SQLProvider.fsproj",
+    "src/FCQRS.ExpectoTickSpec/FCQRS.ExpectoTickSpec.fsproj",
+    ".livedocs/examples/Examples.fsproj"
+  ],
+  "docsSets": [
+    {
+      "id": "fcqrs",
+      "title": "FCQRS",
+      "source": ".livedocs/content",
+      "default": true,
+      "projects": [
+        "src/FCQRS/FCQRS.fsproj",
+        "src/FCQRS.Model/FCQRS.Model.fsproj",
+        "src/FCQRS.Serialization/FCQRS.Serialization.fsproj",
+        "src/FCQRS.SQLProvider/FCQRS.SQLProvider.fsproj",
+        "src/FCQRS.ExpectoTickSpec/FCQRS.ExpectoTickSpec.fsproj",
+        ".livedocs/examples/Examples.fsproj"
+      ]
+    }
+  ]
+}

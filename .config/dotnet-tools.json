@@ -9,10 +9,10 @@
       ],
       "rollForward": false
     },
-    "fsdocs-tool": {
-      "version": "20.0.1",
+    "fslivedocs": {
+      "version": "0.7.3",
       "commands": [
-        "fsdocs"
+        "livedocs"
       ],
       "rollForward": false
     }

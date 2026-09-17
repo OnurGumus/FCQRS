@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="Assembly.fs" />
+    <ProjectReference Include="../../src/FCQRS/FCQRS.fsproj" />
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <PackageReference Include="Dapper" Version="2.1.66" />
+    <PackageReference Include="Expecto" Version="10.2.3" />
+    <PackageReference Include="Npgsql" Version="10.0.3" />
+    <PackageReference Include="OpenTelemetry" Version="1.15.3" />
+  </ItemGroup>
+</Project>

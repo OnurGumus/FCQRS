@@ -72,7 +72,7 @@ let handle (connString: string) (offset: int64) (event: obj) : unit =
         | Document.Updated doc ->
             conn.Execute(
                 "insert or replace into Documents (Id, Title, Body) values (@Id, @Title, @Body)",
-                {| Id = doc.Id.ToString(); Title = doc.Title.Value; Body = doc.Content.Value |}, tx)
+                {| Id = doc.Id.ToString(); Title = doc.Title.ToString(); Body = doc.Content.ToString() |}, tx)
             |> ignore
         | _ -> ()
     | _ -> ()

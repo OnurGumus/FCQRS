@@ -3,6 +3,9 @@
 obj/
 tmp/
 .fsdocs/cache
+.livedocs/cache/
+.livedocs/content/
+.livedocs/releases/
 *.db
 /output
 bin/

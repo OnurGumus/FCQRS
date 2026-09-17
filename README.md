@@ -54,3 +54,18 @@ The [F#](samples/registration-fsharp/) and [C#](samples/registration-csharp/) sa
 package on stable .NET 10. Copy either folder to start a standalone project.
 
 See [LICENSE.md](LICENSE.md).
+
+## Build the documentation
+
+The site uses [FsLiveDocs](https://adz.github.io/FsLiveDocs/introduction.html).
+With the repository's .NET SDK, Python 3, and Node.js installed:
+
+```text
+dotnet tool restore
+python3 scripts/build-docs.py
+python3 -m http.server 8000 --directory output
+```
+
+Open `http://localhost:8000`. The build runs the literate F# scripts, checks sample excerpts,
+audits Markdown examples, and generates the guides, API reference, and search index.
+See [the documentation authoring notes](scripts/DOCUMENTATION.md) for the source formats and checks.

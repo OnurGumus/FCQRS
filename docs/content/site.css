@@ -1,0 +1,28 @@
+@font-face {
+  font-family: Inter;
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url('../fonts/inter-latin-wght-normal.woff2') format('woff2');
+}
+
+.cs-alt { display: none; }
+.lang-tabbar { display: flex; gap: .25rem; margin-top: 1.5rem; }
+.lang-tab {
+  padding: .5rem 1rem;
+  border: 1px solid currentColor;
+  border-radius: .5rem .5rem 0 0;
+  opacity: .6;
+}
+.lang-tab[aria-selected="true"] { opacity: 1; font-weight: 700; }
+.lang-pane { margin-top: 0 !important; }
+.lang-pane[hidden] { display: none !important; }
+
+.language-csharp .hljs-keyword { color: var(--livedocs-code-keyword); }
+.language-csharp .hljs-string { color: var(--livedocs-code-string); }
+.language-csharp .hljs-number,
+.language-csharp .hljs-literal { color: var(--livedocs-code-number); }
+.language-csharp .hljs-comment { color: var(--livedocs-code-comment); }
+.language-csharp .hljs-type,
+.language-csharp .hljs-title.class_ { color: var(--livedocs-code-type); }
+.language-csharp .hljs-title.function_ { color: var(--livedocs-code-function); }

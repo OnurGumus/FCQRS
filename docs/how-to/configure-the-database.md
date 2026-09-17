@@ -51,7 +51,9 @@ through configuration as shown in the [configuration reference](../configuration
 
 Changing the F# `DBType` configures all three persistence stores and enables table initialization:
 
-```fsharp
+```fsharp isolated
+open FCQRS.FSharp
+
 let connection =
     Fcqrs.connect FCQRS.Actor.DBType.PostgreSQL
         "Host=localhost;Database=app;Username=app;Password=…"
