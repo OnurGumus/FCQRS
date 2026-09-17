@@ -29,6 +29,12 @@ open FCQRS.Model.Data
 /// An aggregate's entity-ref factory: an id -> its sharded actor ref.
 type AggregateFactory = string -> IEntityRef<obj>
 
+/// An application command handler: event filter, correlation id, aggregate id,
+/// then command. Returns the matching event payload without its envelope.
+/// Construct with Fcqrs.handler; completion does not wait for a projection.
+type Handler<'Command, 'Event> =
+    ('Event -> bool) -> CID -> AggregateId -> 'Command -> Async<'Event>
+
 // ---------------------------------------------------------------------------
 // Definitions (records of functions) + the handles returned after registration.
 // ---------------------------------------------------------------------------
@@ -269,6 +275,19 @@ module Fcqrs =
         let factory = refFor fac
         { Factory = factory
           Send = fun cid id command filter -> api.CreateCommandSubscription factory cid id command filter None }
+
+    /// Register an aggregate immediately and return a reusable application handler.
+    /// The returned function takes filter, cid, aggregate id, and command, in that order,
+    /// and sends when its Async is executed. It returns EventDetails from the first
+    /// matching reply; it does not wait for a projection or wire saga starters.
+    /// Use aggregate instead when the caller needs the envelope or entity-ref factory.
+    let handler (api: IActor) (def: Aggregate<'State, 'Command, 'Event>) : Handler<'Command, 'Event> =
+        let registered = aggregate api def
+        fun filter cid id command ->
+            async {
+                let! event = registered.Send cid id command filter
+                return event.EventDetails
+            }
 
     /// Send only if the aggregate's persisted version equals expectedVersion (initially zero).
     /// A mismatch raises AggregateVersionConflictException before the domain handler or filter runs.

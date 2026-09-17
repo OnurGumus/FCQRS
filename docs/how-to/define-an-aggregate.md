@@ -92,6 +92,29 @@ of the journal a recovery replays, `Passivation` how often a recovery happens at
 the overridable `SnapshotPolicy` and `PassivationPolicy` properties on `Aggregate<>`. See
 [Configuration](../configuration.html) for the resolution order and the configuration-only forms.
 
+## Bundle application handlers
+
+From FCQRS 6.6.0, an F# application can expose account commands through a record of functions:
+
+```fsharp
+type CommandHandlers = {
+    Accounts: Handler<Account.RegisterUser, Account.UserRegistered>
+}
+
+let registerHandlers actorApi accountDefinition =
+    { Accounts = Fcqrs.handler actorApi accountDefinition }
+```
+
+`Fcqrs.handler` registers the aggregate immediately and returns a reusable function with signature
+`filter -> cid -> aggregateId -> command -> Async<event>`. Execute the returned async computation to
+send a command. It returns the matching event's payload, including deferred replies, without waiting
+for a projection. Register once during startup and call `Fcqrs.wireSagaStarters` after registering the
+aggregates and sagas, including an empty list when there are no sagas.
+
+Keep `Fcqrs.aggregate` and its handle when callers need `.Factory`, the event version, or the
+`Journaled` flag used for [projection waiting](read-your-writes.html). C# applications continue to use
+the existing `FCQRS.CSharp.Handler<,>` delegate, which returns the full event envelope in a `Task`.
+
 ## Choose the action
 
 | Action | Stored | Folded into state | Returned to caller | Sent to projections |

@@ -1,5 +1,12 @@
 # Changelog
 
+## 6.6.0 (FCQRS core)
+
+- F# applications can declare command-handler records with `FCQRS.FSharp.Handler<'Command, 'Event>`
+  and initialize their fields with `Fcqrs.handler api definition`. Registration happens immediately;
+  each invocation returns the matching event payload without its envelope. Argument order is event
+  filter, correlation id, aggregate id, then command. Projection waiting and saga wiring remain explicit.
+
 ## 6.5.0 (FCQRS core)
 
 FCQRS core adds conditional commands and event upcasting. The satellite packages remain at 6.0.0.
