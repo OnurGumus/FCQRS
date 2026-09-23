@@ -57,6 +57,8 @@ module internal Manifests =
     /// upgraded node would crash older readers during a rolling deployment.
     /// Type.GetType resolves these names on every version, and still reads versioned
     /// names from earlier rows. An escaped comma inside a type name is not a separator.
+    /// FCQRS.Serialization applies the same rule to union case keys (Library.fs, versionFree),
+    /// and the two packages ship separately. Change both copies together.
     let versionFree (t: Type) =
         Regex.Replace(t.AssemblyQualifiedName |> Unchecked.nonNull, @"(?<!\\), (?:Version|Culture|PublicKeyToken)=[^,\]]*", "")
 

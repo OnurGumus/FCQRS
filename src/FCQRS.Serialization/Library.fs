@@ -42,7 +42,9 @@ module public Serialization =
     /// embeds its arguments' assembly versions, which change with every runtime or
     /// application release. Readers match on this form, so both old and version-free
     /// keys resolve; writers keep the full name until every reader has this lookup.
-    /// An escaped comma inside a type name is not a separator.
+    /// An escaped comma inside a type name is not a separator. FCQRS core applies the same
+    /// rule to journal manifests (Serialization.fs, Manifests.versionFree), and the two packages
+    /// ship separately. Change both copies together.
     let private versionFree (key: string) =
         Regex.Replace(key, @"(?<!\\), (?:Version|Culture|PublicKeyToken)=[^,\]]*", "")
 
