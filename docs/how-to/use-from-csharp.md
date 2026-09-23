@@ -204,7 +204,8 @@ cancellation policy because projection subscriptions are in-memory request coord
 queue. The complete ordering and notification rules are in [Read your writes](read-your-writes.html).
 
 When a decision depends on data read earlier, pass its aggregate version to
-`runtime.Actor.SendIfVersionAsync`. Inject `FcqrsRuntime` and the aggregate's
+`runtime.Actor.SendIfVersionAsync`. `Values.VersionValue(reply.Version)` reads a reply's version as a
+`long`. Inject `FcqrsRuntime` and the aggregate's
 `AggregateRefs<AccountCommand, AccountEvent>` to obtain
 the actor API and factory. [Send at an expected version](send-if-version.html) gives the complete
 service example and handles `AggregateVersionConflictException` when another command has changed

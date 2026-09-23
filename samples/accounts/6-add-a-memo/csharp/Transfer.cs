@@ -90,9 +90,8 @@ public sealed class Transfer(AggregateFactory accounts)
                 RetrySchedules.Fixed(TimeSpan.FromSeconds(5)))
         };
 
-    // An account expects its command union, so these helpers take one. In FCQRS
-    // 6.6.0, a single case passed as object arrives as its own type, and no account
-    // handles it.
+    // SagaCommands takes any object. These helpers take an AccountCommand, so the
+    // compiler rejects anything else sent to an account.
     ExecuteCommand ToAccount(string id, AccountCommand command) =>
         SagaCommands.ToAggregate(accounts, id, command);
 

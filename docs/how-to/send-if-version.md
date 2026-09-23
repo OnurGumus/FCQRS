@@ -60,7 +60,9 @@ the same command and event types, resolve the refs keyed by the aggregate class,
 [Use FCQRS from C#](use-from-csharp.html).
 
 `expectedVersion` is a nonnegative `int64` in F# or `long` in C#. Supply the version that accompanied
-the data the decision was based on. In a read model, store the aggregate event's `Version` alongside
+the data the decision was based on. A reply's `Version` is the aggregate's version after that
+command. Read it as a number with `ValueLens.Value` from `FCQRS.Model.Data` in F#, or with
+`Values.VersionValue` in C#, available from FCQRS 6.7.0. In a read model, store the aggregate event's `Version` alongside
 the fields it shows and commit both in the same projection transaction, as the tutorial's
 [statement](../tutorial/show-a-statement.html) does. A delayed read model can return an older
 version; the aggregate then detects that the withdrawal was based on stale data.

@@ -7,7 +7,7 @@ index: 5
 ---
 *)
 (*** hide ***)
-#r "nuget: FCQRS, 6.6.0"
+#r "nuget: FCQRS, 6.7.0"
 #load "../../samples/accounts/5-transfer-money/fsharp/Account.fs"
 #load "../../samples/accounts/5-transfer-money/fsharp/Transfer.fs"
 
@@ -479,9 +479,8 @@ static SagaSideEffectResult<TransferState> Deliver(ExecuteCommand command) =>
             RetrySchedules.Fixed(TimeSpan.FromSeconds(5)))
     };
 
-// An account expects its command union, so these helpers take one. In FCQRS
-// 6.6.0, a single case passed as object arrives as its own type, and no account
-// handles it.
+// SagaCommands takes any object. These helpers take an AccountCommand, so the
+// compiler rejects anything else sent to an account.
 ExecuteCommand ToAccount(string id, AccountCommand command) =>
     SagaCommands.ToAggregate(accounts, id, command);
 
@@ -507,9 +506,8 @@ money. The money is in flight, so the transfer must not give up. `handleEvent` e
 again, which stores a new state and starts another 30 seconds. Every round is stored, so a stuck
 transfer is visible in the saga's journal.
 
-In C#, the helpers take an `AccountCommand`. The saga passes a command as `object`, and FCQRS 6.6.0
-delivers it as the type it has: a single case such as `ReceiveTransfer`, given directly, would reach
-the account as its own type, which the account does not handle, and the transfer would never finish.
+In C#, `SagaCommands` takes a command as `object`. The helpers take an `AccountCommand`, so the
+compiler rejects anything that is not an account command.
 
 ## Register the saga
 
