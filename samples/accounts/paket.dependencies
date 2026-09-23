@@ -1,0 +1,2 @@
+// The programs in this folder use NuGet package references, not Paket. This file stops the
+// repository's Paket restore at this folder: Paket cannot yet read the net11.0 target they use.
