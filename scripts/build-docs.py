@@ -19,6 +19,7 @@ PROJECTS = [str(ROOT / project) for project in CONFIG['projects']]
 CONTEXTS = ROOT / '.livedocs/contexts'
 EXAMPLES_PROJECT = ROOT / '.livedocs/examples/Examples.fsproj'
 VERSION = ET.parse(PROJECTS[0]).findtext('.//Version')
+FSHARP_FENCE = re.compile(r'^```fsharp([^\n]*)\n(.*?)^```', re.M | re.S)
 
 
 def run(*command):
@@ -63,7 +64,7 @@ def compiler_context(body, relative):
         return source.rstrip()
     template = re.sub(r'^// include: (.+)$', include, template, flags=re.M)
     markers = list(re.finditer(r'^( *)// snippet: (\d+)( module)?\n', template, re.M))
-    fences = list(re.finditer(r'^```fsharp[^\n]*\n(.*?)^```', body, re.M | re.S))
+    fences = list(FSHARP_FENCE.finditer(body))
     if [int(m[2]) for m in markers] != list(range(1, len(fences) + 1)):
         raise ValueError(f'{context}: must include every F# fence once, in page order')
     def setup(code):
@@ -71,7 +72,7 @@ def compiler_context(body, relative):
     replacements = []
     start = 0
     for marker, fence in zip(markers, fences):
-        code = fence[1]
+        code = fence[2]
         if marker[3]:
             lines = code.splitlines()
             if not re.fullmatch(r'module \w+', lines[0]):
@@ -86,6 +87,11 @@ def compiler_context(body, relative):
     return body.replace('---\n', f'---\nproject: {EXAMPLES_PROJECT.relative_to(ROOT)}\n', 1)
 
 
+def examples(body):
+    """Return the visible F# examples in page order; `prepare` fences are compiler setup."""
+    return [fence[2] for fence in FSHARP_FENCE.finditer(body) if 'prepare' not in fence[1].split()]
+
+
 def redirect(target):
     escaped = html.escape(target, quote=True)
     return ('<!doctype html>\n<html lang="en"><head><meta charset="utf-8">'
@@ -96,9 +102,23 @@ def redirect(target):
             '</body></html>\n')
 
 
+def fsdocs_anchor(title, seen):
+    """Return the anchor fsdocs gave a heading, so existing deep links still resolve."""
+    # fsdocs joined the words of the heading's text and link labels with '-', skipped
+    # inline code, and numbered a repeated anchor from 1.
+    text = re.sub(r'(`+).*?\1', '', title)
+    text = re.sub(r'!\[[^\]]*\]\([^)]*\)', '', text)
+    text = re.sub(r'\[([^\]]*)\]\([^)]*\)', r'\1', text)
+    anchor = '-'.join(re.findall(r'\w+', text)) or 'header'
+    count = seen.get(anchor, 0)
+    seen[anchor] = count + 1
+    return f'{anchor}{count}' if count else anchor
+
+
 def heading_anchors(body):
     lines = []
     fence = None
+    seen = {}
     for line in body.splitlines():
         marker = re.match(r'^\s*(`{3,}|~{3,})', line)
         if marker:
@@ -107,9 +127,7 @@ def heading_anchors(body):
             elif marker[1][0] == fence[0] and len(marker[1]) >= len(fence):
                 fence = None
         if fence is None and re.match(r'^#{1,6} ', line):
-            title = line.split(' ', 1)[1]
-            anchor = re.sub(r'[^\w -]', '', title).replace(' ', '-')
-            line += ' {#' + anchor + '}'
+            line += ' {#' + fsdocs_anchor(line.split(' ', 1)[1], seen) + '}'
         lines.append(line)
     return '\n'.join(lines) + '\n'
 
@@ -118,7 +136,7 @@ def prepare():
     if CONTENT.exists():
         shutil.rmtree(CONTENT)
     CONTENT.mkdir(parents=True)
-    pages = []
+    pages = {}
     for source in sorted(DOCS.rglob('*')):
         if not source.is_file():
             continue
@@ -128,6 +146,7 @@ def prepare():
         body = source.read_text()
         if source.suffix == '.fsx':
             body = literate_markdown(body, str(relative))
+        written = examples(body)
         body = compiler_context(body, relative)
         front = re.match(r'---\n(.*?)\n---\n', body, re.S)
         if not front:
@@ -147,8 +166,69 @@ def prepare():
         body = body.replace('1-the-aggregate.html', 'the-aggregate.html').replace('2-running-it.html', 'running-it.html')
         target.write_text(body)
         output_path = relative.with_name(stem + '.html')
-        pages.append(str(output_path))
+        # Pair each example as written with the code FsLiveDocs compiles and renders.
+        pages[str(output_path)] = list(zip(written, examples(body), strict=True))
     return pages
+
+
+def rendered_examples(text):
+    """Yield the markup spans of visible F# examples, skipping collapsed compiler setup."""
+    depth = 0
+    for match in re.finditer(r'<details\b|</details>|<code class="[^"]*\blanguage-fsharp\b[^"]*">(.*?)</code>',
+                             text, re.S):
+        if match[0] == '</details>':
+            depth -= 1
+        elif match[0].startswith('<details'):
+            depth += 1
+        elif not depth:
+            yield match.span(1)
+
+
+def markup_text(markup):
+    return html.unescape(re.sub(r'<[^>]*>', '', markup))
+
+
+def as_written(markup, written):
+    """Remove the characters a compiler context added, keeping the semantic token markup."""
+    # A context only inserts indentation and a module's '=', so the written example
+    # is a subsequence of the rendered text.
+    target = written.rstrip('\n')
+    kept = []
+    position = 0
+    for unit in re.findall(r'<[^>]*>|&#?\w+;|.', markup, re.S):
+        if unit.startswith('<'):
+            kept.append(unit)
+            continue
+        char = html.unescape(unit)
+        if position < len(target) and char == target[position]:
+            position += 1
+            kept.append(unit)
+        elif position == len(target) and char == '\n':
+            kept.append(unit)
+    return ''.join(kept) if position == len(target) else None
+
+
+def show_examples_as_written(pages):
+    """Show each F# example as docs/ writes it and verify every rendered example."""
+    count = 0
+    for page, pairs in pages.items():
+        path = OUTPUT / page
+        text = path.read_text()
+        spans = list(rendered_examples(text))
+        if len(spans) != len(pairs):
+            raise ValueError(f'{page}: expected {len(pairs)} F# examples, found {len(spans)}')
+        for index, ((start, end), (written, compiled)) in reversed(list(enumerate(zip(spans, pairs), 1))):
+            markup = text[start:end]
+            if markup_text(markup).rstrip('\n') != compiled.rstrip('\n'):
+                raise ValueError(f'{page}: F# example {index} does not render its source')
+            if written != compiled:
+                markup = as_written(markup, written)
+                if markup is None:
+                    raise ValueError(f'{page}: F# example {index} changes more than its indentation')
+                text = text[:start] + markup + text[end:]
+        path.write_text(text)
+        count += len(pairs)
+    return count
 
 
 def finish(pages):
@@ -189,6 +269,11 @@ def finish(pages):
                 highlighter = '../' * depth + 'content/highlight.min.js'
                 scripts = f'<script src="{highlighter}" defer></script><script src="{asset}" defer></script>'
                 text = text.replace('</body>', scripts + '</body>')
+            # Search indexes page content only, so navigation and redirect pages stay out of results.
+            if 'data-pagefind-body' not in text:
+                text, found = re.subn(r'<main(?=[\s>])', '<main data-pagefind-body', text, count=1)
+                if not found:
+                    raise ValueError(f'{page.relative_to(OUTPUT)}: no <main> element to index for search')
             page.write_text(text)
     # Keep fsdocs API entry points usable when following old bookmarks.
     for page in (OUTPUT / 'api').glob('*.html'):
@@ -199,7 +284,8 @@ def finish(pages):
     for page in pages:
         if not (OUTPUT / page).is_file():
             raise ValueError(f'Missing generated documentation page: {page}')
-    print(f'Verified {len(pages)} guide pages.', flush=True)
+    count = show_examples_as_written(pages)
+    print(f'Verified {len(pages)} guide pages and {count} F# examples as written.', flush=True)
 
 
 def main():
@@ -223,7 +309,8 @@ def main():
     run('dotnet', 'livedocs', 'build', *PROJECTS, '--version', VERSION, '--interactive', 'false', '--banner', 'false')
     finish(pages)
     run('python3', 'scripts/check-doc-tooltips.py')
-    # Reindex the final homepage and fail if Pagefind cannot produce the index.
+    # Reindex the final site, including the homepage, and fail if Pagefind cannot produce the index.
+    # Only data-pagefind-body elements are indexed, so the redirect pages are left out.
     run('npx', '--yes', 'pagefind@1.5.2', '--site', 'output')
     run('python3', 'scripts/check-doc-links.py')
 

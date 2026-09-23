@@ -4,10 +4,13 @@ Run `dotnet tool restore`, then `python3 scripts/build-docs.py` from the reposit
 The build requires the SDK in `global.json`, Python 3, and Node.js (22 in CI).
 FsLiveDocs is pinned in `.config/dotnet-tools.json`. After rendering, the build uses Pagefind 1.5.2
 to index the final site, including the custom homepage, and checks local links and fragments.
+Pagefind indexes only `data-pagefind-body` elements. The build marks each generated page's `<main>`
+and the homepage marks its own, so navigation and redirect pages stay out of search results.
 
 The build compiles the solution in Release, checks sample excerpts, executes every `docs/**/*.fsx`
-file, runs `livedocs test`, and renders `output/`. It verifies that every visible F# example has
-compiler tooltip data and that each tooltip target exists. Use `--no-build` after compiling Release locally.
+file, runs `livedocs test`, and renders `output/`. It verifies that every visible F# example shows
+the code written in `docs/` and has compiler tooltip data, and that each tooltip target exists.
+Use `--no-build` after compiling Release locally.
 Serve the result with `python3 -m http.server 8000 --directory output`.
 
 ## Authoring
@@ -24,8 +27,9 @@ The complete script is executed separately, so hidden assertions still fail the 
 literate directives are not supported. Add explicit conversion support before using one.
 
 Keep `categoryindex` and `index` in page front matter. The adapter translates them into FsLiveDocs
-folder and file ordering. It preserves the existing heading anchors and copies the custom homepage,
-images, and legacy redirects. Numeric tutorial URLs redirect to FsLiveDocs' unnumbered paths.
+folder and file ordering. It builds heading anchors with the fsdocs rule, joining the heading's words
+with `-` and skipping inline code, so existing deep links still resolve. It also copies the custom
+homepage, images, and legacy redirects. Numeric tutorial URLs redirect to FsLiveDocs' unnumbered paths.
 The API index is `api/index.html`; `reference/index.html` and the old type-page names redirect there
 or to the matching generated type. Old API member fragments may need to be selected again on the
 new type page.
@@ -35,10 +39,12 @@ alternatives that redeclare the same name. Keep every F# example checked: `no-ch
 lexical highlighting and removes compiler hover tips.
 
 Partial examples use a matching `.livedocs/contexts/<page-path>.fs` template. Each `// snippet: N`
-marker inserts the Nth F# fence from the page, preserving its code and applying the marker's
-indentation. Surrounding imports, domain declarations, and function scopes become collapsible
-FsLiveDocs `prepare` blocks. Every fence must occur exactly once, in order. `// snippet: N module`
-turns a sample's file-scoped module into a nested module so later examples can reference it.
+marker inserts the Nth F# fence from the page at the marker's indentation. Surrounding imports,
+domain declarations, and function scopes become collapsible FsLiveDocs `prepare` blocks. Every fence
+must occur exactly once, in order. `// snippet: N module` turns a sample's file-scoped module into a
+nested module so later examples can reference it. The compiler checks the indented or nested form;
+after rendering, the build removes the added indentation and the module's `=`, so readers see each
+fence as written.
 `// include: <repository-path>` imports a complete sample module without duplicating its source.
 Contexts are compiler checked with the visible snippets; they are not executed. The complete
 literate `.fsx` scripts are still executed separately, including their hidden assertions.
@@ -47,6 +53,7 @@ The `<!-- sample: ... -->` markers keep F# and C# excerpts synchronized with run
 Run `python3 scripts/check-learning-snippets.py --update` after changing sample regions.
 FsLiveDocs does not compile C# fences; the sample build and behaviour checks in CI provide that
 coverage. `<div class="cs-alt"></div>` pairs adjacent language alternatives in the rendered site.
+An F# example's collapsed setup stays in its F# tab, so it is hidden when C# is selected.
 
 ## Verification and publishing
 

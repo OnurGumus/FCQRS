@@ -20,6 +20,19 @@
   const blocks = [...document.querySelectorAll('pre code')]
     .filter(code => !code.closest('.livedocs-shared-setup'));
   const matches = (code, lang) => code.classList.contains(`language-${lang}`);
+  // FsLiveDocs renders an example's compiler setup as collapsed sibling <details>.
+  // Keep that setup in the example's pane so it is hidden with its language.
+  const isSetup = el => el?.matches('details.livedocs-shared-setup');
+  function withSetup(example) {
+    const members = [example];
+    for (let el = example.previousElementSibling; isSetup(el); el = el.previousElementSibling) members.unshift(el);
+    for (let el = example.nextElementSibling; isSetup(el); el = el.nextElementSibling) members.push(el);
+    if (members.length === 1) return example;
+    const pane = document.createElement('div');
+    members[0].before(pane);
+    pane.append(...members);
+    return pane;
+  }
   document.querySelectorAll('.cs-alt').forEach((marker, index) => {
     const fs = [...blocks].reverse().find(code => matches(code, marker.dataset.fs || 'fsharp') &&
       marker.compareDocumentPosition(code) & Node.DOCUMENT_POSITION_PRECEDING);
@@ -27,8 +40,10 @@
       marker.compareDocumentPosition(code) & Node.DOCUMENT_POSITION_FOLLOWING);
     if (!fs || !cs) return;
     const panes = [fs, cs].map(code => {
-      const managed = code.closest('.livedocs-code, .lang-pane');
-      if (managed) return managed;
+      const paired = code.closest('.lang-pane');
+      if (paired) return paired;
+      const managed = code.closest('.livedocs-code');
+      if (managed) return withSetup(managed);
       // Prism replaces the class list on pre elements. Keep tab state on a wrapper.
       const pre = code.closest('pre');
       const pane = document.createElement('div');

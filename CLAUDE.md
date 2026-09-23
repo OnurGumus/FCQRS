@@ -132,14 +132,17 @@ Run the Expecto facade and behaviour tests:
 dotnet run --project test/Facade.Tests/Facade.Tests.fsproj
 ```
 
-Build the documentation:
+Build and check the documentation:
 
 ```bash
-dotnet fsdocs build --properties Configuration=Release
+dotnet tool restore
+python3 scripts/build-docs.py
 ```
 
-The fsdocs process can finish with exit code zero even when an embedded F# snippet reports an error.
-Inspect its output for `error(` and verify every changed executable page is listed as evaluated.
+The build compiles the solution in Release, runs every `docs/**/*.fsx` page, compiles the F# examples
+with FsLiveDocs, renders `output/`, and checks sample excerpts, tooltips, rendered examples, and local
+links. A failed step stops the build with a non-zero exit code. `scripts/DOCUMENTATION.md` describes
+the source formats and checks.
 
 Before finishing documentation work:
 
