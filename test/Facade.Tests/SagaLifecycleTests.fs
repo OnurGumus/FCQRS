@@ -272,10 +272,67 @@ let private stopDuringSave =
 type CheckCommand = Check
 type CheckEvent = Checked
 
+/// The recovery check a saga sends its originator, built as the saga runtime builds it.
+let private recoveryCheck<'TEvent when 'TEvent: not null> (cid: CID) (startingEvent: Event<'TEvent>) : obj =
+    let continueOrAbort =
+        match typeof<IActor>.Assembly.GetType("FCQRS.Common+ContinueOrAbort`1") with
+        | null -> failwith "ContinueOrAbort was not found."
+        | definition -> definition.MakeGenericType [| typeof<'TEvent> |]
+    let flags = Reflection.BindingFlags.Public ||| Reflection.BindingFlags.NonPublic
+    let case = Reflection.FSharpType.GetUnionCases(continueOrAbort, flags) |> Array.exactlyOne
+    let details = Reflection.FSharpValue.MakeUnion(case, [| box startingEvent |], flags)
+    let commandType = typedefof<Command<_>>.MakeGenericType [| continueOrAbort |]
+    Reflection.FSharpValue.MakeRecord(
+        commandType,
+        [| details
+           box DateTime.UtcNow
+           box (Guid.CreateVersion7().ToString() |> ValueLens.CreateAsResult |> Result.value : MessageId)
+           box (None: AggregateId option)
+           box cid
+           box (Map.empty<string, string>) |],
+        flags)
+    |> Unchecked.nonNull
+
+/// A stand-in for a saga of `originator`. The originator answers a recovery check only when
+/// the asker's name marks it as one of its sagas. Collects the answers it receives.
+let private fakeSaga (system: Akka.Actor.ActorSystem) (originator: string) (cid: CID) =
+    let replies = Collections.Concurrent.BlockingCollection<obj>()
+    let saga =
+        Akkling.Spawn.spawn system $"{originator}~Saga~{cid}" (Akkling.Props.props (fun (mailbox: Akkling.Actors.Actor<obj>) ->
+            let rec receive () =
+                Akkling.ComputationExpressions.actor {
+                    let! message = mailbox.Receive()
+                    match message with
+                    | :? Akkling.Actors.LifecycleEvent -> ()
+                    | reply -> replies.Add reply
+                    return! receive ()
+                }
+            receive ()))
+        |> Akkling.ActorRefs.untyped
+    let reply () =
+        let mutable reply: obj = null
+        if replies.TryTake(&reply, TimeSpan.FromSeconds 5.0) then Some reply else None
+    saga, reply
+
+let private isAbort (reply: obj option) =
+    match reply with
+    | Some reply ->
+        let replyType = reply.GetType()
+        replyType.IsGenericType && replyType.GetGenericArguments().[0].Name = "AbortedEvent"
+    | None -> false
+
 let private continueOrAbortIdentity =
-    testCase "saga lifecycle: recovery continues only on the event journaled at that version"
+    testCase "saga lifecycle: recovery continues only on the event stored at that version"
     <| fun _ ->
         withSystem "ContinueOrAbortIdentity" <| fun api _ ->
+            let aborts = Collections.Concurrent.ConcurrentQueue<string>()
+            use listener = new Diagnostics.ActivityListener()
+            listener.ShouldListenTo <- fun source -> source.Name = Telemetry.ActivitySourceName
+            listener.Sample <-
+                Diagnostics.SampleActivity<Diagnostics.ActivityContext>(fun _ -> Diagnostics.ActivitySamplingResult.AllDataAndRecorded)
+            listener.ActivityStopped <-
+                fun activity -> if activity.OperationName.StartsWith "Abort:" then aborts.Enqueue activity.OperationName
+            Diagnostics.ActivitySource.AddActivityListener listener
             let checks =
                 Fcqrs.aggregate api
                     { Name = "Check"
@@ -289,53 +346,111 @@ let private continueOrAbortIdentity =
             let journaled =
                 Async.RunSynchronously(checks.Send cid (Fcqrs.aggregateId "check") Check (fun _ -> true), 20000)
 
-            // The recovery check a saga sends its originator, built as the saga runtime builds it.
-            let assembly = typeof<IActor>.Assembly
-            let continueOrAbort =
-                match assembly.GetType("FCQRS.Common+ContinueOrAbort`1") with
-                | null -> failwith "ContinueOrAbort was not found."
-                | definition -> definition.MakeGenericType [| typeof<CheckEvent> |]
-            let flags = Reflection.BindingFlags.Public ||| Reflection.BindingFlags.NonPublic
-            let case = Reflection.FSharpType.GetUnionCases(continueOrAbort, flags) |> Array.exactlyOne
-            let recoveryCheck (startingEvent: Event<CheckEvent>) =
-                let details = Reflection.FSharpValue.MakeUnion(case, [| box startingEvent |], flags)
-                let commandType = typedefof<Command<_>>.MakeGenericType [| continueOrAbort |]
-                Reflection.FSharpValue.MakeRecord(
-                    commandType,
-                    [| details
-                       box DateTime.UtcNow
-                       box (Guid.CreateVersion7().ToString() |> ValueLens.CreateAsResult |> Result.value : MessageId)
-                       box (None: AggregateId option)
-                       box cid
-                       box (Map.empty<string, string>) |],
-                    flags)
+            let saga, reply = fakeSaga api.System "check" cid
 
-            // Replies reach the asker only when its name marks it as a saga of this originator.
-            let replies = Collections.Concurrent.BlockingCollection<obj>()
-            let saga =
-                Akkling.Spawn.spawn api.System $"check~Saga~{cid}" (Akkling.Props.props (fun (mailbox: Akkling.Actors.Actor<obj>) ->
+            // Every other subscriber of the correlation ID, such as a pending send that reuses it.
+            let published = Collections.Concurrent.ConcurrentQueue<obj>()
+            use subscribed = new ManualResetEventSlim(false)
+            let probe =
+                Akkling.Spawn.spawn api.System "check-topic-probe" (Akkling.Props.props (fun (mailbox: Akkling.Actors.Actor<obj>) ->
                     let rec receive () =
                         Akkling.ComputationExpressions.actor {
                             let! message = mailbox.Receive()
-                            replies.Add message
+                            match message with
+                            | :? Akka.Cluster.Tools.PublishSubscribe.SubscribeAck -> subscribed.Set()
+                            | :? Akkling.Actors.LifecycleEvent -> ()
+                            | other -> published.Enqueue other
                             return! receive ()
                         }
                     receive ()))
                 |> Akkling.ActorRefs.untyped
-            let entity = checks.Factory "check"
-            let aborted () =
-                let mutable reply: obj = null
-                if replies.TryTake(&reply, TimeSpan.FromSeconds 3.0) then
-                    let replyType = reply.GetType()
-                    replyType.IsGenericType && replyType.GetGenericArguments().[0].Name = "AbortedEvent"
-                else
-                    false
+            let topic = "check~" + (cid |> ValueLens.Value |> ValueLens.Value)
+            Akka.Cluster.Tools.PublishSubscribe.DistributedPubSub.Get(api.System).Mediator.Tell(
+                Akka.Cluster.Tools.PublishSubscribe.Subscribe(topic, probe), probe)
+            Expect.isTrue (subscribed.Wait(TimeSpan.FromSeconds 5.0)) "the probe listens on the correlation topic"
 
-            entity.Tell(recoveryCheck journaled, saga)
-            Expect.isFalse (aborted ()) "the event journaled at that version lets the saga continue"
-            let otherEvent = { journaled with Id = Guid.CreateVersion7().ToString() |> ValueLens.CreateAsResult |> Result.value }
-            entity.Tell(recoveryCheck otherEvent, saga)
-            Expect.isTrue (aborted ()) "a different event at the same version aborts the saga"
+            let entity = checks.Factory "check"
+            let continued () =
+                match reply () with
+                | Some(:? Event<CheckEvent> as event) -> event.Id = journaled.Id
+                | _ -> false
+            let aborted () = isAbort (reply ())
+            let newId () : MessageId = Guid.CreateVersion7().ToString() |> ValueLens.CreateAsResult |> Result.value
+            let otherEvent = { journaled with Id = newId () }
+
+            // The starting event is the latest stored event.
+            entity.Tell(recoveryCheck cid journaled, saga)
+            Expect.isTrue (continued ()) "the latest stored event lets the saga continue"
+            entity.Tell(recoveryCheck cid otherEvent, saga)
+            Expect.isTrue (aborted ()) "a different event at the latest version aborts the saga"
+
+            // A later event is stored, so the answer comes from the journal.
+            Async.RunSynchronously(checks.Send (Fcqrs.newCid ()) (Fcqrs.aggregateId "check") Check (fun _ -> true), 20000)
+            |> ignore
+            entity.Tell(recoveryCheck cid journaled, saga)
+            Expect.isTrue (continued ()) "a stored event lets the saga continue after later events"
+            entity.Tell(recoveryCheck cid otherEvent, saga)
+            Expect.isTrue (aborted ()) "a different event stored at that version aborts the saga"
+            let beyondVersion: Version = 5L |> ValueLens.TryCreate |> Result.value
+            let beyond = { journaled with Id = newId (); Version = beyondVersion }
+            entity.Tell(recoveryCheck cid beyond, saga)
+            Expect.isTrue (aborted ()) "an event beyond the stored versions aborts the saga"
+
+            Expect.equal aborts.Count 3 "every abort is flagged in the trace"
+            Thread.Sleep 500
+            Expect.isEmpty published "answers go only to the saga that asked"
+
+/// An in-memory journal whose next single-event reads fail, as a journal's reads do while its
+/// database is unavailable. Recovery reads are not affected.
+type FlakyReadJournal() =
+    inherit Akka.Persistence.Journal.MemoryJournal()
+    static let failuresLeft = ref 0
+    static member FailNextReads(count: int) = failuresLeft.Value <- count
+
+    override _.ReplayMessagesAsync(context, persistenceId, fromSequenceNr, toSequenceNr, max, recoveryCallback) =
+        if max = 1L && fromSequenceNr = toSequenceNr && Interlocked.Decrement(&failuresLeft.contents) >= 0 then
+            Threading.Tasks.Task.FromException(InvalidOperationException "The test journal cannot read right now.")
+        else
+            base.ReplayMessagesAsync(context, persistenceId, fromSequenceNr, toSequenceNr, max, recoveryCallback)
+
+let private journalReadRetry =
+    testCase "saga lifecycle: a recovery check retries while the journal cannot read"
+    <| fun _ ->
+        let db = Path.Combine(Path.GetTempPath(), $"fcqrs_saga_lifecycle_{Guid.NewGuid():N}.db")
+        let configuration =
+            ConfigurationBuilder()
+                .AddInMemoryCollection(
+                    [ Collections.Generic.KeyValuePair<string, string | null>("config:akka:persistence:journal:plugin", "akka.persistence.journal.flaky")
+                      Collections.Generic.KeyValuePair<string, string | null>(
+                          "config:akka:persistence:journal:flaky:class", "SagaLifecycleTests+FlakyReadJournal, Facade.Tests") ])
+                .Build()
+        let api =
+            Fcqrs.actor configuration NullLoggerFactory.Instance
+                (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite $"Data Source={db};")) "JournalReadRetry"
+        try
+            let checks =
+                Fcqrs.aggregate api
+                    { Name = "Retry"
+                      Initial = 0
+                      Decide = fun (_: Command<CheckCommand>) _ -> PersistEvent Checked
+                      Fold = fun (_: Event<CheckEvent>) state -> state + 1
+                      Snapshots = NoSnapshots
+                      Passivation = PassivationPolicy.Default }
+            Fcqrs.wireSagaStarters api []
+            let cid = Fcqrs.newCid ()
+            let send cid = Async.RunSynchronously(checks.Send cid (Fcqrs.aggregateId "retry") Check (fun _ -> true), 20000)
+            let started = send cid
+            // A later event makes the check read the journal.
+            send (Fcqrs.newCid ()) |> ignore
+            let saga, reply = fakeSaga api.System "retry" cid
+            FlakyReadJournal.FailNextReads 1
+            (checks.Factory "retry").Tell(recoveryCheck cid started, saga)
+            match reply () with
+            | Some(:? Event<CheckEvent> as event) ->
+                Expect.equal event.Id started.Id "the second read found the stored starting event"
+            | other -> failtestf "expected the starting event after a retry, got %A" other
+        finally
+            api.Stop().Wait(TimeSpan.FromSeconds 30.0) |> ignore
 
 type EarlyCommand = Early
 type EarlyEvent = Arrived
@@ -542,7 +657,14 @@ type private CapturingLoggerFactory(sink: Collections.Concurrent.ConcurrentQueue
         member _.AddProvider(_provider) = ()
         member _.Dispose() = ()
 
-let private bootGates (db: string) (lmdb: string) (loggerFactory: Microsoft.Extensions.Logging.ILoggerFactory) =
+/// `parked` lets the saga leave the framework's Started state on GateOpened and reports it.
+/// Without it the saga never leaves Started.
+let private bootGates
+    (db: string)
+    (lmdb: string)
+    (loggerFactory: Microsoft.Extensions.Logging.ILoggerFactory)
+    (parked: ManualResetEventSlim option)
+    =
     let configuration =
         ConfigurationBuilder()
             .AddInMemoryCollection(
@@ -568,52 +690,88 @@ let private bootGates (db: string) (lmdb: string) (loggerFactory: Microsoft.Exte
             { Name = "GateSaga"
               InitialData = ()
               Originator = gates.Factory
-              // The saga never leaves the framework's Started state.
-              HandleEvent = fun _ _ -> UnhandledEvent
-              ApplySideEffects = fun (_: SagaState<unit, GateSagaState>) _ -> Stay, []
+              HandleEvent =
+                fun event state ->
+                    match event, state.State with
+                    | :? Event<GateEvent> as opened, None when parked.IsSome && opened.EventDetails = GateOpened ->
+                        StateChangedEvent Parked
+                    | _ -> UnhandledEvent
+              ApplySideEffects =
+                fun (state: SagaState<unit, GateSagaState>) _ ->
+                    match state.State with
+                    | Parked ->
+                        parked |> Option.iter (fun signal -> signal.Set())
+                        StopSaga, []
               StartOn = fun (event: Event<GateEvent>) -> event.EventDetails = GateOpened
               Snapshots = NoSnapshots }
     Fcqrs.wireSagaStarters api [ saga ]
     api, gates
 
-let private abortBeforeStarted =
-    testCase "saga lifecycle: a saga recovered before Started honours its originator's abort"
+let private deleteRow (db: string) (persistenceIdPattern: string) (sequenceNr: int64) =
+    use connection = new SqliteConnection($"Data Source={db};")
+    connection.Open()
+    use command = connection.CreateCommand()
+    command.CommandText <- "DELETE FROM journal WHERE persistence_id LIKE $pattern AND sequence_number = $sequence"
+    command.Parameters.AddWithValue("$pattern", persistenceIdPattern) |> ignore
+    command.Parameters.AddWithValue("$sequence", sequenceNr) |> ignore
+    command.ExecuteNonQuery() |> ignore
+
+/// Starts GateSaga with GateOpened (gate version 1) and stops the system once the saga has
+/// stored its starting event and Started. `thenSend` runs on the gate before the stop.
+let private startGateSaga (db: string) (lmdb: string) (thenSend: GateCommand list) =
+    let gate = Fcqrs.aggregateId "front"
+    let api, gates = bootGates db lmdb NullLoggerFactory.Instance None
+    try
+        Async.RunSynchronously(gates.Send (Fcqrs.newCid ()) gate OpenGate (fun _ -> true), 20000) |> ignore
+        let deadline = DateTime.UtcNow.AddSeconds 10.0
+        while journalCount db "GateSaga/%" < 2L && DateTime.UtcNow < deadline do
+            Thread.Sleep 50
+        for command in thenSend do
+            Async.RunSynchronously(gates.Send (Fcqrs.newCid ()) gate command (fun _ -> true), 20000) |> ignore
+    finally
+        api.Stop().Wait(TimeSpan.FromSeconds 30.0) |> ignore
+    Expect.equal (journalCount db "GateSaga/%") 2L "the saga stored its starting event and Started"
+    // A stop between the saga's two writes leaves only its starting event.
+    deleteRow db "GateSaga/%" 2L
+    Expect.equal (journalCount db "GateSaga/%") 1L "only the starting event remains"
+
+let private storedStartContinues =
+    testCase "saga lifecycle: a saga recovered before Started continues when its starting event is stored"
     <| fun _ ->
         let db = Path.Combine(Path.GetTempPath(), $"fcqrs_saga_gate_{Guid.NewGuid():N}.db")
         let lmdb = Path.Combine(Path.GetTempPath(), $"fcqrs_saga_gate_lmdb_{Guid.NewGuid():N}")
-        let gate = Fcqrs.aggregateId "front"
-        let sagaRows () = journalCount db "GateSaga/%"
-        // GateOpened (version 1) starts the saga, which journals its starting event and Started.
-        // Bumped (version 2) moves the originator past the starting event.
-        let api1, gates1 = bootGates db lmdb NullLoggerFactory.Instance
-        try
-            Async.RunSynchronously(gates1.Send (Fcqrs.newCid ()) gate OpenGate (fun _ -> true), 20000) |> ignore
-            let deadline = DateTime.UtcNow.AddSeconds 10.0
-            while sagaRows () < 2L && DateTime.UtcNow < deadline do
-                Thread.Sleep 50
-            Async.RunSynchronously(gates1.Send (Fcqrs.newCid ()) gate Bump (fun _ -> true), 20000) |> ignore
-        finally
-            api1.Stop().Wait(TimeSpan.FromSeconds 30.0) |> ignore
-        Expect.equal (sagaRows ()) 2L "the saga journaled its starting event and Started"
-        // A stop between the two saga writes leaves only the starting event.
-        (use connection = new SqliteConnection($"Data Source={db};")
-         connection.Open()
-         use command = connection.CreateCommand()
-         command.CommandText <- "DELETE FROM journal WHERE persistence_id LIKE 'GateSaga/%' AND sequence_number = 2"
-         command.ExecuteNonQuery() |> ignore)
-        Expect.equal (sagaRows ()) 1L "only the starting event remains"
-        // Remember-entities recovers the saga before Started; the originator is at version 2,
-        // so it answers the saga's recovery check with an abort.
+        // Bumped (gate version 2) is stored after the saga's starting event.
+        startGateSaga db lmdb [ Bump ]
+        // Remember-entities recovers the saga before Started. The gate is at version 2 and finds
+        // version 1 in its journal, so it answers with the starting event.
         let logs = Collections.Concurrent.ConcurrentQueue<string>()
-        let api2, _ = bootGates db lmdb (new CapturingLoggerFactory(logs))
+        use parked = new ManualResetEventSlim(false)
+        let api, _ = bootGates db lmdb (new CapturingLoggerFactory(logs)) (Some parked)
         try
-            let aborted () = logs.ToArray() |> Array.exists (fun line -> line = "GateSaga | Aborting")
+            Expect.isTrue (parked.Wait(TimeSpan.FromSeconds 25.0)) "the saga continued from its stored starting event"
+            Expect.isFalse (logs.ToArray() |> Array.contains "GateSaga | Aborting") "the saga was not aborted"
+        finally
+            api.Stop().Wait(TimeSpan.FromSeconds 30.0) |> ignore
+
+let private abortBeforeStarted =
+    testCase "saga lifecycle: a saga recovered before Started ends when its starting event was never stored"
+    <| fun _ ->
+        let db = Path.Combine(Path.GetTempPath(), $"fcqrs_saga_gate_{Guid.NewGuid():N}.db")
+        let lmdb = Path.Combine(Path.GetTempPath(), $"fcqrs_saga_gate_lmdb_{Guid.NewGuid():N}")
+        startGateSaga db lmdb []
+        // The gate's own write of the starting event failed after the saga started.
+        deleteRow db "Gate/%" 1L
+        Expect.equal (journalCount db "Gate/%") 0L "the gate's journal does not hold the starting event"
+        let logs = Collections.Concurrent.ConcurrentQueue<string>()
+        let api, _ = bootGates db lmdb (new CapturingLoggerFactory(logs)) None
+        try
+            let aborted () = logs.ToArray() |> Array.contains "GateSaga | Aborting"
             let deadline = DateTime.UtcNow.AddSeconds 25.0
             while not (aborted ()) && DateTime.UtcNow < deadline do
                 Thread.Sleep 100
-            Expect.isTrue (aborted ()) "the saga ends when its starting event was never the originator's latest"
+            Expect.isTrue (aborted ()) "the saga ends when its originator never stored its starting event"
         finally
-            api2.Stop().Wait(TimeSpan.FromSeconds 30.0) |> ignore
+            api.Stop().Wait(TimeSpan.FromSeconds 30.0) |> ignore
 
 let tests =
     testSequenced (
@@ -624,8 +782,10 @@ let tests =
               recoveredReadiness
               stopDuringSave
               continueOrAbortIdentity
+              journalReadRetry
               starterWiredLate
               customSagaNames
               initialStateDeadline
+              storedStartContinues
               abortBeforeStarted ]
     )

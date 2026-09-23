@@ -149,15 +149,19 @@ module Parked =
           Snapshots = Every 2 }
 
 /// A saga that starts on a big increment and then never leaves the framework's
-/// Started state (its handleEvent ignores everything). Used to prove restart
-/// detection: a saga recovering in Started re-sends ContinueOrAbort carrying its
-/// starting event, and an originator that has moved past that event's version
-/// must answer with AbortedEvent (observable as an "Abort:" span) instead of
-/// re-publishing a stale event.
+/// Started state (its handleEvent records and ignores everything). Used to prove
+/// restart detection: a saga recovering in Started re-sends ContinueOrAbort carrying
+/// its starting event, and an originator that has moved past that event's version
+/// must still answer with the event when it stored it.
 module Handshake =
     type State = Idle // never entered: the saga parks in the framework's Started
 
-    let private handleEvent (_: obj) (_: SagaState<unit, State option>) : EventAction<State> = UnhandledEvent
+    /// Every event the saga has received.
+    let received = Collections.Concurrent.ConcurrentQueue<obj>()
+
+    let private handleEvent (event: obj) (_: SagaState<unit, State option>) : EventAction<State> =
+        received.Enqueue event
+        UnhandledEvent
 
     let private applySideEffects (sagaState: SagaState<unit, State>) _recovering =
         match sagaState.State with
@@ -381,13 +385,13 @@ let private bootAbort (db: string) (lmdb: string) =
     api, counter
 
 let private restartDetectionTest =
-    testCase "facade: restart detection - a saga recovering against a rolled-forward originator aborts"
+    testCase "facade: restart detection - a saga recovering against a rolled-forward originator continues on its stored start"
     <| fun _ ->
         let db = Path.Combine(Path.GetTempPath(), sprintf "fcqrs_abort_%s.db" (Guid.NewGuid().ToString("N")))
         let lmdb = Path.Combine(Path.GetTempPath(), sprintf "fcqrs_abort_lmdb_%s" (Guid.NewGuid().ToString("N")))
 
-        // The abort is observed through its "Abort:" span: the version-mismatch
-        // branch is the only place the aggregate emits one.
+        // An abort would be observed through its "Abort:" span, which the aggregate emits
+        // whenever it answers a recovery check with AbortedEvent.
         let aborts = Collections.Concurrent.ConcurrentBag<string>()
         use listener = new ActivityListener()
         listener.ShouldListenTo <- fun src -> src.Name = Telemetry.ActivitySourceName
@@ -407,7 +411,7 @@ let private restartDetectionTest =
         |> Async.RunSynchronously
         |> ignore
 
-        // Roll the originator forward: v2 makes the saga's starting event (v1) stale.
+        // Roll the originator forward: v2 is stored after the saga's starting event (v1).
         counter1.Send (Fcqrs.newCid ()) (Fcqrs.aggregateId "drift") (Counter.Increment 5)
             (function Counter.Incremented _ -> true | _ -> false)
         |> Async.RunSynchronously
@@ -433,17 +437,23 @@ let private restartDetectionTest =
 
         // Phase 2: reboot on the same journal. remember-entities resurrects the
         // saga; recovering in Started it sends ContinueOrAbort with its v1 starting
-        // event, the originator recovers at v2, versions differ -> the aggregate
-        // must answer AbortedEvent (and emit the Abort: span) instead of
-        // re-publishing the stale event.
+        // event. The originator recovers at v2, finds v1 stored in its journal, and
+        // answers with the starting event, which the saga receives again.
+        Handshake.received.Clear()
         let api2, _ = bootAbort db lmdb
 
+        let isStartingEvent (event: obj) =
+            match event with
+            | :? Event<Counter.Event> as event -> event.EventDetails = Counter.Incremented 100
+            | _ -> false
+
         let mutable waits = 0
-        while aborts.IsEmpty && waits < 80 do
+        while not (Handshake.received |> Seq.exists isStartingEvent) && waits < 80 do
             waits <- waits + 1
             Threading.Thread.Sleep 250
 
-        Expect.isFalse aborts.IsEmpty "phase 2: the version mismatch fired restart detection (AbortedEvent path)"
+        Expect.isTrue (Handshake.received |> Seq.exists isStartingEvent) "phase 2: the recovered saga received its stored starting event"
+        Expect.isEmpty aborts "phase 2: a stored starting event is not aborted"
         api2.Stop().Wait(TimeSpan.FromSeconds 30.0) |> ignore
 
 let private roundTripTest =

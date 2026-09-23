@@ -42,6 +42,130 @@ module internal Internal =
         /// Set by handleEffect when the in-flight persist should be followed by
         /// an immediate snapshot (PersistAndSnapshot); cleared after saving.
         ManualSnapshotRequested: bool ref }
+    /// Flags an aborted saga recovery in the trace, so aborted flows are findable without tag
+    /// filters. An instantaneous Error span.
+    let markRestartDetected (e: Event<'TEvent>) (currentVersion: int64) (actorName: string) =
+        if activitySource.HasListeners() then
+            let eventCid = e.CorrelationId |> ValueLens.Value |> ValueLens.Value
+            let eventCase = caseNameOf (box e.EventDetails)
+
+            let act =
+                match tryTraceContext e.Metadata eventCid with
+                | Some parent -> activitySource.StartActivity($"Abort:{eventCase}", ActivityKind.Internal, parent)
+                | None -> activitySource.StartActivity($"Abort:{eventCase}", ActivityKind.Internal)
+
+            match act with
+            | null -> ()
+            | act ->
+                act.SetTag("cid", eventCid) |> ignore
+                act.SetTag("actor", actorName) |> ignore
+                act.SetTag("event.type", payloadTag (box e.EventDetails)) |> ignore
+                act.SetTag("version.current", currentVersion) |> ignore
+                act.SetTag("version.event", e.Version |> ValueLens.Value) |> ignore
+
+                act.SetStatus(ActivityStatusCode.Error, "Restart detected: the originator did not store the saga's starting event")
+                |> ignore
+
+                act.Dispose()
+
+    /// Reports whether the event stored at a saga's starting-event version is that event. The
+    /// originator has stored later events, so its state no longer shows this; its journal does.
+    /// Reads with the replay request recovery uses, through the aggregate's own journal plugin.
+    /// Each attempt has its own reader, so a late reply cannot answer a newer attempt. Attempts
+    /// repeat while the journal cannot answer and stop when the actor system terminates.
+    let answerFromJournal
+        (system: Akka.Actor.ActorSystem)
+        (logger: ILogger)
+        (persistenceId: string)
+        (startingEvent: Event<'TEvent>)
+        (answer: bool -> unit)
+        =
+        let journal = Akka.Persistence.Persistence.Instance.Apply(system).JournalFor(null)
+        let sequenceNr = startingEvent.Version |> ValueLens.Value
+
+        let readStored () =
+            let stored = Threading.Tasks.TaskCompletionSource<obj option>(Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously)
+
+            let reader =
+                spawnAnonymous system (props (fun (reader: Actor<obj>) ->
+                    journal.Tell(
+                        Akka.Persistence.ReplayMessages(sequenceNr, sequenceNr, 1L, persistenceId, untyped reader.Self),
+                        untyped reader.Self)
+
+                    let rec receive (payload: obj option) =
+                        actor {
+                            let! message = reader.Receive()
+
+                            match message with
+                            | :? Akka.Persistence.ReplayedMessage as replayed -> return! receive (Some replayed.Persistent.Payload)
+                            | :? Akka.Persistence.RecoverySuccess ->
+                                stored.TrySetResult payload |> ignore
+                                return! Stop
+                            | :? Akka.Persistence.ReplayMessagesFailure as failure ->
+                                stored.TrySetException failure.Cause |> ignore
+                                return! Stop
+                            | _ -> return! receive payload
+                        }
+
+                    receive None))
+
+            task {
+                try
+                    return! stored.Task.WaitAsync(TimeSpan.FromSeconds 30.0)
+                finally
+                    // A reader that answered has stopped already; one that timed out must not linger.
+                    (untyped reader).Tell(Akka.Actor.PoisonPill.Instance, Akka.Actor.ActorRefs.NoSender)
+            }
+
+        let isStartingEvent (payload: obj option) =
+            match payload with
+            | None -> false
+            | Some payload ->
+                let event =
+                    try
+                        EventUpcasting.Internal.upcastEvent system payload
+                    with error ->
+                        logger.LogError(error, "Fatal error upcasting aggregate history for {PersistenceId}.", persistenceId)
+                        fatalFailFast null "Process terminated due to aggregate event-upcast error" error
+                        failwith "unreachable"
+
+                match event with
+                | :? Event<'TEvent> as event -> event.Id = startingEvent.Id && event.Version = startingEvent.Version
+                | _ -> false
+
+        task {
+            let mutable attempt = 0
+            let mutable answered = false
+
+            while not answered && not system.WhenTerminated.IsCompleted do
+                let! outcome =
+                    task {
+                        try
+                            let! payload = readStored ()
+                            return Choice1Of2 payload
+                        with error ->
+                            return Choice2Of2 error
+                    }
+
+                match outcome with
+                | Choice1Of2 payload ->
+                    answer (isStartingEvent payload)
+                    answered <- true
+                | Choice2Of2 error ->
+                    let delay = TimeSpan.FromSeconds(min 30.0 (2.0 ** float attempt))
+
+                    logger.LogWarning(
+                        error,
+                        "Could not read {PersistenceId} at sequence {SequenceNr} to answer a saga's recovery check; retrying in {Delay}.",
+                        persistenceId,
+                        sequenceNr,
+                        delay)
+
+                    attempt <- attempt + 1
+                    do! Threading.Tasks.Task.Delay delay
+        }
+        |> ignore
+
     let runActor<'TEvent , 'TState when 'TEvent : not null>
         (snapshotEvery: int64 option)
         (manualSnapshotRequested: bool ref)
@@ -73,12 +197,14 @@ module internal Internal =
         // journaled ack from a deferred/publish-only one — read-your-writes
         // needs this to know whether a projection event will ever follow.
         // Stamped ONLY on the outbound copy; the journal record stays clean.
+        let stamp journaled (event: Event<'TEvent>) =
+            { event with
+                Metadata =
+                    event.Metadata
+                    |> Map.add Common.JournaledMetadataKey (if journaled then "true" else "false") }
+
         let publishEvent journaled (event: Event<'TEvent>) =
-            let stamped =
-                { event with
-                    Metadata =
-                        event.Metadata
-                        |> Map.add Common.JournaledMetadataKey (if journaled then "true" else "false") }
+            let stamped = stamp journaled event
 
             SagaStarter.Internal.publishEvent
                 logger
@@ -151,79 +277,64 @@ module internal Internal =
                 // The snapshot does not record which event holds its version.
                 lastJournaledIdRef.Value <- None
                 return! snap |> set
+            // A saga recovered before it leaves Started asks whether this aggregate stored its
+            // starting event: the saga-start handshake runs before the write, and the write can fail.
             | :? Command<ContinueOrAbort<'TEvent>> as (cmd) ->
                 let (ContinueOrAbort(e: Event<'TEvent>)) = cmd.CommandDetails
                 let currentVersion = state.Version |> ValueLens.Value
                 let eventVersion = e.Version |> ValueLens.Value
+                let saga = untyped (mailbox.Sender())
+                let self = untyped mailbox.Self
+                let actorName = mailbox.Self.Path.Name
 
-                // The saga's starting event must be the event journaled at that version. After a
-                // failed save, a different event can hold the same version; continuing would
-                // start the workflow from an event that was never journaled. After recovery
-                // from a snapshot with no later events the identity is unknown, so only the
-                // version is compared.
-                let sameEvent =
-                    match lastJournaledIdRef.Value with
-                    | Some id -> id = e.Id
-                    | None -> true
+                let abortedEvent =
+                    { EventDetails = AbortedEvent
+                      CreationDate = mailbox.System.Scheduler.Now.UtcDateTime
+                      Id = Guid.CreateVersion7().ToString() |> ValueLens.CreateAsResult |> Result.value
+                      Sender =
+                        actorName
+                        |> SagaStarter.Internal.entityIdOf
+                        |> ValueLens.CreateAsResult
+                        |> Result.value
+                        |> Some
+                      CorrelationId = e.CorrelationId
+                      Version = state.Version
+                      Metadata = e.Metadata }
 
-                if currentVersion = eventVersion && sameEvent then
-                    publishEvent true e
-                    return! state |> set
-                else
-                    // Restart detection fired: flag it in the trace so aborted flows
-                    // are findable without tag filters. Instantaneous Error span.
-                    if activitySource.HasListeners() then
-                        let eventCid = e.CorrelationId |> ValueLens.Value |> ValueLens.Value
-
-                        let eventCase = caseNameOf (box e.EventDetails)
-
-                        let act =
-                            match tryTraceContext e.Metadata eventCid with
-                            | Some parent ->
-                                activitySource.StartActivity($"Abort:{eventCase}", ActivityKind.Internal, parent)
-                            | None -> activitySource.StartActivity($"Abort:{eventCase}", ActivityKind.Internal)
-
-                        match act with
-                        | null -> ()
-                        | act ->
-                            act.SetTag("cid", eventCid) |> ignore
-                            act.SetTag("actor", mailbox.Self.Path.Name) |> ignore
-                            act.SetTag("event.type", payloadTag (box e.EventDetails)) |> ignore
-                            act.SetTag("version.current", currentVersion) |> ignore
-                            act.SetTag("version.event", eventVersion) |> ignore
-
-                            act.SetStatus(
-                                ActivityStatusCode.Error,
-                                "Restart detected: event version does not match aggregate version")
-                            |> ignore
-
-                            act.Dispose()
-
-                    let abortedEvent =
-                        { EventDetails = AbortedEvent
-                          CreationDate = mailbox.System.Scheduler.Now.UtcDateTime
-                          Id = Guid.CreateVersion7().ToString() |> ValueLens.CreateAsResult |> Result.value
-                          Sender =
-                            mailbox.Self.Path.Name
-                            |> SagaStarter.Internal.entityIdOf
-                            |> ValueLens.CreateAsResult
-                            |> Result.value
-                            |> Some
-                          CorrelationId = e.CorrelationId
-                          Version = state.Version
-                          Metadata = e.Metadata }
-                    // Only notify the specific saga that asked (via ContinueOrAbort sender);
-                    // do NOT broadcast via mediator — other sagas sharing this CID must
-                    // not be passivated by another saga's abort.
-                    let sender = mailbox.Sender()
-                    if sender.Path.Name |> SagaStarter.Internal.entityIdOf |> SagaStarter.Internal.isSaga then
-                        sender <! abortedEvent
+                // Only the saga that asked receives the answer. Publishing the starting event again
+                // would reach every subscriber of its correlation ID, and a pending send that reuses
+                // the ID could take the old event as its reply. Other sagas sharing the ID must not
+                // be passivated by this saga's abort either.
+                let answer stored =
+                    if stored then
+                        saga.Tell(stamp true e :> obj, self)
                     else
-                        logger.LogWarning(
-                            "ContinueOrAbort arrived from non-saga sender {sender}; dropping AbortedEvent (contract violation)",
-                            sender.Path.Name)
+                        markRestartDetected e currentVersion actorName
+                        saga.Tell(abortedEvent :> obj, self)
 
-                    return! state |> set
+                if not (saga.Path.Name |> SagaStarter.Internal.entityIdOf |> SagaStarter.Internal.isSaga) then
+                    logger.LogWarning(
+                        "ContinueOrAbort arrived from non-saga sender {sender}; ignoring it (contract violation)",
+                        saga.Path.Name)
+                elif currentVersion = eventVersion then
+                    // After a failed save, a different event can hold the same version. After
+                    // recovery from a snapshot with no later events the identity is unknown, so only
+                    // the version is compared.
+                    let sameEvent =
+                        match lastJournaledIdRef.Value with
+                        | Some id -> id = e.Id
+                        | None -> true
+
+                    answer sameEvent
+                elif currentVersion < eventVersion then
+                    // This check runs after any write in progress, so the event was never stored.
+                    answer false
+                else
+                    // Later events were stored after the starting event, and this aggregate's state
+                    // does not show whether the starting event is among them. Its journal does.
+                    answerFromJournal mailbox.System logger mailbox.Pid e answer
+
+                return! state |> set
 
             // actor level events will come here
             | Deferred mailbox (:? Common.Event<'TEvent> as event) ->

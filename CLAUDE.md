@@ -89,6 +89,8 @@ Keep these distinctions intact in code comments and documentation.
 - A saga stores workflow progress and issues commands across aggregate boundaries.
 - Recovery re-drives side effects for recovered state. Commands it issues must be retry-safe or
   explicitly recovery-aware.
+- A saga recovered before it leaves `Started` continues if its originator stored its starting event,
+  and ends otherwise.
 - A persisted saga state cannot make an external operation exactly once.
 - External calls need idempotency keys, timeouts, retry policy, and compensation or intervention paths.
 - Avoid circular workflows and give every expected event a domain timeout, either hand-rolled with

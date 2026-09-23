@@ -20,11 +20,15 @@ Fixes from a review of the core. Existing journal rows, snapshots, and entity na
 - **A recovered saga keeps its readiness.** Expectation retries and ignored events reinstated
   handshake flags from before the saga resubscribed, so a repeated start went unanswered and the
   originator's handshake timeout terminated the process.
-- **Saga recovery checks the identity of its starting event.** `ContinueOrAbort` compared only
-  versions, so after a failed save a saga could continue from an event that was never journaled while
-  another event held that version. An originator recovered from a snapshot with no later events still
-  compares only the version. An abort that answers an outdated recovery check no longer ends a saga
-  that has moved on.
+- **A recovered saga continues whenever its originator stored its starting event.** A saga recovered
+  before it left `Started` was aborted as soon as its originator had stored any later event, so a
+  restart could silently drop the workflow of a stored event. An originator that has moved past the
+  starting event now reads the event stored at that version from its journal. It compares event IDs as
+  well as versions, because after a failed save another event can hold the same version; an originator
+  recovered from a snapshot with no later events still compares only the version. Answers go only to
+  the saga that asked, so a continue answer no longer republishes an old event to every subscriber of
+  its correlation ID. An abort that answers an outdated recovery check no longer ends a saga that has
+  moved on.
 - **Passivation and shard hand-off wait for saves in flight.** Entities stop through an internal
   message instead of `PoisonPill`, which bypassed the persistence stash and dropped the reply of a save
   in flight and the commands queued behind it. This includes a saga's own passivation after

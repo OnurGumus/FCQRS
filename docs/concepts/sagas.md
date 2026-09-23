@@ -228,18 +228,24 @@ exactly-once messaging.
 
 ## The starting event also protects resumption
 
-During recovery FCQRS uses the stored starting event to check the originator exchange and continue the
-startup protocol safely. A saga recovered before it leaves `Started` asks its originator whether the
-starting event is the event journaled at the originator's current version. The originator compares
-the version and the event ID. The ID matters after a failed save, when another event can hold the
-same version. An originator recovered from a snapshot with no later events does not know which event
-holds its version, so it compares only the version.
+A saga starts before its originator stores the starting event: the saga-start handshake subscribes the
+saga first, so it cannot miss the originator's publication. If the originator's write then fails, the
+saga holds a starting event that was never stored. A saga recovered before it leaves `Started` therefore
+asks its originator whether the starting event is stored.
 
-If the originator has moved past the starting event, or holds another event at its version, the check
-fails. The originator answers the saga with an `AbortedEvent`, visible as an `Abort:` span and in the
-message-flow logs, and the saga passivates instead of continuing from stale assumptions. An
-`AbortedEvent` that arrives after the saga has stored a newer state answers an earlier check, and the
-saga ignores it.
+The originator compares the event stored at the starting event's version with the starting event, by
+version and event ID. The ID matters after a failed save, when another event can hold the same version.
+If that version is the originator's latest, it compares with the event it holds in memory. If it has
+stored later events, it reads that one event from its journal, through the same journal plugin it
+recovers from, and retries while the journal cannot be read; the saga waits in `Started` meanwhile. An
+originator recovered from a snapshot with no later events does not know which event holds its version,
+so it compares only the version.
+
+If the starting event is stored, the originator sends it to the saga, and the saga continues as it would
+have without the restart. If another event holds that version, or none does, the originator answers
+with an `AbortedEvent`, visible as an `Abort:` span and in the message-flow logs, and the saga
+passivates. Both answers go only to the saga that asked. An `AbortedEvent` that arrives after the saga
+has stored a newer state answers an earlier check, and the saga ignores it.
 
 This check protects the FCQRS actor conversation. It does not make an independent database, payment
 provider, or HTTP service part of the saga journal transaction. External operations still require
