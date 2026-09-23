@@ -10,8 +10,8 @@ index: 4
 The journal is excellent at preserving what happened. It is a poor shape for most questions a user
 asks.
 
-An order page wants one query-ready result containing customer, lines, totals, payment state, delivery
-state, and a timeline. Reconstructing several aggregates and scanning their event histories for every
+A statement page wants one query-ready result: the owner, every deposit, withdrawal, and transfer with
+its memo, and the balance after each. Loading the account and scanning its event history for every
 page request would make queries slow and couple the user interface to write-side internals.
 
 The read side exists to turn stored facts into useful answers ahead of time.
@@ -27,9 +27,9 @@ A **projection** is the event-handling process. A **read model** is the data it 
 For example:
 
 ```text
-OrderPlaced      -> insert order_summary row
-PaymentReceived  -> set payment_status = 'paid'
-OrderShipped     -> set delivery_status = 'shipped'
+Opened           -> insert a statement row with a balance of 0
+Deposited        -> insert a row, balance = previous balance + amount
+TransferSent     -> insert a row, balance = previous balance - amount
 ```
 
 The read model may be a SQL table, document, search index, graph, or cache. Its shape follows a query,
@@ -38,9 +38,9 @@ and understandable.
 
 <img src="../img/read-path.svg" alt="Stored events flow through a projection into query-ready read-model tables" width="900"/>
 
-Several projections can consume the same event. `OrderPlaced` might update an order page, a customer
-history, a warehouse queue, and a sales report. Those read models can evolve independently because
-they share facts rather than one schema.
+Several projections can consume the same event. `TransferSent` might update a statement, a list of
+large transfers, a fraud review queue, and a monthly report. Those read models can evolve
+independently because they share facts rather than one schema.
 
 ## Follow the event stream with an offset
 
@@ -50,17 +50,19 @@ the last position it committed.
 Imagine this stream:
 
 ```text
-offset 41  OrderPlaced
-offset 42  PaymentReceived
-offset 43  OrderShipped
+offset 41  Deposited 100     alice
+offset 42  Withdrawn 30      alice
+offset 43  TransferSent t1   alice
 ```
 
-If the projection has committed offset 42, it resumes after 42 and handles `OrderShipped`. It does not
+If the projection has committed offset 42, it resumes after 42 and handles `TransferSent`. It does not
 ask each aggregate for current state. The journal is the source; the offset is the projection's
 bookmark.
 
 An aggregate version and a projection offset are different counters. A version orders events for one
-aggregate identity. An offset locates an event in the stream a projection consumes.
+aggregate identity. An offset locates an event in the stream a projection consumes. The transactional
+projection in the [tutorial](../tutorial/show-a-statement.html) keeps its progress per aggregate
+instead: the version of the last event it committed for each account.
 
 ## The transaction boundary creates reliable progress
 
@@ -84,8 +86,8 @@ afterwards), or another explicit coordination design.
 
 ## Event order is part of the model
 
-A projection should make invalid histories visible. If `OrderShipped` arrives without `OrderPlaced`,
-silently inventing a partial row hides a broken contract or rebuild. Failing the projection exposes the
+A projection should make invalid histories visible. If `Deposited` arrives for an account whose
+`Opened` the projection never saw, silently inventing a partial row hides a broken contract or rebuild. Failing the projection exposes the
 problem at the event that caused it.
 
 Handlers should also define how repeated or superseded facts behave. A transactional offset prevents
@@ -107,9 +109,9 @@ observe immediately after a command.
 Some interactions can redirect immediately and allow the page to catch up. Others must show the new
 result before replying. FCQRS carries a correlation id from the command to its event, so an active
 caller can subscribe to that id before sending and wait until the required projection publishes the
-matching event. The full request flow — the subscribe-before-send ordering, deferred replies that
-skip the wait, and the timeouts that bound it — is developed in
-[Correlation IDs and read-your-writes](correlation-ids.html).
+matching event. [Correlation IDs and read-your-writes](correlation-ids.html) develops the full
+request flow: the subscribe-before-send ordering, deferred replies that skip the wait, and the
+timeouts that bound it.
 
 ## Read models are disposable, rebuilds are not casual
 
@@ -132,6 +134,6 @@ Start from a consumer and a query, not from the event types. Write the result sh
 like to receive in one read. Then determine which events create and update it, which fields need
 indexes, and how the projection handles missing or out-of-order facts.
 
-[Query a registered user](../tutorial/2-running-it.html) shows a projection in the runnable sample. Use
-[Add a projection](../how-to/add-a-projection.html), [Read your writes](../how-to/read-your-writes.html),
+The [tutorial's statement](../tutorial/show-a-statement.html) puts these ideas into a running program.
+Use [Add a projection](../how-to/add-a-projection.html), [Read your writes](../how-to/read-your-writes.html),
 and [Rebuild a read model](../how-to/rebuild-a-read-model.html) for focused implementation recipes.

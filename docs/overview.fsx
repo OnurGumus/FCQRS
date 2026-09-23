@@ -8,39 +8,67 @@ index: 1
 *)
 
 (**
-# FCQRS
+# Why FCQRS
 
-FCQRS runs event-sourced applications on Akka.NET, with F# and C# APIs. Your code decides which events
-to save and how they change state. FCQRS stores those events and rebuilds state after a restart.
+## One model for every job
 
-**[Register a user](get-started.html)** shows the code and runs it with SQLite on .NET 10.
+Many .NET applications map their tables to one object graph, often with Entity Framework. A customer has
+addresses, contacts, orders, and a cart. An order has items, an invoice, payments, and shipments. An item
+points to a product and a discount. Every change and every screen goes through that one graph.
 
-## Follow one registration
+<a href="img/two-models.png"><img src="img/two-models.png" alt="Left: a traditional Entity Framework graph in which customers, orders, items, invoices, payments, carts, products, and discounts all reference each other. Right: the CQRS split, with separate Customer and Order aggregates on the command side and flat read models such as OrderSummaryDto and CustomerOrdersDto on the query side." width="1400"/></a>
 
-1. `RegisterUser("Alice")` asks one account to register a name. This request is a **command**.
-2. The account's rule checks its current state and returns `UserRegistered("Alice")`, an **event**.
-3. FCQRS stores that event in the **journal**, the account's event history, and applies it to state.
-4. A **projection** reads the saved event and fills a query view. The sample queries that view for Alice's name.
+The left side of the picture shows where this leads as the application grows:
 
-The account's state and rules form an **aggregate**. Its commands run one at a time; different accounts
-can run independently. A query view updates asynchronously, so the sample waits for that view before
-reading it.
+- **Changes reach too far.** Cancelling an order loads part of the graph and saves whatever changed. The
+  rule that a shipped order cannot be cancelled lives in one of those classes, and two requests can change
+  the same order at the same time unless you add concurrency checks.
+- **Screens pull in different directions.** The order list, the order page, and the customer page each
+  need a different shape. They all join through the same graph, so changing it for one screen affects
+  the others.
 
-<img src="img/architecture.svg" alt="A command enters an aggregate; stored events rebuild its state and feed projections and sagas; queries read a projection's view." width="900"/>
+## Two models
 
-## Continue with a task
+CQRS, Command Query Responsibility Segregation, gives each job its own model. The right side of the
+picture shows the split:
 
-- [Try another registration](tutorial/1-the-aggregate.html): change the name and account ID.
-- [Query a registered user](tutorial/2-running-it.html): see the projection and runtime setup.
-- [Test your domain](how-to/test-your-domain.html): check registration and replay without a database.
-- [Register over HTTP](tutorial/http-api.html), optional: add POST and GET endpoints.
-- [Task guides](how-to/index.html): add durable query storage, workflows, or operational configuration.
-- [Concepts](concepts/index.html): understand the guarantees and their boundaries.
+- The **command side** is a set of small **aggregates**. Each one owns its data and the rules that protect
+  it, refers to other aggregates only by ID, and changes in a transaction of its own.
+- The **query side** is a set of **read models**, each shaped for one screen or report. They are flat,
+  duplicate data where that helps, and contain no business rules.
+
+## Events connect the two sides
+
+When an aggregate accepts a command, it records what happened as an **event**, such as `OrderShipped`.
+Read models are updated from those events.
+
+FCQRS also keeps the events as the aggregate's stored data, which is called **event sourcing**. The
+database holds every change in order, and an aggregate's current state is rebuilt from its events. A new
+read model can be built from the history that already exists.
+
+## What FCQRS does
+
+You write the rules of each aggregate: which event a command produces, and how an event changes the
+state. FCQRS runs one instance per aggregate ID and hands it one command at a time. It stores the events,
+rebuilds the state after a restart, and updates your read models. It also runs workflows that span
+several aggregates, called **sagas**. FCQRS runs on Akka.NET and has F# and C# APIs.
+
+## Learn it by building a bank
+
+The tutorial applies this split to a small bank. Each account is an aggregate, and a statement is a read
+model. Every step is a program you run.
+
+1. [Open an account](tutorial/open-an-account.html): commands, events, and the journal.
+2. [Withdraw money](tutorial/withdraw-money.html): rules, rejections, and one command at a time.
+3. [Restart the bank](tutorial/restart-the-bank.html): loading an account and snapshots.
+4. [Show a statement](tutorial/show-a-statement.html): read models and projections.
+5. [Transfer money](tutorial/transfer-money.html): sagas and commands that are safe to repeat.
+6. [Add a memo](tutorial/add-a-memo.html): changing events the journal already holds.
 
 ## When to use FCQRS
 
-FCQRS is useful when several callers can change the same entity, decisions depend on its history,
-or workflows must recover after a restart. It adds an event journal, asynchronous query views, and an
+FCQRS is useful when several callers can change the same data, decisions depend on history, or workflows
+must recover after a restart. It adds an event journal, read models that update asynchronously, and an
 actor runtime to operate. For an application that only edits and reads rows, a conventional database
 application may need less infrastructure.
 *)

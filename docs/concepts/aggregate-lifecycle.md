@@ -37,8 +37,8 @@ explains how the aggregate reached its state.
 
 ## Deferring returns an outcome without recording it
 
-A command does not always create a new fact. Cancelling an already shipped order may need to return
-`OrderAlreadyShipped`, but that verdict does not change the order.
+A command does not always create a new fact. A withdrawal larger than the balance returns
+`Rejected "Insufficient funds"`, but that verdict does not change the account.
 
 `DeferEvent` follows this path:
 
@@ -58,9 +58,9 @@ restart.
 
 Use a deferred reply for a rejection or idempotent verdict whose meaning is “nothing new happened.”
 Persist the outcome instead when it must become part of history, change future decisions, or reach
-journal projections. The `CancelOrder` decide/fold pair in
-[Aggregates and the write side](aggregates.html) shows the pattern: `OrderAlreadyShipped` and
-`AlreadyCancelled` are deferred replies whose folds preserve state.
+journal projections. The withdrawal decide/fold pair in
+[Aggregates and the write side](aggregates.html) shows the pattern: `Rejected` is a deferred reply
+whose fold preserves state.
 
 ## Snapshots shorten recovery
 
@@ -118,19 +118,19 @@ and the limits that apply.
 
 ## See the three mechanisms on one timeline
 
-Consider this order history:
+Consider this account history:
 
 ```text
-v1  OrderPlaced       persisted
-v2  OrderPaid         persisted, snapshot saved at v2
-v3  OrderShipped      persisted
-    CancelOrder       returns deferred OrderAlreadyShipped, no v4
+v1  Opened "Alice"    persisted
+v2  Deposited 100     persisted, snapshot saved at v2
+v3  Withdrawn 30      persisted
+    Withdraw 500      returns deferred Rejected, no v4
     actor becomes idle and passivates
     another command arrives
-    load snapshot v2, replay v3, recover Shipped
+    load snapshot v2, replay v3, recover a balance of 70
 ```
 
-The deferred reply does not reappear during recovery, which is safe because its fold left the order
+The deferred reply does not reappear during recovery, which is safe because its fold left the account
 unchanged. The snapshot avoids replaying v1 and v2. Passivation removes only the working state that can
 be reconstructed from the snapshot and journal.
 
@@ -148,8 +148,8 @@ only appears in a deferred fold or a mutable object held by the actor, it is not
 
 ## Put it into practice
 
-The [registration example](../get-started.html) introduces persisted and deferred actions and
-demonstrates recovery after running the application again. Use [Define an
+The tutorial shows deferred rejections in [step 2](../tutorial/withdraw-money.html), and recovery
+with snapshots in [step 3](../tutorial/restart-the-bank.html). Use [Define an
 aggregate](../how-to/define-an-aggregate.html) for the complete action table and
 [Configuration](../configuration.html) for snapshot cadence and Akka.NET settings. [Consistency and
 recovery](consistency-and-recovery.html) places aggregate recovery beside projections, sagas, and

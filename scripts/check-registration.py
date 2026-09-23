@@ -44,19 +44,3 @@ with tempfile.TemporaryDirectory(prefix='fcqrs-registration-') as temp:
         with sqlite3.connect(database) as connection:
             assert connection.execute('SELECT COUNT(*) FROM journal').fetchone()[0] == 2
         print(f'{language}: registration, restart, query rebuild, repeat, and independent account passed.', flush=True)
-
-    # Compile and run the exact C# test class taught by the domain-testing guide.
-    tests = Path(temp) / 'Registration.Tests'
-    def dotnet(*args):
-        result = subprocess.run(['dotnet', *args], cwd=temp, text=True,
-                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=180)
-        assert result.returncode == 0, result.stdout
-        return result.stdout
-
-    dotnet('new', 'xunit', '-n', 'Registration.Tests', '--framework', 'net10.0')
-    dotnet('add', 'Registration.Tests', 'reference', 'csharp/Registration.CSharp.csproj')
-    guide = (ROOT / 'docs/how-to/test-your-domain.fsx').read_text()
-    test_code = guide.split('```csharp\n', 1)[1].split('\n```', 1)[0]
-    (tests / 'UnitTest1.cs').write_text(test_code)
-    result = dotnet('test', 'Registration.Tests')
-    print(result.strip(), flush=True)

@@ -87,10 +87,14 @@
   });
   apply(language);
   // FsLiveDocs ships a Prism F# grammar. Use the existing vendored highlighter
-  // for C# after its DOMContentLoaded formatting has finished.
+  // for C# and SQL after its DOMContentLoaded formatting has finished.
   window.addEventListener('DOMContentLoaded', () => {
     if (!window.hljs) return;
-    document.querySelectorAll('code.language-csharp').forEach(code => {
+    // highlight.js 11.9 predates C# 15. Mark its new type modifiers as keywords before the
+    // grammar compiles on first use.
+    const csharp = window.hljs.getLanguage('csharp');
+    if (Array.isArray(csharp?.keywords?.keyword)) csharp.keywords.keyword.push('closed', 'union');
+    document.querySelectorAll('code.language-csharp, code.language-sql').forEach(code => {
       code.querySelectorAll('br').forEach(br => br.replaceWith('\n'));
       code.textContent = code.textContent;
       window.hljs.highlightElement(code);

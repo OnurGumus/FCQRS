@@ -20,23 +20,25 @@ differently:
 
 - **Offset first, then data.** A crash in between advances the bookmark past an event that never
   reached the read model. On restart the projection resumes after it. Nothing errors; the view is
-  simply missing that update and stays wrong until the read model is rebuilt.
+  missing that update and stays wrong until the read model is rebuilt.
 - **Data first, then offset.** A crash in between leaves the bookmark behind, so the event is applied
-  again on restart. An insert-or-replace absorbs the repeat; a counter or an append does not, and the
-  view drifts.
+  again on restart. An insert-or-replace absorbs the repeat; a running total or an append does not,
+  and the view drifts.
 - **Same transaction.** The crash commits both or neither. Retrying the uncommitted event gives
   exactly-once updates within that store.
 
 > **Motivation:** Storing data and offset together removes ambiguity after a restart. The projection
 > either committed the event and moves past it, or committed neither and can safely try it again.
 
-Create the read model and one offset row for this projection:
+The example keeps each account's current balance for a list of accounts. The balance is a running
+total: each deposit or withdrawal adds to the stored value, so an event applied twice would be counted
+twice. Create the read model and one offset row for this projection:
 
 ```sql
-create table if not exists Documents (
+create table if not exists Balances (
     Id text primary key,
-    Title text not null,
-    Body text not null
+    Owner text not null,
+    Balance numeric not null
 );
 
 create table if not exists Offsets (
@@ -45,7 +47,7 @@ create table if not exists Offsets (
 );
 
 insert or ignore into Offsets (OffsetName, OffsetCount)
-values ('DocumentProjection', 0);
+values ('Balances', 0);
 ```
 
 ## Handle every event transactionally
@@ -61,27 +63,36 @@ open Microsoft.Data.Sqlite
 open FCQRS.Common
 open FCQRS.FSharp
 
+let openAccount =
+    "insert into Balances (Id, Owner, Balance) values (@Id, @Owner, 0)"
+let changeBalance =
+    "update Balances set Balance = Balance + @Amount where Id = @Id"
+let saveOffset =
+    "update Offsets set OffsetCount = @n where OffsetName = 'Balances'"
+
 let handle (connString: string) (offset: int64) (event: obj) : unit =
     use conn = new SqliteConnection(connString)
     conn.Open()
     use tx = conn.BeginTransaction()
 
     match event with
-    | :? Event<Document.Event> as e ->
+    // Sender is the ID of the account that stored the event.
+    | :? Event<AccountEvent> as e ->
+        let id = string e.Sender.Value
+        let add (amount: decimal) =
+            let row = {| Id = id; Amount = amount |}
+            conn.Execute(changeBalance, row, tx) |> ignore
         match e.EventDetails with
-        | Document.Updated doc ->
-            conn.Execute(
-                "insert or replace into Documents (Id, Title, Body) values (@Id, @Title, @Body)",
-                {| Id = doc.Id.ToString(); Title = doc.Title.ToString(); Body = doc.Content.ToString() |}, tx)
-            |> ignore
-        | _ -> ()
+        | Opened owner ->
+            let row = {| Id = id; Owner = owner |}
+            conn.Execute(openAccount, row, tx) |> ignore
+        | Deposited amount -> add amount
+        | Withdrawn amount -> add -amount
+        | Rejected _ -> ()
     | _ -> ()
 
     // Advance for every event, in the same transaction as the read-model write.
-    conn.Execute(
-        "update Offsets set OffsetCount = @n where OffsetName = 'DocumentProjection'",
-        {| n = offset |}, tx)
-    |> ignore
+    conn.Execute(saveOffset, {| n = offset |}, tx) |> ignore
     tx.Commit()
 ```
 
@@ -93,28 +104,45 @@ using static FCQRS.Common;   // Event<>
 using Dapper;
 using Microsoft.Data.Sqlite;
 
-public static void HandleEventWrapper(string connString, long offset, object eventObj)
+const string OpenAccount =
+    "insert into Balances (Id, Owner, Balance) values (@Id, @Owner, 0)";
+const string ChangeBalance =
+    "update Balances set Balance = Balance + @Amount where Id = @Id";
+const string SaveOffset =
+    "update Offsets set OffsetCount = @n where OffsetName = 'Balances'";
+
+public static void Handle(string connString, long offset, object eventObj)
 {
     using var conn = new SqliteConnection(connString);
     conn.Open();
     using var tx = conn.BeginTransaction();
 
-    if (eventObj is Event<DocumentEvent> { EventDetails: DocumentEvent.Updated u })
-        conn.Execute(
-            "insert or replace into Documents (Id, Title, Body) values (@Id, @Title, @Body)",
-            new { Id = u.Document.Id.ToString(), Title = u.Document.Title.ToString(), Body = u.Document.Content.ToString() }, tx);
+    // Sender is the ID of the account that stored the event.
+    if (eventObj is Event<AccountEvent> { Sender: { } sender } e)
+    {
+        var id = sender.Value.ToString();
+        void Add(decimal amount) =>
+            conn.Execute(ChangeBalance, new { Id = id, Amount = amount }, tx);
+
+        switch (e.EventDetails)
+        {
+            case Opened opened:
+                conn.Execute(OpenAccount, new { Id = id, opened.Owner }, tx);
+                break;
+            case Deposited deposited: Add(deposited.Amount); break;
+            case Withdrawn withdrawn: Add(-withdrawn.Amount); break;
+        }
+    }
 
     // Advance for every event, in the same transaction as the read-model write.
-    conn.Execute(
-        "update Offsets set OffsetCount = @n where OffsetName = 'DocumentProjection'",
-        new { n = offset }, tx);
+    conn.Execute(SaveOffset, new { n = offset }, tx);
     tx.Commit();
 }
 ```
 
 ## Resume from the stored offset
 
-Read `DocumentProjection` from `Offsets` during startup and pass that value to the projection:
+Read the `Balances` row from `Offsets` during startup and pass that value to the projection:
 
 ```fsharp
 let getLastOffset (connString: string) : int64 =
@@ -122,7 +150,7 @@ let getLastOffset (connString: string) : int64 =
     conn.Open()
 
     conn.ExecuteScalar<int64>(
-        "select OffsetCount from Offsets where OffsetName = 'DocumentProjection'")
+        "select OffsetCount from Offsets where OffsetName = 'Balances'")
 
 let subscriptions =
     Fcqrs.projection api
@@ -138,11 +166,11 @@ static long GetLastOffset(string connString)
     using var conn = new SqliteConnection(connString);
     conn.Open();
     return conn.ExecuteScalar<long>(
-        "select OffsetCount from Offsets where OffsetName = 'DocumentProjection'");
+        "select OffsetCount from Offsets where OffsetName = 'Balances'");
 }
 
 services.AddProjection(
-    handler: sp => (offset, evt) => HandleEventWrapper(connString, offset, evt),
+    handler: sp => (offset, evt) => Handle(connString, offset, evt),
     lastOffset: _ => GetLastOffset(connString));
 ```
 

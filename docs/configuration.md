@@ -23,7 +23,8 @@ let connection = Fcqrs.connect FCQRS.Actor.DBType.Sqlite "Data Source=app.db;"
 
 // An empty IConfiguration accepts the embedded Akka.NET defaults.
 let config = Microsoft.Extensions.Configuration.ConfigurationBuilder().Build()
-let loggerFactory = Microsoft.Extensions.Logging.LoggerFactory.Create(fun _ -> ())
+let loggerFactory =
+    Microsoft.Extensions.Logging.LoggerFactory.Create(fun _ -> ())
 
 let api = Fcqrs.actor config loggerFactory (Some connection) "MyCluster"
 ```
@@ -73,9 +74,8 @@ The .NET configuration path uses colons. The equivalent HOCON path uses nested o
 | `config:akka:stdout-loglevel` | `OFF` | Akka.NET standard-output log level |
 
 The two timeout keys share one unit rule: a **bare number means seconds**. `command-timeout` also
-accepts HOCON durations such as `500ms` or `1m` (beware: a bare number would mean *milliseconds* to
-HOCON's duration parser — FCQRS parses bare numbers as seconds deliberately, matching
-`saga-start-timeout`). The command timeout is a deadline that starts when the command subscription
+accepts HOCON durations such as `500ms` or `1m`. HOCON's own duration parser would read a bare number
+as milliseconds; FCQRS reads it as seconds, matching `saga-start-timeout`. The command timeout is a deadline that starts when the command subscription
 accepts the command. Non-matching events on the same correlation topic do not restart it. The same
 key bounds the projection wait in the F# facade's `sendAwaiting`: a projection that suppresses the
 matching notification raises `TimeoutException` instead of hanging the caller.
@@ -101,7 +101,7 @@ fail-fast the process, exactly as they did before the floor was adaptive. On a 1
 default ceiling, 1000 simultaneous saga starts across distinct aggregate instances complete and 1500
 do not. The starter logs a warning the first time demand exceeds the ceiling, and an error if the
 runtime refuses the raise outright (a lower process maximum). Values below the captured baseline are
-ignored — the floor is never lowered. This bounds concurrent saga *starts*, not command throughput:
+ignored, so the floor is never lowered. This bounds concurrent saga *starts*, not command throughput:
 commands to one aggregate serialize through one entity. See
 [Sagas: durable coordination](concepts/sagas.html) for why the handshake blocks.
 
@@ -134,7 +134,7 @@ Keys nested under the entity name override the shared block for that entity type
 ```hocon
 config.akka.cluster.sharding {
   passivate-idle-entity-after = 30m   # every aggregate type
-  Order.passivate-idle-entity-after = 2h   # the Order aggregate only
+  Account.passivate-idle-entity-after = 2h   # the Account aggregate only
   Session.passivate-idle-entity-after = 30s
 }
 ```
@@ -147,7 +147,7 @@ its definition, where it outranks both configuration levels:
 
 ```fsharp
 Fcqrs.aggregate api
-    { Name = "Order"
+    { Name = "Account"
       Initial = initial
       Decide = decide
       Fold = fold
@@ -158,7 +158,8 @@ Fcqrs.aggregate api
 <div class="cs-alt"></div>
 
 ```csharp
-public sealed class OrderAggregate : Aggregate<OrderState, OrderCommand, OrderEvent>
+public sealed class Account
+    : Aggregate<AccountState, AccountCommand, AccountEvent>
 {
     public override PassivationPolicy PassivationPolicy =>
         PassivationPolicy.NewAfter(TimeSpan.FromHours(2));

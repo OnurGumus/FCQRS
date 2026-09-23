@@ -7,7 +7,7 @@ index: 1
 
 # Apply FCQRS: task guides
 
-Choose the task you need. For a first working application, start with [registration](../get-started.html).
+Choose the task you need. For a first working application, start with [the tutorial](../tutorial/open-an-account.html).
 
 ## Choose the task
 
@@ -15,7 +15,7 @@ Choose the task you need. For a first working application, start with [registrat
 |---|---|
 | Model commands, events, decisions, and folds | [Define an aggregate](define-an-aggregate.html) |
 | Reject a command based on an older aggregate version | [Send at an expected version](send-if-version.html) |
-| Expose registration and queries over HTTP | [Register over HTTP](../tutorial/http-api.html) |
+| Put an aggregate behind HTTP endpoints | [Serve an aggregate over HTTP](serve-over-http.html) |
 | Project events into query data | [Add a projection](add-a-projection.html) |
 | Wait before querying your own change | [Read your writes](read-your-writes.html) |
 | Wait until a projection has processed a journal snapshot | [Catch up projections](catch-up-projections.html) |

@@ -7,25 +7,24 @@ index: 3
 
 # Send at an expected version
 
-A document editor loads version `7` and sends its changes with that version. If another edit has
-already advanced the document to version `8`, FCQRS rejects the stale command before the aggregate's
-decision function runs.
+A teller's screen shows Alice's account at version `7`, and the teller decides to withdraw 60 based
+on what it shows. The withdrawal is sent with that version. If a transfer has already advanced the
+account to version `8`, FCQRS rejects the stale command before the aggregate's decision function runs.
 
 Use `Fcqrs.sendIfVersion` in F# or `SendIfVersionAsync` in C#, available in FCQRS 6.5.0 or later.
-The examples use the document types from
-`samples/getting-started-fsharp/Document.fs` and `samples/getting-started-csharp/Document.cs`:
+The examples use the account from the tutorial's [withdraw money](../tutorial/withdraw-money.html)
+step:
 
 ```fsharp
 open FCQRS.Common
 open FCQRS.FSharp
-open Program
+open Account
 
-let editDocument api documents expectedVersion documentId content =
-    Fcqrs.sendIfVersion api documents expectedVersion
-        (Fcqrs.newCid ()) (Fcqrs.aggregateId documentId)
-        (EditDocument(documentId, content))
+let withdrawAtVersion api accounts expectedVersion accountId amount =
+    Fcqrs.sendIfVersion api accounts expectedVersion
+        (Fcqrs.newCid ()) (Fcqrs.aggregateId accountId) (Withdraw amount)
         (function
-         | DocumentEdited _ | DocumentRejected _ -> true
+         | Withdrawn _ | Rejected _ -> true
          | _ -> false)
 ```
 
@@ -37,33 +36,34 @@ using static FCQRS.Common;
 using static FCQRS.CSharp;
 using static FCQRS.CSharp.ActorWiring;
 
-public sealed class DocumentEditor(
+public sealed class Teller(
     FcqrsRuntime runtime,
-    AggregateRefs<DocumentCommand, DocumentEvent> documents)
+    AggregateRefs<AccountCommand, AccountEvent> accounts)
 {
-    public Task<Event<DocumentEvent>> EditDocument(
-        long expectedVersion, string documentId, string content,
+    public Task<Event<AccountEvent>> WithdrawAtVersion(
+        long expectedVersion, string accountId, decimal amount,
         CancellationToken cancellationToken) =>
         runtime.Actor.SendIfVersionAsync(
-            documents.Factory, expectedVersion,
-            Values.NewCID(), Values.CreateAggregateId(documentId),
-            (DocumentCommand)new EditDocument(documentId, content),
-            (DocumentEvent reply) => reply is DocumentEdited or DocumentRejected,
+            accounts.Factory, expectedVersion,
+            Values.NewCID(), Values.CreateAggregateId(accountId),
+            (AccountCommand)new Withdraw(amount),
+            (AccountEvent reply) => reply is Withdrawn or Rejected,
             cancellationToken);
 }
 ```
 
-In F#, `api` and `documents` come from `Fcqrs.actor` and `Fcqrs.aggregate`. In C#,
-`AddAggregate<DocumentAggregate>()` registers the typed `AggregateRefs` for injection, and `AddFcqrs`
+In F#, `api` and `accounts` come from `Fcqrs.actor` and `Fcqrs.aggregate`. In C#,
+`AddAggregate<Account>()` registers the typed `AggregateRefs` for injection, and `AddFcqrs`
 registers `FcqrsRuntime`. Import `FCQRS.CSharp.ActorWiring` as shown to make the extension method
 available. Call the service after the host has started. If several aggregates share
 the same command and event types, resolve the refs keyed by the aggregate class, as described in
 [Use FCQRS from C#](use-from-csharp.html).
 
 `expectedVersion` is a nonnegative `int64` in F# or `long` in C#. Supply the version that accompanied
-the data being edited. In a read model, store the aggregate event's `Version` alongside the document
-fields and commit both in the same projection transaction. A delayed read model can return an older
-version; the aggregate then detects that the edit was based on stale data.
+the data the decision was based on. In a read model, store the aggregate event's `Version` alongside
+the fields it shows and commit both in the same projection transaction, as the tutorial's
+[statement](../tutorial/show-a-statement.html) does. A delayed read model can return an older
+version; the aggregate then detects that the withdrawal was based on stale data.
 
 ## Handle a conflict
 
@@ -74,10 +74,10 @@ the event filter accepting a domain reply.
 ```fsharp
 async {
     try
-        let! reply = editDocument api documents 7L "doc-1" "Revised content"
-        printfn "Document reply: %A" reply.EventDetails
+        let! reply = withdrawAtVersion api accounts 7L "alice" 60m
+        printfn "Account reply: %A" reply.EventDetails
     with :? AggregateVersionConflictException as conflict ->
-        printfn "Document %s changed: expected %d, actual %d"
+        printfn "Account %s changed: expected %d, actual %d"
             conflict.AggregateId conflict.ExpectedVersion conflict.ActualVersion
 }
 ```
@@ -87,26 +87,26 @@ async {
 ```csharp
 try
 {
-    var reply = await editor.EditDocument(
-        7L, "doc-1", "Revised content", cancellationToken);
-    Console.WriteLine($"Document reply: {reply.EventDetails}");
+    var reply = await teller.WithdrawAtVersion(
+        7L, "alice", 60m, cancellationToken);
+    Console.WriteLine($"Account reply: {reply.EventDetails}");
 }
 catch (AggregateVersionConflictException conflict)
 {
     Console.WriteLine(
-        $"Document {conflict.AggregateId} changed: " +
-        $"expected {conflict.ExpectedVersion}, actual {conflict.ActualVersion}");
+        $"Account {conflict.AggregateId} changed: expected " +
+        $"{conflict.ExpectedVersion}, actual {conflict.ActualVersion}");
 }
 ```
 
-On conflict, load the current document and let the caller review or merge its changes. Automatically
-substituting `ActualVersion` and resending would permit the stale edit that the check was intended to
+On conflict, load the current statement and let the teller decide again. Automatically substituting
+`ActualVersion` and resending would permit the stale withdrawal that the check was intended to
 prevent. The reported actual version was current at the check; another command can advance it before
 the exception reaches the caller.
 
-When the version matches, the domain still decides whether the edit is valid. The method returns the
-first matching aggregate reply, including a deferred `DocumentRejected` reply. Inspect that reply
-before reporting that the edit succeeded.
+When the version matches, the domain still decides whether the withdrawal is valid. The method returns
+the first matching aggregate reply, including a deferred `Rejected` reply for insufficient funds.
+Inspect that reply before reporting that the withdrawal succeeded.
 
 Conditional waits match the command ID, correlation ID, target aggregate, and event filter. FCQRS
 preserves these IDs for persisted and deferred replies and guarded `RunAsync` continuations. If a
@@ -131,7 +131,7 @@ The checked value is the aggregate's persisted domain version:
 | Defer a reply or perform no write | Unchanged |
 | Recover from the journal or a snapshot | Restores the persisted version |
 
-Two concurrent edits expecting version `7` cannot both persist from that version. After one persists,
+Two concurrent withdrawals expecting version `7` cannot both persist from that version. After one persists,
 the other observes the advanced version and conflicts. Two commands that write nothing can both
 match version `7`. This check is not a command identifier or a durable record of a previous request.
 

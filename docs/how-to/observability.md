@@ -14,17 +14,23 @@ complete workflow.
 ## Message-flow logs
 
 At `Information` level, the `FCQRS.MessageFlow` category records aggregate decisions, persisted event
-versions, saga transitions, and commands issued by sagas. Every line contains the correlation id:
+versions, saga transitions, and commands issued by sagas. Every line contains the correlation id.
+These lines are the first transfer from the tutorial's [transfer money](../tutorial/transfer-money.html)
+step, one correlation id from Alice's command to Bob's stored event:
 
 ```text
-info: FCQRS.MessageFlow
-      Command Publish (doc-42, "guides/fcqrs") to aggregate doc-42 yielded PersistEvent (PublicationRequested ...) [cid: ...]
-info: FCQRS.MessageFlow
-      Aggregate doc-42 persisted event PublicationRequested (...) (v2) [cid: ...]
-info: FCQRS.MessageFlow
-      Saga doc-42~PublicationSaga~... changed state to ReservingSlug [cid: ...]
-info: FCQRS.MessageFlow
-      Saga doc-42~PublicationSaga~... sent command Reserve (...) to guides/fcqrs [cid: ...]
+info: FCQRS.MessageFlow[0]
+      Command SendTransfer ("t1", "bob", 30M) to aggregate alice (v2) yielded PersistEvent (TransferSent ("t1", "bob", 30M)) [cid: 01a0cf1b-8485-72e5-9e41-6011435b56bf]
+info: FCQRS.MessageFlow[0]
+      Aggregate alice persisted event TransferSent ("t1", "bob", 30M) (v3) [cid: 01a0cf1b-8485-72e5-9e41-6011435b56bf]
+info: FCQRS.MessageFlow[0]
+      Saga alice~Saga~01a0cf1b-8485-72e5-9e41-6011435b56bf changed state to Delivering [cid: 01a0cf1b-8485-72e5-9e41-6011435b56bf]
+info: FCQRS.MessageFlow[0]
+      Saga alice~Saga~01a0cf1b-8485-72e5-9e41-6011435b56bf sent command ReceiveTransfer ("t1", "alice", 30M) to bob [cid: 01a0cf1b-8485-72e5-9e41-6011435b56bf]
+info: FCQRS.MessageFlow[0]
+      Aggregate bob persisted event TransferReceived ("t1", "alice", 30M) (v2) [cid: 01a0cf1b-8485-72e5-9e41-6011435b56bf]
+info: FCQRS.MessageFlow[0]
+      Saga alice~Saga~01a0cf1b-8485-72e5-9e41-6011435b56bf changed state to Completed [cid: 01a0cf1b-8485-72e5-9e41-6011435b56bf]
 ```
 
 Disable the process-wide narrative with
@@ -49,7 +55,8 @@ Aggregates, sagas, and projections use three activity sources. A W3C `traceparen
 command metadata and carried through later events and saga commands. Register all three sources:
 
 ```csharp
-tracing.AddSource(FCQRS.Common.Telemetry.AllActivitySources); // "FCQRS", "FCQRS.Saga", "FCQRS.Query"
+// "FCQRS", "FCQRS.Saga", and "FCQRS.Query"
+tracing.AddSource(FCQRS.Common.Telemetry.AllActivitySources);
 ```
 
 `ActivitySource` avoids creating activities when no listener is attached. Restart-detection aborts and
@@ -61,16 +68,19 @@ handler. The CID remains a domain correlation value; trace context travels besid
 
 ### Span names are low-cardinality
 
-Span names contain the case name, such as `Command:Register`, `Event:Registered`,
-`Saga:GeneratingCode`, or `Abort:VerificationRequested`. Payload values do not appear in the span name,
+Span names contain the case name, such as `Command:SendTransfer`, `Event:TransferSent`,
+`Saga:Delivering`, or `Abort:TransferSent`. Payload values do not appear in the span name,
 so trace backends can group operations without creating one name per entity. On .NET 11, tracing rules
 can select a source and operation:
 
 ```csharp
+using Microsoft.Extensions.Diagnostics.Tracing;
+
 builder.Services.AddTracing(tracing =>
 {
     tracing.EnableTracing(sourceName: "FCQRS.Saga");
-    tracing.DisableTracing(sourceName: "FCQRS", operationName: "Command:HealthPing");
+    tracing.DisableTracing(
+        sourceName: "FCQRS", operationName: "Command:HealthPing");
 });
 ```
 
@@ -82,7 +92,7 @@ Rendered payloads appear in span tags and message-flow logs by default. Disable 
 sensitive values when detailed payload diagnostics are not acceptable:
 
 ```fsharp
-FCQRS.Common.Telemetry.IncludePayloads <- false   // or builder.WithPayloadDiagnostics(false)
+FCQRS.Common.Telemetry.IncludePayloads <- false
 ```
 
 <div class="cs-alt"></div>
@@ -104,7 +114,8 @@ process-exit flushing. Register a bounded flush hook for buffered telemetry:
 ```fsharp
 FCQRS.Common.Telemetry.FatalFlush <- System.Action(fun () ->
     tracerProvider.ForceFlush(3000) |> ignore
-    loggerProvider.ForceFlush(3000) |> ignore) // or Serilog's Log.CloseAndFlush()
+    // With Serilog, call Log.CloseAndFlush() instead.
+    loggerProvider.ForceFlush(3000) |> ignore)
 ```
 
 <div class="cs-alt"></div>
@@ -113,7 +124,8 @@ FCQRS.Common.Telemetry.FatalFlush <- System.Action(fun () ->
 FCQRS.Common.Telemetry.FatalFlush = new Action(() =>
 {
     tracerProvider.ForceFlush(3000);
-    loggerProvider.ForceFlush(3000); // or Serilog.Log.CloseAndFlush()
+    // With Serilog, call Serilog.Log.CloseAndFlush() instead.
+    loggerProvider.ForceFlush(3000);
 });
 ```
 

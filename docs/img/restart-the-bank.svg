@@ -1,0 +1,62 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 400" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="rb-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#2563EB"/></marker>
+    <style>
+      .title { font-size:20px; font-weight:700; fill:#0F172A; }
+      .subtitle { font-size:13px; fill:#475569; }
+      .head { font-size:15px; font-weight:700; }
+      .note { font-size:12px; fill:#64748B; }
+      .code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:13px; }
+      .lbl { font-size:12px; font-weight:700; }
+    </style>
+  </defs>
+
+  <rect width="760" height="400" fill="#FFFFFF"/>
+  <text class="title" x="30" y="36">Loading an account starts from its newest snapshot</text>
+  <text class="subtitle" x="30" y="58">FCQRS loads Alice's account on its first command after a start, or after two idle minutes.</text>
+  <text class="subtitle" x="30" y="76">It reads the newest snapshot, then folds only the events stored after it.</text>
+
+  <!-- snapshots -->
+  <rect x="232" y="100" width="150" height="40" rx="8" fill="#FFFFFF" stroke="#94A3B8" stroke-width="1.6"/>
+  <text class="code" x="307" y="117" text-anchor="middle" fill="#0F172A">snapshot at 100</text>
+  <text class="note" x="307" y="133" text-anchor="middle">Balance 990</text>
+  <path d="M307,140 L307,160" fill="none" stroke="#94A3B8" stroke-width="1.6"/>
+
+  <rect x="512" y="100" width="150" height="40" rx="8" fill="#EFF6FF" stroke="#2563EB" stroke-width="2"/>
+  <text class="code" x="587" y="117" text-anchor="middle" fill="#0F172A">snapshot at 200</text>
+  <text class="note" x="587" y="133" text-anchor="middle" fill="#1D4ED8">Balance 1990, the newest</text>
+  <path d="M587,140 L587,160" fill="none" stroke="#2563EB" stroke-width="2"/>
+
+  <!-- journal -->
+  <text class="head" x="30" y="118" fill="#334155">journal</text>
+  <text class="note" x="30" y="136">251 events</text>
+  <rect x="30" y="160" width="557" height="36" fill="#F1F5F9" stroke="#CBD5E1" stroke-width="1.4"/>
+  <text class="note" x="308" y="183" text-anchor="middle">events 1–200: not read when the account loads</text>
+  <rect x="587" y="160" width="143" height="36" fill="#EFF6FF" stroke="#2563EB" stroke-width="2"/>
+  <text class="code" x="658" y="183" text-anchor="middle" fill="#1D4ED8">201–251 folded</text>
+  <text class="note" x="30" y="214">1</text>
+  <text class="note" x="307" y="214" text-anchor="middle">100</text>
+  <text class="note" x="587" y="214" text-anchor="middle">200</text>
+  <text class="note" x="730" y="214" text-anchor="end">251</text>
+
+  <!-- loading -->
+  <rect x="30" y="246" width="210" height="72" rx="10" fill="#EFF6FF" stroke="#2563EB" stroke-width="2"/>
+  <text class="lbl" x="44" y="268" fill="#1D4ED8">1. Read the newest snapshot</text>
+  <text class="code" x="44" y="289" fill="#0F172A">version 200</text>
+  <text class="note" x="44" y="306">Owner Alice, Balance 1990</text>
+  <path d="M242,282 L270,282" fill="none" stroke="#2563EB" stroke-width="2.5" marker-end="url(#rb-blue)"/>
+
+  <rect x="274" y="246" width="210" height="72" rx="10" fill="#EFF6FF" stroke="#2563EB" stroke-width="2"/>
+  <text class="lbl" x="288" y="268" fill="#1D4ED8">2. Fold the later events</text>
+  <text class="code" x="288" y="289" fill="#0F172A">events 201–251</text>
+  <text class="note" x="288" y="306">51 deposits of 10</text>
+  <path d="M486,282 L514,282" fill="none" stroke="#2563EB" stroke-width="2.5" marker-end="url(#rb-blue)"/>
+
+  <rect x="518" y="246" width="212" height="72" rx="10" fill="#F1F5F9" stroke="#334155" stroke-width="2"/>
+  <text class="lbl" x="532" y="268" fill="#0F172A">3. Handle the command</text>
+  <text class="code" x="532" y="289" fill="#0F172A">version 251</text>
+  <text class="note" x="532" y="306">Owner Alice, Balance 2500</text>
+
+  <text class="note" x="30" y="352">Without snapshots, loading would fold all 251 events.</text>
+  <text class="note" x="30" y="372">The journal keeps every event. A snapshot is an extra copy of the state at one version.</text>
+</svg>

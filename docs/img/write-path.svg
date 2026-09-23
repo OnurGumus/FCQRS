@@ -17,17 +17,17 @@
   </defs>
 
   <rect width="980" height="500" fill="#FFFFFF"/>
-  <text class="title" x="40" y="40">The write path — what happens to one command</text>
-  <text class="subtitle" x="40" y="64">handleCommand looks at the command and the current state, then returns an action. Only PersistEvent changes state.</text>
+  <text class="title" x="40" y="40">The write path: what happens to one command</text>
+  <text class="subtitle" x="40" y="64">decide looks at the command and the current state and returns an action. Only a stored event changes recoverable state.</text>
 
   <!-- command in -->
   <path class="edge-red" d="M44,172 L144,172" marker-end="url(#w-red)"/>
-  <text class="elbl" x="44" y="160" fill="#B4262A" font-size="12">Register</text>
+  <text class="elbl" x="44" y="160" fill="#B4262A" font-size="12">Withdraw 30</text>
   <text class="note" x="44" y="192">command in</text>
 
   <!-- handleCommand -->
   <rect x="150" y="136" width="172" height="80" rx="12" fill="#F1F5F9" stroke="#334155" stroke-width="2"/>
-  <text class="blbl" x="236" y="172" text-anchor="middle" fill="#0F172A">handleCommand</text>
+  <text class="blbl" x="236" y="172" text-anchor="middle" fill="#0F172A">decide</text>
   <text class="bsub" x="236" y="192" text-anchor="middle" fill="#475569">(command, state) → action</text>
 
   <!-- PersistEvent path (top pipeline) -->
@@ -40,7 +40,7 @@
 
   <path class="edge-blue" d="M590,154 L624,154" marker-end="url(#w-blue)"/>
   <rect x="626" y="122" width="152" height="64" rx="10" fill="#F1F5F9" stroke="#334155" stroke-width="2"/>
-  <text class="blbl" x="702" y="150" text-anchor="middle" fill="#0F172A" font-size="13">applyEvent</text>
+  <text class="blbl" x="702" y="150" text-anchor="middle" fill="#0F172A" font-size="13">fold</text>
   <text class="bsub" x="702" y="169" text-anchor="middle" fill="#475569">(event, state) → state</text>
 
   <path class="edge-gray" d="M778,154 L812,154" marker-end="url(#w-gray)"/>
@@ -56,10 +56,10 @@
   <path class="edge-blue" d="M252,216 C 300,282 360,300 438,304" marker-end="url(#w-blue)" stroke-dasharray="6 4"/>
   <text class="elbl" x="320" y="272" fill="#1D4ED8">DeferEvent</text>
   <rect x="440" y="282" width="186" height="56" rx="10" fill="#EFF6FF" stroke="#2563EB" stroke-width="1.6"/>
-  <text class="blbl" x="533" y="306" text-anchor="middle" fill="#1D4ED8" font-size="13">publish only</text>
-  <text class="bsub" x="533" y="324" text-anchor="middle" fill="#1D4ED8">not stored · state unchanged</text>
-  <text class="note" x="644" y="304">emitted but never persisted — used for</text>
-  <text class="note" x="644" y="322">rejections like AlreadyRegistered / LoginFailed</text>
+  <text class="blbl" x="533" y="306" text-anchor="middle" fill="#1D4ED8" font-size="13">reply only</text>
+  <text class="bsub" x="533" y="324" text-anchor="middle" fill="#1D4ED8">not stored · fold keeps state</text>
+  <text class="note" x="644" y="304">published but not stored: use it for</text>
+  <text class="note" x="644" y="322">rejections like Rejected "Insufficient funds"</text>
 
   <!-- IgnoreEvent path (bottom) -->
   <path class="edge-gray" d="M212,216 C 244,384 332,410 438,414" marker-end="url(#w-gray)"/>

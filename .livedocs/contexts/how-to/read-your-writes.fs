@@ -1,22 +1,28 @@
-open System
+open System.Threading
 open FCQRS.Model.Data
 open FCQRS.Common
 open FCQRS.FSharp
-open FCQRS.Model.Data
-module Document =
-    type Document = { Id: Guid; Title: ShortString; Content: LongString }
-    type Command = CreateOrUpdate of Document
-    type Event = Updated of Document | Rejected of string
-open Document
-open System.Threading
 open FCQRS.Query
-let save (api: IActor) (handle: int64 -> obj -> unit)
-         (documents: AggregateHandle<Document.Command, Document.Event>) cid id doc = async {
+module Account =
+    type AccountCommand =
+        | Open of owner: string
+        | Deposit of amount: decimal
+        | Withdraw of amount: decimal
+    type AccountEvent =
+        | Opened of owner: string
+        | Deposited of amount: decimal
+        | Withdrawn of amount: decimal
+        | Rejected of reason: string
+open Account
+let deposit (api: IActor) (handle: int64 -> obj -> unit)
+            (accounts: AggregateHandle<AccountCommand, AccountEvent>)
+            (cid: CID) (alice: AggregateId) = async {
     // snippet: 1
-    return ack
+    return reply
 }
-let saveManually (subscriptions: ISubscribe)
-                 (documents: AggregateHandle<Document.Command, Document.Event>)
-                 (cid: CID) documentId command isExpectedReply (cancellationToken: CancellationToken) = async {
+let sendManually (statement: ISubscribe)
+                 (accounts: AggregateHandle<AccountCommand, AccountEvent>)
+                 (cid: CID) (alice: AggregateId) (command: AccountCommand)
+                 (cancellationToken: CancellationToken) = async {
     // snippet: 2
 }

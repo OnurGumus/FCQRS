@@ -11,14 +11,16 @@ The journal, query journal, and snapshot store use the same database provider by
 the provider with `Fcqrs.connect` and pass the connection to `Fcqrs.actor`.
 
 ```fsharp
+open Microsoft.Extensions.Configuration
+open Microsoft.Extensions.Logging
 open FCQRS.FSharp
 
 let connection =
     Fcqrs.connect FCQRS.Actor.DBType.Sqlite "Data Source=app.db;"
 
 // An empty IConfiguration accepts the embedded Akka.NET defaults.
-let config = Microsoft.Extensions.Configuration.ConfigurationBuilder().Build()
-let loggerFactory = Microsoft.Extensions.Logging.LoggerFactory.Create(fun _ -> ())
+let config = ConfigurationBuilder().Build()
+let loggerFactory = LoggerFactory.Create(fun _ -> ())
 let api = Fcqrs.actor config loggerFactory (Some connection) "MyCluster"
 ```
 

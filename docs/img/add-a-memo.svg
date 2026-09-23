@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 450" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="am-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#2563EB"/></marker>
+    <marker id="am-green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#15803D"/></marker>
+    <style>
+      .title { font-size:20px; font-weight:700; fill:#0F172A; }
+      .subtitle { font-size:13px; fill:#475569; }
+      .head { font-size:14px; font-weight:700; }
+      .note { font-size:12px; fill:#64748B; }
+      .code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:12px; }
+      .tag { font-size:11px; font-weight:700; }
+    </style>
+  </defs>
+
+  <rect width="760" height="450" fill="#FFFFFF"/>
+  <text class="title" x="30" y="36">New code reads old events, and a new read model uses them all</text>
+  <text class="subtitle" x="30" y="58">Stored events never change. The memo is optional, so the events step 5 stored read as</text>
+  <text class="subtitle" x="30" y="76">having none, and a new statement is built from the first event.</text>
+
+  <!-- journal -->
+  <rect x="30" y="98" width="330" height="206" rx="10" fill="#F8FAFC" stroke="#64748B" stroke-width="2"/>
+  <text class="head" x="46" y="122" fill="#334155">journal: alice's transfers</text>
+  <rect x="44" y="136" width="302" height="44" rx="6" fill="#FFFFFF" stroke="#CBD5E1"/>
+  <text class="code" x="56" y="154" fill="#0F172A">3  TransferSent t1, bob, 30</text>
+  <text class="tag" x="56" y="171" fill="#94A3B8">STORED BY STEP 5, NO MEMO</text>
+  <rect x="44" y="188" width="302" height="44" rx="6" fill="#FFFFFF" stroke="#CBD5E1"/>
+  <text class="code" x="56" y="206" fill="#0F172A">4  TransferSent t2, carol, 20</text>
+  <text class="tag" x="56" y="223" fill="#94A3B8">STORED BY STEP 5, NO MEMO</text>
+  <rect x="44" y="240" width="302" height="44" rx="6" fill="#EFF6FF" stroke="#2563EB"/>
+  <text class="code" x="56" y="258" fill="#1D4ED8">6  TransferSent t3, bob, 25, "rent"</text>
+  <text class="tag" x="56" y="275" fill="#2563EB">STORED BY STEP 6</text>
+
+  <!-- reader -->
+  <path d="M362,200 L420,200" fill="none" stroke="#2563EB" stroke-width="2.5" marker-end="url(#am-blue)"/>
+  <rect x="424" y="146" width="306" height="108" rx="12" fill="#F1F5F9" stroke="#334155" stroke-width="2"/>
+  <text class="head" x="440" y="170" fill="#0F172A">step 6 code</text>
+  <text class="code" x="440" y="194" fill="#0F172A">memo: string option</text>
+  <text class="code" x="440" y="212" fill="#0F172A">string? Memo = null</text>
+  <text class="note" x="440" y="236">t1 and t2 read with no memo; t3 with "rent"</text>
+
+  <!-- read models -->
+  <rect x="30" y="336" width="330" height="92" rx="10" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="1.6" stroke-dasharray="6 4"/>
+  <text class="head" x="46" y="360" fill="#64748B">statement</text>
+  <text class="note" x="46" y="382">written by step 5's projection, no memo column;</text>
+  <text class="note" x="46" y="400">left as it is until nothing reads it</text>
+
+  <path d="M577,256 L577,332" fill="none" stroke="#15803D" stroke-width="2.5" marker-end="url(#am-green)"/>
+  <text class="note" x="589" y="298">projection StatementV2,</text>
+  <text class="note" x="589" y="314">from the first event</text>
+  <rect x="400" y="336" width="330" height="92" rx="10" fill="#F0FDF4" stroke="#15803D" stroke-width="2"/>
+  <text class="head" x="416" y="360" fill="#14532D">statement_v2</text>
+  <text class="code" x="416" y="382" fill="#0F172A">every row again, with a memo column:</text>
+  <text class="code" x="416" y="400" fill="#0F172A">empty for t1 and t2, "rent" for t3</text>
+</svg>

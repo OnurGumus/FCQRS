@@ -50,8 +50,16 @@ jobs:
           dotnet build saga_sample -c Release
       - name: Registration quickstart
         run: python3 scripts/check-registration.py
-      - name: HTTP registration example
-        run: python3 scripts/check-registration-http.py
+      # The tutorial's programs use C# 15, which needs the .NET 11 SDK. samples/accounts/global.json
+      # selects it for that folder; the rest of the repository keeps the .NET 10 SDK.
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 11.0.x
+          dotnet-quality: preview
+      - name: Accounts tutorial
+        run: python3 scripts/check-accounts.py
+      - name: Accounts HTTP API
+        run: python3 scripts/check-accounts-http.py
       - name: Sample excerpts and legacy compatibility
         run: |
           python3 scripts/check-learning-snippets.py

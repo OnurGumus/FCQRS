@@ -1,9 +1,7 @@
-// include: samples/getting-started-fsharp/Document.fs
-open System
-open FCQRS.Model.Data
+// include: samples/accounts/2-withdraw-money/fsharp/Account.fs
 open FCQRS.Common
 open FCQRS.FSharp
-open Program
+open Account
 // snippet: 1
-let tryEdit (api: IActor) (documents: AggregateHandle<DocumentCommand, DocumentEvent>) =
+let tryWithdraw (api: IActor) (accounts: AggregateHandle<AccountCommand, AccountEvent>) =
     // snippet: 2

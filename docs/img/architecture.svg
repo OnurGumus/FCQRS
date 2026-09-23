@@ -22,7 +22,7 @@
   <rect x="28" y="94" width="944" height="156" rx="14" fill="#FBFCFE"/>
   <text class="lane-t" x="48" y="116">COMMAND SIDE · WRITE</text>
   <rect x="28" y="420" width="944" height="120" rx="14" fill="#FAFEFB"/>
-  <text class="lane-t" x="48" y="442">QUERY SIDE · READ</text>
+  <text class="lane-t" x="132" y="442">QUERY SIDE · READ</text>
 
   <!-- Client -->
   <rect x="40" y="282" width="134" height="92" rx="12" fill="#FEF9C3" stroke="#CA8A04" stroke-width="2"/>
@@ -50,7 +50,7 @@
   <!-- Projection -->
   <rect x="470" y="440" width="180" height="80" rx="12" fill="#DCFCE7" stroke="#16A34A" stroke-width="2"/>
   <text class="blbl" x="560" y="476" text-anchor="middle" fill="#14532D">Projection</text>
-  <text class="bsub" x="560" y="496" text-anchor="middle" fill="#15803D">folds events into rows</text>
+  <text class="bsub" x="560" y="496" text-anchor="middle" fill="#15803D">writes rows from events</text>
 
   <!-- Read model -->
   <rect x="730" y="440" width="186" height="80" rx="12" fill="#DCFCE7" stroke="#16A34A" stroke-width="2"/>
@@ -59,23 +59,23 @@
 
   <!-- edges -->
   <path d="M174,306 C 246,252 254,184 298,168" fill="none" stroke="#E5484D" stroke-width="2.5" marker-end="url(#ar-red)"/>
-  <circle cx="234" cy="218" r="11" fill="#E5484D"/><text class="badge" x="234" y="222" text-anchor="middle">1</text>
-  <text class="elbl" x="250" y="222" fill="#B4262A">command (carries CID)</text>
+  <circle cx="60" cy="232" r="11" fill="#E5484D"/><text class="badge" x="60" y="236" text-anchor="middle">1</text>
+  <text class="elbl" x="76" y="236" fill="#B4262A">command (carries CID)</text>
 
   <path d="M506,160 L636,160" fill="none" stroke="#2563EB" stroke-width="2.5" marker-end="url(#ar-blue)"/>
-  <circle cx="571" cy="146" r="11" fill="#2563EB"/><text class="badge" x="571" y="150" text-anchor="middle">2</text>
-  <text class="elbl" x="587" y="150" fill="#1D4ED8">persist event</text>
+  <circle cx="530" cy="140" r="11" fill="#2563EB"/><text class="badge" x="530" y="144" text-anchor="middle">2</text>
+  <text class="elbl" x="546" y="144" fill="#1D4ED8">persist event</text>
 
   <path d="M733,216 C 733,366 648,388 574,436" fill="none" stroke="#2563EB" stroke-width="2.5" marker-end="url(#ar-blue)"/>
   <circle cx="710" cy="324" r="11" fill="#2563EB"/><text class="badge" x="710" y="328" text-anchor="middle">3</text>
-  <text class="elbl" x="726" y="328" fill="#1D4ED8">events, in order</text>
+  <text class="elbl" x="726" y="328" fill="#1D4ED8">stored events</text>
 
   <path d="M650,480 L726,480" fill="none" stroke="#16A34A" stroke-width="2.5" marker-end="url(#ar-green)"/>
   <circle cx="688" cy="466" r="11" fill="#16A34A"/><text class="badge" x="688" y="470" text-anchor="middle">4</text>
 
   <path d="M107,374 C 107,556 150,566 230,566 L810,566 C 842,566 823,544 823,522" fill="none" stroke="#16A34A" stroke-width="2.5" marker-end="url(#ar-green)"/>
-  <circle cx="450" cy="566" r="11" fill="#16A34A"/><text class="badge" x="450" y="570" text-anchor="middle">5</text>
-  <text class="elbl" x="466" y="570" fill="#15803D">query the view</text>
+  <circle cx="450" cy="546" r="11" fill="#16A34A"/><text class="badge" x="450" y="550" text-anchor="middle">5</text>
+  <text class="elbl" x="466" y="550" fill="#15803D">query the read model</text>
 
   <!-- saga loop -->
   <path d="M375,216 L375,300" fill="none" stroke="#2563EB" stroke-width="2.5" marker-end="url(#ar-blue)"/>

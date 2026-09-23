@@ -14,15 +14,15 @@ adds base classes, action factories, delegates, and host-builder registration ar
 This guide uses the current host-builder API. The lower-level `ActorApi` and `ActorWiring` APIs remain
 available for custom composition, but most applications do not need them.
 
-The [registration quickstart](../get-started.html) uses ordinary records on stable .NET 10.
+The [tutorial](../tutorial/open-an-account.html) uses C# 15 unions on .NET 11, like this guide.
 Start there for a runnable project.
 
 ## Compiler requirement for this guide
 
-The examples use C# discriminated unions. At the time of writing, the `union` keyword requires a .NET
-11 preview SDK and `<LangVersion>preview</LangVersion>`. FCQRS targets `net10.0` and can run in a
-`net11.0` host. For stable C#, use [record hierarchies](../concepts/csharp-interop.html) or define the
-domain in an F# class library and keep the host, endpoints, and projections in C#.
+The examples use C# discriminated unions. The `union` keyword is part of C# 15, which needs the .NET 11
+SDK, a release candidate at the time of writing, and a `net11.0` target. FCQRS targets `net10.0` and
+can run in a `net11.0` host. On .NET 10, use [record hierarchies](../concepts/csharp-interop.html) or
+define the domain in an F# class library and keep the host, endpoints, and projections in C#.
 
 FCQRS writes an explicit case discriminator for unions in the journal. Do not replace its event
 serializer with a caseless union representation: two cases can have the same field shape but different
@@ -32,85 +32,80 @@ domain meaning.
 
 Use commands for intent and persisted events for facts. Deferred events are replies that are published
 and folded but not stored. Their fold should leave state unchanged because recovery cannot replay them.
+The examples are the account from the tutorial's [withdraw money](../tutorial/withdraw-money.html)
+step:
 
+<!-- sample: accounts/2-withdraw-money/csharp Account.cs messages -->
 ```csharp
-public record Document(string Id, string Title, string Content);
+// What a caller can ask an account to do.
+public union AccountCommand(Open, Deposit, Withdraw);
+public sealed record Open(string Owner);
+public sealed record Deposit(decimal Amount);
+public sealed record Withdraw(decimal Amount);
 
-public union DocumentCommand(DocumentCommand.Create, DocumentCommand.Edit)
-{
-    public record Create(Document Document);
-    public record Edit(string Id, string Content);
-}
+// What the account replies. Rejected is a reply only: it is never stored.
+public union AccountEvent(Opened, Deposited, Withdrawn, Rejected);
+public sealed record Opened(string Owner);
+public sealed record Deposited(decimal Amount);
+public sealed record Withdrawn(decimal Amount);
+public sealed record Rejected(string Reason);
 
-public union DocumentEvent(
-    DocumentEvent.Created,
-    DocumentEvent.Edited,
-    DocumentEvent.AlreadyExists,
-    DocumentEvent.NoSuchDocument)
-{
-    public record Created(Document Document);
-    public record Edited(string Id, string Content);
-    public record AlreadyExists;
-    public record NoSuchDocument;
-}
-
-public record DocumentState(Document? Document = null)
-{
-    public static readonly DocumentState Initial = new();
-}
+// What the account knows now, rebuilt from its events.
+public sealed record AccountState(string? Owner = null, decimal Balance = 0m);
 ```
 
 ## 2. Implement the aggregate
 
 `HandleCommand` chooses an action. `ApplyEvent` reconstructs state from stored events. Keep both
 functions deterministic and free of database, network, clock, and random-number calls.
+`EventActions` builds the actions: `Persist` stores an event, and `Defer` replies without storing it.
 
+<!-- sample: accounts/2-withdraw-money/csharp Account.cs rules -->
 ```csharp
-public sealed class DocumentAggregate
-    : Aggregate<DocumentState, DocumentCommand, DocumentEvent>
+public sealed class Account
+    : Aggregate<AccountState, AccountCommand, AccountEvent>
 {
-    public override DocumentState InitialState => DocumentState.Initial;
-    public override string EntityName => "Document";
+    // The name stored with every event of this aggregate.
+    public override string EntityName => "Account";
+    // The state before the account's first event.
+    public override AccountState InitialState => new();
 
-    public override EventAction<DocumentEvent> HandleCommand(
-        Command<DocumentCommand> command,
-        DocumentState state) =>
-        (command.CommandDetails, state.Document) switch
+    // Chooses what to do with a command, based on the current state.
+    public override EventAction<AccountEvent> HandleCommand(
+        Command<AccountCommand> command, AccountState state) =>
+        (command.CommandDetails, state.Owner) switch
         {
-            (DocumentCommand.Create create, null) =>
-                EventActions.Persist<DocumentEvent>(
-                    new DocumentEvent.Created(create.Document)),
-
-            (DocumentCommand.Create, _) =>
-                EventActions.Defer<DocumentEvent>(
-                    new DocumentEvent.AlreadyExists()),
-
-            (DocumentCommand.Edit edit, { } document)
-                when document.Id == edit.Id =>
-                EventActions.Persist<DocumentEvent>(
-                    new DocumentEvent.Edited(edit.Id, edit.Content)),
-
-            _ => EventActions.Defer<DocumentEvent>(
-                new DocumentEvent.NoSuchDocument())
+            (Open, not null) => Reject("The account is already open"),
+            (Open open, null) => Store(new Opened(open.Owner)),
+            (_, null) => Reject("The account is not open"),
+            (Deposit { Amount: <= 0m } or Withdraw { Amount: <= 0m }, _) =>
+                Reject("The amount must be positive"),
+            (Deposit deposit, _) => Store(new Deposited(deposit.Amount)),
+            (Withdraw withdraw, _) when withdraw.Amount > state.Balance =>
+                Reject($"Insufficient funds: {state.Balance} available"),
+            (Withdraw withdraw, _) => Store(new Withdrawn(withdraw.Amount))
         };
 
-    public override DocumentState ApplyEvent(
-        Event<DocumentEvent> stored,
-        DocumentState state) =>
+    // Applies one event to the state. A rejection changes nothing.
+    public override AccountState ApplyEvent(
+        Event<AccountEvent> stored, AccountState state) =>
         stored.EventDetails switch
         {
-            DocumentEvent.Created created =>
-                state with { Document = created.Document },
-
-            DocumentEvent.Edited edited
-                when state.Document is { } document && document.Id == edited.Id =>
-                state with
-                {
-                    Document = document with { Content = edited.Content }
-                },
-
-            _ => state
+            Opened opened => state with { Owner = opened.Owner },
+            Deposited deposited =>
+                state with { Balance = state.Balance + deposited.Amount },
+            Withdrawn withdrawn =>
+                state with { Balance = state.Balance - withdrawn.Amount },
+            Rejected => state
         };
+
+    // Stores the event and replies with it.
+    static EventAction<AccountEvent> Store(AccountEvent @event) =>
+        EventActions.Persist(@event);
+
+    // Replies without storing anything.
+    static EventAction<AccountEvent> Reject(string reason) =>
+        EventActions.Defer<AccountEvent>(new Rejected(reason));
 }
 ```
 
@@ -128,8 +123,9 @@ and `PassivationPolicy` sets the idle timeout after which the entity is stopped 
 replays:
 
 ```csharp
+// Or PassivationPolicy.Never to keep the entity in memory.
 public override PassivationPolicy PassivationPolicy =>
-    PassivationPolicy.NewAfter(TimeSpan.FromHours(2));   // or PassivationPolicy.Never
+    PassivationPolicy.NewAfter(TimeSpan.FromHours(2));
 ```
 
 Both default to configuration; [Configuration](../configuration.html) gives the resolution order.
@@ -137,33 +133,36 @@ Both default to configuration; [Configuration](../configuration.html) gives the 
 ## 3. Register the runtime
 
 The host starts aggregates first, then sagas, the saga starter, and finally the projection. Register
-one projection handler per FCQRS runtime — a second `AddProjection` call throws
-`InvalidOperationException`; that one handler may update several read-model tables.
+one projection per FCQRS runtime: a second `AddProjection` or `AddTransactionalProjection` call throws
+`InvalidOperationException`. That one handler may update several read-model tables.
 
 ```csharp
 var builder = Host.CreateApplicationBuilder(args);
 
+var connectionString = "Data Source=accounts.db";
+var store = new SqlProjectionStore(
+    ProjectionSqlDialect.Sqlite, () => new SqliteConnection(connectionString));
+var options = new TransactionalProjectionOptions("Statement", store);
+
 builder.Services
-    .AddFcqrs("Data Source=documents.db;", "documents")
-    .AddAggregate<DocumentAggregate>()
-    .AddProjection(
-        (long offset, object message) => MyProjection.Handle(connectionString, offset, message),
-        lastOffset: MyProjection.GetLastCommittedOffset(connectionString));
+    .AddFcqrs(connectionString, "accounts")
+    .AddAggregate<Account>()
+    .AddTransactionalProjection(options, Statement.Handle);
 
 var app = builder.Build();
 await app.RunAsync();
 ```
 
-`MyProjection` stands in for your projection component — the transactional handler and offset store
-from [Add a projection](add-a-projection.html). For a durable projection, commit its read-model changes
-and `offset` in the same transaction. On the next start, pass the committed offset instead of zero.
+`Statement.Handle` is the tutorial's [statement projection](../tutorial/show-a-statement.html). FCQRS
+commits its read-model changes and progress in one transaction. For a projection that stores its own
+offset, see [Add a projection](add-a-projection.html).
 
 ## 4. Send from an endpoint or application service
 
-Registration adds a typed `Handler<DocumentCommand, DocumentEvent>` to dependency injection. The
+Registration adds a typed `Handler<AccountCommand, AccountEvent>` to dependency injection. The
 handler waits for the matching aggregate reply. It does not by itself wait for a projection. If no
 matching reply arrives within `akka.fcqrs.command-timeout` (default 30s), for example because the
-aggregate decided `UnhandledEvent` or the filter never matches, the handler raises
+aggregate decided `IgnoreEvent` or the filter never matches, the handler raises
 `TimeoutException` instead of waiting forever. If the actor system stops while the handler waits, the
 handler raises `OperationCanceledException`. In both cases the command may or may not have been
 applied.
@@ -174,28 +173,25 @@ aggregate you mean through the keyed registration instead, e.g.
 `services.GetKeyedService<Handler<C, E>>(typeof(MyShard))` or `[FromKeyedServices(typeof(MyShard))]`.
 
 ```csharp
-public sealed class DocumentService(
-    Handler<DocumentCommand, DocumentEvent> documents,
-    ISubscribe subscriptions)
+public sealed class AccountService(
+    Handler<AccountCommand, AccountEvent> accounts,
+    IProjection statement)
 {
-    public async Task<Event<DocumentEvent>> Create(
-        Document document,
-        CancellationToken cancellationToken)
+    public async Task<Event<AccountEvent>> DepositAsync(
+        string accountId, decimal amount, CancellationToken cancellationToken)
     {
-        var cid = Helpers.NewCID();
-        var aggregateId = Helpers.CreateAggregateId(document.Id);
+        var cid = Values.NewCID();
+        var account = Values.CreateAggregateId(accountId);
 
         // Subscribe before sending so the projection cannot win the race.
-        using var projected = subscriptions.SubscribeForFirst(cid);
+        using var projected = statement.SubscribeForFirst(cid);
 
-        var reply = await documents(
-            e => e is DocumentEvent.Created or DocumentEvent.AlreadyExists,
-            cid,
-            aggregateId,
-            new DocumentCommand.Create(document));
+        // Accept the account's reply: Deposited or Rejected.
+        var reply = await accounts(
+            _ => true, cid, account, new Deposit(amount));
 
         // Deferred replies are not journaled and cannot reach a projection.
-        if (reply.Journaled is not { Value: false })
+        if (reply.Journaled?.Value != false)
             await projected.Task.WaitAsync(cancellationToken);
 
         return reply;
@@ -207,8 +203,9 @@ After `projected.Task` completes, query the read model maintained by this subscr
 cancellation policy because projection subscriptions are in-memory request coordination, not a durable
 queue. The complete ordering and notification rules are in [Read your writes](read-your-writes.html).
 
-When editing data read earlier, pass its aggregate version to `runtime.Actor.SendIfVersionAsync`.
-Inject `FcqrsRuntime` and the aggregate's `AggregateRefs<DocumentCommand, DocumentEvent>` to obtain
+When a decision depends on data read earlier, pass its aggregate version to
+`runtime.Actor.SendIfVersionAsync`. Inject `FcqrsRuntime` and the aggregate's
+`AggregateRefs<AccountCommand, AccountEvent>` to obtain
 the actor API and factory. [Send at an expected version](send-if-version.html) gives the complete
 service example and handles `AggregateVersionConflictException` when another command has changed
 the aggregate.
@@ -218,28 +215,29 @@ the aggregate.
 Construct the aggregate and call its two methods directly:
 
 ```csharp
-var aggregate = new DocumentAggregate();
-var document = new Document("doc-1", "FCQRS", "draft");
+var account = new Account();
+var state = new AccountState(Owner: "Alice", Balance: 70m);
 
-var command = TestEnvelope.Command(
-    new DocumentCommand.Create(document),
-    TimeProvider.System);
-
-var action = aggregate.HandleCommand(command, DocumentState.Initial);
+// Name the union type: the aggregate expects a Command<AccountCommand>.
+var withdraw = TestEnvelope.Command<AccountCommand>(new Withdraw(60m));
 Assert.Equal(
-    EventActions.Persist<DocumentEvent>(new DocumentEvent.Created(document)),
-    action);
+    EventActions.Persist<AccountEvent>(new Withdrawn(60m)),
+    account.HandleCommand(withdraw, state));
 
-var stored = TestEnvelope.Event(
-    new DocumentEvent.Created(document),
-    version: 1,
-    TimeProvider.System);
+// A larger withdrawal is rejected without storing anything.
+var rejection = new Rejected("Insufficient funds: 70 available");
+var tooMuch = TestEnvelope.Command<AccountCommand>(new Withdraw(500m));
+Assert.Equal(
+    EventActions.Defer<AccountEvent>(rejection),
+    account.HandleCommand(tooMuch, state));
 
-var state = aggregate.ApplyEvent(stored, DocumentState.Initial);
-Assert.Equal(document, state.Document);
+// Folding the stored withdrawal lowers the balance.
+var stored = TestEnvelope.Event<AccountEvent>(new Withdrawn(60m), version: 3);
+Assert.Equal(10m, account.ApplyEvent(stored, state).Balance);
 ```
 
-Use a `FakeTimeProvider` when a test creates time-dependent envelopes. Add replay fixtures for old
+`TestEnvelope.Command` and `TestEnvelope.Event` also take a `TimeProvider`. Pass a `FakeTimeProvider`
+when a decision depends on the envelope's creation time. Add replay fixtures for old
 events before changing their serialized shape. See [Test your domain](test-your-domain.html).
 
 ## Where to continue

@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net11.0</TargetFramework>
+    <!-- Stored with every event's type name. Step 6 builds the same name to read these events. -->
+    <AssemblyName>Accounts</AssemblyName>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="Account.fs" />
+    <Compile Include="Statement.fs" />
+    <Compile Include="Transfer.fs" />
+    <Compile Include="Program.fs" />
+    <PackageReference Include="FCQRS" Version="6.6.0" />
+    <PackageReference Include="Dapper" Version="2.1.66" />
+    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="3.0.2" />
+    <PackageReference Include="SourceGear.sqlite3" Version="3.50.4.5" />
+  </ItemGroup>
+</Project>

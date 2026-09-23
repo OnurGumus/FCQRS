@@ -1,0 +1,76 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 520" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="wm-red" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#E5484D"/></marker>
+    <marker id="wm-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#2563EB"/></marker>
+    <marker id="wm-gray" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#94A3B8"/></marker>
+    <style>
+      .title { font-size:20px; font-weight:700; fill:#0F172A; }
+      .subtitle { font-size:13px; fill:#475569; }
+      .head { font-size:15px; font-weight:700; }
+      .note { font-size:12px; fill:#64748B; }
+      .code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:13px; }
+      .lbl { font-size:12px; font-weight:700; }
+    </style>
+  </defs>
+
+  <rect width="760" height="520" fill="#FFFFFF"/>
+  <text class="title" x="30" y="36">Every command gets a reply; only accepted ones are stored</text>
+  <text class="subtitle" x="30" y="58">PersistEvent stores the event and changes the state. DeferEvent replies without storing.</text>
+  <text class="subtitle" x="30" y="76">The account takes commands one at a time, so each one sees the balance the last one left.</text>
+
+  <!-- commands -->
+  <text class="note" x="30" y="112">commands, in arrival order</text>
+  <rect x="30" y="124" width="160" height="36" rx="18" fill="#FEF2F2" stroke="#E5484D" stroke-width="1.6"/>
+  <text class="code" x="110" y="147" text-anchor="middle" fill="#B4262A">Withdraw 500</text>
+  <rect x="30" y="200" width="160" height="36" rx="18" fill="#FEF2F2" stroke="#E5484D" stroke-width="1.6"/>
+  <text class="code" x="110" y="223" text-anchor="middle" fill="#B4262A">Withdraw 60</text>
+  <rect x="30" y="248" width="160" height="36" rx="18" fill="#FEF2F2" stroke="#E5484D" stroke-width="1.6"/>
+  <text class="code" x="110" y="271" text-anchor="middle" fill="#B4262A">Withdraw 60</text>
+  <path d="M24,202 L18,202 L18,282 L24,282" fill="none" stroke="#94A3B8" stroke-width="1.5"/>
+  <text class="note" x="30" y="302">these two arrive together</text>
+  <path d="M194,142 L226,142" fill="none" stroke="#E5484D" stroke-width="2.5" marker-end="url(#wm-red)"/>
+  <path d="M194,218 L226,218" fill="none" stroke="#E5484D" stroke-width="2.5" marker-end="url(#wm-red)"/>
+  <path d="M194,266 L226,266" fill="none" stroke="#E5484D" stroke-width="2.5" marker-end="url(#wm-red)"/>
+
+  <!-- account -->
+  <rect x="230" y="118" width="180" height="172" rx="12" fill="#F1F5F9" stroke="#334155" stroke-width="2"/>
+  <text class="head" x="320" y="146" text-anchor="middle" fill="#0F172A">Account "alice"</text>
+  <rect x="246" y="162" width="148" height="52" rx="8" fill="#FFFFFF" stroke="#94A3B8" stroke-width="1.4"/>
+  <text class="code" x="320" y="184" text-anchor="middle" fill="#0F172A" font-weight="700">decide</text>
+  <text class="note" x="320" y="203" text-anchor="middle">(command, state)</text>
+  <text class="note" x="320" y="240" text-anchor="middle">one command at a time</text>
+  <text class="code" x="320" y="268" text-anchor="middle" fill="#0F172A">balance 70 → 10</text>
+
+  <!-- replies -->
+  <path d="M410,150 L490,142" fill="none" stroke="#94A3B8" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#wm-gray)"/>
+  <text class="lbl" x="452" y="132" text-anchor="middle" fill="#64748B">DeferEvent</text>
+  <rect x="494" y="118" width="244" height="50" rx="10" fill="#FFFFFF" stroke="#94A3B8" stroke-width="1.6" stroke-dasharray="6 4"/>
+  <text class="code" x="508" y="139" fill="#0F172A">Rejected: insufficient funds</text>
+  <text class="note" x="508" y="158">reply only; the balance stays 70</text>
+
+  <path d="M410,204 L490,204" fill="none" stroke="#2563EB" stroke-width="2.5" marker-end="url(#wm-blue)"/>
+  <text class="lbl" x="452" y="194" text-anchor="middle" fill="#1D4ED8">PersistEvent</text>
+  <rect x="494" y="180" width="244" height="50" rx="10" fill="#EFF6FF" stroke="#2563EB" stroke-width="2"/>
+  <text class="code" x="508" y="201" fill="#0F172A">Withdrawn 60</text>
+  <text class="note" x="508" y="220" fill="#1D4ED8">stored as version 4; balance 10</text>
+
+  <path d="M410,258 L490,266" fill="none" stroke="#94A3B8" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#wm-gray)"/>
+  <text class="lbl" x="452" y="288" text-anchor="middle" fill="#64748B">DeferEvent</text>
+  <rect x="494" y="242" width="244" height="50" rx="10" fill="#FFFFFF" stroke="#94A3B8" stroke-width="1.6" stroke-dasharray="6 4"/>
+  <text class="code" x="508" y="263" fill="#0F172A">Rejected: insufficient funds</text>
+  <text class="note" x="508" y="282">reply only; the balance stays 10</text>
+
+  <!-- journal -->
+  <path d="M738,205 L750,205 L750,420 L742,420" fill="none" stroke="#2563EB" stroke-width="2.5" marker-end="url(#wm-blue)"/>
+  <rect x="300" y="340" width="440" height="150" rx="10" fill="#F8FAFC" stroke="#64748B" stroke-width="2"/>
+  <text class="head" x="520" y="366" text-anchor="middle" fill="#334155">journal</text>
+  <rect x="314" y="378" width="200" height="24" rx="4" fill="#FFFFFF" stroke="#E2E8F0"/>
+  <text class="code" x="326" y="395" fill="#0F172A"><tspan font-weight="700">1</tspan>  Opened "Alice"</text>
+  <rect x="526" y="378" width="200" height="24" rx="4" fill="#FFFFFF" stroke="#E2E8F0"/>
+  <text class="code" x="538" y="395" fill="#0F172A"><tspan font-weight="700">2</tspan>  Deposited 100</text>
+  <rect x="314" y="408" width="200" height="24" rx="4" fill="#FFFFFF" stroke="#E2E8F0"/>
+  <text class="code" x="326" y="425" fill="#0F172A"><tspan font-weight="700">3</tspan>  Withdrawn 30</text>
+  <rect x="526" y="408" width="200" height="24" rx="4" fill="#EFF6FF" stroke="#2563EB"/>
+  <text class="code" x="538" y="425" fill="#1D4ED8"><tspan font-weight="700">4</tspan>  Withdrawn 60</text>
+  <text class="note" x="520" y="470" text-anchor="middle">rejections never reach the journal</text>
+</svg>

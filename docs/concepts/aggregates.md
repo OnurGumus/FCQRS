@@ -10,20 +10,21 @@ index: 3
 An aggregate is easier to understand as a promise before it is understood as an actor or a type:
 **all decisions for one identity inspect and change one current state, one at a time**.
 
-For order 123, every `AddItem`, `Pay`, `Ship`, and `Cancel` command is routed to the same logical owner.
-Commands for order 456 have a different owner and may run concurrently.
+For account `alice`, every `Deposit`, `Withdraw`, and `SendTransfer` command is routed to the same
+logical owner. Commands for account `bob` have a different owner and may run concurrently.
 
 ## Begin with the rule that must never race
 
-Suppose an order can be cancelled only before shipping. Two requests arrive together: `ShipOrder` and
-`CancelOrder`. If separate request handlers load the same database row, both can observe “paid” and
-both can pass their rule before either save becomes visible.
+Suppose a withdrawal must not overdraw the account. Two withdrawals of 60 arrive together, and the
+balance is 70. If separate request handlers load the same database row, both can observe 70 and both
+can pass their rule before either save becomes visible.
 
 The aggregate boundary places the state and both decisions behind one queue. One command runs first,
-produces an event, and changes current state. The second command sees that new state.
+produces an event, and changes current state. The second command sees that new state, a balance of 10,
+and is rejected.
 
-The guarantee is local to one aggregate identity. It does not lock all orders, and it does not make a
-rule spanning an order, a warehouse item, and a payment account atomic.
+The guarantee is local to one aggregate identity. It does not lock all accounts, and it does not make a
+rule spanning two accounts, such as a transfer, atomic.
 
 When a caller's edit depends on an earlier version, use
 [Send at an expected version](../how-to/send-if-version.html). FCQRS compares that version with the
@@ -38,9 +39,9 @@ it would otherwise satisfy the domain rules.
 
 An **invariant** is a rule that must remain true after every accepted command. Examples include:
 
-- an order cannot ship twice;
-- a bank account cannot spend beyond its permitted limit;
-- a document cannot be published before it exists.
+- an account cannot be overdrawn;
+- an account opens only once;
+- a transfer ID moves money at most once.
 
 Put the state needed to decide one invariant inside one aggregate. Do not start by copying a database
 entity graph into aggregate state. Start from the decision and ask which facts it must inspect
@@ -55,12 +56,12 @@ that can decide the rule correctly.
 
 An FCQRS aggregate definition separates four values:
 
-| Part | Question it answers | Order example |
+| Part | Question it answers | Account example |
 |---|---|---|
-| Command | What does the caller want? | `CancelOrder` |
-| State | What must this aggregate remember to decide? | current lifecycle status |
-| Event | What outcome occurred? | `OrderCancelled` |
-| Initial state | What is true before any events exist? | no order yet |
+| Command | What does the caller want? | `Withdraw 60` |
+| State | What must this aggregate remember to decide? | the owner and the balance |
+| Event | What outcome occurred? | `Withdrawn 60` |
+| Initial state | What is true before any events exist? | no owner, balance 0 |
 
 It also provides two functions:
 
@@ -76,39 +77,43 @@ For example:
 
 ```fsharp
 let decide command state =
-    match command, state with
-    | CancelOrder, Shipped -> OrderAlreadyShipped |> DeferEvent
-    | CancelOrder, Cancelled -> AlreadyCancelled |> DeferEvent
-    | CancelOrder, _ -> OrderCancelled |> PersistEvent
+    match command with
+    | Withdraw amount when amount > state.Balance ->
+        Rejected "Insufficient funds" |> DeferEvent
+    | Withdraw amount -> Withdrawn amount |> PersistEvent
 
 let fold event state =
     match event with
-    | OrderCancelled -> Cancelled
-    | OrderAlreadyShipped
-    | AlreadyCancelled -> state
+    | Withdrawn amount -> { state with Balance = state.Balance - amount }
+    | Rejected _ -> state
 ```
 
 <div class="cs-alt"></div>
 
 ```csharp
-EventAction<OrderEvent> HandleCommand(OrderCommand command, OrderState state) =>
-    (command, state) switch
+EventAction<AccountEvent> HandleCommand(
+    AccountCommand command, AccountState state) =>
+    command switch
     {
-        (OrderCommand.CancelOrder, OrderState.Shipped) =>
-            EventActions.Defer<OrderEvent>(new OrderEvent.OrderAlreadyShipped()),
-        (OrderCommand.CancelOrder, OrderState.Cancelled) =>
-            EventActions.Defer<OrderEvent>(new OrderEvent.AlreadyCancelled()),
-        (OrderCommand.CancelOrder, _) =>
-            EventActions.Persist<OrderEvent>(new OrderEvent.OrderCancelled()),
-        _ => EventActions.Ignore<OrderEvent>()
+        Withdraw withdraw when withdraw.Amount > state.Balance =>
+            EventActions.Defer<AccountEvent>(
+                new Rejected("Insufficient funds")),
+        Withdraw withdraw =>
+            EventActions.Persist<AccountEvent>(new Withdrawn(withdraw.Amount))
     };
 
-OrderState ApplyEvent(OrderEvent outcome, OrderState state) =>
-    outcome is OrderEvent.OrderCancelled ? OrderState.Cancelled : state;
+AccountState ApplyEvent(AccountEvent outcome, AccountState state) =>
+    outcome switch
+    {
+        Withdrawn withdrawn =>
+            state with { Balance = state.Balance - withdrawn.Amount },
+        Rejected => state
+    };
 ```
 
-The real functions receive FCQRS command and event envelopes, but the domain relationship stays this
-simple.
+The real functions receive FCQRS command and event envelopes, and handle every command, as the
+[tutorial's second step](../tutorial/withdraw-money.html) shows. `decide` and `fold` keep the same
+roles there.
 
 ## Choose what becomes history
 
@@ -183,6 +188,6 @@ identity. Then ask whether two instances may decide independently. If they canno
 inside the same aggregate boundary. If the rule truly spans independent owners, model the temporary
 inconsistency and coordinate it with a saga.
 
-The [registration example](../get-started.html) puts these rules into code. Use
+The [tutorial](../tutorial/open-an-account.html) puts these rules into code. Use
 [Define an aggregate](../how-to/define-an-aggregate.html) for the implementation recipe and
 [Test your domain](../how-to/test-your-domain.html) for the test shapes.

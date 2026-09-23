@@ -269,6 +269,8 @@ def finish(pages):
                 highlighter = '../' * depth + 'content/highlight.min.js'
                 scripts = f'<script src="{highlighter}" defer></script><script src="{asset}" defer></script>'
                 text = text.replace('</body>', scripts + '</body>')
+            # Guides use the base prose size on every screen width; FsLiveDocs enlarges it from md up.
+            text = re.sub(r'(<main\b[^>]*class="[^"]*?)\s+md:prose-lg', r'\1', text, count=1)
             # Search indexes page content only, so navigation and redirect pages stay out of results.
             if 'data-pagefind-body' not in text:
                 text, found = re.subn(r'<main(?=[\s>])', '<main data-pagefind-body', text, count=1)

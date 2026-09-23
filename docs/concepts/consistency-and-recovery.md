@@ -68,8 +68,8 @@ increment the persisted version. Its live fold must preserve recoverable state b
 reproduce it. [Deferring, snapshots, and passivation](aggregate-lifecycle.html) follows those paths in
 detail.
 
-Projection offsets advance independently. Event version 8 for one order might appear at offset 52,413
-in the global stream.
+Projection offsets advance independently. Event version 8 of Alice's account might appear at offset
+52,413 in the global stream.
 
 ## Each component recovers from different evidence
 
@@ -124,7 +124,7 @@ For every step, ask: what is the last fact known to be durable, and what could h
 That question leads to the correct recovery action more reliably than assuming a process stopped
 between two convenient source-code lines.
 
-The [registration sample](../get-started.html#Run-it) demonstrates recovery after a restart.
+The [tutorial's first step](../tutorial/open-an-account.html#Run-it-again) shows recovery after a restart.
 [Write a saga](../how-to/write-a-saga.html) covers workflow retries. Use
 [Read your writes](../how-to/read-your-writes.html),
 [Define an aggregate](../how-to/define-an-aggregate.html),

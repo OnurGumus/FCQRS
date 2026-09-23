@@ -17,12 +17,55 @@
 .lang-tab[aria-selected="true"] { opacity: 1; font-weight: 700; }
 .lang-pane { margin-top: 0 !important; }
 .lang-pane[hidden] { display: none !important; }
+/* A paired C# example uses the F# frame's width and padding, so both languages fit the same
+   line length and switching tabs leaves the code in place. FsLiveDocs gives every pre the
+   .code-frame rule, which sets margin and padding with !important. */
+main.prose .lang-pane > pre:has(> code.language-csharp) { margin-inline: -1.5rem !important; }
+@media (min-width: 768px) {
+  main.prose .lang-pane > pre:has(> code.language-csharp) {
+    margin-inline: -2rem !important;
+    padding-inline: 2rem !important;
+  }
+}
 
-.language-csharp .hljs-keyword { color: var(--livedocs-code-keyword); }
-.language-csharp .hljs-string { color: var(--livedocs-code-string); }
-.language-csharp .hljs-number,
+/* Guide text size. Prose sizes headings, spacing, and inline code relative to it. */
+main.prose { font-size: 0.9375rem; }
+
+/* Code reads smaller than prose. The theme's rules otherwise size code like body text. */
+main.prose pre,
+main.prose pre code { font-size: 0.8125rem !important; line-height: 1.65 !important; }
+
+/* highlight.js colours C# and SQL. Those blocks lack FsLiveDocs's .code-frame, which defines
+   the palette for F#, so define the same palette here for both themes. */
+main pre {
+  --livedocs-code-foreground: #24292f;
+  --livedocs-code-comment: #6e7781;
+  --livedocs-code-function: #8250df;
+  --livedocs-code-keyword: #cf222e;
+  --livedocs-code-number: #0550ae;
+  --livedocs-code-operator: #cf222e;
+  --livedocs-code-string: #0a3069;
+  --livedocs-code-type: #953800;
+}
+html[data-theme="dark"] main pre {
+  --livedocs-code-foreground: #c9d1d9;
+  --livedocs-code-comment: #8b949e;
+  --livedocs-code-function: #d2a8ff;
+  --livedocs-code-keyword: #ff7b72;
+  --livedocs-code-number: #79c0ff;
+  --livedocs-code-operator: #ff7b72;
+  --livedocs-code-string: #a5d6ff;
+  --livedocs-code-type: #ffa657;
+}
+:is(.language-csharp, .language-sql) .hljs-keyword { color: var(--livedocs-code-keyword); }
+:is(.language-csharp, .language-sql) .hljs-string { color: var(--livedocs-code-string); }
+:is(.language-csharp, .language-sql) .hljs-number,
 .language-csharp .hljs-literal { color: var(--livedocs-code-number); }
-.language-csharp .hljs-comment { color: var(--livedocs-code-comment); }
+:is(.language-csharp, .language-sql) .hljs-comment { color: var(--livedocs-code-comment); font-style: italic; }
+.language-sql .hljs-operator { color: var(--livedocs-code-operator); }
 .language-csharp .hljs-type,
-.language-csharp .hljs-title.class_ { color: var(--livedocs-code-type); }
-.language-csharp .hljs-title.function_ { color: var(--livedocs-code-function); }
+.language-csharp .hljs-title,
+.language-csharp .hljs-built_in { color: var(--livedocs-code-type); }
+.language-csharp .hljs-title.function_,
+.language-csharp .hljs-meta { color: var(--livedocs-code-function); }
+.language-csharp .hljs-subst { color: var(--livedocs-code-foreground); }

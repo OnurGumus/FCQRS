@@ -7,9 +7,9 @@ index: 6
 
 # Sagas: durable coordination
 
-An aggregate can make a correct decision only from state it owns. A document aggregate can decide
-whether a document is ready to publish, but it cannot decide whether the requested URL slug is already
-reserved by another document. That rule belongs to the aggregate identified by the slug.
+An aggregate can make a correct decision only from state it owns. Alice's account can decide whether
+she has the money to send, but it cannot decide whether Bob's account can take it. That rule belongs to
+Bob's account.
 
 Aggregates cannot reference each other, and no transaction spans two of them. Each one processes its
 own commands against its own state, which is what keeps it safe to run, recover, and relocate
@@ -23,29 +23,29 @@ one durable step at a time. It does not move another aggregate's rules into one 
 
 ## Start with a workflow that can stop halfway
 
-Publishing a document under `/guides/fcqrs` takes several steps:
+Sending 30 from Alice to Bob takes several steps:
 
-1. the document records `PublicationRequested`;
-2. the saga asks the `guides/fcqrs` slug aggregate to reserve itself;
-3. the slug replies with `SlugReserved` or `SlugUnavailable`;
-4. the saga reports `Published` or `Rejected` to the document.
+1. Alice's account records `TransferSent`, which debits her;
+2. the saga asks Bob's account to take the money with `ReceiveTransfer`;
+3. Bob's account replies with `TransferReceived`, or rejects the transfer;
+4. after a rejection, the saga asks Alice's account for a `RefundTransfer`.
 
-The process can stop after any step. A node may restart after the slug is reserved but before the
-result reaches the document.
+The process can stop after any step. A node may restart after Alice's account is debited but before
+Bob's account is credited.
 
 > **Motivation:** A chain of in-memory callbacks forgets where it was when the process stops. A saga
 > stores that progress so the conversation can continue from its last durable step.
 
 ## A saga is a state machine
 
-The publication workflow can be written as a table before any FCQRS code:
+The transfer workflow can be written as a table before any FCQRS code:
 
 | Current state | Incoming event | Persisted next state | Command after persistence |
 |---|---|---|---|
-| not started | `PublicationRequested` | `ReservingSlug` | `ReserveSlug` |
-| `ReservingSlug` | `SlugReserved` | `ReportingResult Published` | `FinishPublication Published` |
-| `ReservingSlug` | `SlugUnavailable` | `ReportingResult Rejected` | `FinishPublication Rejected` |
-| `ReportingResult result` | `PublicationFinished result` | `Done` | none; stop |
+| not started | `TransferSent` | `Delivering` | `ReceiveTransfer` to the target |
+| `Delivering` | `TransferReceived` | `Completed` | none; stop |
+| `Delivering` | `Rejected` from the target | `Refunding` | `RefundTransfer` to the source |
+| `Refunding` | `TransferRefunded` | `Completed` | none; stop |
 
 The state names say what the workflow is waiting for. The state also carries the identifiers needed to
 repeat the next command after recovery.
@@ -62,13 +62,13 @@ handleEvent      : incoming event + current saga state -> persisted next state
 applySideEffects : persisted saga state + recovering   -> transition + commands
 ```
 
-`handleEvent` is the saga's event-driven transition function. For example, `SlugReserved` is accepted
-only while the saga is `ReservingSlug`. It returns `StateChangedEvent (ReportingResult Published)`.
+`handleEvent` is the saga's event-driven transition function. For example, a rejection from the target
+is accepted only while the saga is `Delivering`. It returns `StateChangedEvent (Refunding transfer)`.
 FCQRS stores that state change before running commands for the new state.
 
-`applySideEffects` runs after a state change is durable. In `ReportingResult Published`, it returns
-`FinishPublication Published` to the originating document. FCQRS also calls it after recovery, with
-`recovering = true`, so the workflow can safely resume from the state it last stored.
+`applySideEffects` runs after a state change is durable. In `Refunding`, it returns `RefundTransfer` to
+the originating account. FCQRS also calls it after recovery, with `recovering = true`, so the workflow
+can safely resume from the state it last stored.
 
 This ordering is the core guarantee:
 
@@ -101,11 +101,11 @@ The two functions return different control values because they answer different 
 | `NextState next` | Persist another state immediately, without waiting for an incoming event |
 | `StopSaga` | Issue any returned commands, then complete and passivate the saga |
 
-Delayed commands returned with `StopSaga` are still delivered — they are the saga's final act. The
-exception is `Self`-targeted delayed commands, which FCQRS cancels with a warning: a completed saga
-must not be resurrected by its own final message. (With Akka.NET's remembered entities — the default
-here — a passivated entity restarts when a message arrives, and recovery would re-drive the same
-state.) Final delayed commands should target other entities.
+Delayed commands returned with `StopSaga` are still delivered as the saga's final act. The exception
+is `Self`-targeted delayed commands, which FCQRS cancels with a warning, so a completed saga cannot be
+resurrected by its own final message. Saga regions use Akka.NET's remembered entities: a passivated
+saga restarts when a message arrives, and recovery would re-drive the same state. Final delayed
+commands should target other entities.
 
 Most workflows use `StateChangedEvent` for business events and `Stay` while waiting for a reply.
 `NextState` is useful for an internal step that should advance immediately. Use it carefully: every
@@ -121,18 +121,17 @@ loop without waiting for new information.
 | Emits outcome events | Emits follow-up commands and stores workflow states |
 | Owns domain decision state | Owns only process progress |
 
-The publication saga does not inspect the slug aggregate's state. It sends `ReserveSlug`, and the slug
-aggregate decides whether reservation is allowed. The saga reacts to that owner's answer.
+The transfer saga does not inspect Bob's account. It sends `ReceiveTransfer`, and Bob's account
+decides whether it can take the money. The saga reacts to that owner's answer.
 
 ## Why a saga needs an explicit start
 
 Ordinary actors already exist logically before a caller sends a command. A saga instance is different:
 it represents one particular workflow and should exist only when its starting business event occurs.
 
-The `StartOn` predicate declares that boundary. For the publication saga it matches
-`PublicationRequested` and ignores every other document event. The aggregate that produced this event
-is the **originator**. Commands such as `toOriginator (FinishPublication Published)` route back to
-that exact document instance.
+The `StartOn` predicate declares that boundary. For the transfer saga it matches `TransferSent` and
+ignores every other account event. The aggregate that produced this event is the **originator**.
+Commands such as `toOriginator (RefundTransfer ...)` route back to that exact account.
 
 Only a persisted event can start a saga. A deferred reply is not journaled, so a repeated request
 answered with `DeferEvent` or `persistIf false` does not start a second workflow.
@@ -144,8 +143,8 @@ event in that internal envelope so the saga can retain:
 - the originator identity and version used by the startup handshake;
 - the correlation and metadata context needed during recovery.
 
-The distinction matters: `PublicationRequested` is the domain fact; `SagaStartingEvent` is FCQRS
-runtime evidence about how this saga instance began.
+The distinction matters: `TransferSent` is the domain fact; `SagaStartingEvent` is FCQRS runtime
+evidence about how this saga instance began.
 
 > **Motivation:** `StartOn` is more than an event filter. It marks the creation boundary FCQRS needs to
 > install the new saga before releasing the event that gives it work.
@@ -203,19 +202,18 @@ FCQRS stores each accepted saga state transition. On restart it loads a snapshot
 later state changes, restores the starting-event context, and subscribes the saga again. It then calls
 `applySideEffects` for the recovered state with `recovering = true`.
 
-Suppose the last durable state is `ReportingResult Published`. FCQRS knows the saga must send
-`FinishPublication Published`; it cannot know whether the previous process sent that command just
-before it stopped. The correct recovery action is therefore to re-drive the state with a retry-safe
-command.
+Suppose the last durable state is `Delivering`. FCQRS knows the saga must send `ReceiveTransfer` to
+Bob's account; it cannot know whether the previous process sent that command just before it stopped.
+The correct recovery action is therefore to re-drive the state with a retry-safe command.
 
 ```text
-stored state: ReportingResult Published
-unknown:      was FinishPublication Published delivered before the crash?
-resume:       send FinishPublication Published again safely
+stored state: Delivering t1
+unknown:      was ReceiveTransfer t1 delivered before the crash?
+resume:       send ReceiveTransfer t1 again safely
 ```
 
-The document aggregate should treat a repeated result as the same business outcome rather than store
-it twice. At an external boundary, use a stable idempotency key or query the operation's status.
+Bob's account treats a repeated transfer ID as the same business outcome: it replies with the first
+answer again and credits the money once. At an external boundary, use a stable idempotency key or query the operation's status.
 The `recovering` flag can select that status-check path when repeating the normal command is unsafe.
 
 Returning no commands for every recovered state is usually wrong. It strands a saga when the original
@@ -269,8 +267,8 @@ commands on a schedule and, past a deadline anchored to the persisted state-entr
 
 ## Compensation is a new action
 
-A distributed workflow cannot generally erase work that already succeeded. Releasing a reserved slug
-is not time travel; it is another command with its own outcome and possible failure. A sent e-mail may
+A distributed workflow cannot generally erase work that already succeeded. A refund is not time
+travel; it is another command with its own outcome and possible failure. A sent e-mail may
 have no useful compensation at all.
 
 Model compensation explicitly: what triggers it, which state stores its progress, whether it is
@@ -283,6 +281,6 @@ Use a saga when work crosses independent consistency boundaries and its progress
 Use an aggregate command when one owner can decide the rule. Use an async effect for best-effort work
 that may safely be lost and does not need durable progress.
 
-[Write a saga](../how-to/write-a-saga.html) is the compact F# and C#
-recipe. [Consistency and recovery](consistency-and-recovery.html) places saga resumption beside the
+The [tutorial's transfer](../tutorial/transfer-money.html) runs this saga, and
+[Write a saga](../how-to/write-a-saga.html) is the compact F# and C# recipe. [Consistency and recovery](consistency-and-recovery.html) places saga resumption beside the
 other durable boundaries.

@@ -17,8 +17,8 @@
   </defs>
 
   <rect width="980" height="520" fill="#FFFFFF"/>
-  <text class="title" x="40" y="40">The read path — events become query-ready tables</text>
-  <text class="subtitle" x="40" y="64">A projection folds the event stream into a read model, remembering how far it has read. Queries hit the read model, never the journal.</text>
+  <text class="title" x="40" y="40">The read path: events become query-ready tables</text>
+  <text class="subtitle" x="40" y="64">A projection turns stored events into a read model and records how far it has read. Queries read the read model, not the journal.</text>
 
   <!-- Journal -->
   <rect x="48" y="150" width="166" height="92" rx="12" fill="#F8FAFC" stroke="#64748B" stroke-width="2"/>
@@ -27,39 +27,39 @@
   <text class="bsub" x="131" y="225" text-anchor="middle" fill="#64748B">the source of truth</text>
 
   <path class="edge-blue" d="M214,196 L316,196" marker-end="url(#r-blue)"/>
-  <text class="elbl" x="226" y="186" fill="#1D4ED8">event + offset</text>
+  <text class="elbl" x="226" y="186" fill="#1D4ED8">stored event</text>
 
   <!-- Projection -->
   <rect x="318" y="150" width="216" height="92" rx="12" fill="#DCFCE7" stroke="#16A34A" stroke-width="2"/>
   <text class="blbl" x="426" y="184" text-anchor="middle" fill="#14532D">Projection</text>
-  <text class="bsub" x="426" y="204" text-anchor="middle" fill="#15803D">handleEventWrapper</text>
-  <text class="bsub" x="426" y="221" text-anchor="middle" fill="#15803D">(offset, event) → rows</text>
+  <text class="bsub" x="426" y="204" text-anchor="middle" fill="#15803D">Statement.handle</text>
+  <text class="bsub" x="426" y="221" text-anchor="middle" fill="#15803D">(connection, transaction, event)</text>
 
   <path class="edge-green" d="M534,196 L636,196" marker-end="url(#r-green)"/>
-  <text class="elbl" x="548" y="186" fill="#15803D">upsert rows</text>
+  <text class="elbl" x="548" y="186" fill="#15803D">insert rows</text>
 
   <!-- Read model -->
   <rect x="638" y="150" width="200" height="92" rx="12" fill="#DCFCE7" stroke="#16A34A" stroke-width="2"/>
   <text class="blbl" x="738" y="184" text-anchor="middle" fill="#14532D">Read model</text>
   <text class="bsub" x="738" y="204" text-anchor="middle" fill="#15803D">plain SQL tables</text>
-  <text class="bsub" x="738" y="221" text-anchor="middle" fill="#15803D">Documents · History …</text>
+  <text class="bsub" x="738" y="221" text-anchor="middle" fill="#15803D">statement · large transfers …</text>
 
   <!-- offset down from projection -->
   <path class="edge-gray" d="M426,242 L426,292" marker-end="url(#r-gray)"/>
   <rect x="320" y="294" width="212" height="58" rx="10" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1.6"/>
-  <text class="blbl" x="426" y="318" text-anchor="middle" fill="#334155" font-size="13">save offset = N</text>
-  <text class="bsub" x="426" y="337" text-anchor="middle" fill="#64748B">same transaction → exactly once</text>
+  <text class="blbl" x="426" y="318" text-anchor="middle" fill="#334155" font-size="13">save progress</text>
+  <text class="bsub" x="426" y="337" text-anchor="middle" fill="#64748B">same transaction → each event once</text>
 
   <!-- query from client -->
   <rect x="638" y="316" width="200" height="60" rx="12" fill="#FEF9C3" stroke="#CA8A04" stroke-width="2"/>
   <text class="blbl" x="738" y="344" text-anchor="middle" fill="#713F12" font-size="13.5">Client query</text>
-  <text class="bsub" x="738" y="362" text-anchor="middle" fill="#854D0E">getDocuments, getHistory…</text>
+  <text class="bsub" x="738" y="362" text-anchor="middle" fill="#854D0E">the statement, a report…</text>
   <path class="edge-green" d="M738,314 L738,244" marker-end="url(#r-green)"/>
   <text class="elbl" x="750" y="284" fill="#15803D">SELECT</text>
 
   <!-- rebuild note -->
   <rect x="40" y="412" width="898" height="74" rx="12" fill="#F8FAFC" stroke="#E2E8F0" stroke-width="1.5"/>
-  <text class="note" x="62" y="442" font-weight="700" fill="#0F172A">Disposable by design.</text>
-  <text class="note" x="62" y="464">Delete the whole read model and set the offset back to 0, and the projection rebuilds every row by replaying the journal</text>
-  <text class="note" x="62" y="482">from the start. The journal never changes — which is why fixing a projection bug is "edit, drop, replay," not "patch production."</text>
+  <text class="note" x="62" y="442" font-weight="700" fill="#0F172A">A read model can be rebuilt.</text>
+  <text class="note" x="62" y="464">Delete its rows and the projection's progress, and the projection writes every row again by replaying the journal</text>
+  <text class="note" x="62" y="482">from the start. The journal never changes, so a projection bug is fixed by correcting the handler and replaying.</text>
 </svg>

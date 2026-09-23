@@ -1,4 +1,4 @@
-// include: samples/registration-fsharp/Account.fs
+// include: samples/accounts/2-withdraw-money/fsharp/Account.fs
 open System
 open FCQRS.Model.Data
 open FCQRS.Common

@@ -23,7 +23,8 @@ branding, navigation, and the generated documentation source directory. The addi
 `build-docs.py` converts the existing literate `.fsx` pages to Markdown under `.livedocs/content/`.
 That directory is disposable and ignored by Git. Literate comments become prose; ordinary code
 becomes a code block; `(*** hide ***)` hides setup or assertions until the next prose comment.
-The complete script is executed separately, so hidden assertions still fail the build. Other
+The complete script is executed separately, so a hidden check that throws fails the build. Do not
+use `assert` for these checks: `dotnet fsi` compiles it away. Other
 literate directives are not supported. Add explicit conversion support before using one.
 
 Keep `categoryindex` and `index` in page front matter. The adapter translates them into FsLiveDocs
@@ -50,7 +51,11 @@ Contexts are compiler checked with the visible snippets; they are not executed. 
 literate `.fsx` scripts are still executed separately, including their hidden assertions.
 
 The `<!-- sample: ... -->` markers keep F# and C# excerpts synchronized with runnable samples.
-Run `python3 scripts/check-learning-snippets.py --update` after changing sample regions.
+Run `python3 scripts/check-learning-snippets.py --update` after changing sample regions. The check
+also fails when a code block has a line wider than it shows at desktop size: 80 columns for F# and C#
+in the tutorial and task guides, and 72 for the tutorial's other blocks, which sit in the text column.
+Task guides may quote wider logs and shell commands. `content/site.css` gives paired C#
+examples the same frame as F# examples.
 FsLiveDocs does not compile C# fences; the sample build and behaviour checks in CI provide that
 coverage. `<div class="cs-alt"></div>` pairs adjacent language alternatives in the rendered site.
 An F# example's collapsed setup stays in its F# tab, so it is hidden when C# is selected.

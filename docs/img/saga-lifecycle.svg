@@ -17,7 +17,7 @@
   </defs>
 
   <rect width="820" height="560" fill="#FFFFFF"/>
-  <text class="title" x="40" y="40">One branch of the publication saga</text>
+  <text class="title" x="40" y="40">One branch of the transfer saga</text>
   <text class="subtitle" x="40" y="64">An event selects durable progress. Entering that state issues the next command.</text>
 
   <text class="hdr" x="288" y="100" text-anchor="end" fill="#1D4ED8">EVENT IN  →  handleEvent</text>
@@ -28,27 +28,26 @@
   <text class="note" x="410" y="166" text-anchor="middle">waiting for its start event</text>
 
   <rect class="st" x="310" y="232" width="200" height="58" rx="12"/>
-  <text class="stlbl" x="410" y="266" text-anchor="middle">ReservingSlug</text>
+  <text class="stlbl" x="410" y="266" text-anchor="middle">Delivering</text>
 
   <rect class="st" x="310" y="344" width="200" height="58" rx="12"/>
-  <text class="stlbl" x="410" y="369" text-anchor="middle">ReportingResult</text>
-  <text class="stlbl" x="410" y="389" text-anchor="middle">Published</text>
+  <text class="stlbl" x="410" y="378" text-anchor="middle">Refunding</text>
 
   <rect class="st" x="310" y="456" width="200" height="58" rx="12"/>
-  <text class="stlbl" x="410" y="490" text-anchor="middle">Done</text>
+  <text class="stlbl" x="410" y="490" text-anchor="middle">Completed</text>
 
   <path class="edge-p" d="M410,178 L410,230" marker-end="url(#l-purple)"/>
   <path class="edge-p" d="M410,290 L410,342" marker-end="url(#l-purple)"/>
   <path class="edge-p" d="M410,402 L410,454" marker-end="url(#l-purple)"/>
 
-  <text class="evt" x="300" y="208" text-anchor="end">on PublicationRequested</text>
-  <text class="evt" x="300" y="320" text-anchor="end">on SlugReserved</text>
-  <text class="evt" x="300" y="432" text-anchor="end">on PublicationFinished</text>
+  <text class="evt" x="300" y="208" text-anchor="end">on TransferSent</text>
+  <text class="evt" x="300" y="320" text-anchor="end">on Rejected from the target</text>
+  <text class="evt" x="300" y="432" text-anchor="end">on TransferRefunded</text>
 
   <text class="note" x="524" y="156">no command</text>
-  <text class="cmd" x="524" y="266">issues → ReserveSlug</text>
-  <text class="cmd" x="524" y="378">issues → FinishPublication Published</text>
+  <text class="cmd" x="524" y="266">issues → ReceiveTransfer</text>
+  <text class="cmd" x="524" y="378">issues → RefundTransfer</text>
   <text class="cmd" x="524" y="490">StopSaga → passivate</text>
 
-  <text class="note" x="40" y="538">SlugUnavailable follows the same path with Rejected as the result.</text>
+  <text class="note" x="40" y="538">On TransferReceived, Delivering moves straight to Completed.</text>
 </svg>

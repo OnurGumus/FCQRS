@@ -1,57 +1,31 @@
-open System
-open FCQRS.Model.Data
+// include: samples/accounts/5-transfer-money/fsharp/Account.fs
+module Transfer =
+    open System
+    open FCQRS.Common
+    open FCQRS.FSharp
+    open Account
+    // snippet: 1
+    // snippet: 2
+    // snippet: 3
+    // snippet: 4
+open Microsoft.Extensions.Configuration
+open Microsoft.Extensions.Logging
+open FCQRS.Actor
 open FCQRS.Common
 open FCQRS.FSharp
-// Payloads for the publication workflow shown on this page.
-type DocumentId = string
-module Document =
-    type PublicationResult = Published | Rejected
-    type Command = Publish of DocumentId * string | FinishPublication of PublicationResult
-    type Event =
-        | PublicationRequested of DocumentId * string
-        | PublicationFinished of DocumentId * string * PublicationResult
-    type State = { Id: DocumentId; Slug: string; Result: PublicationResult option }
-    let initial = { Id = ""; Slug = ""; Result = None }
-    let decide (command: Command<Command>) state =
-        match command.CommandDetails with
-        | Publish(id, slug) -> PublicationRequested(id, slug) |> PersistEvent
-        | FinishPublication result ->
-            persistIf state.Result.IsNone (PublicationFinished(state.Id, state.Slug, defaultArg state.Result result))
-    let fold (event: Event<Event>) state =
-        match event.EventDetails with
-        | PublicationRequested(id, slug) -> { state with Id = id; Slug = slug }
-        | PublicationFinished(_, _, result) -> { state with Result = Some result }
-module Slug =
-    type Command = Reserve of DocumentId
-    type Event = SlugReserved of DocumentId | SlugUnavailable of DocumentId
-    let initial: DocumentId option = None
-    let decide (command: Command<Command>) state =
-        let (Reserve id) = command.CommandDetails
-        match state with
-        | None -> SlugReserved id |> PersistEvent
-        | Some owner when owner = id -> SlugReserved id |> DeferEvent
-        | Some _ -> SlugUnavailable id |> DeferEvent
-    let fold (event: Event<Event>) state =
-        match event.EventDetails with
-        | SlugReserved id -> Some id
-        | SlugUnavailable _ -> state
-// snippet: 1
-// snippet: 2
-module DeadlineExample =
-    type State = ReservingSlug of DocumentId * string | PublicationFailed
-    let applySideEffects documentFactory slugFactory (sagaState: SagaState<unit, State>) =
-        match sagaState.State with
-        // snippet: 3
-    let handleEvent (message: obj) (sagaState: SagaState<unit, State option>) =
-        match message, sagaState.State with
-        // snippet: 4
-        | _ -> UnhandledEvent
-module CommitExample =
-    type State = Committing of Set<DocumentId>
-    let handleEvent (message: obj) (sagaState: SagaState<unit, State option>) =
-        match message, sagaState.State with
-        // snippet: 5
-        | _ -> UnhandledEvent
-// snippet: 6
-let register (api: IActor) =
-    // snippet: 7
+open Account
+let connectionString = "Data Source=accounts.db"
+let logging = LoggerFactory.Create(fun _ -> ())
+let configuration = ConfigurationBuilder().Build()
+let connection = Fcqrs.connect DBType.Sqlite connectionString
+let api = Fcqrs.actor configuration logging (Some connection) "accounts"
+
+let accounts =
+    Fcqrs.aggregate api
+        { Name = "Account"
+          Initial = initial
+          Decide = decide
+          Fold = fold
+          Snapshots = Default
+          Passivation = PassivationPolicy.Default }
+// snippet: 5

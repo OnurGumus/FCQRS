@@ -7,19 +7,19 @@ index: 5
 
 # Correlation IDs and read-your-writes
 
-Suppose an API receives a request to cancel order 42. The request may produce a command, a stored
-event, a projection update, several log entries, and perhaps saga work. Those messages happen at
+Suppose an API receives a request to transfer 30 from Alice to Bob. The request produces a command, a
+stored event, a projection update, several log entries, and saga work. Those messages happen at
 different times and may run on different nodes. A **correlation id**, usually shortened to **CID**,
 marks them as parts of the same request flow.
 
-The CID answers “which request caused this work?” It does not answer “which order owns this state?”
-Order 42's aggregate id remains 42. A single CID can pass through several aggregate identities, while
-many requests for order 42 each receive their own CID.
+The CID answers “which request caused this work?” It does not answer “which account owns this state?”
+Alice's aggregate id remains `alice`. A single CID can pass through several aggregate identities, while
+many requests for Alice's account each receive their own CID.
 
 ```text
-aggregate id: order-42       order-42       payment-9
-correlation id: request-A -> request-A -> request-A
-                command      event          saga command
+aggregate id:   alice          alice            bob
+correlation id: request-A  ->  request-A   ->   request-A
+                SendTransfer   TransferSent     ReceiveTransfer (saga command)
 ```
 
 ## Follow one CID through the system
@@ -89,8 +89,8 @@ and the C# awaiter take an explicit timeout or cancellation token.
 A notification means that the projection publishing it has finished handling the matching event. It
 says nothing about another projection with its own offset.
 
-For example, an order-details projection and a customer-history projection may consume the same event
-at different speeds. If the response queries only order details, wait for that projection. If it
+For example, a statement projection and a monthly-report projection may consume the same event at
+different speeds. If the response queries only the statement, wait for that projection. If it
 combines both models, wait for a completion signal from both or create one application-level signal
 that represents the combined requirement.
 
@@ -101,15 +101,15 @@ caller needs.
 
 ## Deferred replies do not reach projections
 
-A deferred rejection such as `OrderAlreadyShipped` is returned to the command caller but is not
-stored. Because it never enters the journal, no journal projection can publish a notification for it.
+A deferred rejection such as `Rejected "Insufficient funds"` is returned to the command caller but is
+not stored. Because it never enters the journal, no journal projection can publish a notification for it.
 
 FCQRS stamps the delivered reply to distinguish the paths:
 
 - `Journaled = Some true`: a stored event can later reach a projection;
 - `Journaled = Some false`: a deferred or publish-only reply will not reach a journal projection;
-- `Journaled = None`: the envelope — the command/event record carrying the payload, correlation id,
-  and metadata — predates or bypassed that delivery stamp.
+- `Journaled = None`: the envelope predates or bypassed that delivery stamp. The envelope is the
+  command or event record that carries the payload, correlation id, and metadata.
 
 The `sendAwaiting` helper checks this value and skips the projection wait for a non-journaled reply.
 Without that check, rejection paths could wait for notifications that can never exist.
@@ -118,7 +118,7 @@ Without that check, rejection paths could wait for notifications that can never 
 
 | Identifier | Scope | Question it answers |
 |---|---|---|
-| Aggregate id | one domain owner | Which order, account, or document owns this decision? |
+| Aggregate id | one domain owner | Which account owns this decision? |
 | Correlation id | one request flow | Which commands, events, logs, and notifications belong together? |
 | Message id | one envelope | Which individual command or event is this? |
 
@@ -128,7 +128,8 @@ work caused by that request.
 
 ## Put it into practice
 
-The [registration sample](../get-started.html) waits for one immutable registration to appear in its
-query view. For coordination tied to a particular write, [Read your writes](../how-to/read-your-writes.html) provides the F# and C# APIs, including
-filters, multiple notifications, cancellation, and `sendAwaiting`. [Observe your
+The [tutorial's statement](../tutorial/show-a-statement.html) waits for each command's event before it
+queries, and the [transfer step](../tutorial/transfer-money.html) waits for a saga's last event by
+correlation ID. [Read your writes](../how-to/read-your-writes.html) provides the F# and C# APIs,
+including filters, multiple notifications, cancellation, and `sendAwaiting`. [Observe your
 system](../how-to/observability.html) shows how the same CID appears in logs and traces.

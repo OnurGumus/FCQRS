@@ -7,35 +7,36 @@ index: 9
 
 # Evolve persisted events
 
-A document journal originally stored its body in a `Text` field. The current event calls that field
-`Content` and records a content format. All historical documents in this example contain plain text:
+An early release of a bank stored each deposit's amount in a `Sum` field. The current event calls that
+field `Amount` and records a currency. Every deposit stored before currencies existed was in euros:
 
 ```fsharp
-type DocumentSavedV1 = { Id: string; Text: string }
-type DocumentSavedV2 = { Id: string; Content: string }
-type DocumentSavedV3 = { Id: string; Content: string; Format: string }
+type DepositedV1 = { Account: string; Sum: decimal }
+type DepositedV2 = { Account: string; Amount: decimal }
+type DepositedV3 = { Account: string; Amount: decimal; Currency: string }
 
-let v1ToV2 (old: DocumentSavedV1) : DocumentSavedV2 =
-    { Id = old.Id; Content = old.Text }
+let v1ToV2 (old: DepositedV1) : DepositedV2 =
+    { Account = old.Account; Amount = old.Sum }
 
-let v2ToV3 (old: DocumentSavedV2) : DocumentSavedV3 =
-    { Id = old.Id; Content = old.Content; Format = "text/plain" }
+let v2ToV3 (old: DepositedV2) : DepositedV3 =
+    { Account = old.Account; Amount = old.Amount; Currency = "EUR" }
 ```
 
 <div class="cs-alt"></div>
 
 ```csharp
-public sealed record DocumentSavedV1(string Id, string Text);
-public sealed record DocumentSavedV2(string Id, string Content);
-public sealed record DocumentSavedV3(string Id, string Content, string Format);
+public sealed record DepositedV1(string Account, decimal Sum);
+public sealed record DepositedV2(string Account, decimal Amount);
+public sealed record DepositedV3(
+    string Account, decimal Amount, string Currency);
 
-public static class DocumentUpcasters
+public static class DepositUpcasters
 {
-    public static DocumentSavedV2 V1ToV2(DocumentSavedV1 old) =>
-        new(old.Id, old.Text);
+    public static DepositedV2 V1ToV2(DepositedV1 old) =>
+        new(old.Account, old.Sum);
 
-    public static DocumentSavedV3 V2ToV3(DocumentSavedV2 old) =>
-        new(old.Id, old.Content, "text/plain");
+    public static DepositedV3 V2ToV3(DepositedV2 old) =>
+        new(old.Account, old.Amount, "EUR");
 }
 ```
 
@@ -43,9 +44,13 @@ An **event upcaster** converts a stored payload to the representation current jo
 Here, a chain converts V1 to V2 and then V2 to V3. A stored V2 event needs only the second conversion;
 a stored V3 event already has the current shape.
 
+A new optional field needs no conversion. The tutorial's [memo](../tutorial/add-a-memo.html) reads as
+absent on transfers stored before it existed. An upcaster is for a change that old payloads cannot
+satisfy as stored, such as a renamed field.
+
 The registration APIs on this page require FCQRS 6.5.0 or later.
 
-The default `"text/plain"` is valid because it describes the old documents. Do not invent a default
+The default `"EUR"` is valid because it describes the old deposits. Do not invent a default
 that changes the historical meaning. Converters must be deterministic: use the old payload and fixed
 compatibility rules, without database queries, external calls, current time, or random values.
 Different actors or projections can call the converters concurrently, so they must also be
@@ -65,16 +70,16 @@ open FCQRS.FSharp
 
 let startRuntime configuration loggerFactory connectionString =
     Fcqrs.journalTypes
-        [ journalType<DocumentSavedV1> "document.saved.v1"
-          journalType<DocumentSavedV2> "document.saved.v2"
-          journalType<DocumentSavedV3> "document.saved.v3" ]
+        [ journalType<DepositedV1> "account.deposited.v1"
+          journalType<DepositedV2> "account.deposited.v2"
+          journalType<DepositedV3> "account.deposited.v3" ]
 
+    let connection = Fcqrs.connect FCQRS.Actor.DBType.Sqlite connectionString
     let api =
-        Fcqrs.actor configuration loggerFactory
-            (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite connectionString)) "documents"
+        Fcqrs.actor configuration loggerFactory (Some connection) "accounts"
 
-    let api = Fcqrs.withEventUpcaster<DocumentSavedV1, DocumentSavedV2> api v1ToV2
-    let api = Fcqrs.withEventUpcaster<DocumentSavedV2, DocumentSavedV3> api v2ToV3
+    let api = Fcqrs.withEventUpcaster<DepositedV1, DepositedV2> api v1ToV2
+    let api = Fcqrs.withEventUpcaster<DepositedV2, DepositedV3> api v2ToV3
     // Register aggregates, sagas, and projections with this API next.
     api
 ```
@@ -88,17 +93,18 @@ using Microsoft.Extensions.Hosting;
 var builder = Host.CreateApplicationBuilder(args);
 
 var fcqrs = builder.Services
-    .AddFcqrs(connectionString, "documents")
+    .AddFcqrs(connectionString, "accounts")
     .WithJournalTypes(types =>
     {
-        types.Type<DocumentSavedV1>("document.saved.v1");
-        types.Type<DocumentSavedV2>("document.saved.v2");
-        types.Type<DocumentSavedV3>("document.saved.v3");
+        types.Type<DepositedV1>("account.deposited.v1");
+        types.Type<DepositedV2>("account.deposited.v2");
+        types.Type<DepositedV3>("account.deposited.v3");
     })
-    .WithEventUpcaster<DocumentSavedV1, DocumentSavedV2>(DocumentUpcasters.V1ToV2)
-    .WithEventUpcaster<DocumentSavedV2, DocumentSavedV3>(DocumentUpcasters.V2ToV3);
+    .WithEventUpcaster<DepositedV1, DepositedV2>(DepositUpcasters.V1ToV2)
+    .WithEventUpcaster<DepositedV2, DepositedV3>(DepositUpcasters.V2ToV3);
 
-// Continue with fcqrs.AddAggregate<...>(), sagas, and a projection before starting the host.
+// Continue with fcqrs.AddAggregate<...>(), sagas, and a projection
+// before starting the host.
 ```
 
 Complete C# builder registrations before building or resolving the host. The builder's configuration
@@ -126,12 +132,12 @@ projections terminate the process under FCQRS's fail-fast policy. A transactiona
 back the current event's transaction and faults `IProjection.Completion`; its checkpoint does not
 advance past that event.
 
-The source type is the envelope's declared payload type. For `Event<DocumentSavedV1>`, register
-`DocumentSavedV1`. For an F# union or C# record hierarchy stored as `Event<DocumentEventV1>`, register
-`DocumentEventV1` and convert all of its cases. Registering only a derived C# case does not match an
-envelope whose payload parameter is the base type.
+The source type is the envelope's declared payload type. For `Event<DepositedV1>`, register
+`DepositedV1`. The tutorial's account stores `Event<AccountEvent>`. For a union or C# record hierarchy
+stored as `Event<AccountEventV1>`, register `AccountEventV1` and convert all of its cases. Registering
+only a case type does not match an envelope whose payload parameter is the union or base type.
 
-Consumers of the example's converted journal events must accept `Event<DocumentSavedV3>`. The
+Consumers of the example's converted journal events must accept `Event<DepositedV3>`. The
 application chooses which type new command decisions persist; an upcaster does not change writers.
 
 ## Understand what is converted
@@ -149,7 +155,7 @@ sequence numbers also stay unchanged. One old event still represents one positio
 
 Upcasting does not run for live commands, published replies, or the live `Persisted` and `Deferred`
 callbacks. It does not change standalone deserialization through the FCQRS serializer. A live
-subscriber receiving `Event<DocumentSavedV1>` still receives that type; registering V1-to-V3 journal
+subscriber receiving `Event<DepositedV1>` still receives that type; registering V1-to-V3 journal
 conversions does not make the subscriber understand it.
 
 Without stable names, older rows may carry CLR assembly and type names. Keep those identities

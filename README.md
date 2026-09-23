@@ -9,37 +9,46 @@ Write the rules; FCQRS stores events, rebuilds state, and feeds query views.
 
 ## Run your first example
 
-From the repository root, with .NET 10 installed:
+From `samples/accounts`, with the .NET 11 SDK installed:
 
 ```text
-dotnet run --project samples/registration-fsharp
+dotnet run --project 1-open-an-account/fsharp
 ```
 
 Or C#:
 
 ```text
-dotnet run --project samples/registration-csharp
+dotnet run --project 1-open-an-account/csharp
 ```
 
 ```text
-Registered: Alice (version 1)
-Query: Alice
+Opened for Alice (version 1)
+Deposited 100 (version 2)
+Deposited 50 (version 3)
 ```
 
-Run again: `Already registered: Alice (version 1)`. The saved registration survives the restart.
+The program then prints the events FCQRS stored. Run it again and the versions continue at 4: FCQRS
+rebuilt Alice's account from its stored events.
 
-The rule is:
+The rules are two functions:
 
 ```fsharp
-let decide (command: Command<RegisterUser>) (state: string option) =
-    let (RegisterUser name) = command.CommandDetails
-    persistIf state.IsNone (UserRegistered(defaultArg state name))
+let decide (command: Command<AccountCommand>) (state: AccountState) =
+    match command.CommandDetails with
+    | Open owner -> PersistEvent(Opened owner)
+    | Deposit amount -> PersistEvent(Deposited amount)
+
+let fold (event: Event<AccountEvent>) (state: AccountState) =
+    match event.EventDetails with
+    | Opened owner -> { state with Owner = Some owner }
+    | Deposited amount -> { state with Balance = state.Balance + amount }
 ```
 
-`persistIf` saves the first registration and defers later replies using the existing name.
-An aggregate processes one account's commands at a time; other accounts run independently.
+`decide` chooses the event to store for a command, and `fold` applies a stored event to the state.
+FCQRS handles one account's commands one at a time; other accounts run independently.
 
-[Get started](https://onurgumus.github.io/FCQRS/get-started.html) ·
+[Why FCQRS](https://onurgumus.github.io/FCQRS/overview.html) ·
+[Tutorial](https://onurgumus.github.io/FCQRS/tutorial/open-an-account.html) ·
 [Task guides](https://onurgumus.github.io/FCQRS/how-to/index.html) ·
 [API reference](https://onurgumus.github.io/FCQRS/reference/index.html) ·
 [Configuration](https://onurgumus.github.io/FCQRS/configuration.html)
@@ -50,8 +59,9 @@ An aggregate processes one account's commands at a time; other accounts run inde
 dotnet add package FCQRS
 ```
 
-The [F#](samples/registration-fsharp/) and [C#](samples/registration-csharp/) samples use the published
-package on stable .NET 10. Copy either folder to start a standalone project.
+The [F#](samples/accounts/1-open-an-account/fsharp/) and [C#](samples/accounts/1-open-an-account/csharp/)
+samples use the published package on .NET 11; the C# one uses C# 15. Copy either folder to start a
+standalone project.
 
 See [LICENSE.md](LICENSE.md).
 

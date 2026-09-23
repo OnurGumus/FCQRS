@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 480" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="oa-red" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#E5484D"/></marker>
+    <marker id="oa-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#2563EB"/></marker>
+    <marker id="oa-gray" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#94A3B8"/></marker>
+    <style>
+      .title { font-size:20px; font-weight:700; fill:#0F172A; }
+      .subtitle { font-size:13px; fill:#475569; }
+      .head { font-size:15px; font-weight:700; }
+      .note { font-size:12px; fill:#64748B; }
+      .code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:13px; }
+      .lbl { font-size:12px; font-weight:700; }
+    </style>
+  </defs>
+
+  <rect width="760" height="480" fill="#FFFFFF"/>
+  <text class="title" x="30" y="36">Commands in, events stored, state folded</text>
+  <text class="subtitle" x="30" y="58">The account decides each command against its current state.</text>
+  <text class="subtitle" x="30" y="76">Each stored event is folded into that state.</text>
+
+  <!-- commands -->
+  <text class="note" x="30" y="112">commands</text>
+  <rect x="30" y="122" width="150" height="36" rx="18" fill="#FEF2F2" stroke="#E5484D" stroke-width="1.6"/>
+  <text class="code" x="105" y="145" text-anchor="middle" fill="#B4262A">Open "Alice"</text>
+  <rect x="30" y="170" width="150" height="36" rx="18" fill="#FEF2F2" stroke="#E5484D" stroke-width="1.6"/>
+  <text class="code" x="105" y="193" text-anchor="middle" fill="#B4262A">Deposit 100</text>
+  <rect x="30" y="218" width="150" height="36" rx="18" fill="#FEF2F2" stroke="#E5484D" stroke-width="1.6"/>
+  <text class="code" x="105" y="241" text-anchor="middle" fill="#B4262A">Deposit 50</text>
+  <path d="M184,188 L218,188" fill="none" stroke="#E5484D" stroke-width="2.5" marker-end="url(#oa-red)"/>
+
+  <!-- account aggregate -->
+  <rect x="222" y="112" width="180" height="152" rx="12" fill="#F1F5F9" stroke="#334155" stroke-width="2"/>
+  <text class="head" x="312" y="140" text-anchor="middle" fill="#0F172A">Account "alice"</text>
+  <rect x="240" y="158" width="144" height="52" rx="8" fill="#FFFFFF" stroke="#94A3B8" stroke-width="1.4"/>
+  <text class="code" x="312" y="180" text-anchor="middle" fill="#0F172A" font-weight="700">decide</text>
+  <text class="note" x="312" y="199" text-anchor="middle">(command, state)</text>
+  <text class="note" x="312" y="236" text-anchor="middle">one command at a time</text>
+  <text class="note" x="312" y="252" text-anchor="middle">per account</text>
+
+  <path d="M402,188 L486,188" fill="none" stroke="#2563EB" stroke-width="2.5" marker-end="url(#oa-blue)"/>
+  <text class="lbl" x="444" y="176" text-anchor="middle" fill="#1D4ED8">PersistEvent</text>
+
+  <!-- journal -->
+  <rect x="490" y="112" width="240" height="168" rx="10" fill="#F8FAFC" stroke="#64748B" stroke-width="2"/>
+  <text class="head" x="610" y="139" text-anchor="middle" fill="#334155">journal</text>
+  <text class="note" x="517" y="160" text-anchor="middle">version</text>
+  <text class="note" x="552" y="160">event</text>
+  <rect x="502" y="168" width="216" height="26" rx="4" fill="#FFFFFF" stroke="#E2E8F0"/>
+  <text class="code" x="517" y="186" text-anchor="middle" fill="#0F172A" font-weight="700">1</text>
+  <text class="code" x="552" y="186" fill="#0F172A">Opened "Alice"</text>
+  <rect x="502" y="199" width="216" height="26" rx="4" fill="#FFFFFF" stroke="#E2E8F0"/>
+  <text class="code" x="517" y="217" text-anchor="middle" fill="#0F172A" font-weight="700">2</text>
+  <text class="code" x="552" y="217" fill="#0F172A">Deposited 100</text>
+  <rect x="502" y="230" width="216" height="26" rx="4" fill="#FFFFFF" stroke="#E2E8F0"/>
+  <text class="code" x="517" y="248" text-anchor="middle" fill="#0F172A" font-weight="700">3</text>
+  <text class="code" x="552" y="248" fill="#0F172A">Deposited 50</text>
+  <text class="note" x="610" y="272" text-anchor="middle">rows are only ever added</text>
+
+  <path d="M610,280 L610,330" fill="none" stroke="#2563EB" stroke-width="2.5" marker-end="url(#oa-blue)"/>
+  <text class="lbl" x="622" y="310" fill="#1D4ED8">fold</text>
+
+  <!-- state -->
+  <rect x="510" y="334" width="200" height="112" rx="12" fill="#EFF6FF" stroke="#2563EB" stroke-width="2"/>
+  <text class="head" x="610" y="360" text-anchor="middle" fill="#1D4ED8">state</text>
+  <text class="code" x="540" y="387"><tspan fill="#475569">Owner</tspan><tspan fill="#0F172A" font-weight="700" x="620">Alice</tspan></text>
+  <text class="code" x="540" y="410"><tspan fill="#475569">Balance</tspan><tspan fill="#0F172A" font-weight="700" x="620">150</tspan></text>
+  <text class="note" x="610" y="434" text-anchor="middle" fill="#1D4ED8">computed, not stored</text>
+
+  <!-- decide reads the state -->
+  <path d="M510,390 L312,390 L312,268" fill="none" stroke="#94A3B8" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#oa-gray)"/>
+  <text class="note" x="411" y="381" text-anchor="middle">decide reads the current state</text>
+
+  <text x="30" y="470" font-size="12.5" fill="#475569">After a restart, FCQRS rebuilds the state by folding the stored events again.</text>
+</svg>

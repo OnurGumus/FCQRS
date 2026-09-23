@@ -11,6 +11,10 @@ Use `RunAsync` when a command needs a short asynchronous result and losing that 
 restart is acceptable. Examples include a cache lookup, optional enrichment, or a suggestion that the
 caller can request again.
 
+Nothing in the tutorial's bank qualifies. Moving money must survive a restart, so the tutorial's
+[transfer](../tutorial/transfer-money.html) uses a saga. This page uses a note that asks a service for
+a summary instead.
+
 Use a [saga](write-a-saga.html) when the work must resume after a restart, needs durable retries, or
 crosses aggregate boundaries as a business process.
 
@@ -34,33 +38,43 @@ A note aggregate accepts `Summarize`, then records either a summary or an unavai
 description contains the input required by the runner:
 
 ```fsharp
-type NoteEffect = SummarizeText of string    // the effect, described as data
+type NoteCommand = Summarize | RecordSummary of string | GiveUp
+type NoteEvent = SummaryRecorded of string | SummaryUnavailable
+
+// The effect, described as data.
+type NoteEffect = SummarizeText of string
 
 let decide (cmd: Command<NoteCommand>) state =
     match cmd.CommandDetails with
-    | Summarize       -> dispatch (SummarizeText state.Body)   // pure: just a description
+    // Pure: only a description of the work.
+    | Summarize -> dispatch (SummarizeText state.Body)
     | RecordSummary s -> SummaryRecorded s |> PersistEvent
-    | GiveUp          -> SummaryUnavailable |> PersistEvent
+    | GiveUp -> SummaryUnavailable |> PersistEvent
 ```
 
 <div class="cs-alt"></div>
 
 ```csharp
-public abstract record NoteEffect
-{
-    public sealed record SummarizeText(string Text) : NoteEffect;
-}
+public union NoteCommand(Summarize, RecordSummary, GiveUp);
+public sealed record Summarize;
+public sealed record RecordSummary(string Summary);
+public sealed record GiveUp;
+public union NoteEvent(SummaryRecorded, SummaryUnavailable);
+public sealed record SummaryRecorded(string Summary);
+public sealed record SummaryUnavailable;
+
+// The effect, described as data.
+public sealed record SummarizeText(string Text);
 
 EventAction<NoteEvent> Decide(Command<NoteCommand> cmd, NoteState state) =>
     cmd.CommandDetails switch
     {
-        NoteCommand.Summarize =>
-            EventActions.Dispatch<NoteEvent>(new NoteEffect.SummarizeText(state.Body)),
-        NoteCommand.RecordSummary result =>
-            EventActions.Persist<NoteEvent>(new NoteEvent.SummaryRecorded(result.Summary)),
-        NoteCommand.GiveUp =>
-            EventActions.Persist<NoteEvent>(new NoteEvent.SummaryUnavailable()),
-        _ => EventActions.Ignore<NoteEvent>()
+        // Pure: only a description of the work.
+        Summarize =>
+            EventActions.Dispatch<NoteEvent>(new SummarizeText(state.Body)),
+        RecordSummary result => EventActions.Persist<NoteEvent>(
+            new SummaryRecorded(result.Summary)),
+        GiveUp => EventActions.Persist<NoteEvent>(new SummaryUnavailable())
     };
 ```
 
@@ -86,7 +100,10 @@ let notes =
 <div class="cs-alt"></div>
 
 ```csharp
-var notes = ActorWiring.InitAggregateWithEffects(
+// C# cannot infer the command type from the Decide method group, so name all
+// three types.
+var notes = ActorWiring.InitAggregateWithEffects<
+    NoteState, NoteCommand, NoteEvent>(
     actor,
     NoteState.Initial,
     "Note",
@@ -94,15 +111,16 @@ var notes = ActorWiring.InitAggregateWithEffects(
     Fold,
     runner: async description =>
     {
-        var effect = (NoteEffect.SummarizeText)description;
+        var effect = (SummarizeText)description;
         try
         {
             var summary = await ai.Summarize(effect.Text);
-            return (object)new NoteCommand.RecordSummary(summary);
+            // Return the union: the aggregate expects a NoteCommand.
+            return (NoteCommand)new RecordSummary(summary);
         }
         catch
         {
-            return new NoteCommand.GiveUp();
+            return (NoteCommand)new GiveUp();
         }
     },
     SnapshotPolicy.Default);
@@ -125,8 +143,8 @@ runner has already performed.
 
 ## Test it without Akka.NET
 
-Because the effect is data, `decide` is testable like any other decision — here with the `command`
-envelope helper from [Test your domain](test-your-domain.html):
+Because the effect is data, `decide` is testable like any other decision. This test uses a `command`
+helper that wraps a payload with `TestEnvelope.Command`, as in [Test your domain](test-your-domain.html):
 
 ```fsharp
 Expect.equal
@@ -138,12 +156,10 @@ Expect.equal
 <div class="cs-alt"></div>
 
 ```csharp
-var action = Decide(
-    TestEnvelope.Command<NoteCommand>(new NoteCommand.Summarize()),
-    state);
+var action = Decide(TestEnvelope.Command<NoteCommand>(new Summarize()), state);
 
 Assert.Equal(
-    EventActions.Dispatch<NoteEvent>(new NoteEffect.SummarizeText(state.Body)),
+    EventActions.Dispatch<NoteEvent>(new SummarizeText(state.Body)),
     action);
 ```
 

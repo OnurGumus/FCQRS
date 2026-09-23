@@ -7,23 +7,22 @@ index: 6
 
 # Catch up projections
 
-A document export can require every change already saved across the journal, including changes to
-other documents. Call `CatchUpAsync` after the aggregate reply, then query the transactional
+A month-end report can require every change already saved across the journal, including changes to
+other accounts. Call `CatchUpAsync` after the aggregate reply, then query the transactional
 projection's read model:
 
 ```fsharp
-let! reply = documents.Send cid documentId (CreateDocument doc) (fun _ -> true)
+let! reply = accounts.Send cid alice (Deposit 100m) (fun _ -> true)
 do! projection.CatchUpAsync(cancellationToken) |> Async.AwaitTask
-// Inspect the command outcome, then query the projected documents.
+// Inspect the reply, then query the balances of every account.
 ```
 
 <div class="cs-alt"></div>
 
 ```csharp
-var reply = await documents(
-    _ => true, cid, documentId, new CreateDocument(document));
+var reply = await accounts(_ => true, cid, alice, new Deposit(100m));
 await projection.CatchUpAsync(cancellationToken);
-// Inspect the command outcome, then query the projected documents.
+// Inspect the reply, then query the balances of every account.
 ```
 
 These transactional projection APIs are available in FCQRS 6.4.0 and later.
@@ -45,8 +44,9 @@ It also works after a deferred reply, although a deferred reply itself adds no j
 the command outcome separately: projection completion does not turn a rejected command into a
 successful one.
 
-The examples use the document types from `samples/getting-started-fsharp/Document.fs` and
-`samples/getting-started-csharp/Document.cs`.
+The examples use the account from the tutorial's [withdraw money](../tutorial/withdraw-money.html)
+step. The tutorial's [statement](../tutorial/show-a-statement.html) is a transactional projection
+too.
 
 ## Register a transactional projection
 
@@ -59,7 +59,7 @@ its connection and transaction to the handler, records progress, and commits the
 from the handler only when its writes have completed. Use the supplied transaction for every
 read-model change covered by this projection.
 
-Use the `Documents` table from [Add a projection](add-a-projection.html). The following SQLite
+Use the `Balances` table from [Add a projection](add-a-projection.html). The following SQLite
 registration uses one database for the journal, read model, and FCQRS-owned progress tables:
 
 ```fsharp
@@ -74,35 +74,44 @@ open FCQRS.Common
 open FCQRS.FSharp
 open FCQRS.ProjectionStorage
 open FCQRS.Projections
-open Program
+open Account
+
+let openAccount =
+    "insert into Balances (Id, Owner, Balance) values (@Id, @Owner, 0)"
+let changeBalance =
+    "update Balances set Balance = Balance + @Amount where Id = @Id"
 
 let handle (connection: DbConnection) (transaction: DbTransaction)
            (envelope: EventEnvelope) : Task =
     task {
         match envelope.Event with
-        | :? Event<DocumentEvent> as stored ->
+        // Sender is the ID of the account that stored the event.
+        | :? Event<AccountEvent> as stored ->
+            let id = string stored.Sender.Value
+            let add (amount: decimal) =
+                task {
+                    let row = {| Id = id; Amount = amount |}
+                    let! rows =
+                        connection.ExecuteAsync(changeBalance, row, transaction)
+                    if rows <> 1 then
+                        failwith "A balance change needs an earlier Opened"
+                }
             match stored.EventDetails with
-            | DocumentCreated doc ->
-                let! _ = connection.ExecuteAsync(
-                    "insert into Documents (Id, Title, Body) values (@Id, @Title, @Body) " +
-                    "on conflict (Id) do update set Title = excluded.Title, Body = excluded.Body",
-                    {| Id = doc.Id; Title = doc.Title; Body = doc.Content |},
-                    transaction)
+            | Opened owner ->
+                let row = {| Id = id; Owner = owner |}
+                let! _ = connection.ExecuteAsync(openAccount, row, transaction)
                 ()
-            | DocumentEdited(id, content) ->
-                let! rows = connection.ExecuteAsync(
-                    "update Documents set Body = @Body where Id = @Id",
-                    {| Id = id; Body = content |}, transaction)
-                if rows <> 1 then failwith "DocumentEdited requires an earlier DocumentCreated"
-            | _ -> ()
+            | Deposited amount -> do! add amount
+            | Withdrawn amount -> do! add -amount
+            | Rejected _ -> ()
         | _ -> ()
     } :> Task
 
 let store =
     SqlProjectionStore(
         ProjectionSqlDialect.Sqlite,
-        Func<DbConnection>(fun () -> new SqliteConnection(connectionString) :> DbConnection))
-let options = TransactionalProjectionOptions("DocumentProjection", store)
+        Func<DbConnection>(fun () -> new SqliteConnection(connectionString)))
+let options = TransactionalProjectionOptions("Balances", store)
 let projection = Fcqrs.transactionalProjection api options handle
 ```
 
@@ -119,38 +128,46 @@ using static FCQRS.Common;
 using static FCQRS.ProjectionStorage;
 using static FCQRS.Projections;
 
+const string OpenAccount =
+    "insert into Balances (Id, Owner, Balance) values (@Id, @Owner, 0)";
+const string ChangeBalance =
+    "update Balances set Balance = Balance + @Amount where Id = @Id";
+
 static async Task Handle(
     DbConnection connection, DbTransaction transaction, EventEnvelope envelope)
 {
-    if (envelope.Event is not Event<DocumentEvent> stored) return;
+    // Sender is the ID of the account that stored the event.
+    if (envelope.Event is not Event<AccountEvent> { Sender: { } sender } stored)
+        return;
+    var id = sender.Value.ToString();
+
+    async Task Add(decimal amount)
+    {
+        var row = new { Id = id, Amount = amount };
+        var rows =
+            await connection.ExecuteAsync(ChangeBalance, row, transaction);
+        if (rows != 1)
+            throw new InvalidOperationException(
+                "A balance change needs an earlier Opened");
+    }
+
     switch (stored.EventDetails)
     {
-        case DocumentCreated created:
-            await connection.ExecuteAsync(
-                "insert into Documents (Id, Title, Body) values (@Id, @Title, @Body) " +
-                "on conflict (Id) do update set Title = excluded.Title, Body = excluded.Body",
-                new {
-                    Id = created.Document.Id,
-                    Title = created.Document.Title,
-                    Body = created.Document.Content
-                }, transaction);
+        case Opened opened:
+            var owner = new { Id = id, opened.Owner };
+            await connection.ExecuteAsync(OpenAccount, owner, transaction);
             break;
-        case DocumentEdited edited:
-            var rows = await connection.ExecuteAsync(
-                "update Documents set Body = @Body where Id = @Id",
-                new { Id = edited.Id, Body = edited.Content }, transaction);
-            if (rows != 1)
-                throw new InvalidOperationException("DocumentEdited requires an earlier DocumentCreated");
-            break;
+        case Deposited deposited: await Add(deposited.Amount); break;
+        case Withdrawn withdrawn: await Add(-withdrawn.Amount); break;
     }
 }
 
 var store = new SqlProjectionStore(
     ProjectionSqlDialect.Sqlite, () => new SqliteConnection(connectionString));
-var options = new TransactionalProjectionOptions("DocumentProjection", store);
+var options = new TransactionalProjectionOptions("Balances", store);
 
-builder.Services.AddFcqrs(connectionString, "document-system")
-    .AddAggregate<DocumentAggregate>()
+builder.Services.AddFcqrs(connectionString, "accounts")
+    .AddAggregate<Account>()
     .AddTransactionalProjection(options, Handle);
 ```
 
@@ -191,12 +208,11 @@ open Npgsql
 let store =
     SqlProjectionStore(
         ProjectionSqlDialect.PostgreSql,
-        Func<DbConnection>(fun () -> new NpgsqlConnection(connectionString) :> DbConnection))
-let options = TransactionalProjectionOptions("DocumentProjection", store)
+        Func<DbConnection>(fun () -> new NpgsqlConnection(connectionString)))
+let options = TransactionalProjectionOptions("Balances", store)
 
-let api =
-    Fcqrs.actor configuration loggerFactory
-        (Some(Fcqrs.connect FCQRS.Actor.DBType.PostgreSQL15 connectionString)) "document-system"
+let connection = Fcqrs.connect FCQRS.Actor.DBType.PostgreSQL15 connectionString
+let api = Fcqrs.actor configuration loggerFactory (Some connection) "accounts"
 let projection = Fcqrs.transactionalProjection api options handle
 ```
 
@@ -204,12 +220,13 @@ let projection = Fcqrs.transactionalProjection api options handle
 
 ```csharp
 var store = new SqlProjectionStore(
-    ProjectionSqlDialect.PostgreSql, () => new Npgsql.NpgsqlConnection(connectionString));
-var options = new TransactionalProjectionOptions("DocumentProjection", store);
+    ProjectionSqlDialect.PostgreSql,
+    () => new Npgsql.NpgsqlConnection(connectionString));
+var options = new TransactionalProjectionOptions("Balances", store);
 
 builder.Services.AddFcqrs(
-        connectionString, "document-system", FCQRS.Actor.DBType.PostgreSQL15)
-    .AddAggregate<DocumentAggregate>()
+        connectionString, "accounts", FCQRS.Actor.DBType.PostgreSQL15)
+    .AddAggregate<Account>()
     .AddTransactionalProjection(options, Handle);
 ```
 
@@ -239,9 +256,9 @@ Catch-up suppresses an ambient `TransactionScope` so the snapshot sees freshly c
 data. Projection commits belong to FCQRS transactions independently of the caller's transaction;
 rolling back the caller's scope does not roll back projection work.
 
-For a user-disable workflow, this wait can establish that the selected projection processed every
-event committed before the disable event and the subsequent snapshot. Rejecting later user commands
-remains an aggregate or application rule. The wait does not drain commands that were sent earlier
+For an account-closing workflow, this wait can establish that the selected projection processed every
+event committed before the closing event and the subsequent snapshot. Rejecting later commands to the
+closed account remains an aggregate or application rule. The wait does not drain commands that were sent earlier
 but have not yet been persisted, and it does not stop future writes.
 
 ## Configure discovery and waiting

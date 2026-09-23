@@ -18,98 +18,98 @@ closed message model and durable serialized contracts in C#?”
 
 ## Start from the language-independent model
 
-Suppose a document supports two requests and four outcomes:
+The tutorial's account supports three requests and four outcomes:
 
 ```text
-commands: Create | Edit
-events:   Created | Edited | AlreadyExists | NoSuchDocument
+commands: Open | Deposit | Withdraw
+events:   Opened | Deposited | Withdrawn | Rejected
 ```
 
 Those are closed sets. The aggregate must handle each possible command and event case. Adding a case
 should produce a compiler-visible place to update decisions, folds, tests, and serialization.
 
-F# discriminated unions express the model directly. Current C# compilers have two practical paths.
+F# discriminated unions express the model directly. C# 15 has two ways to express a closed set, and
+C# on .NET 10 has none.
 
-## Path 1: stable C# with record hierarchies
+## Path 1: C# union types
 
-The [registration quickstart](../get-started.html) uses stable .NET 10 C#. Ordinary derived records represent the message cases.
-For example, the creation and editing events share a base record:
+The [tutorial](../tutorial/open-an-account.html) declares each set with the C# `union` keyword:
+
+```csharp
+public union AccountCommand(Open, Deposit, Withdraw);
+public sealed record Open(string Owner);
+public sealed record Deposit(decimal Amount);
+public sealed record Withdraw(decimal Amount);
+
+public union AccountEvent(Opened, Deposited, Withdrawn, Rejected);
+public sealed record Opened(string Owner);
+public sealed record Deposited(decimal Amount);
+public sealed record Withdrawn(decimal Amount);
+public sealed record Rejected(string Reason);
+```
+
+A `switch` over `AccountEvent` that misses a case gets warning CS8509. FCQRS serializes a union with
+its own converter, so the cases need no serialization attributes.
+
+The `union` keyword is part of C# 15. It needs the .NET 11 SDK and a `net11.0` target. FCQRS targets
+`net10.0` and can be referenced by a newer host. The [C# how-to](../how-to/use-from-csharp.html) tracks
+the exact compiler setup used by these examples.
+
+## Path 2: closed record hierarchies
+
+Derived records can also represent the cases. The deposit and withdrawal events share a base record:
 
 ```csharp
 [JsonPolymorphic(TypeDiscriminatorPropertyName = "$case")]
-[JsonDerivedType(typeof(DocumentCreated), "created")]
-[JsonDerivedType(typeof(DocumentEdited), "edited")]
-public abstract record DocumentEvent;
-public sealed record DocumentCreated(Document Document) : DocumentEvent;
-public sealed record DocumentEdited(string Id, string Content) : DocumentEvent;
+[JsonDerivedType(typeof(Deposited), "deposited")]
+[JsonDerivedType(typeof(Withdrawn), "withdrawn")]
+public closed record AccountEvent;
+public sealed record Deposited(decimal Amount) : AccountEvent;
+public sealed record Withdrawn(decimal Amount) : AccountEvent;
 ```
 
-This excerpt needs `System.Text.Json.Serialization`; a hierarchy must register each derived event case. The discriminator names are serialized contracts. Keep each case registered and
-test serialization through the base type, which is the type the journal envelope carries.
+This excerpt needs `System.Text.Json.Serialization`. A hierarchy must register each derived event
+case: without the attributes, System.Text.Json writes each event as `{}` and cannot read it back. The
+discriminator names are serialized contracts. Keep each case registered and test serialization through
+the base type, which is the type the journal envelope carries.
 
-An aggregate derives from `Aggregate<TState,TCommand,TEvent>`, implements `HandleCommand`, and
-implements `ApplyEvent`. Pattern matching selects the derived case. C# does not enforce an exhaustive
-closed set for this hierarchy, so a new case needs explicit decision, fold, projection, and test updates.
+`closed` is also new in C# 15. Only the project that declares a closed record can derive from it, so
+the compiler knows every case and a `switch` that misses one gets warning CS8509.
 
-Run [`samples/registration-csharp`](https://github.com/OnurGumus/FCQRS/tree/main/samples/registration-csharp)
-for an example with one command and event type. It needs no polymorphic event hierarchy.
-[Evolve persisted events](../how-to/evolve-events.html) covers serialized compatibility when adding cases.
+## On .NET 10
 
-## Path 2: C# union types for closed cases
-
-Some reference and how-to examples use the optional C# union syntax:
-
-```csharp
-public union DocumentCommand(DocumentCommand.Create, DocumentCommand.Edit)
-{
-    public record Create(Document Document);
-    public record Edit(string Id, string Content);
-}
-
-public union DocumentEvent(
-    DocumentEvent.Created,
-    DocumentEvent.Edited,
-    DocumentEvent.AlreadyExists,
-    DocumentEvent.NoSuchDocument)
-{
-    public record Created(Document Document);
-    public record Edited(string Id, string Content);
-    public record AlreadyExists;
-    public record NoSuchDocument;
-}
-```
-
-At the time of writing, the `union` keyword requires a .NET 11 preview SDK and
-`<LangVersion>preview</LangVersion>`. FCQRS targets `net10.0` and can be referenced by a newer host.
-The [C# how-to](../how-to/use-from-csharp.html) tracks the exact compiler setup used by these examples.
-
-If preview language features are not acceptable, use concrete C# message types or place the closed
-domain model in a small F# class library while keeping the host, endpoints, and infrastructure in C#.
+C# on .NET 10 has neither keyword. An `abstract` base record works with the same attributes, but C#
+does not enforce an exhaustive set, so a new case needs explicit decision, fold, projection, and test
+updates. Alternatively, use one concrete command type and one concrete event type, as
+[`samples/registration-csharp`](https://github.com/OnurGumus/FCQRS/tree/main/samples/registration-csharp)
+does, or place the closed domain model in a small F# class library while keeping the host, endpoints,
+and infrastructure in C#.
 
 ## The C# aggregate preserves decide and fold
 
 The interop API uses virtual methods instead of curried F# functions:
 
 ```csharp
-public sealed class DocumentAggregate
-    : Aggregate<DocumentState, DocumentCommand, DocumentEvent>
+public sealed class Account
+    : Aggregate<AccountState, AccountCommand, AccountEvent>
 {
-    public override DocumentState InitialState => DocumentState.Initial;
-    public override string EntityName => "Document";
+    public override string EntityName => "Account";
+    public override AccountState InitialState => new();
 
-    public override EventAction<DocumentEvent> HandleCommand(
-        Command<DocumentCommand> command,
-        DocumentState state) => /* decide */;
+    public override EventAction<AccountEvent> HandleCommand(
+        Command<AccountCommand> command,
+        AccountState state) => /* decide */;
 
-    public override DocumentState ApplyEvent(
-        Event<DocumentEvent> stored,
-        DocumentState state) => /* fold */;
+    public override AccountState ApplyEvent(
+        Event<AccountEvent> stored,
+        AccountState state) => /* fold */;
 }
 ```
 
 `EventActions` constructs persist, defer, ignore, and batch actions. Hosting extensions register
 aggregates, sagas, the saga starter, projections, and the runtime in dependency injection order. The
 surface is idiomatic C#, while the recovery and consistency model remains the same.
+[Withdraw money](../tutorial/withdraw-money.html) shows both methods in full.
 
 ## Envelopes carry framework context
 
@@ -130,10 +130,14 @@ FCQRS registers System.Text.Json support for F# records and unions. Its C# union
 explicit representation like:
 
 ```json
-{ "$case": "Created", "$value": { "document": { "id": "doc-1" } } }
+{ "$case": "Withdrawn", "$value": { "Amount": 60 } }
 ```
 
-The case discriminator matters. `Approved` and `Rejected` might both carry a string, but equal field
+The discriminator is the case type's full name: `Withdrawn` for a case declared at the top level, as in
+the tutorial, or `AccountEvent+Withdrawn` for a case nested in the union declaration. Renaming or moving
+a case type changes it.
+
+The case discriminator matters. `Deposited` and `Withdrawn` both carry an amount, but equal field
 shapes do not give them equal domain meaning.
 
 Do not casually rename persisted event cases, change their meaning, remove required fields, or replace
@@ -160,15 +164,16 @@ for the runtime.
 
 ## Choose based on team and contract needs
 
-Use stable concrete C# types when they express the current message set clearly. Use C# union syntax
-when the preview compiler is acceptable and exhaustive closed cases improve the model. Use an F#
-domain library when discriminated unions and functional composition are valuable but the surrounding
-application belongs in C#.
+On C# 15, use C# unions, as the tutorial does, or `closed` record hierarchies when each stored case
+needs a name that does not depend on its type name. Both give exhaustive `switch` checks. On .NET 10,
+use concrete C# types when they express the current message set clearly. Use an F# domain library when
+discriminated unions and functional composition are valuable but the surrounding application belongs
+in C#.
 
-The architecture and persistence responsibilities are identical in all three options. The choice is
+The architecture and persistence responsibilities are identical in every option. The choice is
 about source representation, not a different FCQRS runtime.
 
-Run the [C# getting-started project](../get-started.html#Run-it), then follow
+Run the [tutorial's C# sample](../tutorial/open-an-account.html#Run-it), then follow
 [Use FCQRS from C#](../how-to/use-from-csharp.html) for aggregates, hosting, commands, and isolated
 tests. Read [Evolve persisted events](../how-to/evolve-events.html) before changing a deployed message
 contract.

@@ -19,7 +19,7 @@ Write documentation in this order:
 4. Show the failure mode and the application's remaining responsibility.
 5. Link to the next runnable or task-focused page.
 
-Use the document example across adjacent pages unless a different domain is necessary. Introduce only
+Use the accounts example across adjacent pages unless a different domain is necessary. Introduce only
 the types needed for the current step.
 
 ### Documentation style
@@ -41,8 +41,10 @@ Good prose makes the example easier to reason about. It does not narrate the tea
 ## Learning-path structure
 
 - `README.md` gives repository orientation and the smallest domain example.
-- `docs/get-started.fsx` runs one complete command, journal, projection, and query loop.
-- `docs/tutorial/` builds the system in order from aggregate to production.
+- `docs/overview.fsx` explains why FCQRS separates aggregates from read models and maps the tutorial.
+- `docs/tutorial/` builds a small bank in order, from the first aggregate to sagas and changing stored
+  events. Each step has a runnable F# and C# program under `samples/accounts/`; step 6 continues from
+  step 5's database, so both build an assembly named `Accounts`.
 - `docs/concepts/` explains the underlying models and boundaries.
 - `docs/how-to/` provides focused task instructions.
 - `docs/configuration.md` is the runtime configuration reference.
@@ -116,8 +118,12 @@ Keep these distinctions intact in code comments and documentation.
 - `src/FCQRS/CSharpInterop.fs`: C# types and lower-level interop.
 - `src/FCQRS/HostExtensions.fs`: C# host-builder and dependency-injection registration.
 - `src/FCQRS/default.hocon`: embedded Akka.NET defaults.
-- `samples/getting-started-fsharp/` and `samples/getting-started-csharp/`: equivalent first-project
-  flows kept on stable .NET 10.
+- `samples/accounts/`: the tutorial's steps as equivalent F# and C# programs on .NET 11. The C#
+  programs use C# 15 unions, and `samples/accounts/global.json` selects the .NET 11 SDK. The task
+  guides quote these programs too; `serve-over-http/` puts step 4 behind ASP.NET Core endpoints.
+- `samples/registration-*/` and `samples/getting-started-*/`: older .NET 10 samples kept for CI checks
+  and persisted-compatibility checks. The C# interop page links `registration-csharp` as a .NET 10
+  example.
 - `sample/` and `saga_sample/`: executable examples.
 - `test/Facade.Tests/`: facade and behaviour tests.
 

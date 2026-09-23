@@ -1,13 +1,14 @@
-// include: samples/getting-started-fsharp/Document.fs
+// include: samples/accounts/2-withdraw-money/fsharp/Account.fs
 open System
 open FCQRS.Model.Data
 open FCQRS.Common
 open FCQRS.FSharp
-open Program
+open Account
 open System.Threading
 open FCQRS.Projections
-let saveAndCatchUp (documents: AggregateHandle<DocumentCommand, DocumentEvent>)
-                   (projection: IProjection) cid documentId doc (cancellationToken: CancellationToken) = async {
+let depositAndCatchUp (accounts: AggregateHandle<AccountCommand, AccountEvent>)
+                      (projection: IProjection) (cid: CID) (alice: AggregateId)
+                      (cancellationToken: CancellationToken) = async {
     // snippet: 1
 }
 open System.Data.Common
@@ -21,7 +22,7 @@ let configuration = Microsoft.Extensions.Configuration.ConfigurationBuilder().Bu
 let loggerFactory = Microsoft.Extensions.Logging.LoggerFactory.Create(fun _ -> ())
 module Sqlite =
     let api = Fcqrs.actor configuration loggerFactory
-                  (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite connectionString)) "documents"
+                  (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite connectionString)) "accounts"
     // snippet: 2
 module PostgreSql =
     let handle = Sqlite.handle

@@ -9,7 +9,7 @@ index: 8
 (*** hide ***)
 #r "nuget: FCQRS, 6.6.0"
 #r "nuget: Expecto, 10.2.3"
-#load "../../samples/registration-fsharp/Account.fs"
+#load "../../samples/accounts/2-withdraw-money/fsharp/Account.fs"
 
 open Expecto
 open FCQRS.Common
@@ -19,28 +19,36 @@ open Account
 (**
 # Test your domain
 
-Test the [registration account](../get-started.html) directly, without starting FCQRS or SQLite.
-`TestEnvelope` wraps your payload in the same command or event type the runtime passes to your code.
+Test the account from the tutorial's [withdraw money](../tutorial/withdraw-money.html) step directly,
+without starting FCQRS or SQLite. `TestEnvelope` wraps your payload in the same command or event type
+the runtime passes to your code.
 
-## Check registration, replay, and repeats
+## Check decisions, replay, and rejections
 
 The F# assertions use Expecto. The C# tests use xUnit and the sample's `Account` class.
 *)
 
-// A new account stores its first registration.
-let first = decide (TestEnvelope.Command(RegisterUser "Alice")) None
-Expect.equal first (PersistEvent(UserRegistered "Alice")) "first registration persists"
+// An account Alice opened, with a balance of 70.
+let opened = { initial with Owner = Some "Alice"; Balance = 70m }
 
-// Recovery starts with empty state and applies the stored event.
-let stored = TestEnvelope.Event(UserRegistered "Alice", 1L)
-let recovered = fold stored None
-Expect.equal recovered (Some "Alice") "replay restores the name"
+// A withdrawal the balance covers is stored.
+let accepted = decide (TestEnvelope.Command(Withdraw 60m)) opened
+Expect.equal accepted (PersistEvent(Withdrawn 60m)) "a covered withdrawal persists"
 
-// A different requested name cannot overwrite the existing registration.
-let repeated = decide (TestEnvelope.Command(RegisterUser "Bob")) recovered
-Expect.equal repeated (DeferEvent(UserRegistered "Alice")) "repeat returns the saved name"
-Expect.equal (fold stored recovered) recovered "applying the repeated reply preserves state"
-printfn "Registration tests passed."
+// Recovery applies the stored events in order, starting from the initial state.
+let history =
+    [ Opened "Alice"; Deposited 100m; Withdrawn 30m ]
+    |> List.mapi (fun index event -> TestEnvelope.Event(event, int64 (index + 1)))
+let recovered = List.fold (fun state event -> fold event state) initial history
+Expect.equal recovered opened "replay restores the balance"
+
+// A larger withdrawal is rejected, and folding the rejection changes nothing.
+let rejection = Rejected "Insufficient funds: 70 available"
+let overdraft = decide (TestEnvelope.Command(Withdraw 500m)) recovered
+Expect.equal overdraft (DeferEvent rejection) "an overdraft is rejected"
+let reply = TestEnvelope.Event(rejection, 3L)
+Expect.equal (fold reply recovered) recovered "the rejection preserves state"
+printfn "Account tests passed."
 
 (**
 <div class="cs-alt"></div>
@@ -52,30 +60,41 @@ using static FCQRS.CSharp;
 public class AccountTests
 {
     private readonly Account account = new();
+    // An account Alice opened, with a balance of 70.
+    private readonly AccountState opened = new("Alice", 70m);
 
     [Fact]
-    public void First_registration_is_persisted()
+    public void Covered_withdrawal_is_persisted()
     {
-        var action = account.HandleCommand(
-            TestEnvelope.Command(new RegisterUser("Alice")), account.InitialState);
-        Assert.Equal(EventActions.Persist(new UserRegistered("Alice")), action);
+        // Name the union type: the aggregate expects a Command<AccountCommand>.
+        var command = TestEnvelope.Command<AccountCommand>(new Withdraw(60m));
+        Assert.Equal(
+            EventActions.Persist<AccountEvent>(new Withdrawn(60m)),
+            account.HandleCommand(command, opened));
     }
 
     [Fact]
-    public void Replay_restores_the_name()
+    public void Replay_restores_the_balance()
     {
-        var stored = TestEnvelope.Event(new UserRegistered("Alice"), 1);
-        Assert.Equal(new AccountState("Alice"), account.ApplyEvent(stored, account.InitialState));
+        AccountEvent[] history =
+            [new Opened("Alice"), new Deposited(100m), new Withdrawn(30m)];
+        var state = account.InitialState;
+        for (var index = 0; index < history.Length; index++)
+            state = account.ApplyEvent(
+                TestEnvelope.Event(history[index], index + 1), state);
+        Assert.Equal(opened, state);
     }
 
     [Fact]
-    public void Repeated_registration_preserves_the_saved_name()
+    public void Overdraft_is_rejected_and_changes_nothing()
     {
-        var state = new AccountState("Alice");
-        var action = account.HandleCommand(TestEnvelope.Command(new RegisterUser("Bob")), state);
-        Assert.Equal(EventActions.Defer(new UserRegistered("Alice")), action);
-        var reply = TestEnvelope.Event(new UserRegistered("Alice"), 1);
-        Assert.Equal(state, account.ApplyEvent(reply, state));
+        var rejection = new Rejected("Insufficient funds: 70 available");
+        var command = TestEnvelope.Command<AccountCommand>(new Withdraw(500m));
+        Assert.Equal(
+            EventActions.Defer<AccountEvent>(rejection),
+            account.HandleCommand(command, opened));
+        var reply = TestEnvelope.Event<AccountEvent>(rejection, 3);
+        Assert.Equal(opened, account.ApplyEvent(reply, opened));
     }
 }
 ```
@@ -94,18 +113,20 @@ dotnet fsi --exec docs/how-to/test-your-domain.fsx
 <div class="cs-alt" data-fs="text" data-cs="text"></div>
 
 ```text
-dotnet new xunit -n Registration.Tests --framework net10.0
-dotnet add Registration.Tests reference samples/registration-csharp/Registration.CSharp.csproj
+cd samples/accounts
+dotnet new xunit -n Accounts.Tests --framework net11.0
+dotnet add Accounts.Tests reference 2-withdraw-money/csharp/Accounts.WithdrawMoney.CSharp.csproj
 ```
 
-For C#, replace `Registration.Tests/UnitTest1.cs` with the test class above, then run
-`dotnet test Registration.Tests`. All three tests should pass. F# prints `Registration tests passed.`
+The `global.json` in `samples/accounts` selects the .NET 11 SDK. For C#, replace
+`Accounts.Tests/UnitTest1.cs` with the test class above, then run `dotnet test Accounts.Tests`. All
+three tests should pass. F# prints `Account tests passed.`
 
 As your domain grows, add cases for each command and state combination and replay complete stored
 histories. Use a fixed `TimeProvider` with `TestEnvelope` when a rule depends on the envelope time.
 Keep clocks and external calls out of the fold.
 
 These tests verify the rule and replay function. Also run the application across a real restart to
-check persistence and query recovery, as in the [quickstart](../get-started.html#Run-it).
+check persistence and query recovery, as the [tutorial's first step](../tutorial/open-an-account.html#Run-it-again) does.
 For changes to stored event shapes, [test compatibility with old events](evolve-events.html).
 *)

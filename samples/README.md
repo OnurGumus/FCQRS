@@ -1,10 +1,14 @@
 # Samples
 
-Start with [registration in F#](registration-fsharp/) or [registration in C#](registration-csharp/).
-Both use stable .NET 10 and the published FCQRS package. Run twice to see recovery and duplicate handling.
+Start with the [accounts tutorial](accounts/). Each step is a complete program in F# and C# that uses
+the published FCQRS package on .NET 11. The C# programs use C# 15.
 
-Then try the optional HTTP API in [F#](registration-http-fsharp/) or [C#](registration-http-csharp/).
-It reuses the account rule and exposes registration and query endpoints.
+The task guides quote the same programs. [accounts/serve-over-http](accounts/serve-over-http/) puts
+step 4's account and statement behind ASP.NET Core endpoints.
+
+The registration samples, [F#](registration-fsharp/) and [C#](registration-csharp/), are older .NET 10
+programs that CI still runs. The [C# interop page](../docs/concepts/csharp-interop.md) links the C# one as a .NET 10
+example.
 
 The older `getting-started-*` document-store projects and fixtures remain for persisted-compatibility
 checks. They are not part of the beginner guide.

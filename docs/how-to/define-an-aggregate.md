@@ -12,66 +12,138 @@ before writing the types: every rule that must be decided atomically needs to fi
 one aggregate instance. FCQRS processes its commands sequentially, eliminating races within that
 boundary.
 
-The [registration example](../get-started.html) gives each account one registered name. Define the
-messages and the two functions in `Account.fs`, or the aggregate class in `Account.cs`:
+The tutorial's bank account must never pay out more than its balance. Every withdrawal decision needs
+the current balance, so one account is one aggregate instance. Define the messages and the two
+functions in `Account.fs`, or the aggregate class in `Account.cs`:
 
-<!-- sample: fsharp Account.fs messages -->
+<!-- sample: accounts/2-withdraw-money/fsharp Account.fs messages -->
 ```fsharp
 module Account
 
 open FCQRS.Common
-open FCQRS.FSharp
 
-type RegisterUser = RegisterUser of name: string
-type UserRegistered = UserRegistered of name: string
+// What a caller can ask an account to do.
+type AccountCommand =
+    | Open of owner: string
+    | Deposit of amount: decimal
+    | Withdraw of amount: decimal
+
+// What the account replies. Rejected is a reply only: it is never stored.
+type AccountEvent =
+    | Opened of owner: string
+    | Deposited of amount: decimal
+    | Withdrawn of amount: decimal
+    | Rejected of reason: string
+
+// What the account knows now, rebuilt from its events.
+type AccountState = { Owner: string option; Balance: decimal }
+
+// The state before the account's first event.
+let initial = { Owner = None; Balance = 0m }
 ```
 
 <div class="cs-alt"></div>
 
-<!-- sample: csharp Account.cs messages -->
+<!-- sample: accounts/2-withdraw-money/csharp Account.cs messages -->
 ```csharp
-using static FCQRS.Common;
-using static FCQRS.CSharp;
+// What a caller can ask an account to do.
+public union AccountCommand(Open, Deposit, Withdraw);
+public sealed record Open(string Owner);
+public sealed record Deposit(decimal Amount);
+public sealed record Withdraw(decimal Amount);
 
-public sealed record RegisterUser(string Name);
-public sealed record UserRegistered(string Name);
-public sealed record AccountState(string? Name = null);
+// What the account replies. Rejected is a reply only: it is never stored.
+public union AccountEvent(Opened, Deposited, Withdrawn, Rejected);
+public sealed record Opened(string Owner);
+public sealed record Deposited(decimal Amount);
+public sealed record Withdrawn(decimal Amount);
+public sealed record Rejected(string Reason);
+
+// What the account knows now, rebuilt from its events.
+public sealed record AccountState(string? Owner = null, decimal Balance = 0m);
 ```
 
-<!-- sample: fsharp Account.fs rules -->
+<!-- sample: accounts/2-withdraw-money/fsharp Account.fs rules -->
 ```fsharp
-let decide (command: Command<RegisterUser>) (state: string option) =
-    let (RegisterUser name) = command.CommandDetails
-    persistIf state.IsNone (UserRegistered(defaultArg state name))
+// Chooses what to do with a command, based on the current state.
+let decide (command: Command<AccountCommand>) (state: AccountState) =
+    match command.CommandDetails, state.Owner with
+    | Open _, Some _ -> DeferEvent(Rejected "The account is already open")
+    | Open owner, None -> PersistEvent(Opened owner)
+    | _, None -> DeferEvent(Rejected "The account is not open")
+    | (Deposit amount | Withdraw amount), _ when amount <= 0m ->
+        DeferEvent(Rejected "The amount must be positive")
+    | Deposit amount, _ -> PersistEvent(Deposited amount)
+    | Withdraw amount, _ when amount > state.Balance ->
+        DeferEvent(Rejected $"Insufficient funds: {state.Balance} available")
+    | Withdraw amount, _ -> PersistEvent(Withdrawn amount)
 
-let fold (event: Event<UserRegistered>) (_state: string option) =
-    let (UserRegistered name) = event.EventDetails
-    Some name
+// Applies one event to the state. A rejection changes nothing.
+let fold (event: Event<AccountEvent>) (state: AccountState) =
+    match event.EventDetails with
+    | Opened owner -> { state with Owner = Some owner }
+    | Deposited amount -> { state with Balance = state.Balance + amount }
+    | Withdrawn amount -> { state with Balance = state.Balance - amount }
+    | Rejected _ -> state
 ```
 
 <div class="cs-alt"></div>
 
-<!-- sample: csharp Account.cs rules -->
+<!-- sample: accounts/2-withdraw-money/csharp Account.cs rules -->
 ```csharp
-public sealed class Account : Aggregate<AccountState, RegisterUser, UserRegistered>
+public sealed class Account
+    : Aggregate<AccountState, AccountCommand, AccountEvent>
 {
-    public override string EntityName => "RegistrationCSharpAccount";
+    // The name stored with every event of this aggregate.
+    public override string EntityName => "Account";
+    // The state before the account's first event.
     public override AccountState InitialState => new();
 
-    public override EventAction<UserRegistered> HandleCommand(
-        Command<RegisterUser> command, AccountState state) =>
-        EventActions.PersistConditionally(state.Name is null,
-            new UserRegistered(state.Name ?? command.CommandDetails.Name));
+    // Chooses what to do with a command, based on the current state.
+    public override EventAction<AccountEvent> HandleCommand(
+        Command<AccountCommand> command, AccountState state) =>
+        (command.CommandDetails, state.Owner) switch
+        {
+            (Open, not null) => Reject("The account is already open"),
+            (Open open, null) => Store(new Opened(open.Owner)),
+            (_, null) => Reject("The account is not open"),
+            (Deposit { Amount: <= 0m } or Withdraw { Amount: <= 0m }, _) =>
+                Reject("The amount must be positive"),
+            (Deposit deposit, _) => Store(new Deposited(deposit.Amount)),
+            (Withdraw withdraw, _) when withdraw.Amount > state.Balance =>
+                Reject($"Insufficient funds: {state.Balance} available"),
+            (Withdraw withdraw, _) => Store(new Withdrawn(withdraw.Amount))
+        };
 
-    public override AccountState ApplyEvent(Event<UserRegistered> stored, AccountState state) =>
-        new(stored.EventDetails.Name);
+    // Applies one event to the state. A rejection changes nothing.
+    public override AccountState ApplyEvent(
+        Event<AccountEvent> stored, AccountState state) =>
+        stored.EventDetails switch
+        {
+            Opened opened => state with { Owner = opened.Owner },
+            Deposited deposited =>
+                state with { Balance = state.Balance + deposited.Amount },
+            Withdrawn withdrawn =>
+                state with { Balance = state.Balance - withdrawn.Amount },
+            Rejected => state
+        };
+
+    // Stores the event and replies with it.
+    static EventAction<AccountEvent> Store(AccountEvent @event) =>
+        EventActions.Persist(@event);
+
+    // Replies without storing anything.
+    static EventAction<AccountEvent> Reject(string reason) =>
+        EventActions.Defer<AccountEvent>(new Rejected(reason));
 }
 ```
 
-The condition persists the first registration and defers subsequent replies using the saved name.
-The fold applies either outcome; replay applies only stored events.
+`decide` persists a deposit or withdrawal the account can accept and defers a rejection. `fold`
+returns the state unchanged for `Rejected`, so folding a deferred reply in memory leaves the same state
+that replay produces. [Withdraw money](../tutorial/withdraw-money.html) runs this aggregate and shows
+its journal.
 
-[Register the aggregate with the runtime](../tutorial/2-running-it.html#Connect-it-to-FCQRS) before
+[Register the aggregate with the runtime](../tutorial/open-an-account.html#Start-FCQRS-and-send-commands) before
 sending commands. F# supplies the initial state and functions in the registration record; C# supplies
 them through the `Aggregate<,,>` base class.
 
@@ -98,7 +170,7 @@ From FCQRS 6.6.0, an F# application can expose account commands through a record
 
 ```fsharp
 type CommandHandlers = {
-    Accounts: Handler<Account.RegisterUser, Account.UserRegistered>
+    Accounts: Handler<Account.AccountCommand, Account.AccountEvent>
 }
 
 let registerHandlers actorApi accountDefinition =

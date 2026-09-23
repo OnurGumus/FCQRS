@@ -7,9 +7,10 @@ index: 2
 
 # CQRS and event sourcing, from the beginning
 
-Start with a familiar application. An `Orders` table stores one row per order. An endpoint loads a
-row, checks a rule, changes `Status`, and saves it. Another endpoint loads the same row with customer,
-product, payment, and delivery joins to render a page.
+Start with a familiar application. An `accounts` table stores one row per bank account. An endpoint
+loads a row, checks that the balance covers a withdrawal, changes `balance`, and saves it. Another
+endpoint loads the same row with the owner, every transaction, and pending transfers to render a
+statement.
 
 That design is often the right place to begin. It becomes difficult when the model used to make
 decisions and the model used to answer questions are pulled in different directions.
@@ -19,15 +20,15 @@ decisions and the model used to answer questions are pulled in different directi
 
 ## One model is doing two jobs
 
-Consider cancelling an order.
+Consider a withdrawal.
 
-The **decision** needs a small, precise set of facts: whether the order exists, whether it has shipped,
-and whether it was cancelled already. It must protect the rule that a shipped order cannot be
-cancelled, even if two requests arrive at the same time.
+The **decision** needs a small, precise set of facts: whether the account is open and what its balance
+is. It must protect the rule that a withdrawal cannot overdraw the account, even if two withdrawals
+arrive at the same time.
 
-The **order page** needs a different shape: customer name, product descriptions, totals, address,
-payment status, delivery estimate, and a timeline. A warehouse list and a revenue report need still
-other shapes.
+The **statement** needs a different shape: the owner's name, every deposit, withdrawal, and transfer
+with its memo, and the balance after each one. A list of large transfers and a monthly report need
+still other shapes.
 
 Adding every query field and relationship to the decision model makes the rules depend on a large
 object graph. Shaping every query around the decision model produces joins and transformations on
@@ -47,26 +48,27 @@ keeping the code and data flows distinct.
 | Write side | Read side |
 |---|---|
 | Accepts commands | Accepts queries |
-| Shaped around invariants — rules that must hold after every accepted command | Shaped around screens and consumers |
+| Shaped around invariants: rules that must hold after every accepted command | Shaped around screens and consumers |
 | One consistency boundary per decision | Joins and duplicates data freely |
 | Produces events | Consumes events |
 | Rejects invalid changes | Returns available information |
 
 ## Commands and events describe different moments
 
-A **command** is a request: `CancelOrder`. It is named in the imperative because the outcome is not
+A **command** is a request: `Withdraw 60`. It is named in the imperative because the outcome is not
 known yet. The system can reject it.
 
-An **event** is a recorded outcome: `OrderCancelled` or a non-persisted reply such as
-`OrderAlreadyShipped`. It is named in the past tense because the decision has been made.
+An **event** is a recorded outcome: `Withdrawn 60`, or a reply that is not stored, such as
+`Rejected "Insufficient funds"`. `Withdrawn` is named in the past tense because the decision has been
+made.
 
 Keeping the types separate prevents a request from being mistaken for a fact. It also makes the domain
 decision visible:
 
 ```text
-CancelOrder + current order state
-    -> persist OrderCancelled
-    -> or reply OrderAlreadyShipped
+Withdraw 60 + current account state
+    -> persist Withdrawn 60
+    -> or reply Rejected "Insufficient funds"
 ```
 
 FCQRS puts the decision inside an [aggregate](aggregates.html). The aggregate does not return a mutated
@@ -78,24 +80,24 @@ CQRS and event sourcing are separate ideas. You can use different command and qu
 storing only current state. You can also event-source a model without creating several read models.
 FCQRS deliberately combines them.
 
-With ordinary state storage, an update replaces `Status = Paid` with `Status = Shipped`. The database
-retains the new value but not necessarily the reason or sequence that produced it.
+With ordinary state storage, an update replaces `balance = 100` with `balance = 70`. The database
+retains the new value but not the deposits and withdrawals that produced it.
 
 With **event sourcing**, the journal appends facts:
 
 ```text
-1  OrderPlaced
-2  PaymentReceived
-3  OrderShipped
+1  Opened "Alice"
+2  Deposited 100
+3  Withdrawn 30
 ```
 
 Current state is derived by folding those events in order:
 
 ```text
 empty
-  |> apply OrderPlaced       = awaiting payment
-  |> apply PaymentReceived   = paid
-  |> apply OrderShipped      = shipped
+  |> apply Opened "Alice"    = open, balance 0
+  |> apply Deposited 100     = balance 100
+  |> apply Withdrawn 30      = balance 70
 ```
 
 The fold is an ordinary deterministic function. Given the same initial state and event sequence, it
@@ -105,10 +107,10 @@ must always produce the same result. Recovery relies on that property.
 
 An FCQRS request takes this path:
 
-1. The client creates a correlation id and sends `CancelOrder` to the order aggregate's identity.
+1. The client creates a correlation ID and sends `Withdraw 30` to the account aggregate `alice`.
 2. The aggregate loads its current state, recovering from stored events if necessary.
 3. Its decision function checks the command against that state.
-4. If allowed, FCQRS appends `OrderCancelled` to the journal.
+4. If allowed, FCQRS appends `Withdrawn 30` to the journal.
 5. The aggregate folds the event into its in-memory state and publishes it.
 6. One or more projections consume the event and update read models.
 7. The client queries the read model, optionally after waiting for the required projection.
@@ -149,4 +151,4 @@ persisted event, and two different queries derived from that event. If the decis
 shapes are identical and the history has no value, CQRS and event sourcing may not earn their cost.
 
 Next, learn how [aggregates](aggregates.html) protect one decision boundary. The
-[registration example](../get-started.html) implements the command, event, decision, and fold.
+[tutorial](../tutorial/open-an-account.html) builds this bank one step at a time.
