@@ -40,8 +40,8 @@ module public Serialization =
 
     /// A case key without assembly versions. The full name of a generic case type
     /// embeds its arguments' assembly versions, which change with every runtime or
-    /// application release. Readers match on this form, so both old and version-free
-    /// keys resolve; writers keep the full name until every reader has this lookup.
+    /// application release. Writers emit this form, and readers match on it, so keys
+    /// written with versions by earlier releases still resolve.
     /// An escaped comma inside a type name is not a separator. FCQRS core applies the same
     /// rule to journal manifests (Serialization.fs, Manifests.versionFree), and the two packages
     /// ship separately. Change both copies together.
@@ -113,7 +113,7 @@ module public Serialization =
                         if caseType.IsInstanceOfType caseValue then Some caseType else None)
                     |> Option.defaultValue (caseValue.GetType())
                 writer.WriteStartObject()
-                writer.WriteString("$case", typeKey caseType)
+                writer.WriteString("$case", typeKey caseType |> versionFree)
                 writer.WritePropertyName("$value")
                 JsonSerializer.Serialize(writer, caseValue, caseType, options)
                 writer.WriteEndObject()

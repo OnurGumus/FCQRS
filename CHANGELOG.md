@@ -104,12 +104,18 @@ Fixes from a review of the core. Existing journal rows, snapshots, and entity na
   take a plain string and are source compatible. Code that builds the record directly changes the
   field's type annotation from `ShortString` to `LongString`.
 
-## Unreleased (FCQRS.Serialization)
+## 6.1.0 (FCQRS.Serialization)
 
 - A null reference to a class-based C# union is written as JSON `null` instead of terminating the
   process.
-- Readers match union case names without assembly versions, so rows written on another .NET or
-  application version resolve. Writers keep the full name until every reader has this change.
+- Union case names are written and matched without assembly versions, so a row written on one .NET or
+  application version reads on another. Names written with versions by 6.0.0 still read.
+
+### Breaking
+
+- FCQRS.Serialization 6.0.0 cannot read a generic union case written by 6.1.0, because it expects
+  the versioned name. Upgrade every node that reads the journal before any node writes with 6.1.0.
+  A non-generic case's name has no versions and does not change.
 
 ## 6.6.0 (FCQRS core)
 
