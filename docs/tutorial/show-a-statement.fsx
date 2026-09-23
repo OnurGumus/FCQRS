@@ -7,7 +7,7 @@ index: 4
 ---
 *)
 (*** hide ***)
-#r "nuget: FCQRS, 6.7.0"
+#r "nuget: FCQRS, 6.8.0"
 #r "nuget: Dapper, 2.1.66"
 #load "../../samples/accounts/4-show-a-statement/fsharp/Account.fs"
 #load "../../samples/accounts/4-show-a-statement/fsharp/Statement.fs"
