@@ -2558,6 +2558,7 @@ let main argv =
                 ConditionalCommandSerializationTests.tests
                 EventUpcastingTests.tests
                 HostingAndRegistryTests.tests
+                UnionCommandTests.tests
                 JournalRejectionTests.tests
             ])
         runTestsWithCLIArgs [] argv allTests

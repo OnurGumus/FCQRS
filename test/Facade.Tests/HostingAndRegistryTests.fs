@@ -57,9 +57,12 @@ type InjectedWorker(
 
                 let! first = handler.Invoke(Func<int, bool>(fun _ -> true), cid, id, 1)
                 Expect.equal first.EventDetails 1 "constructor-injected handler dispatches after startup"
+                Expect.equal (Values.VersionValue first.Version) 1L "C# reads the reply's persisted version"
                 do! Task.WhenAll(byCid.Task, byFilter.Task, byBoth.Task, allSeen.Task).WaitAsync(timeout, cancellationToken)
                 let! second = keyedHandler.Invoke(Func<int, bool>(fun _ -> true), Values.NewCID(), id, 2)
                 Expect.equal second.EventDetails 3 "keyed handler reaches the same aggregate"
+                Expect.equal (Values.VersionValue second.Version) 2L "the second event has version 2"
+                Expect.equal (Values.VersionValue(Values.CreateVersion 7L)) 7L "VersionValue reverses CreateVersion"
                 result.Completed <- true
             } :> Task
 
@@ -197,6 +200,56 @@ module private LongConnection =
                 for path in [ database; database + "-wal"; database + "-shm" ] do
                     if File.Exists path then File.Delete path
 
+[<AbstractClass>]
+type UnconfiguredEvent() = class end
+type UnconfiguredCase() = inherit UnconfiguredEvent()
+
+[<AbstractClass; System.Text.Json.Serialization.JsonDerivedType(typeof<ConfiguredCase>, "case")>]
+type ConfiguredEvent() = class end
+and ConfiguredCase() = inherit ConfiguredEvent()
+
+module private StorableEvents =
+    open FCQRS.FSharp
+
+    let test =
+        testCase "registration: an abstract event type without polymorphism is rejected"
+        <| fun _ ->
+            let database = Path.Combine(Path.GetTempPath(), $"fcqrs-storable-events-{Guid.NewGuid():N}.db")
+            let configuration = Microsoft.Extensions.Configuration.ConfigurationBuilder().Build()
+            let loggers = Microsoft.Extensions.Logging.Abstractions.NullLoggerFactory.Instance
+            let api =
+                Fcqrs.actor configuration loggers
+                    (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite $"Data Source={database};")) "StorableEvents"
+            try
+                // System.Text.Json would store each event as {}, losing its fields without an error.
+                let rejected =
+                    try
+                        Fcqrs.aggregate api
+                            { Name = "Unconfigured"
+                              Initial = 0
+                              Decide = fun (_: Command<int>) _ -> PersistEvent(UnconfiguredCase() :> UnconfiguredEvent)
+                              Fold = fun (_: Event<UnconfiguredEvent>) state -> state
+                              Snapshots = NoSnapshots
+                              Passivation = PassivationPolicy.Default }
+                        |> ignore
+                        None
+                    with :? InvalidOperationException as error -> Some error.Message
+                Expect.isSome rejected "registration rejects an event type that would be stored as {}"
+                Expect.stringContains rejected.Value "stored as {}" "the error names the data loss"
+                // [JsonDerivedType] configures polymorphism, so the same shape registers.
+                Fcqrs.aggregate api
+                    { Name = "Configured"
+                      Initial = 0
+                      Decide = fun (_: Command<int>) _ -> PersistEvent(ConfiguredCase() :> ConfiguredEvent)
+                      Fold = fun (_: Event<ConfiguredEvent>) state -> state
+                      Snapshots = NoSnapshots
+                      Passivation = PassivationPolicy.Default }
+                |> ignore
+            finally
+                api.Stop().Wait(TimeSpan.FromSeconds 30.0) |> ignore
+                for path in [ database; database + "-wal"; database + "-shm" ] do
+                    if File.Exists path then File.Delete path
+
 type RegistryLeft = { Left: int }
 type RegistryRight = { Right: string }
 type RegistryRejected = { Rejected: bool }
@@ -258,5 +311,5 @@ let tests =
     testSequenced (
         testList
             "hosting and registry"
-            [ hostedConstructorInjection; repeatedStart; LongConnection.test; concurrentRegistry ]
+            [ hostedConstructorInjection; repeatedStart; LongConnection.test; StorableEvents.test; concurrentRegistry ]
     )

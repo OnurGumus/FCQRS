@@ -20,6 +20,8 @@
     <Compile Include="ConditionalCommandSerializationTests.fs" />
     <Compile Include="EventUpcastingTests.fs" />
     <Compile Include="HostingAndRegistryTests.fs" />
+    <Compile Include="UnionAttribute.fs" />
+    <Compile Include="UnionCommandTests.fs" />
     <Compile Include="JournalRejectionTests.fs" />
     <Compile Include="Tests.fs" />
   </ItemGroup>

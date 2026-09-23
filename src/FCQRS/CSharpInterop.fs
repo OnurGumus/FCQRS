@@ -24,7 +24,8 @@ type AggregateRefs<'TCommand, 'TEvent when 'TEvent: not null> =
       Handler: Handler<'TCommand, 'TEvent> }
 
 /// Factory methods for creating FCQRS's strongly-typed value/identifier types
-/// (CID, AggregateId, MessageId, ShortString, LongString, Version) from C#.
+/// (CID, AggregateId, MessageId, ShortString, LongString, Version) from C#, and
+/// for reading a Version's number back.
 type Values =
     /// Create a ShortString from a string (throws on failure)
     static member CreateShortString(s: string) : ShortString =
@@ -69,6 +70,12 @@ type Values =
         match ValueLens.TryCreate<Version, _, _> v with
         | Ok ver -> ver
         | Error e -> failwithf "Failed to create Version: %A" e
+
+    /// The number a Version holds, such as an event's persisted version. Store it
+    /// beside read-model data, or pass it to SendIfVersionAsync as the expected
+    /// version. F# code reads it with ValueLens.Value.
+    static member VersionValue(version: Version) : int64 =
+        ValueLens.Value version
 
     /// Try to create a ShortString (returns Result instead of throwing)
     static member TryCreateShortString(s: string) : Result<ShortString, ModelError list> =

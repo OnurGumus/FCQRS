@@ -19,11 +19,16 @@ open System.Diagnostics
 let private activitySource = new ActivitySource(Common.Telemetry.SagaActivitySourceName)
 
 // Innermost union case name (unwraps SagaStateWrapper.UserDefined to the
-// user's state) — shared by the state-change span and the flow log line.
+// user's state) — shared by the state-change span and the flow log line. A C#
+// union is named by its active case's type. Another state is named by its type,
+// so a record's field values never reach a span name; an enum, number, or string
+// keeps its value.
 let rec private getUnionCaseName (obj: obj) =
     let t = obj.GetType()
 
-    if FSharpType.IsUnion(t) then
+    match unionCaseOf obj with
+    | Some case -> case.GetType().Name
+    | None when FSharpType.IsUnion(t) ->
         let case, fields = FSharpValue.GetUnionFields(obj, t)
 
         if case.Name = "UserDefined" && fields.Length = 1 then
@@ -32,8 +37,8 @@ let rec private getUnionCaseName (obj: obj) =
             | field -> getUnionCaseName field
         else
             case.Name
-    else
-        sprintf "%A" obj
+    | None when t.IsEnum || t.IsPrimitive || t = typeof<string> -> sprintf "%A" obj
+    | None -> t.Name
 
 let private stateName (state: 'State) =
     match box state with

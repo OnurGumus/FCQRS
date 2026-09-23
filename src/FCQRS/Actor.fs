@@ -512,6 +512,73 @@ module internal Internal =
                 return set state
         }
 
+    /// A C# 15 union shares no base type with its cases, so a case sent as its own type, for
+    /// example through the object-typed saga command helpers, arrives as Command<Case> and no
+    /// aggregate of Command<Union> would handle it. For a union command type, these rebuild such
+    /// a message as Command<Union>. Anything else passes through unchanged.
+    type internal UnionCommands<'Command> private () =
+        static let unionType = typeof<'Command>
+
+        // The union's case constructors, keyed by case type. The C# compiler marks a union with
+        // this attribute and gives it one single-argument constructor per case.
+        static let cases: (Type * Reflection.ConstructorInfo) array =
+            if unionType.GetCustomAttributes(false)
+               |> Array.exists (fun a -> a.GetType().FullName = "System.Runtime.CompilerServices.UnionAttribute") then
+                unionType.GetConstructors(
+                    Reflection.BindingFlags.Public ||| Reflection.BindingFlags.NonPublic ||| Reflection.BindingFlags.Instance)
+                |> Array.choose (fun ctor ->
+                    match ctor.GetParameters() with
+                    | [| parameter |] when parameter.ParameterType <> unionType -> Some(parameter.ParameterType, ctor)
+                    | _ -> None)
+            else
+                [||]
+
+        static let caseFor = Collections.Concurrent.ConcurrentDictionary<Type, Reflection.ConstructorInfo option>()
+
+        // An exact case type first, then a case its payload derives from.
+        static let find (payloadType: Type) =
+            caseFor.GetOrAdd(
+                payloadType,
+                fun payloadType ->
+                    match cases |> Array.tryFind (fun (caseType, _) -> caseType = payloadType) with
+                    | Some(_, ctor) -> Some ctor
+                    | None ->
+                        cases
+                        |> Array.tryFind (fun (caseType, _) -> caseType.IsAssignableFrom payloadType)
+                        |> Option.map snd)
+
+        static let commandDetailsIndex =
+            FSharp.Reflection.FSharpType.GetRecordFields typeof<Command<'Command>>
+            |> Array.findIndex (fun field -> field.Name = "CommandDetails")
+
+        /// The payload as the union when it is one of the union's cases; otherwise unchanged.
+        static member Payload(payload: obj) : obj =
+            if cases.Length = 0 || payload.GetType() = unionType then
+                payload
+            else
+                match find (payload.GetType()) with
+                | Some ctor -> ctor.Invoke [| payload |]
+                | None -> payload
+
+        /// The message as Command<Union> when it is a Command<Case>; otherwise unchanged.
+        static member Message(message: obj) : obj =
+            if cases.Length = 0 then
+                message
+            else
+                let messageType = message.GetType()
+
+                if messageType.IsGenericType
+                   && messageType.GetGenericTypeDefinition() = typedefof<Command<_>>
+                   && messageType.GetGenericArguments().[0] <> unionType then
+                    match find (messageType.GetGenericArguments().[0]) with
+                    | Some ctor ->
+                        let fields = FSharp.Reflection.FSharpValue.GetRecordFields message
+                        fields.[commandDetailsIndex] <- ctor.Invoke [| fields.[commandDetailsIndex] |]
+                        FSharp.Reflection.FSharpValue.MakeRecord(typeof<Command<'Command>>, fields)
+                    | None -> message
+                else
+                    message
+
     let actorProp
         (config: IConfiguration)
         (loggerFactory: ILoggerFactory)
@@ -571,6 +638,8 @@ module internal Internal =
                     match bodyInput.Message with
                     | :? ConditionalCommand as conditional -> Some conditional, conditional.Command
                     | message -> None, message
+
+                let msg = UnionCommands<'Command>.Message msg
 
                 actor {
                     match msg, state with
@@ -732,7 +801,8 @@ module internal Internal =
                                         // recheck the original version after the async work.
                                         let selfCmd =
                                             { cmd with
-                                                CommandDetails = unbox boxedCommand
+                                                // A runner can return a single case of a C# union.
+                                                CommandDetails = unbox (UnionCommands<'Command>.Payload boxedCommand)
                                                 Id =
                                                     match condition with
                                                     | Some _ -> cmd.Id
@@ -827,7 +897,27 @@ module internal Internal =
             return! createCommandSubscriptionCore actorApi factory cid id command filter None (Some expectedVersion)
         }
 
-    let init config loggerFactory initialState name toEvent (actorApi: IActor) handleCommand apply snapshotPolicy passivationPolicy effectRunner =
+    /// System.Text.Json writes a value through an abstract class or interface as `{}` unless the
+    /// type configures polymorphism. Such an event type loses every field in the journal without
+    /// an error, and the next load cannot read the rows back, so registration rejects it.
+    let internal requireStorableEvents (name: string) (eventType: Type) =
+        let has (attribute: Type) = eventType.IsDefined(attribute, false)
+
+        if (eventType.IsAbstract || eventType.IsInterface)
+           && not (Microsoft.FSharp.Reflection.FSharpType.IsUnion(
+                   eventType, Reflection.BindingFlags.Public ||| Reflection.BindingFlags.NonPublic))
+           && not (has typeof<System.Text.Json.Serialization.JsonDerivedTypeAttribute>)
+           && not (has typeof<System.Text.Json.Serialization.JsonPolymorphicAttribute>)
+           && not (has typeof<System.Text.Json.Serialization.JsonConverterAttribute>) then
+            invalidOp (
+                $"Aggregate '%s{name}' cannot store events of type '%s{eventType.FullName}': it is abstract "
+                + "and has no System.Text.Json polymorphism, so every event would be stored as {}. "
+                + "Declare the events as a C# union or F# union, or mark the base type with "
+                + "[JsonDerivedType] for each case."
+            )
+
+    let init config loggerFactory initialState name toEvent (actorApi: IActor) (handleCommand: Command<'Command> -> 'State -> EventAction<'Event>) apply snapshotPolicy passivationPolicy effectRunner =
+        requireStorableEvents name typeof<'Event>
         EventUpcasting.Internal.freeze actorApi.System
         AkklingHelpers.Internal.entityFactoryFor actorApi.System shardResolver name
         <| propsPersist (

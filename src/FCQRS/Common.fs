@@ -411,13 +411,69 @@ let internal currentTraceparent () : string option =
 let internal messageFlowEnabled (logger: ILogger) : bool =
     Telemetry.MessageFlowLogging && logger.IsEnabled LogLevel.Information
 
+/// The Value property of each C# 15 union type, or null for any other type.
+let private unionValueProperties =
+    Collections.Concurrent.ConcurrentDictionary<Type, Reflection.PropertyInfo | null>()
+
+/// (Internal) The active case of a C# 15 union, None for any other value. The C# compiler
+/// marks a union with System.Runtime.CompilerServices.UnionAttribute and keeps the case in
+/// a generated Value property; a type is matched by the attribute, not by having a Value.
+let internal unionCaseOf (value: obj) : obj option =
+    let property =
+        unionValueProperties.GetOrAdd(
+            value.GetType(),
+            fun t ->
+                if t.GetCustomAttributes(false)
+                   |> Array.exists (fun a -> a.GetType().FullName = "System.Runtime.CompilerServices.UnionAttribute") then
+                    t.GetProperty "Value"
+                else
+                    null)
+    match property with
+    | null -> None
+    | property ->
+        match property.GetValue value with
+        | null -> None
+        | case -> Some case
+
+/// True when a C# union sits in the value or, through F# union cases, inside it.
+let rec private holdsUnionCase (value: obj) =
+    (unionCaseOf value).IsSome
+    || (let t = value.GetType()
+        Microsoft.FSharp.Reflection.FSharpType.IsUnion t
+        && Microsoft.FSharp.Reflection.FSharpValue.GetUnionFields(value, t)
+           |> snd
+           |> Array.exists (function
+               | null -> false
+               | field -> holdsUnionCase field))
+
+/// %A, except that a C# union shows its active case. %A prints only a union's type name,
+/// so an F# union holding one, such as StateChangedEvent (UserDefined state), is rendered
+/// case by case.
+let rec private render (value: obj) : string =
+    match unionCaseOf value with
+    | Some case -> render case
+    | None ->
+        let t = value.GetType()
+        if Microsoft.FSharp.Reflection.FSharpType.IsUnion t && holdsUnionCase value then
+            let case, fields = Microsoft.FSharp.Reflection.FSharpValue.GetUnionFields(value, t)
+            let rendered =
+                fields
+                |> Array.map (function
+                    | null -> "null"
+                    | field -> render field)
+            match rendered with
+            | [||] -> case.Name
+            | _ -> $"""{case.Name} ({String.concat ", " rendered})"""
+        else
+            sprintf "%A" value
+
 /// (Internal) %A rendering collapsed to a single line, so every flow-narrative
 /// entry stays one greppable log line even for multi-field records.
 let internal renderValue (value: obj | null) : string =
     let s =
         match value with
         | null -> "null"
-        | v -> sprintf "%A" v
+        | v -> render v
 
     if s.Contains '\n' then
         s.Split([| '\r'; '\n' |], StringSplitOptions.RemoveEmptyEntries)
@@ -462,15 +518,10 @@ let internal caseNameOf (value: obj | null) : string =
             let case, _ = Microsoft.FSharp.Reflection.FSharpValue.GetUnionFields(v, t)
             case.Name
         else
-            // C# 15 union: unwrap the active case via its generated .Value, then
-            // take that case's type name. A no-op for a plain payload type.
-            match t.GetProperty "Value" with
-            | null -> t.Name
-            | prop ->
-                match prop.GetValue v with
-                | null -> t.Name
-                | inner when obj.ReferenceEquals(inner, v) -> t.Name
-                | inner -> inner.GetType().Name
+            // A C# 15 union is named by its active case's type.
+            match unionCaseOf v with
+            | Some case -> case.GetType().Name
+            | None -> t.Name
 
 /// (Internal) A raw value rendered for a span *tag* or flow-log line, honoring
 /// the IncludePayloads switch: full rendering when on, the bare case name when

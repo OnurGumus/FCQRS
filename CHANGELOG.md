@@ -1,9 +1,21 @@
 # Changelog
 
-## Unreleased (FCQRS core)
+## 6.7.0 (FCQRS core)
 
 Fixes from a review of the core. Existing journal rows, snapshots, and entity names remain readable.
 
+- **A C# union command case reaches its aggregate.** A C# 15 union shares no base type with its
+  cases, so a case passed as `object`, for example `SagaCommands.ToAggregate(accounts, id, new
+  ReceiveTransfer(...))`, arrived as a command of the case's own type. The aggregate left it unhandled,
+  and the saga waited until its expectation ran out, again and again. An aggregate whose command type
+  is a C# union now accepts a command of any of its case types as that union, from a saga, a direct
+  send, or a `RunAsync` runner.
+- **Registration rejects event types that would be stored as `{}`.** System.Text.Json writes a value
+  through an abstract class or interface without polymorphism as an empty object. A C# aggregate whose
+  event base type lacked `[JsonDerivedType]` stored every event as `{}` without an error; the replies
+  looked right, and the next load could not read the rows. Registering such an aggregate now throws
+  `InvalidOperationException`. F# unions, C# unions, and base types with `[JsonDerivedType]`,
+  `[JsonPolymorphic]`, or `[JsonConverter]` register as before.
 - **Transactional projections skip Akka's sharding bookkeeping.** Sagas remember their entities
   through cluster sharding, which journals that bookkeeping under persistence IDs starting with
   `/sharding/` and deletes its early history after each snapshot. A new or lagging transactional
@@ -69,8 +81,21 @@ Fixes from a review of the core. Existing journal rows, snapshots, and entity na
   registered with `InitializeSaga` never persists entry into its initial state, so a `StayExpecting`
   from that state anchored at arming time and a restart postponed the deadline. It now anchors at the
   creation time of the journaled starting event.
+- **Traces and flow logs name a C# union by its active case.** A saga whose state was a C# union
+  was traced as `Saga:TransferState` in every state, and flow logs showed a union payload as its type
+  name alone. Saga spans, state-change log lines, and rendered payloads now use the active case, as
+  command and event spans already did. A payload counts as a union only when the C# compiler marked it
+  as one: a command record with a `Value` field was named after that field's type, as in
+  `Command:Decimal`. A saga state that is not a union, enum, number, or string is now named by its type,
+  so a record's field values no longer reach a `Saga:` span name.
 - `SagaApi.InitSimple` documents that its typed handler receives `default(TSagaState)` before the
   first state, so an enum or struct state needs a zero value that means "not started".
+
+### Added
+
+- `Values.VersionValue(version)` returns the number in a `Version` as a `long`, so C# code can read a
+  reply's persisted version, for example to pass it to `SendIfVersionAsync`. C# previously had only
+  `ToString()`. F# code keeps using `ValueLens.Value`.
 
 ### Breaking
 
