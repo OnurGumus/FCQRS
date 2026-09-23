@@ -41,6 +41,21 @@ type WatchState =
     new(watching: Watching) = { Value = box watching }
     new(settled: Settled) = { Value = box settled }
 
+// A generic case: its full name embeds the assembly version of its type argument.
+type Boxed<'T> = { Item: 'T }
+
+type Count = { Total: int }
+
+[<System.Runtime.CompilerServices.Union; Struct>]
+type BoxEvent =
+    val Value: obj
+    new(boxed: Boxed<int>) = { Value = box boxed }
+    new(count: Count) = { Value = box count }
+
+type BoxCommand =
+    | Store of int
+    | Total
+
 type private CapturingLogger(category: string, sink: Collections.Concurrent.ConcurrentQueue<string>) =
     interface Microsoft.Extensions.Logging.ILogger with
         member _.BeginScope<'TState when 'TState: not null>(_state: 'TState) : IDisposable | null = null
@@ -200,4 +215,61 @@ let private namedByActiveCase =
             for path in [ db; db + "-wal"; db + "-shm" ] do
                 if File.Exists path then File.Delete path
 
-let tests = testList "union commands" [ caseSentAsItsOwnType; namedByActiveCase ]
+let private genericCaseWithoutVersions =
+    testCase "journal: a generic C# union case is stored without assembly versions and recovers"
+    <| fun _ ->
+        let db = Path.Combine(Path.GetTempPath(), $"fcqrs_union_generic_{Guid.NewGuid():N}.db")
+        let start () =
+            let api =
+                Fcqrs.actor (ConfigurationBuilder().Build()) NullLoggerFactory.Instance
+                    (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite $"Data Source={db};")) "UnionGenericCase"
+            let boxes =
+                Fcqrs.aggregate api
+                    { Name = "UnionBoxes"
+                      Initial = 0
+                      Decide =
+                        fun (command: Command<BoxCommand>) state ->
+                            match command.CommandDetails with
+                            | Store n -> PersistEvent(BoxEvent { Item = n })
+                            | Total -> DeferEvent(BoxEvent { Total = state })
+                      Fold =
+                        fun (event: Event<BoxEvent>) state ->
+                            match event.EventDetails.Value with
+                            | :? Boxed<int> as boxed -> state + boxed.Item
+                            | _ -> state
+                      Snapshots = NoSnapshots
+                      Passivation = PassivationPolicy.Default }
+            Fcqrs.wireSagaStarters api []
+            api, boxes
+        let send (boxes: AggregateHandle<BoxCommand, BoxEvent>) command =
+            let reply = Async.RunSynchronously(boxes.Send (Fcqrs.newCid ()) (Fcqrs.aggregateId "box") command (fun _ -> true), 20000)
+            match reply.EventDetails.Value with
+            | :? Boxed<int> as boxed -> boxed.Item
+            | :? Count as count -> count.Total
+            | other -> failwithf "unexpected reply %A" other
+
+        let first, boxes = start ()
+        try
+            Expect.equal (send boxes (Store 5)) 5 "the aggregate stored the generic case"
+        finally
+            first.Stop().Wait(TimeSpan.FromSeconds 30.0) |> ignore
+
+        use connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={db};")
+        connection.Open()
+        use command = connection.CreateCommand()
+        command.CommandText <- "SELECT CAST(message AS TEXT) FROM journal WHERE persistence_id LIKE 'UnionBoxes/%'"
+        let stored = command.ExecuteScalar() |> string
+        connection.Close()
+        Expect.stringContains stored "System.Private.CoreLib]]" "the stored case name names its type argument's assembly"
+        Expect.isFalse (stored.Contains "Version=") "the stored case name has no assembly version"
+
+        let second, boxes = start ()
+        try
+            Expect.equal (send boxes Total) 5 "recovery read the stored case"
+        finally
+            second.Stop().Wait(TimeSpan.FromSeconds 30.0) |> ignore
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools()
+            for path in [ db; db + "-wal"; db + "-shm" ] do
+                if File.Exists path then File.Delete path
+
+let tests = testList "union commands" [ caseSentAsItsOwnType; namedByActiveCase; genericCaseWithoutVersions ]

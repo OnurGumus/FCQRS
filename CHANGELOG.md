@@ -1,5 +1,16 @@
 # Changelog
 
+## 6.8.0 (FCQRS core)
+
+### Breaking
+
+- A saga built with `Fcqrs.saga` or the C# saga builder stores its state rows and snapshots under
+  stable journal names when its state type and its originator's event type are registered with
+  `JournalTypes`, so renaming or moving those types no longer breaks recovery. FCQRS 6.7.0 reads these
+  rows; earlier releases cannot. Rows stored under CLR names keep reading.
+- FCQRS depends on FCQRS.Serialization 6.1.0, which stores generic C# union case names without
+  assembly versions. Nodes on FCQRS 6.7.0 or earlier cannot read those names.
+
 ## 6.7.0 (FCQRS core)
 
 Fixes from a review of the core. Existing journal rows, snapshots, and entity names remain readable.

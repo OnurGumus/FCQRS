@@ -795,16 +795,19 @@ let private manifestTest =
         let simple = ser.FromBinary(bytes, versionFree) :?> Event<Counter.Event>
         Expect.equal simple.EventDetails (Counter.Incremented 3) "version-free names resolve"
 
-        // 3b. A tag this release reads before any release writes it.
+        // 3b. A builder saga's state wrapper is written and read under its own tag.
         let manifests = typeof<FCQRS.ActorSerialization.STJSerializer>.Assembly.GetType("FCQRS.ActorSerialization+Manifests", true)
-        let resolve =
-            manifests.GetMethod("resolve", Reflection.BindingFlags.Static ||| Reflection.BindingFlags.Public ||| Reflection.BindingFlags.NonPublic)
+        let internalMethod name =
+            manifests.GetMethod(name, Reflection.BindingFlags.Static ||| Reflection.BindingFlags.Public ||| Reflection.BindingFlags.NonPublic)
             |> Unchecked.nonNull
-        let wrapped = resolve.Invoke(null, [| box "fcqrs:saga-ev(saga-wrap(counter.event,counter.event))" |]) :?> Type
-        Expect.equal
-            (wrapped.GetGenericArguments().[0].GetGenericTypeDefinition())
-            typedefof<SagaBuilder.SagaStateWrapper<obj, obj>>
-            "the saga state wrapper tag resolves"
+        let sagaEvent = typeof<FCQRS.ActorSerialization.STJSerializer>.Assembly.GetType("FCQRS.Common+Internal+SagaEvent`1", true)
+        let wrapperEvent =
+            (sagaEvent |> Unchecked.nonNull).MakeGenericType(typeof<SagaBuilder.SagaStateWrapper<Counter.Event, Counter.Event>>)
+        let encoded = internalMethod("tryEncode").Invoke(null, [| box wrapperEvent |]) :?> string option
+        Expect.equal encoded (Some "saga-ev(saga-wrap(counter.event,counter.event))")
+            "a registered builder saga state is written under the saga-wrap tag"
+        let wrapped = internalMethod("resolve").Invoke(null, [| box "fcqrs:saga-ev(saga-wrap(counter.event,counter.event))" |]) :?> Type
+        Expect.equal wrapped wrapperEvent "the saga state wrapper tag resolves to the same type"
 
         // 4. THE rename test: point the logical name at a different CLR type and
         // the same journal bytes deserialize as the new type. This is the exact

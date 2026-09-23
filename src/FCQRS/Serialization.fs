@@ -31,9 +31,11 @@ module internal Manifests =
     [<Literal>]
     let Prefix = "fcqrs:"
 
-    /// The envelope generics FCQRS journals, each with a stable tag.
+    /// The envelope generics FCQRS journals, each with a stable tag. Builder sagas wrap
+    /// their state in SagaStateWrapper; "saga-wrap" gives their state rows and snapshots
+    /// stable manifests too. FCQRS 6.7.0 reads it; earlier releases cannot.
     let private tagToDef, private defToTag =
-        let written =
+        let tags =
             [ "ev", typedefof<Event<obj>>
               "cmd", typedefof<Command<obj>>
               "saga-ev", typedefof<SagaEvent<obj>>
@@ -42,14 +44,10 @@ module internal Manifests =
               "saga-start", typedefof<FCQRS.Saga.SagaStartingEventWrapper<obj>>
               "agg-snap", typedefof<FCQRS.Actor.Internal.State<obj>>
               "cont", typedefof<ContinueOrAbort<obj>>
-              "sse", typedefof<SagaStarter.SagaStartingEvent<obj>> ]
+              "sse", typedefof<SagaStarter.SagaStartingEvent<obj>>
+              "saga-wrap", typedefof<SagaBuilder.SagaStateWrapper<obj, obj>> ]
 
-        // Every node must read a tag before any node writes it. Builder sagas wrap their
-        // state in SagaStateWrapper, so their state rows and snapshots fall back to CLR
-        // names until a later release also writes this tag.
-        let readOnly = [ "saga-wrap", typedefof<SagaBuilder.SagaStateWrapper<obj, obj>> ]
-
-        dict (written @ readOnly), dict [ for tag, def in written -> def, tag ]
+        dict tags, dict [ for tag, def in tags -> def, tag ]
 
     /// The CLR type name without assembly version, culture or public-key token.
     /// Each FCQRS release changes the FCQRS assembly version, and a node still running

@@ -136,6 +136,86 @@ let private manifestsWithoutVersions =
             let manifests = retry 50
             let versioned = manifests |> List.filter (fun manifest -> manifest.Contains "Version=")
             Expect.isEmpty versioned "an older node cannot bind a newer assembly version"
+            Expect.exists manifests (fun manifest -> manifest.Contains "saga-wrap(lifecycle.note.state,lifecycle.note.event)")
+                "the saga's state rows use the registered names"
+
+type LedgerCommand = Record
+type LedgerEvent = Recorded
+type LedgerSagaState = Waiting
+
+let private wrapperTagRecovers =
+    testCase "saga lifecycle: a saga stored under registered names recovers after a restart"
+    <| fun _ ->
+        Fcqrs.journalTypes [ journalType<LedgerEvent> "lifecycle.ledger.event"; journalType<LedgerSagaState> "lifecycle.ledger.state" ]
+        let db = Path.Combine(Path.GetTempPath(), $"fcqrs_saga_wrap_{Guid.NewGuid():N}.db")
+        let lmdb = Path.Combine(Path.GetTempPath(), $"fcqrs_saga_wrap_lmdb_{Guid.NewGuid():N}")
+        // A durable remember-entities store lets the second system restart the saga by itself.
+        let start (recovered: Threading.Tasks.TaskCompletionSource<LedgerSagaState>) =
+            let configuration =
+                ConfigurationBuilder()
+                    .AddInMemoryCollection(
+                        [ Collections.Generic.KeyValuePair<string, string | null>(
+                              "config:akka:cluster:distributed-data:durable:lmdb", lmdb) ])
+                    .Build()
+            let api =
+                Fcqrs.actor configuration NullLoggerFactory.Instance
+                    (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite $"Data Source={db};")) "SagaWrapRecovery"
+            let ledgers =
+                Fcqrs.aggregate api
+                    { Name = "Ledgers"
+                      Initial = 0
+                      Decide = fun (_: Command<LedgerCommand>) _ -> PersistEvent Recorded
+                      Fold = fun (_: Event<LedgerEvent>) state -> state + 1
+                      Snapshots = NoSnapshots
+                      Passivation = PassivationPolicy.Default }
+            let saga =
+                Fcqrs.saga api
+                    { Name = "LedgerSaga"
+                      InitialData = ()
+                      Originator = ledgers.Factory
+                      HandleEvent =
+                        fun event state ->
+                            match event, state.State with
+                            | :? Event<LedgerEvent>, None -> StateChangedEvent Waiting
+                            | _ -> UnhandledEvent
+                      ApplySideEffects =
+                        fun state recovering ->
+                            if recovering then recovered.TrySetResult state.State |> ignore
+                            Stay, []
+                      StartOn = fun (_: Event<LedgerEvent>) -> true
+                      Snapshots = NoSnapshots }
+            Fcqrs.wireSagaStarters api [ saga ]
+            api, ledgers
+
+        let first, ledgers = start (Threading.Tasks.TaskCompletionSource<LedgerSagaState>())
+        try
+            Async.RunSynchronously(ledgers.Send (Fcqrs.newCid ()) (Fcqrs.aggregateId "ledger") Record (fun _ -> true), 20000)
+            |> ignore
+            let deadline = DateTime.UtcNow.AddSeconds 10.0
+            let stored () =
+                try
+                    use connection = new SqliteConnection($"Data Source={db};")
+                    connection.Open()
+                    use command = connection.CreateCommand()
+                    command.CommandText <-
+                        "SELECT COUNT(*) FROM journal WHERE persistence_id LIKE 'LedgerSaga/%' AND manifest LIKE '%saga-wrap(lifecycle.ledger.state,lifecycle.ledger.event)%'"
+                    Convert.ToInt64(command.ExecuteScalar()) > 0L
+                with :? SqliteException -> false
+            while not (stored ()) && DateTime.UtcNow < deadline do
+                Thread.Sleep 50
+            Expect.isTrue (stored ()) "the saga stored its state under the saga-wrap tag"
+        finally
+            first.Stop().Wait(TimeSpan.FromSeconds 30.0) |> ignore
+
+        let recovered = Threading.Tasks.TaskCompletionSource<LedgerSagaState>()
+        let second, _ = start recovered
+        try
+            Expect.isTrue (recovered.Task.Wait(TimeSpan.FromSeconds 30.0)) "the saga recovered after the restart"
+            Expect.equal recovered.Task.Result Waiting "recovery read the stored state"
+        finally
+            second.Stop().Wait(TimeSpan.FromSeconds 30.0) |> ignore
+            for path in [ db; db + "-wal"; db + "-shm" ] do
+                if File.Exists path then File.Delete path
 
 type DoorCommand =
     | Open
@@ -779,6 +859,7 @@ let tests =
             "saga lifecycle"
             [ deferredVerdict
               manifestsWithoutVersions
+              wrapperTagRecovers
               recoveredReadiness
               stopDuringSave
               continueOrAbortIdentity

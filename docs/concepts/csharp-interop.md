@@ -135,7 +135,9 @@ explicit representation like:
 
 The discriminator is the case type's full name: `Withdrawn` for a case declared at the top level, as in
 the tutorial, or `AccountEvent+Withdrawn` for a case nested in the union declaration. Renaming or moving
-a case type changes it.
+a case type changes it. From FCQRS 6.8.0, the name of a generic case, such as `Box<int>`, leaves out
+the assembly versions of its type arguments, so it stays the same across .NET and application
+versions.
 
 The case discriminator matters. `Deposited` and `Withdrawn` both carry an amount, but equal field
 shapes do not give them equal domain meaning.
