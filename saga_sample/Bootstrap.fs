@@ -54,7 +54,7 @@ let loggerF =
     new SerilogLoggerFactory(serilogLogger) :> ILoggerFactory
 
 // Create connection for SQLite - this will be merged with the hocon file config
-let connectionString: ShortString =
+let connectionString: LongString =
     "Data Source=demo.db;" |> ValueLens.TryCreate |> Result.value
 
 let connection =

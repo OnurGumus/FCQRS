@@ -7,6 +7,7 @@ open System
 open System.IO
 open System.Text
 open System.Text.Json
+open System.Text.RegularExpressions
 open FCQRS.Common
 open FCQRS.Model.Data
 open FCQRS.Serialization
@@ -22,8 +23,9 @@ open FCQRS.Serialization
 /// mapping — decade-old journal rows keep deserializing.
 ///
 /// Anything else (unregistered payloads, pre-existing journals) uses the legacy
-/// CLR AssemblyQualifiedName manifest, and the read side dispatches on the
-/// "fcqrs:" prefix — so old journals never need migrating.
+/// CLR type-name manifest, and the read side dispatches on the "fcqrs:" prefix —
+/// so old journals never need migrating. New legacy manifests omit assembly
+/// versions (see versionFree); rows written before that keep reading.
 module internal Manifests =
 
     [<Literal>]
@@ -31,7 +33,7 @@ module internal Manifests =
 
     /// The envelope generics FCQRS journals, each with a stable tag.
     let private tagToDef, private defToTag =
-        let pairs =
+        let written =
             [ "ev", typedefof<Event<obj>>
               "cmd", typedefof<Command<obj>>
               "saga-ev", typedefof<SagaEvent<obj>>
@@ -42,7 +44,21 @@ module internal Manifests =
               "cont", typedefof<ContinueOrAbort<obj>>
               "sse", typedefof<SagaStarter.SagaStartingEvent<obj>> ]
 
-        dict pairs, dict [ for tag, def in pairs -> def, tag ]
+        // Every node must read a tag before any node writes it. Builder sagas wrap their
+        // state in SagaStateWrapper, so their state rows and snapshots fall back to CLR
+        // names until a later release also writes this tag.
+        let readOnly = [ "saga-wrap", typedefof<SagaBuilder.SagaStateWrapper<obj, obj>> ]
+
+        dict (written @ readOnly), dict [ for tag, def in written -> def, tag ]
+
+    /// The CLR type name without assembly version, culture or public-key token.
+    /// Each FCQRS release changes the FCQRS assembly version, and a node still running
+    /// an older release cannot bind a newer one, so versioned names written by an
+    /// upgraded node would crash older readers during a rolling deployment.
+    /// Type.GetType resolves these names on every version, and still reads versioned
+    /// names from earlier rows. An escaped comma inside a type name is not a separator.
+    let versionFree (t: Type) =
+        Regex.Replace(t.AssemblyQualifiedName |> Unchecked.nonNull, @"(?<!\\), (?:Version|Culture|PublicKeyToken)=[^,\]]*", "")
 
     /// Type -> "tag(arg,...)" / logical name; None if anything inside is unregistered.
     let rec tryEncode (t: Type) : string option =
@@ -146,9 +162,9 @@ type STJSerializer(system: ExtendedActorSystem) =
             match Manifests.tryEncode (o.GetType()) with
             | Some encoded -> Manifests.Prefix + encoded
             | None ->
-                // Legacy manifest for unregistered types (also what every pre-existing
-                // journal row carries) — readable forever via the fallback below.
-                o.GetType().AssemblyQualifiedName |> Unchecked.nonNull
+                // Legacy manifest for unregistered types — readable forever via the
+                // fallback below, like the versioned names in pre-existing journal rows.
+                Manifests.versionFree (o.GetType())
 
     override _.FromBinary(bytes: byte[], manifest: string) : obj =
         try

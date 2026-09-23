@@ -23,6 +23,18 @@ open FCQRS.Projections
 
 type CatchUpEvent = Added of int
 
+type BookkeepingCommand = Open
+type BookkeepingEvent = Opened
+type BookkeepingState = Closed
+
+type CausalOriginCommand = Begin
+type CausalOriginEvent = Begun
+type CausalFollowUpCommand = FollowUp
+type CausalFollowUpEvent = FollowedUp
+type CausalRelayState = Relaying
+type TallyCommand = Tally of int
+type TallyEvent = Tallied of int
+
 let private wait (work: Task) =
     work.WaitAsync(TimeSpan.FromSeconds 20.0).GetAwaiter().GetResult()
 
@@ -450,6 +462,313 @@ let private hostedProjectionInjection =
             for path in [ database; database + "-wal"; database + "-shm" ] do
                 if File.Exists path then File.Delete path
 
+let private sqlitePaths () =
+    let suffix = Guid.NewGuid().ToString("N")
+    suffix,
+    Path.Combine(Path.GetTempPath(), $"fcqrs-catchup-journal-{suffix}.db"),
+    Path.Combine(Path.GetTempPath(), $"fcqrs-catchup-read-{suffix}.db")
+
+let private sqliteString (path: string) = $"Data Source={path};Pooling=False;Default Timeout=5"
+
+let private sqliteScalar (path: string) (sql: string) =
+    use connection = new SqliteConnection(sqliteString path)
+    connection.Open()
+    use command = connection.CreateCommand()
+    command.CommandText <- sql
+    Convert.ToInt64(command.ExecuteScalar())
+
+let private sqliteStore journalPath projectionPath =
+    SqlProjectionStore(
+        ProjectionSqlDialect.Sqlite,
+        Func<DbConnection>(fun () -> new SqliteConnection(sqliteString journalPath)),
+        Func<DbConnection>(fun () -> new SqliteConnection(sqliteString projectionPath)))
+
+let private deleteDatabases paths =
+    for database in paths do
+        for path in [ database; database + "-wal"; database + "-shm" ] do
+            if File.Exists path then File.Delete path
+
+let private shardingBookkeeping =
+    testCase "catch-up: a new projection skips Akka's trimmed sharding history"
+    <| fun _ ->
+        let suffix, journalPath, projectionPath = sqlitePaths ()
+        // Sagas remember their entities through Akka cluster sharding, which journals that
+        // bookkeeping under "/sharding/..." and deletes its early history after each snapshot.
+        // Akka snapshots every 1000 updates by default; 10 trims the first rows after 30.
+        let configuration =
+            ConfigurationBuilder()
+                .AddInMemoryCollection(
+                    [ Collections.Generic.KeyValuePair<string, string | null>("config:akka:cluster:sharding:snapshot-after", "10") ])
+                .Build()
+        let api =
+            Fcqrs.actor configuration NullLoggerFactory.Instance
+                (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite (sqliteString journalPath))) ("Bookkeeping" + suffix)
+        try
+            let accounts =
+                Fcqrs.aggregate api
+                    { Name = "BookkeepingAccount"
+                      Initial = 0
+                      Decide = fun (_: Command<BookkeepingCommand>) _ -> PersistEvent Opened
+                      Fold = fun (_: Event<BookkeepingEvent>) state -> state + 1
+                      Snapshots = NoSnapshots
+                      Passivation = PassivationPolicy.Default }
+            let saga =
+                Fcqrs.saga api
+                    { Name = "BookkeepingSaga"
+                      InitialData = ()
+                      Originator = accounts.Factory
+                      HandleEvent =
+                        fun event state ->
+                            match event, state.State with
+                            | :? Event<BookkeepingEvent>, None -> StateChangedEvent Closed
+                            | _ -> UnhandledEvent
+                      ApplySideEffects = fun state _ -> match state.State with Closed -> StopSaga, []
+                      StartOn = fun (_: Event<BookkeepingEvent>) -> true
+                      Snapshots = NoSnapshots }
+            Fcqrs.wireSagaStarters api [ saga ]
+            // Each correlation ID starts and stops its own saga.
+            for _ in 1..40 do
+                accounts.Send (Fcqrs.newCid ()) (Fcqrs.aggregateId "account") Open (fun _ -> true)
+                |> fun work -> Async.RunSynchronously(work, 20000)
+                |> ignore
+            let firstShardRow () =
+                sqliteScalar journalPath "SELECT COALESCE(MIN(sequence_number), 0) FROM journal WHERE persistence_id LIKE '/sharding/%'"
+            let deadline = DateTime.UtcNow.AddSeconds 20.0
+            while firstShardRow () <= 1L && DateTime.UtcNow < deadline do
+                Thread.Sleep 100
+            Expect.isGreaterThan (firstShardRow ()) 1L "Akka deleted the start of its sharding history"
+            let applied = ref 0
+            use projection =
+                Fcqrs.transactionalProjection api (TransactionalProjectionOptions("bookkeeping", sqliteStore journalPath projectionPath))
+                    (fun _ _ envelope ->
+                        match envelope.Event with
+                        | :? Event<BookkeepingEvent> -> Interlocked.Increment(&applied.contents) |> ignore
+                        | _ -> ()
+                        Task.CompletedTask)
+            wait (projection.CatchUpAsync())
+            Expect.equal applied.Value 40 "every aggregate event is projected"
+        finally
+            wait (api.Stop())
+            deleteDatabases [ journalPath; projectionPath ]
+
+let private causalNotification =
+    testCase "catch-up: a correlation waiter wakes only after the event that caused a saga follow-up commits"
+    <| fun _ ->
+        let suffix, journalPath, projectionPath = sqlitePaths ()
+        let api =
+            Fcqrs.actor (ConfigurationBuilder().Build()) NullLoggerFactory.Instance
+                (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite (sqliteString journalPath))) ("Causal" + suffix)
+        try
+            (use read = new SqliteConnection(sqliteString projectionPath)
+             read.Open()
+             execute read None "CREATE TABLE seen (kind TEXT NOT NULL)" [])
+            // The follow-up's persistence ID sorts before the originator's.
+            let followUps =
+                Fcqrs.aggregate api
+                    { Name = "CausalFollowUp"
+                      Initial = 0
+                      Decide = fun (_: Command<CausalFollowUpCommand>) _ -> PersistEvent FollowedUp
+                      Fold = fun (_: Event<CausalFollowUpEvent>) state -> state + 1
+                      Snapshots = NoSnapshots
+                      Passivation = PassivationPolicy.Default }
+            let origins =
+                Fcqrs.aggregate api
+                    { Name = "CausalOrigin"
+                      Initial = 0
+                      Decide = fun (_: Command<CausalOriginCommand>) _ -> PersistEvent Begun
+                      Fold = fun (_: Event<CausalOriginEvent>) state -> state + 1
+                      Snapshots = NoSnapshots
+                      Passivation = PassivationPolicy.Default }
+            // The saga's command reuses the originator's correlation ID.
+            let relay =
+                Fcqrs.saga api
+                    { Name = "CausalRelay"
+                      InitialData = ()
+                      Originator = origins.Factory
+                      HandleEvent =
+                        fun event state ->
+                            match event, state.State with
+                            | :? Event<CausalOriginEvent>, None -> StateChangedEvent Relaying
+                            | _ -> UnhandledEvent
+                      ApplySideEffects =
+                        fun state _ ->
+                            match state.State with
+                            | Relaying -> StopSaga, [ toAggregate followUps.Factory "follow-up" (box FollowUp) ]
+                      StartOn = fun (_: Event<CausalOriginEvent>) -> true
+                      Snapshots = NoSnapshots }
+            Fcqrs.wireSagaStarters api [ relay ]
+            let options = TransactionalProjectionOptions("causal", sqliteStore journalPath projectionPath)
+            // Leave both events to the explicit catch-up below, so they share one snapshot.
+            options.PollInterval <- TimeSpan.FromMinutes 10.0
+            let handler (connection: DbConnection) (transaction: DbTransaction) (envelope: EventEnvelope) : Task =
+                task {
+                    let kind =
+                        match envelope.Event with
+                        | :? Event<CausalOriginEvent> -> Some "origin"
+                        | :? Event<CausalFollowUpEvent> -> Some "follow-up"
+                        | _ -> None
+                    match kind with
+                    | Some kind ->
+                        // Keep the originator's event uncommitted long enough to observe an early wake.
+                        if kind = "origin" then do! Task.Delay 1000
+                        execute connection (Some transaction) "INSERT INTO seen (kind) VALUES (@kind)" [ "@kind", box kind ]
+                    | None -> ()
+                }
+                :> Task
+            use projection = Fcqrs.transactionalProjection api options handler
+            wait (projection.CatchUpAsync())
+            let waiting =
+                Fcqrs.sendAwaiting (projection :> FCQRS.Query.ISubscribe<IMessageWithCID>)
+                    origins (Fcqrs.newCid ()) (Fcqrs.aggregateId "origin") Begin (fun _ -> true)
+                |> Async.StartAsTask
+            let journaled () =
+                sqliteScalar journalPath "SELECT COUNT(*) FROM journal WHERE persistence_id LIKE 'CausalOrigin/%' OR persistence_id LIKE 'CausalFollowUp/%'"
+            let deadline = DateTime.UtcNow.AddSeconds 20.0
+            while journaled () < 2L && DateTime.UtcNow < deadline do
+                Thread.Sleep 50
+            Expect.equal (journaled ()) 2L "the originator event and the saga follow-up are journaled"
+            let catchUp = projection.CatchUpAsync()
+            let reply = waiting.WaitAsync(TimeSpan.FromSeconds 20.0).GetAwaiter().GetResult()
+            let originRows = sqliteScalar projectionPath "SELECT COUNT(*) FROM seen WHERE kind = 'origin'"
+            wait catchUp
+            Expect.equal reply.EventDetails Begun "sendAwaiting returns the command's event"
+            Expect.equal originRows 1L "the command's own event was committed when the waiter woke"
+        finally
+            wait (api.Stop())
+            deleteDatabases [ journalPath; projectionPath ]
+
+let private tallyAggregate api name =
+    Fcqrs.aggregate api
+        { Name = name
+          Initial = 0
+          Decide = fun (command: Command<TallyCommand>) _ -> let (Tally amount) = command.CommandDetails in PersistEvent(Tallied amount)
+          Fold = fun (_: Event<TallyEvent>) state -> state + 1
+          Snapshots = NoSnapshots
+          Passivation = PassivationPolicy.Default }
+
+let private heldWaiterOrder =
+    testCase "catch-up: a held correlation waiter does not reorder other subscribers"
+    <| fun _ ->
+        let suffix, journalPath, projectionPath = sqlitePaths ()
+        let api =
+            Fcqrs.actor (ConfigurationBuilder().Build()) NullLoggerFactory.Instance
+                (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite (sqliteString journalPath))) ("HeldOrder" + suffix)
+        try
+            let tallies = tallyAggregate api "HeldOrderTally"
+            Fcqrs.wireSagaStarters api []
+            let options = TransactionalProjectionOptions("held-order", sqliteStore journalPath projectionPath)
+            // Leave both events to the explicit catch-up below, so they share one snapshot.
+            options.PollInterval <- TimeSpan.FromMinutes 10.0
+            use projection = Fcqrs.transactionalProjection api options (fun _ _ _ -> Task.CompletedTask)
+            wait (projection.CatchUpAsync())
+            let seen = Collections.Concurrent.ConcurrentQueue<int>()
+            use _all =
+                (projection :> FCQRS.Query.ISubscribe<IMessageWithCID>).Subscribe(fun (event: IMessageWithCID) ->
+                    match event with
+                    | :? Event<TallyEvent> as tally -> let (Tallied amount) = tally.EventDetails in seen.Enqueue amount
+                    | _ -> ())
+            // The first event has a correlation waiter; the second does not.
+            let waiting =
+                Fcqrs.sendAwaiting (projection :> FCQRS.Query.ISubscribe<IMessageWithCID>)
+                    tallies (Fcqrs.newCid ()) (Fcqrs.aggregateId "tally") (Tally 1) (fun _ -> true)
+                |> Async.StartAsTask
+            let journaled () = sqliteScalar journalPath "SELECT COUNT(*) FROM journal WHERE persistence_id LIKE 'HeldOrderTally/%'"
+            let deadline = DateTime.UtcNow.AddSeconds 20.0
+            while journaled () < 1L && DateTime.UtcNow < deadline do
+                Thread.Sleep 50
+            Async.RunSynchronously(tallies.Send (Fcqrs.newCid ()) (Fcqrs.aggregateId "tally") (Tally 2) (fun _ -> true), 20000)
+            |> ignore
+            wait (projection.CatchUpAsync())
+            waiting.WaitAsync(TimeSpan.FromSeconds 20.0).GetAwaiter().GetResult() |> ignore
+            let deadline = DateTime.UtcNow.AddSeconds 5.0
+            while seen.Count < 2 && DateTime.UtcNow < deadline do
+                Thread.Sleep 50
+            Expect.sequenceEqual (seen.ToArray()) [ 1; 2 ] "a subscriber without a correlation ID sees journal order"
+        finally
+            wait (api.Stop())
+            deleteDatabases [ journalPath; projectionPath ]
+
+let private observedTimeout =
+    testCase "catch-up: a sendAwaiting timeout leaves no unobserved task exception"
+    <| fun _ ->
+        let suffix, journalPath, projectionPath = sqlitePaths ()
+        let configuration =
+            ConfigurationBuilder()
+                .AddInMemoryCollection(
+                    [ Collections.Generic.KeyValuePair<string, string | null>("config:akka:fcqrs:command-timeout", "3") ])
+                .Build()
+        let api =
+            Fcqrs.actor configuration NullLoggerFactory.Instance
+                (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite (sqliteString journalPath))) ("ObservedTimeout" + suffix)
+        let unobserved = ref 0
+        let count =
+            EventHandler<UnobservedTaskExceptionEventArgs>(fun _ args ->
+                if args.Exception.InnerExceptions |> Seq.exists (fun error -> error :? TimeoutException) then
+                    Interlocked.Increment(&unobserved.contents) |> ignore)
+        TaskScheduler.UnobservedTaskException.AddHandler count
+        try
+            let tallies = tallyAggregate api "ObservedTimeoutTally"
+            Fcqrs.wireSagaStarters api []
+            let options = TransactionalProjectionOptions("observed-timeout", sqliteStore journalPath projectionPath)
+            // No catch-up runs, so the notification never arrives.
+            options.PollInterval <- TimeSpan.FromMinutes 10.0
+            use projection = Fcqrs.transactionalProjection api options (fun _ _ _ -> Task.CompletedTask)
+            wait (projection.CatchUpAsync())
+            let outcome =
+                try
+                    Fcqrs.sendAwaiting (projection :> FCQRS.Query.ISubscribe<IMessageWithCID>)
+                        tallies (Fcqrs.newCid ()) (Fcqrs.aggregateId "tally") (Tally 1) (fun _ -> true)
+                    |> fun work -> Async.RunSynchronously(work, 20000)
+                    |> ignore
+                    None
+                with error -> Some(error.GetType())
+            // Finalizing a faulted task that nothing observed raises UnobservedTaskException.
+            for _ in 1..5 do
+                GC.Collect()
+                GC.WaitForPendingFinalizers()
+                Thread.Sleep 100
+            Expect.equal outcome (Some typeof<TimeoutException>) "the wait timed out"
+            Expect.equal unobserved.Value 0 "the timed-out wait was observed"
+        finally
+            TaskScheduler.UnobservedTaskException.RemoveHandler count
+            wait (api.Stop())
+            deleteDatabases [ journalPath; projectionPath ]
+
+let private nullCorrelationId =
+    testCase "catch-up: a notification without a correlation ID is published"
+    <| fun _ ->
+        // Custom notifications from Projection.multi or the C# list handler can carry a null CID.
+        let hubType =
+            typeof<FCQRS.Query.ISubscribe<IMessageWithCID>>.Assembly
+                .GetType("FCQRS.Query+Internal+NotificationHub`1", true)
+            |> Unchecked.nonNull
+            |> fun definition -> definition.MakeGenericType [| typeof<IMessageWithCID> |]
+        let hub =
+            Activator.CreateInstance(hubType, [| box 8; box NullLogger.Instance; box (TimeSpan.FromSeconds 5.0) |])
+            |> Unchecked.nonNull
+        let subscriptions = hub :?> FCQRS.Query.ISubscribe<IMessageWithCID>
+        let received = ref 0
+        use _all = subscriptions.Subscribe(fun _ -> Interlocked.Increment(&received.contents) |> ignore)
+        use _waiter = subscriptions.Subscribe(Fcqrs.newCid (), 1)
+        let publish =
+            hubType.GetMethod(
+                "Publish",
+                Reflection.BindingFlags.Instance ||| Reflection.BindingFlags.Public ||| Reflection.BindingFlags.NonPublic
+            )
+            |> Unchecked.nonNull
+        let notification = { new IMessageWithCID with member _.CID = Unchecked.defaultof<CID> }
+        let outcome =
+            try
+                publish.Invoke(hub, [| box notification |]) |> ignore
+                None
+            with :? Reflection.TargetInvocationException as error ->
+                error.InnerException |> Option.ofObj |> Option.map (fun inner -> inner.GetType().Name)
+        Expect.isNone outcome "publishing a notification without a correlation ID does not throw"
+        let deadline = DateTime.UtcNow.AddSeconds 5.0
+        while received.Value < 1 && DateTime.UtcNow < deadline do
+            Thread.Sleep 20
+        Expect.equal received.Value 1 "the subscriber without a correlation ID receives it"
+
 let private concurrentInstances postgres =
     use fixture = new Fixture(postgres)
     for amount in 1..8 do fixture.Send("shared", amount)
@@ -537,6 +856,11 @@ let tests =
               timeoutIsolation
               actorShutdown
               hostedProjectionInjection
+              shardingBookkeeping
+              causalNotification
+              heldWaiterOrder
+              observedTimeout
+              nullCorrelationId
               testCase "SQLite: competing projection instances do not double-apply" (fun _ -> concurrentInstances None)
               match postgres with
               | Some connection ->

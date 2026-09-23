@@ -75,10 +75,10 @@ The .NET configuration path uses colons. The equivalent HOCON path uses nested o
 The two timeout keys share one unit rule: a **bare number means seconds**. `command-timeout` also
 accepts HOCON durations such as `500ms` or `1m` (beware: a bare number would mean *milliseconds* to
 HOCON's duration parser — FCQRS parses bare numbers as seconds deliberately, matching
-`saga-start-timeout`). The command timeout is an idle timeout: receiving a non-matching event on the
-same correlation topic restarts it. Correlation topics are quiet in practice, but it is not a hard
-deadline. The same key bounds the projection wait in the F# facade's `sendAwaiting`: a projection
-that suppresses the matching notification raises `TimeoutException` instead of hanging the caller.
+`saga-start-timeout`). The command timeout is a deadline that starts when the command subscription
+accepts the command. Non-matching events on the same correlation topic do not restart it. The same
+key bounds the projection wait in the F# facade's `sendAwaiting`: a projection that suppresses the
+matching notification raises `TimeoutException` instead of hanging the caller.
 
 The notification buffer is not a durable queue. Notifications without an active subscriber may be
 dropped, which is correct for the request-scoped read-your-writes mechanism.

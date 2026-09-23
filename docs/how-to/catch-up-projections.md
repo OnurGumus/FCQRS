@@ -31,12 +31,14 @@ These transactional projection APIs are available in FCQRS 6.4.0 and later.
 `CatchUpAsync` captures one **journal snapshot**: the highest committed sequence number for each
 persistence identity visible in one database read. A persistence identity identifies one actor's
 journal history. The call succeeds after this projection has committed every event through those
-captured sequence numbers. The snapshot includes aggregate events and saga journal records.
+captured sequence numbers. The snapshot includes aggregate events and saga journal records. It
+excludes Akka's cluster-sharding records, whose persistence identities start with `/sharding/`.
+Akka deletes their early history itself, and they are not application events.
 
 The order matters. Await the aggregate reply before calling `CatchUpAsync` so the snapshot includes
 that event when the reply was journaled. It also includes every other event committed before the
-snapshot, across all persistence identities in this journal. Writes arriving after the snapshot do
-not extend this call's target.
+snapshot, across all application persistence identities in this journal. Writes arriving after the
+snapshot do not extend this call's target.
 
 The checkpoint is durable, so this wait does not require a correlation subscription before sending.
 It also works after a deferred reply, although a deferred reply itself adds no journal event. Check
@@ -155,6 +157,14 @@ builder.Services.AddFcqrs(connectionString, "document-system")
 The C# registration adds `IProjection` to dependency injection. Inject it into the caller that waits
 for catch-up. The F# facade returns the same interface. It also implements `ISubscribe`, so existing
 correlation subscriptions remain available, with aggregate notifications published after commit.
+
+The runner commits persistence identities in key order, not in causal order, so a saga's follow-up
+event can commit before the event that caused it. Both carry the same correlation ID. A subscription
+for that correlation ID, such as `Subscribe(cid, ...)` or `sendAwaiting`, therefore receives its
+notifications after the whole snapshot commits. A waiter woken by the follow-up can read the event
+that caused it. It can also wait longer than the commit of its own event, and it is cancelled if the
+projection fails before the snapshot commits. A subscription without a correlation ID, including a
+filter on the correlation ID, receives each notification when its event commits.
 
 Subscriptions belong to the local worker. If several workers share the same projection name and
 store, a worker can observe progress committed by another worker without publishing that other

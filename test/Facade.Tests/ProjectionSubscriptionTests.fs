@@ -102,6 +102,32 @@ let private boundedIsolation =
             release.Set()
             stop ()
 
+let private correlationRouting =
+    testCase "projection subscriptions: other requests' events cannot evict a correlation waiter's notification"
+    <| fun _ ->
+        let subscriptions, publish, stop = createHub 2
+        use entered = new ManualResetEventSlim(false)
+        use release = new ManualResetEventSlim(false)
+        let cid = Fcqrs.newCid ()
+        try
+            use waiting =
+                subscriptions.Subscribe(cid, 2, callback = (fun evt ->
+                    if (evt :?> Notification).Number = 1 then
+                        entered.Set()
+                        release.Wait()))
+            publish (Notification(cid, 1))
+            Expect.isTrue (entered.Wait(TimeSpan.FromSeconds 5.0)) "the waiter is handling its first notification"
+            // Other requests' events arrive on both sides of the waiter's second notification
+            // while its callback is busy. A queue of two must still hold that notification.
+            for number in 1..10 do publish (Notification(Fcqrs.newCid (), 100 + number))
+            publish (Notification(cid, 2))
+            for number in 1..10 do publish (Notification(Fcqrs.newCid (), 200 + number))
+            release.Set()
+            received waiting.Task
+        finally
+            release.Set()
+            stop ()
+
 let private incompleteCancellation =
     testCase "projection subscriptions: disposal, cancellation and shutdown cannot satisfy an incomplete count"
     <| fun _ ->
@@ -167,4 +193,4 @@ let private alreadyCanceled =
 
 let tests =
     testList "projection notification coordination"
-        [ readyBeforeReturn; boundedIsolation; incompleteCancellation; failedCallbacks; alreadyCanceled ]
+        [ readyBeforeReturn; boundedIsolation; correlationRouting; incompleteCancellation; failedCallbacks; alreadyCanceled ]

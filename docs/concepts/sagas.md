@@ -134,6 +134,9 @@ The `StartOn` predicate declares that boundary. For the publication saga it matc
 is the **originator**. Commands such as `toOriginator (FinishPublication Published)` route back to
 that exact document instance.
 
+Only a persisted event can start a saga. A deferred reply is not journaled, so a repeated request
+answered with `DeferEvent` or `persistIf false` does not start a second workflow.
+
 Application code does not construct `SagaStartingEvent` directly. FCQRS wraps the matched originator
 event in that internal envelope so the saga can retain:
 
@@ -226,9 +229,17 @@ exactly-once messaging.
 ## The starting event also protects resumption
 
 During recovery FCQRS uses the stored starting event to check the originator exchange and continue the
-startup protocol safely. If the originator has moved past the starting event's version, the check
-fails: the originator answers the saga with an `AbortedEvent` — visible as an `Abort:` span and in the
-message-flow logs — and the saga passivates instead of continuing from stale assumptions.
+startup protocol safely. A saga recovered before it leaves `Started` asks its originator whether the
+starting event is the event journaled at the originator's current version. The originator compares
+the version and the event ID. The ID matters after a failed save, when another event can hold the
+same version. An originator recovered from a snapshot with no later events does not know which event
+holds its version, so it compares only the version.
+
+If the originator has moved past the starting event, or holds another event at its version, the check
+fails. The originator answers the saga with an `AbortedEvent`, visible as an `Abort:` span and in the
+message-flow logs, and the saga passivates instead of continuing from stale assumptions. An
+`AbortedEvent` that arrives after the saga has stored a newer state answers an earlier check, and the
+saga ignores it.
 
 This check protects the FCQRS actor conversation. It does not make an independent database, payment
 provider, or HTTP service part of the saga journal transaction. External operations still require

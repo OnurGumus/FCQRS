@@ -201,6 +201,12 @@ type internal ContinueOrAbort<'EventDetails when 'EventDetails : not null> =
 
 type internal AbortedEvent = AbortedEvent
 
+/// The stop message cluster sharding sends an entity for passivation and shard hand-off.
+/// Akka's default, PoisonPill, is handled ahead of the persistence stash, so it could stop
+/// an entity with a save in flight: that save's reply and publication would be lost, and
+/// commands waiting behind it dropped. A regular message is processed after the save.
+type internal StopEntity = StopEntity
+
 [<AutoOpen>]
 module internal Internal =
     type SagaEvent<'TState> =
@@ -270,6 +276,7 @@ type EventAction<'T when 'T : not null> =
     /// snapshot — a manual checkpoint, independent of the SnapshotPolicy cadence.
     | PersistAndSnapshot of 'T
     /// Publish and fold the event in the live actor without storing it or incrementing the persisted version.
+    /// A deferred event does not start a saga; running sagas still receive it.
     | DeferEvent of 'T
     /// Publish the event immediately to the mediator without persisting it. The actor's state is not updated.
     | PublishEvent of Event<'T>
@@ -521,9 +528,11 @@ let internal fatalFailFast (heldActivity: Activity | null) (message: string) (ex
 
 /// Stable logical names for journal payload types. Register every command/event/
 /// state type that touches the journal; the serializer then writes manifests like
-/// "fcqrs:ev(doc.event)" instead of CLR AssemblyQualifiedNames — so types can be
+/// "fcqrs:ev(doc.event)" instead of CLR type names — so types can be
 /// renamed or moved freely (update the mapping, old journal rows keep reading).
-/// Unregistered types fall back to the legacy AQN manifest.
+/// Unregistered types are written under their assembly-qualified CLR name without
+/// the assembly version, culture and public-key token; versioned names in older rows
+/// still read.
 type JournalTypes private () =
     static let gate = obj ()
     static let byName = Collections.Generic.Dictionary<string, Type>()
@@ -698,7 +707,9 @@ type ExpectationExhausted =
     {
         /// Union-case name of the state whose expectation ran out.
         StateName: string
-        /// The persisted entry time of that state.
+        /// The persisted entry time of that state. The initial state of a saga registered with
+        /// `InitializeSaga` is never persisted; for it, this is the creation time of the saga's
+        /// starting event.
         EnteredAt: DateTime
         /// Number of retry ticks that elapsed before exhaustion.
         Attempts: int
@@ -756,7 +767,8 @@ type IActor =
     /// If no matching event arrives within `akka.fcqrs.command-timeout` (default
     /// 30s) — e.g. the aggregate decided UnhandledEvent/IgnoreEvent or the filter
     /// never matches — the returned Async raises TimeoutException instead of
-    /// hanging forever.
+    /// hanging forever. If the actor system stops first, it raises
+    /// OperationCanceledException; the command may or may not have been applied.
     /// <param name="factory">Entity factory function for the target actor type.</param>
     /// <param name="cid">Correlation ID for tracking.</param>
     /// <param name="id">Entity ID of the target actor.</param>
@@ -834,9 +846,15 @@ type IActor =
 
 // Internal helper to create Event records
 
-/// Default shard name used if no specific sharding strategy is provided.
-/// Represents a potential transformation to apply to an entity ID prefix, used in saga routing.
-/// Allows sagas to be co-located or routed differently based on the originator's ID structure.
+/// How the saga starter names a saga it starts for an originator event.
+/// `PrefixConversion (Some f)` names the saga `originatorId~Saga~f(correlationId)`, and `Some id` gives
+/// the standard name `originatorId~Saga~correlationId`. A saga reads its originator and correlation id
+/// from its own name to receive the originator's events and to correlate the commands it sends, so `f`
+/// must return the correlation id, optionally after a prefix that ends with `~` (for example
+/// `"audit~" + cid`). The starter logs an error and does not start a saga when `f` changes or drops the
+/// correlation id, or throws.
+/// `PrefixConversion None` uses `originatorId~correlationId` as the saga name. That name has no `~Saga~`
+/// marker, so the saga does not receive its originator's events.
 type PrefixConversion = PrefixConversion of ((string -> string) option)
 
 /// Contains types and functions for building and initializing sagas
@@ -1125,6 +1143,28 @@ module SagaStarter =
         let internal toCheckSagas (event, originator, cid) =
             (event |> box |> Unchecked.nonNull, originator, cid) |> CheckSagas |> Command
 
+        // The resolved local saga starter of each actor system.
+        let private starters = System.Runtime.CompilerServices.ConditionalWeakTable<ActorSystem, Akka.Actor.IActorRef>()
+
+        /// The local saga starter. Aggregate and saga regions go live before the application
+        /// wires its saga starter, and remembered sagas can re-drive commands in that window,
+        /// so a save can arrive first. Wait for the starter until the handshake's deadline
+        /// instead of sending the check into dead letters.
+        let private resolveStarter (system: ActorSystem) (deadline: DateTime) =
+            match starters.TryGetValue system with
+            | true, starter -> starter
+            | _ ->
+                let rec attempt () =
+                    try
+                        let starter =
+                            system.ActorSelection(SagaStarterPath).ResolveOne(TimeSpan.FromSeconds 1.0).GetAwaiter().GetResult()
+                        starters.AddOrUpdate(system, starter)
+                        starter
+                    with :? ActorNotFoundException when DateTime.UtcNow < deadline ->
+                        Threading.Thread.Sleep 20
+                        attempt ()
+                attempt ()
+
         let internal toSendMessage (askTimeout: TimeSpan) (system: ActorSystem) (originator: IActorRef<_>) event =
             // Build from the originator's ENTITY ID, not its escaped path name: the
             // shard escapes the saga id we derive here when it names the saga actor,
@@ -1139,7 +1179,6 @@ module SagaStarter =
             // empty. CheckSagas carries a local originator ref and never crosses
             // the wire; only saga readiness replies may cross nodes.
             let message = (event, untyped originator, cid) |> toCheckSagas
-            let coordinator = system.ActorSelection(SagaStarterPath)
 
             // Deliberately synchronous: the aggregate blocks here until every saga
             // this event starts is journaled and subscribed, so the event published
@@ -1147,8 +1186,12 @@ module SagaStarter =
             // BOUNDED: without a timeout a saga or SagaStarter failure mid-handshake
             // parks this entity (and its dispatcher thread) forever. If the
             // handshake cannot complete, crash the process — fail-fast policy.
+            let deadline = DateTime.UtcNow + askTimeout
             try
-                coordinator.Ask<obj>(message, askTimeout).GetAwaiter().GetResult() |> ignore
+                let coordinator = resolveStarter system deadline
+                let remaining = deadline - DateTime.UtcNow
+                let remaining = if remaining > TimeSpan.Zero then remaining else TimeSpan.FromMilliseconds 1.0
+                coordinator.Ask<obj>(message, remaining).GetAwaiter().GetResult() |> ignore
             with ex ->
                 fatalFailFast
                     null
@@ -1292,28 +1335,59 @@ module SagaStarter =
                         "SagaStarter reached the ThreadPool ceiling of {0} worker threads with {1} saga-start handshake(s) in flight. Handshakes block a dispatcher thread each, so beyond this point they may time out and crash the process. Raise akka.fcqrs.max-worker-threads or reduce saga-starting concurrency.",
                         maxWorkers, inFlight)
 
+            // A saga reads its originator, its event topic and the CID of every
+            // command it sends from its own entity id. The originator publishes
+            // the journaled starting event under the original CID, so a saga whose
+            // name carries another CID never receives it: a builder saga then
+            // stays in Started forever. Refuse that saga instead of starting it.
+            let sagaIdFor (originator: IActorRef) cid prefix =
+                match prefix with
+                | PrefixConversion None -> Some cid
+                | PrefixConversion(Some f) ->
+                    let originatorId = originator.Path.Name |> entityIdOf
+                    let rawCid = cid |> toRawGuid
+
+                    let converted =
+                        try
+                            Some(f rawCid)
+                        with error ->
+                            log.Error(
+                                error,
+                                "Saga not started for originator {0} [cid: {1}]: the prefix conversion threw.",
+                                originatorId,
+                                rawCid)
+
+                            None
+
+                    match converted with
+                    | None -> None
+                    | Some converted ->
+                        let sagaId = originatorId + SAGA_Suffix + converted
+
+                        if toOriginatorName sagaId = originatorId && toRawGuid sagaId = rawCid then
+                            Some sagaId
+                        else
+                            log.Error(
+                                "Saga not started for originator {0} [cid: {1}]: the prefix conversion returned '{2}'. A converted saga name must end with the correlation id, optionally after a prefix that ends with '~'.",
+                                originatorId,
+                                rawCid,
+                                converted)
+
+                            None
+
             // Different saga types share an entity id when the same event starts
             // them. Readiness belongs to the (type, entity) pair, and a repeated
             // Continue from one saga must never stand in for another saga.
             let rec set (state: Map<string, (IActorRef * (Set<string * string> * Guid) list)>) =
                 let startSaga
-                    cid
                     (originator: IActorRef)
-                    (list: ((string -> IEntityRef<obj>) * PrefixConversion * obj) list)
+                    (list: ((string -> IEntityRef<obj>) * string * obj) list)
                     =
                     let sender = untyped <| mailbox.Sender()
 
                     let sagas =
-                        [ for (factory, prefix, e) in list do
-                              let saga =
-                                  cid
-                                  |> fun name ->
-                                      match prefix with
-                                      | PrefixConversion None -> name
-                                      | PrefixConversion(Some f) ->
-                                          (originator.Path.Name |> entityIdOf) + SAGA_Suffix + f (name |> toRawGuid)
-                                  |> factory
-
+                        [ for (factory, sagaId, e) in list do
+                              let saga = factory sagaId
                               let msg = unboxx e
                               saga <! msg //box (ShardRegion.StartEntity(saga.EntityId))
                               yield saga.TypeName, saga.EntityId ]
@@ -1389,11 +1463,17 @@ module SagaStarter =
                         // dispatcher thread; cover them before answering.
                         ensureThreads (state.Count + 1)
 
-                        match sagaCheck o with
+                        let sagas =
+                            [ for (factory, prefix, e) in sagaCheck o do
+                                  match sagaIdFor originator cid prefix with
+                                  | Some sagaId -> yield factory, sagaId, e
+                                  | None -> () ]
+
+                        match sagas with
                         | [] ->
                             mailbox.Sender() <! SagaCheckDone
                             return! set state
-                        | list -> return! set <| startSaga cid originator list
+                        | sagas -> return! set <| startSaga originator sagas
                     | Command(PruneStale(originName, batchId)) ->
                         match state.TryFind originName with
                         | None -> return! set state
@@ -1473,6 +1553,10 @@ module CommandHandler =
               Cid: string
               Exception: exn }
 
+        /// Internal marker replied to the asker when the subscriber stops before the
+        /// request completes, for example during actor-system shutdown.
+        type internal CommandSubscriptionStopped = CommandSubscriptionStopped of entityId: string * cid: string
+
         // Upper bound for one command subscription: the aggregate's reply event
         // (persist + publish) should arrive in milliseconds; if it never does
         // (decide returned UnhandledEvent/IgnoreEvent, or the filter never
@@ -1504,10 +1588,16 @@ module CommandHandler =
                 let commandTimeout = resolveCommandTimeout mailbox.System.Settings.Config
                 let mutable deadline: ICancelable option = None
                 let mutable commandSent = false
+                let mutable replied = false
 
                 let cancelDeadline () =
                     deadline |> Option.iter (fun timer -> timer.Cancel())
                     deadline <- None
+
+                // Every accepted request gets exactly one reply, including when this actor stops first.
+                let reply (s: State<'Command, 'Event>) (message: obj) =
+                    replied <- true
+                    s.Sender.Tell(message, untyped mailbox.Self)
 
                 let matchesTarget (target: IEntityRef<obj>) =
                     // DistributedPubSub preserves the publishing actor as Sender.
@@ -1584,10 +1674,9 @@ module CommandHandler =
                                     s.CommandDetails.EntityRef.EntityId,
                                     cid)
 
-                                s.Sender.Tell(
-                                    { EntityId = s.CommandDetails.EntityRef.EntityId
-                                      Cid = cid },
-                                    untyped mailbox.Self)
+                                reply s
+                                    (({ EntityId = s.CommandDetails.EntityRef.EntityId
+                                        Cid = cid }: CommandSubscriptionTimeout) :> obj)
                             | None -> ()
 
                             return! Stop
@@ -1600,7 +1689,7 @@ module CommandHandler =
                                           && conflict.AggregateId = s.CommandDetails.EntityRef.EntityId
                                           && matchesTarget s.CommandDetails.EntityRef ->
                                 cancelDeadline ()
-                                s.Sender.Tell(conflict, untyped mailbox.Self)
+                                reply s (conflict :> obj)
                                 return! Stop
                             | _ -> return! set state
                         // A CID can cross aggregate types. Only accept an event
@@ -1614,7 +1703,7 @@ module CommandHandler =
                                 match (try Choice1Of2(s.CommandDetails.Filter e.EventDetails) with ex -> Choice2Of2 ex) with
                                 | Choice1Of2 true ->
                                     cancelDeadline ()
-                                    s.Sender.Tell e // Send event back to original asker
+                                    reply s (e :> obj) // Send event back to original asker
                                     return! Stop // Stop the temporary subscription actor
                                 | Choice1Of2 false -> return! set state // Continue waiting
                                 | Choice2Of2 ex ->
@@ -1635,11 +1724,10 @@ module CommandHandler =
                                         s.CommandDetails.EntityRef.EntityId,
                                         cid)
 
-                                    s.Sender.Tell(
-                                        { EntityId = s.CommandDetails.EntityRef.EntityId
-                                          Cid = cid
-                                          Exception = ex },
-                                        untyped mailbox.Self)
+                                    reply s
+                                        ({ EntityId = s.CommandDetails.EntityRef.EntityId
+                                           Cid = cid
+                                           Exception = ex } :> obj)
 
                                     return! Stop
                             | _ ->
@@ -1648,6 +1736,13 @@ module CommandHandler =
                                 return! set state
                         | LifecycleEvent PostStop ->
                             cancelDeadline ()
+                            // Stopping without a reply, as during actor-system shutdown, must
+                            // still release the caller.
+                            match state with
+                            | Some s when not replied ->
+                                let cid = s.CommandDetails.Cmd.CorrelationId |> ValueLens.Value |> ValueLens.Value
+                                reply s (CommandSubscriptionStopped(s.CommandDetails.EntityRef.EntityId, cid) :> obj)
+                            | _ -> ()
                             return! Ignore
                         | LifecycleEvent _ -> return! Ignore // Ignore actor lifecycle events
                         | _ ->
@@ -1659,9 +1754,49 @@ module CommandHandler =
 
             // Spawn the temporary actor and send it the initial Execute command
             async {
-                let! res = spawnAnonymous system (props (actorProp mediator)) <? box command
+                // The subscriber replies to every request it accepts, even when it stops first.
+                // This bound covers a subscriber that stops before accepting one, such as a
+                // send racing actor-system shutdown.
+                // Ask cancels through CancellationTokenSource.CancelAfter, which rejects a delay
+                // beyond ~49.7 days, so a longer configured timeout is clamped here.
+                let maxBound = TimeSpan.FromMilliseconds(float UInt32.MaxValue - 1.0)
+
+                let bound =
+                    match box system with
+                    | :? ActorSystem as actorSystem -> Some actorSystem.Settings.Config
+                    | :? IActorContext as context -> Some context.System.Settings.Config
+                    | _ -> None
+                    |> Option.map (fun config ->
+                        let bound = resolveCommandTimeout config + TimeSpan.FromSeconds 5.0
+                        if bound > maxBound then maxBound else bound)
+
+                let subscriber = spawnAnonymous system (props (actorProp mediator))
+
+                let! (res: obj) =
+                    async {
+                        try
+                            return! subscriber.Ask(box command, bound)
+                        with :? AskTimeoutException as timeout ->
+                            // Nobody waits for this subscriber any more.
+                            (untyped subscriber).Tell(PoisonPill.Instance)
+                            return
+                                raise (
+                                    TimeoutException(
+                                        "The command subscription did not answer within the command timeout (akka.fcqrs.command-timeout).",
+                                        timeout
+                                    )
+                                )
+                    }
 
                 match box res with
+                | :? CommandSubscriptionStopped as stopped ->
+                    let (CommandSubscriptionStopped(entityId, cid)) = stopped
+                    return
+                        raise (
+                            OperationCanceledException(
+                                $"The command subscription for entity '{entityId}' [cid: {cid}] stopped before a reply arrived, because the actor system shut down or the subscription failed. The command may or may not have been applied."
+                            )
+                        )
                 | :? ConditionalCommandConflict as conflict ->
                     return raise (AggregateVersionConflictException(
                         conflict.AggregateId, conflict.ExpectedVersion, conflict.ActualVersion))

@@ -62,6 +62,7 @@ Keep these distinctions intact in code comments and documentation.
 - It does not serialize different aggregates, projections, databases, or external services.
 - `PersistEvent` stores an event, applies it to state, and publishes it.
 - `DeferEvent` publishes and folds a reply without storing it or changing the persisted version.
+- Only a persisted event starts a saga. A deferred reply, such as a repeated verdict, does not.
 - A fold should leave state unchanged for a deferred rejection or repeated verdict. A state change
   caused only by a deferred event disappears on recovery.
 - A command handler waits for the matching aggregate reply. It does not wait for a read model.

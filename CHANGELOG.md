@@ -1,5 +1,87 @@
 # Changelog
 
+## Unreleased (FCQRS core)
+
+Fixes from a review of the core. Existing journal rows, snapshots, and entity names remain readable.
+
+- **Transactional projections skip Akka's sharding bookkeeping.** Sagas remember their entities
+  through cluster sharding, which journals that bookkeeping under persistence IDs starting with
+  `/sharding/` and deletes its early history after each snapshot. A new or lagging transactional
+  projection treated the deleted history as a gap and stopped. Catch-up now excludes those IDs.
+- **Correlation waiters wake after the events that caused them.** A transactional projection commits
+  persistence IDs in key order, so a saga follow-up that reuses a correlation ID could wake
+  `sendAwaiting` before the originator's own event committed. Correlation-ID subscriptions
+  (`Subscribe(cid, ...)` and `sendAwaiting`) now receive their notifications after the whole snapshot
+  commits, which can add the time the rest of the snapshot takes. Other subscriptions still receive
+  every notification when its event commits, in commit order. Correlation-ID subscriptions are also
+  routed on publication, so other requests' events can no longer evict a waiter's notification.
+- **Deferred events no longer start sagas.** A repeated verdict answered with `DeferEvent` or
+  `persistIf false` started a second saga when it carried a new correlation ID.
+- **A recovered saga keeps its readiness.** Expectation retries and ignored events reinstated
+  handshake flags from before the saga resubscribed, so a repeated start went unanswered and the
+  originator's handshake timeout terminated the process.
+- **Saga recovery checks the identity of its starting event.** `ContinueOrAbort` compared only
+  versions, so after a failed save a saga could continue from an event that was never journaled while
+  another event held that version. An originator recovered from a snapshot with no later events still
+  compares only the version. An abort that answers an outdated recovery check no longer ends a saga
+  that has moved on.
+- **Passivation and shard hand-off wait for saves in flight.** Entities stop through an internal
+  message instead of `PoisonPill`, which bypassed the persistence stash and dropped the reply of a save
+  in flight and the commands queued behind it. This includes a saga's own passivation after
+  `StopSaga` or an abort.
+- **Pending sends are released on shutdown.** A command waiter that stopped before replying left its
+  caller waiting forever. The caller now receives `OperationCanceledException`; the command may or may
+  not have been applied. A waiter that stops before it accepts the command raises `TimeoutException`
+  after the command timeout plus five seconds.
+- **Journal names for unregistered types omit assembly versions.** A node on an older FCQRS release
+  could not bind names written by an upgraded node and terminated during a rolling deployment. This
+  includes the state rows of builder sagas. Readers accept both forms. This release also reads a
+  `saga-wrap` tag, which a later release can write so builder saga state uses registered names.
+- **Failures are logged.** Journal write failures and recovery failures of aggregates and sagas, saga
+  snapshot failures, and repeated journal read failures in `Query.init` are now logged.
+- **A write the journal rejects terminates the process**, as a serialization error already does. In
+  6.6.0 the entity kept running, so its next event skipped the rejected sequence number, and the gap
+  stopped transactional projections. Stopping only the entity would drop the commands queued behind
+  the rejected write. A failed write, such as one during a database outage, still stops only its entity.
+- **`RunAsync` runners start off the aggregate's thread.** Synchronous work before a runner's first
+  asynchronous step no longer blocks its aggregate, and a synchronous exception reaches the documented
+  fail-fast path.
+- `sendAwaiting` no longer leaves its timeout timer running after the notification arrives. Over the
+  C# host's `IProjection`, it now uses the configured command timeout instead of 30 seconds.
+- **A save before the saga starter exists waits for it.** Aggregate regions start before
+  `wireSagaStarters` or the host registers the saga starter, and remembered sagas can wake aggregates
+  in that window. The saga-start check sent there went to dead letters, so the handshake timeout
+  terminated the process. The check now waits for the starter within the same timeout.
+- **A custom saga name must keep the correlation ID.** A saga reads its originator, event topic, and
+  command correlation ID from its own name. A `PrefixConversion` that changed the correlation ID
+  produced a saga that never received its originator's events, so a builder saga stayed in `Started`
+  forever. The saga starter now logs an error and does not start such a saga, or one whose conversion
+  throws. A conversion that adds a prefix ending with `~`, such as `"audit~" + cid`, still works.
+- **A second start of a shared host builder uses only its own saga rules.** Each start of the C# host
+  appended its saga start rules to a list on the builder. A later start, such as a second service
+  provider built from the same service collection, kept the rules bound to the earlier, stopped
+  actor system.
+- **An expectation from a low-level saga's initial state keeps its deadline across restarts.** A saga
+  registered with `InitializeSaga` never persists entry into its initial state, so a `StayExpecting`
+  from that state anchored at arming time and a restart postponed the deadline. It now anchors at the
+  creation time of the journaled starting event.
+- `SagaApi.InitSimple` documents that its typed handler receives `default(TSagaState)` before the
+  first state, so an enum or struct state needs a zero value that means "not started".
+
+### Breaking
+
+- `Actor.Connection.ConnectionString` is a `LongString` instead of a `ShortString`, so connection
+  strings longer than 255 characters are accepted. `Fcqrs.connect`, `ActorApi.Create`, and `AddFcqrs`
+  take a plain string and are source compatible. Code that builds the record directly changes the
+  field's type annotation from `ShortString` to `LongString`.
+
+## Unreleased (FCQRS.Serialization)
+
+- A null reference to a class-based C# union is written as JSON `null` instead of terminating the
+  process.
+- Readers match union case names without assembly versions, so rows written on another .NET or
+  application version resolve. Writers keep the full name until every reader has this change.
+
 ## 6.6.0 (FCQRS core)
 
 - F# applications can declare command-handler records with `FCQRS.FSharp.Handler<'Command, 'Event>`

@@ -244,12 +244,16 @@ type SqlProjectionStore
 
     /// Captures a fixed committed snapshot using one SELECT on a fresh authoritative connection.
     /// Per-persistence-ID targets do not assume global journal ordering follows commit ordering.
+    /// Akka cluster sharding stores its own bookkeeping, such as remembered saga entities, under
+    /// persistence IDs that start with "/sharding/", and deletes their early history after each of
+    /// its snapshots. Those records are not application events, so the snapshot excludes them.
     member internal _.CaptureAsync(ct: CancellationToken) : Task<Map<string, int64>> =
         task {
             use! connection = openConnection journalConnectionFactory validateJournalConnection ct
             use command = connection.CreateCommand()
             command.CommandText <- $"SELECT {persistenceIdSql}, MAX({sequenceNumberSql}) FROM {journalSql} GROUP BY {persistenceIdSql}"
-            return! readPositions command ct
+            let! positions = readPositions command ct
+            return positions |> Map.filter (fun persistenceId _ -> not (persistenceId.StartsWith("/sharding/", StringComparison.Ordinal)))
         }
 
     /// Reads committed progress for a batch. Recheck an individual position under the lock before applying an event.

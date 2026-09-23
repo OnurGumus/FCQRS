@@ -122,13 +122,15 @@ type EventActions =
 
     /// Create a DeferEvent action. The event is published and folded but not
     /// persisted. Rejection and idempotent-reply folds should preserve state,
-    /// because recovery cannot replay a deferred event.
+    /// because recovery cannot replay a deferred event. A deferred event does not
+    /// start a saga; running sagas still receive it.
     static member Defer<'TEvent when 'TEvent: not null>(event: 'TEvent) : EventAction<'TEvent> =
         EventAction.DeferEvent event
 
     /// Persist the event when `shouldPersist` is true; otherwise Defer it - the
     /// event is still published and folded but is not written to the journal or
-    /// sent through a projection. Its fold should preserve the current state.
+    /// sent through a projection, and it does not start a saga. Its fold should
+    /// preserve the current state.
     /// The idempotent "emit this verdict, but only
     /// write it once" shape, e.g. re-approving an already-approved aggregate:
     /// `PersistConditionally(state.Approval != Approved, new Approved(id))`.
@@ -229,7 +231,9 @@ type SagaDefinition() =
     /// `PrefixConversion None` produced saga names without the ~Saga~ marker, which breaks
     /// originator/saga name resolution and the SagaStarter Continue→SagaCheckDone handshake.
     member val PrefixConversion: PrefixConversion = PrefixConversion (Some id) with get, set
-    /// The event to send to start the saga
+    /// The event to send to start the saga. Pass the originator's event unchanged: a saga
+    /// recovered before it leaves Started asks the originator whether this exact event
+    /// (its Id and Version) is the one it journaled, and ends when it is not.
     member val StartingEvent: obj | null = null with get, set
 
 /// C#-friendly factory for PrefixConversion
@@ -237,7 +241,10 @@ type PrefixConversions =
     /// Identity conversion - uses originator prefix with saga suffix
     /// This creates saga IDs like: originatorId~Saga~correlationId
     static member Identity = PrefixConversion (Some id)
-    /// Custom conversion function
+    /// Custom conversion of the correlation id part of the saga name: originatorId~Saga~f(correlationId).
+    /// The saga reads its correlation id from the end of its name, so `f` must return the correlation id,
+    /// optionally after a prefix that ends with `~`, for example `cid => "audit~" + cid`. The saga starter
+    /// logs an error and does not start the saga when `f` changes or drops the correlation id, or throws.
     static member Custom(f: Func<string, string>) = PrefixConversion (Some f.Invoke)
 
 /// C#-friendly Actor API
@@ -251,7 +258,7 @@ type ActorApi =
         clusterName: string,
         databaseType: Actor.DBType) : IActor =
         let connection : Actor.Connection =
-            { ConnectionString = Values.CreateShortString connectionString; DBType = databaseType }
+            { ConnectionString = Values.CreateLongString connectionString; DBType = databaseType }
         Actor.api configuration loggerFactory (Some connection) (Values.CreateShortString clusterName)
 
     /// Create the actor system with SQLite connection
@@ -867,6 +874,11 @@ type SagaApi =
     /// ToSelf/ToSelfAfter payloads and other aggregates' reply events cannot reach it
     /// (they are logged and ignored) — sagas needing timeouts or multi-aggregate
     /// orchestration must use the obj-based Init overloads.
+    /// Before the saga's first state, handleEvent receives default(TSagaState): null for a
+    /// class, and the zero value for an enum or struct. The handler cannot tell that value
+    /// apart from a state equal to it, so the zero value of an enum or struct state must mean
+    /// "not started". Saga&lt;TEvent, TData, TState&gt; and the obj-based Init overloads pass an
+    /// option instead.
     static member InitSimple<'TEvent, 'TSagaData, 'TSagaState when 'TSagaState : not null and 'TEvent : not null>(
         actorApi: IActor,
         sagaData: 'TSagaData,
@@ -909,9 +921,11 @@ type SagaApi =
             apply, originatorFactory, sagaName)
 
     /// Initialize a saga with simplified signatures and no apply.
-    /// Same limitation as the other InitSimple overload: only the originator's
+    /// Same limitations as the other InitSimple overload: only the originator's
     /// Event&lt;'TEvent&gt; reaches the typed handler; ToSelf timeouts and other
-    /// aggregates' replies require the obj-based Init overloads.
+    /// aggregates' replies require the obj-based Init overloads. Before the first
+    /// state, the handler receives default(TSagaState), so the zero value of an enum
+    /// or struct state must mean "not started".
     static member InitSimple<'TEvent, 'TSagaData, 'TSagaState when 'TSagaState : not null and 'TEvent : not null>(
         actorApi: IActor,
         sagaData: 'TSagaData,

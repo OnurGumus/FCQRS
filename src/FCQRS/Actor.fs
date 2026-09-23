@@ -46,6 +46,7 @@ module internal Internal =
         (snapshotEvery: int64 option)
         (manualSnapshotRequested: bool ref)
         (journaledStateRef: 'TState ref)
+        (lastJournaledIdRef: FCQRS.Model.Data.MessageId option ref)
         (sagaStartTimeout: TimeSpan)
         (logger: ILogger)
         (flowLogger: ILogger)
@@ -106,23 +107,66 @@ module internal Internal =
                 else
                     msg
 
+            let eventName (event: obj | null) =
+                match event with
+                | null -> "null"
+                | event -> event.GetType().Name
+
             match msg with
+            | PersistentLifecycleEvent(PersistFailed(error, event, sequenceNr)) ->
+                // Akka stops the entity after this callback; its next command recovers it from the journal.
+                logger.LogError(
+                    error,
+                    "Aggregate {Aggregate} could not persist {Event} at sequence {SequenceNr}; the entity stops.",
+                    mailbox.Self.Path.ToString(), eventName event, sequenceNr)
+                return! state |> set
+            | PersistentLifecycleEvent(PersistRejected(error, event, sequenceNr)) ->
+                // The journal refused the event. Akka keeps the entity running with this sequence
+                // number used, so its next event would leave a journal gap that stops transactional
+                // projections. Stopping the entity would drop the commands queued behind the write.
+                // Crash instead, as a serialization error does.
+                logger.LogError(
+                    error,
+                    "The journal rejected {Event} at sequence {SequenceNr} for aggregate {Aggregate}. Terminating the process.",
+                    eventName event, sequenceNr, mailbox.Self.Path.ToString())
+                fatalFailFast null "Process terminated because the journal rejected an event" error
+                return! state |> set
+            | PersistentLifecycleEvent(ReplayFailed(error, _)) ->
+                // Akka stops the entity after this callback.
+                logger.LogError(error, "Aggregate {Aggregate} could not recover from the journal; the entity stops.", mailbox.Self.Path.ToString())
+                return! state |> set
             | PersistentLifecycleEvent _
             | :? Persistence.SaveSnapshotSuccess
             | LifecycleEvent _ -> return! state |> set
+
+            // Passivation or shard hand-off. As an ordinary message it waits for any save
+            // in flight, unlike PoisonPill.
+            | :? FCQRS.Common.StopEntity -> return! Stop
 
             | SnapshotOffer(snapState: obj) ->
                 let snap = snapState |> unbox<State<'TState>>
                 // The snapshot holds journal-only state by construction; resume
                 // the mirror from it before replay continues.
                 journaledStateRef.Value <- snap.State
+                // The snapshot does not record which event holds its version.
+                lastJournaledIdRef.Value <- None
                 return! snap |> set
             | :? Command<ContinueOrAbort<'TEvent>> as (cmd) ->
                 let (ContinueOrAbort(e: Event<'TEvent>)) = cmd.CommandDetails
                 let currentVersion = state.Version |> ValueLens.Value
                 let eventVersion = e.Version |> ValueLens.Value
 
-                if currentVersion = eventVersion then
+                // The saga's starting event must be the event journaled at that version. After a
+                // failed save, a different event can hold the same version; continuing would
+                // start the workflow from an event that was never journaled. After recovery
+                // from a snapshot with no later events the identity is unknown, so only the
+                // version is compared.
+                let sameEvent =
+                    match lastJournaledIdRef.Value with
+                    | Some id -> id = e.Id
+                    | None -> true
+
+                if currentVersion = eventVersion && sameEvent then
                     publishEvent true e
                     return! state |> set
                 else
@@ -240,6 +284,7 @@ module internal Internal =
                 // and reappear on recovery.
                 let journaledState = applyChecked event journaledStateRef.Value
                 journaledStateRef.Value <- journaledState
+                lastJournaledIdRef.Value <- Some event.Id
                 publishEvent true event
 
                 match activity with
@@ -269,6 +314,7 @@ module internal Internal =
                 let state = applyChecked event state.State
                 // Replay is journal-only by construction: keep the mirror in step.
                 journaledStateRef.Value <- applyChecked event journaledStateRef.Value
+                lastJournaledIdRef.Value <- Some event.Id
 
                 let newState =
                     {   Version = event.Version
@@ -324,7 +370,10 @@ module internal Internal =
                 return! boxedEvents |> Seq.ofList |> PersistAll
 
             | DeferEvent event ->
-                return! seq { event |> toEvent state.Version |> bodyInput.SendToSagaStarter } |> Defer
+                // A deferred event is not journaled, so it does not start sagas. Saga recovery
+                // checks the originator's journaled version, and a repeated verdict answered with
+                // a deferred event would otherwise start a duplicate workflow.
+                return! seq { event |> toEvent state.Version |> box |> Unchecked.nonNull } |> Defer
             | PublishEvent event ->
                 event |> bodyInput.PublishEvent |> ignore
                 return set state
@@ -402,6 +451,8 @@ module internal Internal =
         // change captured by a snapshot would reappear on recovery even though a
         // deferred change is supposed to disappear on recovery.
         let journaledStateRef = ref initialState
+        // The ID of the event journaled at the current version, for ContinueOrAbort.
+        let lastJournaledIdRef: FCQRS.Model.Data.MessageId option ref = ref None
 
         let rec set (state: State<'State>) =
             let body (bodyInput: BodyInput<'Event>) =
@@ -555,7 +606,15 @@ module internal Internal =
                                     | act -> act.Dispose()
 
                                 Async.StartWithContinuations(
-                                    run description,
+                                    // StartWithContinuations runs synchronously until the first
+                                    // asynchronous step. Leave the aggregate's thread first, and
+                                    // create the runner's work inside the async, so its synchronous
+                                    // part cannot block the mailbox and its exceptions reach the
+                                    // documented fail-fast continuation below.
+                                    async {
+                                        do! Async.SwitchToThreadPool()
+                                        return! run description
+                                    },
                                     (fun (boxedCommand: obj) ->
                                         disposeActivity ()
                                         // Conditional continuations retain their request ID and
@@ -598,7 +657,7 @@ module internal Internal =
                         return Unhandled
                 }
 
-            runActor snapshotEvery manualSnapshotRequested journaledStateRef sagaStartTimeout logger flowLogger mailbox mediator set state (apply: Event<_> -> 'State -> 'State) body
+            runActor snapshotEvery manualSnapshotRequested journaledStateRef lastJournaledIdRef sagaStartTimeout logger flowLogger mailbox mediator set state (apply: Event<_> -> 'State -> 'State) body
 
         let initialState =
             { 
@@ -736,9 +795,11 @@ type DBType =
     /// IBM DB2
     | DB2
 
-/// Represents a database connection configuration
+/// Represents a database connection configuration.
+/// The connection string is a `LongString`: provider connection strings with TLS, pooling and
+/// timeout settings often exceed the 255 characters a `ShortString` allows.
 type Connection =
-    { ConnectionString: Model.Data.ShortString
+    { ConnectionString: Model.Data.LongString
       DBType: DBType }
 
 let api (config: IConfiguration) (loggerFactory: ILoggerFactory) (connection: Connection option) (clusterName: Model.Data.ShortString) =

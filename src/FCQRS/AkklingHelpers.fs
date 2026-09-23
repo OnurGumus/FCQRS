@@ -135,7 +135,9 @@ module Internal =
                 name,
                 adjustedProps.ToProps(),
                 shardSettings,
-                new TypedMessageExtractor<_, _>(EntityRefs.entityRefExtractor, shardResolver)
+                new TypedMessageExtractor<_, _>(EntityRefs.entityRefExtractor, shardResolver),
+                clusterSharding.DefaultShardAllocationStrategy(shardSettings),
+                FCQRS.Common.StopEntity :> obj
             )
 
         { 

@@ -52,8 +52,10 @@ type ISubscribe<'TDataEvent when 'TDataEvent :> IMessageWithCID> =
     /// after that count is reached; cancellation or disposal before then cancels it.
     /// </summary>
     /// <param name="filter">
-    /// Predicate function to determine if an event should be processed, e.g.
-    /// <c>fun event -> event.CorrelationId = targetId</c>.
+    /// Predicate function to determine if an event should be processed. To wait for a
+    /// correlation ID, use the <c>Subscribe(cid, take)</c> overload instead: it is routed by
+    /// correlation ID, and a transactional projection delivers to it only after the events
+    /// that caused the notification are committed.
     /// </param>
     /// <param name="take">Maximum number of events to process.</param>
     /// <param name="callback">
@@ -62,13 +64,11 @@ type ISubscribe<'TDataEvent when 'TDataEvent :> IMessageWithCID> =
     /// <param name="cancellationToken">An optional cancellation token to cancel the subscription.</param>
     /// <example>
     /// <code lang="fsharp">
-    /// // Typical usage: subscribe for a filtered event by matching on CorrelationId,
-    /// // process only one event, and omit the callback and cancellation token.
+    /// // Wait for the first notification that matches a predicate. The callback and
+    /// // cancellation token are optional.
     /// async {
-    ///     let targetId = some-correlation-id
-    ///     // Here, take is set to 1 and no callback or cancellation token is provided.
-    ///     let! subscription = query.Subscribe((fun event -> event.CorrelationId = targetId), 1)
-    ///     // Use the asynchronous subscription as needed.
+    ///     use subscription = query.Subscribe((fun event -> isPublication event), 1)
+    ///     do! subscription.Task |> Async.AwaitTask
     /// } |> Async.Start
     /// </code>
     /// </example>
@@ -259,23 +259,52 @@ module internal Internal =
     /// Synchronous registration closes the subscribe-before-send race: publishing
     /// after Subscribe returns always sees the new subscriber. Queue workers may
     /// start later without losing the notifications already addressed to them.
+    /// Correlation-ID subscribers are routed by CID when an event is published, so
+    /// unrelated events never enter, or evict notifications from, their bounded queues.
     type NotificationHub<'TDataEvent when 'TDataEvent :> IMessageWithCID>
         (bufferSize: int, logger: ILogger, notificationTimeout: TimeSpan) =
         let gate = obj ()
         let subscribers = Dictionary<int64, NotificationSubscription<'TDataEvent>>()
+        let byCid = Dictionary<CID, Dictionary<int64, NotificationSubscription<'TDataEvent>>>()
         let mutable nextId = 0L
         let mutable stopped = false
 
-        member private _.Subscribe(filter, take, callback, token) =
+        // Custom notifications can carry a null CID; Dictionary rejects a null key.
+        let waitersOf (cid: CID) =
+            if isNull (box cid) then None
+            else
+                match byCid.TryGetValue cid with
+                | true, group -> Some group
+                | _ -> None
+
+        member private _.Subscribe(cid: CID option, filter, take, callback, token) =
             take |> Option.iter (fun count -> if count < 0 then invalidArg "take" "The event count must not be negative.")
             let subscriber =
                 lock gate (fun () ->
                     if stopped then invalidOp "The projection notification subscription has stopped."
                     nextId <- nextId + 1L
                     let id = nextId
-                    let remove () = lock gate (fun () -> subscribers.Remove id |> ignore)
+                    let group =
+                        match cid with
+                        | None -> subscribers
+                        | Some cid ->
+                            match byCid.TryGetValue cid with
+                            | true, group -> group
+                            | _ ->
+                                let group = Dictionary<int64, NotificationSubscription<'TDataEvent>>()
+                                byCid.Add(cid, group)
+                                group
+                    let remove () =
+                        lock gate (fun () ->
+                            group.Remove id |> ignore
+                            match cid with
+                            | Some cid when group.Count = 0 ->
+                                match byCid.TryGetValue cid with
+                                | true, current when obj.ReferenceEquals(current, group) -> byCid.Remove cid |> ignore
+                                | _ -> ()
+                            | _ -> ())
                     let subscriber = new NotificationSubscription<'TDataEvent>(bufferSize, filter, take, callback, token, remove, logger)
-                    subscribers.Add(id, subscriber)
+                    group.Add(id, subscriber)
                     subscriber)
             subscriber.Start()
             subscriber :> IAwaitableDisposable
@@ -283,29 +312,52 @@ module internal Internal =
         member _.Publish(evt: 'TDataEvent) =
             lock gate (fun () ->
                 for subscriber in subscribers.Values do
-                    subscriber.Publish evt)
+                    subscriber.Publish evt
+                match waitersOf (evt :> IMessageWithCID).CID with
+                | Some group ->
+                    for subscriber in group.Values do
+                        subscriber.Publish evt
+                | None -> ())
+
+        /// Publishes to the subscribers without a correlation ID now and returns the
+        /// delivery to the correlation-ID subscribers waiting for this event at this
+        /// moment, or None. The caller runs the delivery once the event's causes are
+        /// readable. A subscriber that finishes in between receives nothing.
+        member _.PublishExceptWaiters(evt: 'TDataEvent) : (unit -> unit) option =
+            lock gate (fun () ->
+                for subscriber in subscribers.Values do
+                    subscriber.Publish evt
+                match waitersOf (evt :> IMessageWithCID).CID with
+                | Some group ->
+                    let waiters = Array.ofSeq group.Values
+                    Some(fun () -> for waiter in waiters do waiter.Publish evt)
+                | None -> None)
 
         member _.Stop() =
             let active =
                 lock gate (fun () ->
                     stopped <- true
-                    let active = subscribers.Values |> Seq.toArray
+                    let active =
+                        [| yield! subscribers.Values
+                           for group in byCid.Values do
+                               yield! group.Values |]
                     subscribers.Clear()
+                    byCid.Clear()
                     active)
             for subscriber in active do subscriber.Cancel()
 
         interface ISubscribe<'TDataEvent> with
             member this.Subscribe(callback, ?cancellationToken) =
-                this.Subscribe((fun _ -> true), None, callback, defaultArg cancellationToken CancellationToken.None) :> IDisposable
+                this.Subscribe(None, (fun _ -> true), None, callback, defaultArg cancellationToken CancellationToken.None) :> IDisposable
 
             member this.Subscribe(filter: 'TDataEvent -> bool, take: int, ?callback, ?cancellationToken) =
-                this.Subscribe(filter, Some take, defaultArg callback ignore, defaultArg cancellationToken CancellationToken.None)
+                this.Subscribe(None, filter, Some take, defaultArg callback ignore, defaultArg cancellationToken CancellationToken.None)
 
             member this.Subscribe(cid: CID, take: int, ?callback, ?cancellationToken) =
-                (this :> ISubscribe<'TDataEvent>).Subscribe((fun e -> e.CID = cid), take, ?callback = callback, ?cancellationToken = cancellationToken)
+                this.Subscribe(Some cid, (fun e -> e.CID = cid), Some take, defaultArg callback ignore, defaultArg cancellationToken CancellationToken.None)
 
             member this.Subscribe(cid: CID, filter: 'TDataEvent -> bool, take: int, ?callback, ?cancellationToken) =
-                (this :> ISubscribe<'TDataEvent>).Subscribe((fun e -> e.CID = cid && filter e), take, ?callback = callback, ?cancellationToken = cancellationToken)
+                this.Subscribe(Some cid, (fun e -> e.CID = cid && filter e), Some take, defaultArg callback ignore, defaultArg cancellationToken CancellationToken.None)
 
         interface IHasNotificationTimeout with
             member _.Timeout = notificationTimeout
@@ -344,7 +396,17 @@ let init<'TDataEvent, 'TPredicate, 't when 'TDataEvent :> IMessageWithCID> (acto
 
     let source =
         RestartSource.WithBackoff(
-            (fun () -> (readJournal actorApi.System).AllEvents(Offset.Sequence lastProcessedOffset)),
+            (fun () ->
+                (readJournal actorApi.System)
+                    .AllEvents(Offset.Sequence lastProcessedOffset)
+                    // Akka reports restarts only through its own logging, which FCQRS turns off,
+                    // so a journal that keeps failing would otherwise freeze the read model silently.
+                    .SelectError(fun error ->
+                        logger.LogError(
+                            error,
+                            "Query projection could not read the journal after offset {Offset}; retrying with backoff.",
+                            lastProcessedOffset)
+                        error)),
             restartSettings)
 
     source

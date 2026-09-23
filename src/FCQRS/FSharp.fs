@@ -192,11 +192,13 @@ let journalType<'T> (name: string) : System.Type * string = typeof<'T>, name
 let persist (event: 'e) : EventAction<'e> = PersistEvent event
 let persistAll (events: 'e list) : EventAction<'e> = PersistAllEvents events
 let persistAndSnapshot (event: 'e) : EventAction<'e> = PersistAndSnapshot event
+/// Publish and fold the event without journaling it. A deferred event does not
+/// start a saga; running sagas still receive it.
 let defer (event: 'e) : EventAction<'e> = DeferEvent event
 /// Persist the event when `shouldPersist`, else defer it (published and folded
 /// but not journalled). The deferred fold should preserve state, because it
-/// cannot be replayed. This is the idempotent "emit this verdict, write it only
-/// once" shape.
+/// cannot be replayed, and the deferred event does not start a saga. This is the
+/// idempotent "emit this verdict, write it only once" shape.
 let persistIf (shouldPersist: bool) (event: 'e) : EventAction<'e> =
     if shouldPersist then PersistEvent event else DeferEvent event
 let transitionTo (state: 'state) : EventAction<'state> = StateChangedEvent state
@@ -239,9 +241,9 @@ module Fcqrs =
     let private refFor (fac: EntityFac<obj>) : AggregateFactory =
         fun entityId -> fac.RefFor DEFAULT_SHARD entityId
 
-    /// Build a SQLite/etc. Connection from a raw connection string (ShortString hidden).
+    /// Build a SQLite/etc. Connection from a raw connection string of any length.
     let connect (dbType: FCQRS.Actor.DBType) (connectionString: string) : FCQRS.Actor.Connection =
-        { ConnectionString = short connectionString; DBType = dbType }
+        { ConnectionString = connectionString |> ValueLens.TryCreate |> Result.value; DBType = dbType }
 
     /// Create the actor system from plain values (cluster name as a string).
     let actor (config: IConfiguration) (loggerFactory: ILoggerFactory) (connection: FCQRS.Actor.Connection option) (clusterName: string) : IActor =
@@ -439,7 +441,7 @@ module Fcqrs =
                     | :? FCQRS.Query.IHasNotificationTimeout as t -> t.Timeout
                     | _ -> System.TimeSpan.FromSeconds 30.0
 
-                // Task.Delay throws beyond ~49.7 days (uint.MaxValue-1 ms); an
+                // WaitAsync throws beyond ~49.7 days (uint.MaxValue-1 ms); an
                 // absurdly large configured command-timeout must still bound the
                 // wait, not detonate the call with an argument exception.
                 let maxDelay =
@@ -447,16 +449,23 @@ module Fcqrs =
 
                 let timeout = if timeout > maxDelay then maxDelay else timeout
 
-                let! winner =
-                    System.Threading.Tasks.Task.WhenAny(awaiter.Task, System.Threading.Tasks.Task.Delay timeout)
+                // WaitAsync removes its timer as soon as the subscription completes. Wait for either
+                // outcome without throwing, then inspect the subscription itself. Reading Exception
+                // observes a timeout or fault, which would otherwise surface as UnobservedTaskException.
+                do!
+                    awaiter.Task
+                        .WaitAsync(timeout)
+                        .ContinueWith(
+                            (fun (waited: System.Threading.Tasks.Task) -> waited.Exception |> ignore),
+                            System.Threading.Tasks.TaskScheduler.Default)
                     |> Async.AwaitTask
 
-                if obj.ReferenceEquals(winner, awaiter.Task) then
-                    // Await the winner so a FAULTED subscription surfaces its
-                    // exception rather than passing for a notification.
-                    do! awaiter.Task |> Async.AwaitTask |> Async.Ignore
+                if awaiter.Task.IsCompleted then
+                    // Await it so a FAULTED subscription surfaces its exception rather than
+                    // passing for a notification.
+                    do! awaiter.Task |> Async.AwaitTask
 
-                    // ... and a subscription that merely ENDED must not pass either.
+                    // A subscription that merely ENDED must not pass either.
                     if not notified then
                         raise (
                             System.InvalidOperationException(

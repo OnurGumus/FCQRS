@@ -78,8 +78,10 @@ type FcqrsRuntime(actor: IActor) =
 type FcqrsBuilder internal (services: IServiceCollection, connectionString: string, clusterName: string) =
     let upcasters = FCQRS.EventUpcasting.Internal.Registry()
     let aggregateSteps = ResizeArray<IServiceProvider -> IActor -> FcqrsRuntime -> unit>()
-    let sagaSteps = ResizeArray<IServiceProvider -> IActor -> FcqrsRuntime -> unit>()
-    let sagaStarters = ResizeArray<obj -> AggregateFactory option>()
+    // Each saga step registers its saga with the actor system it is given and returns
+    // that system's start rule. StartAsync collects the rules for its own run: a
+    // builder-wide list would keep rules bound to an earlier, stopped actor system.
+    let sagaSteps = ResizeArray<IServiceProvider -> IActor -> FcqrsRuntime -> (obj -> AggregateFactory option)>()
     let mutable projectionStep: (IServiceProvider -> IActor -> FCQRS.Query.ISubscribe) option = None
     // Builder-level snapshot default: what an entity's SnapshotPolicy.Default
     // resolves to. Itself Default => fall through to the config key / 30.
@@ -139,7 +141,7 @@ type FcqrsBuilder internal (services: IServiceCollection, connectionString: stri
         this
 
     /// Register stable journal names for payload types: manifests become
-    /// "fcqrs:ev(doc.event)" instead of CLR AssemblyQualifiedNames, so types can
+    /// "fcqrs:ev(doc.event)" instead of CLR type names, so types can
     /// be renamed/moved freely (update the mapping; old rows keep reading).
     member this.WithJournalTypes(configure: Action<JournalTypeMapBuilder>) : FcqrsBuilder =
         configure.Invoke(JournalTypeMapBuilder())
@@ -200,7 +202,6 @@ type FcqrsBuilder internal (services: IServiceCollection, connectionString: stri
     member internal _.ClusterName = clusterName
     member internal _.AggregateSteps = aggregateSteps
     member internal _.SagaSteps = sagaSteps
-    member internal _.SagaStarters = sagaStarters
     member internal _.ProjectionStep = projectionStep
 
     /// Register an aggregate. The shard is constructed via DI (ctor args resolved
@@ -285,7 +286,7 @@ type FcqrsBuilder internal (services: IServiceCollection, connectionString: stri
         sagaSteps.Add(fun sp actor _runtime ->
             let saga = create.Invoke sp
             let sagaFactory = saga.Factory(actor, this.EffectiveSnapshotPolicy saga.SnapshotPolicy)
-            sagaStarters.Add(fun evt -> if startOn.Invoke evt then Some sagaFactory else None))
+            fun evt -> if startOn.Invoke evt then Some sagaFactory else None)
         this
 
     // Sets the projection step exactly once: a second AddProjection call would
@@ -382,7 +383,14 @@ type FcqrsBuilder internal (services: IServiceCollection, connectionString: stri
                 member _.Subscribe(callback, ?cancellationToken) = subs.Subscribe(callback, ?cancellationToken = cancellationToken)
                 member _.Subscribe(filter: IMessageWithCID -> bool, take, ?callback, ?cancellationToken) = subs.Subscribe(filter, take, ?callback = callback, ?cancellationToken = cancellationToken)
                 member _.Subscribe(cid: CID, take, ?callback, ?cancellationToken) = subs.Subscribe(cid, take, ?callback = callback, ?cancellationToken = cancellationToken)
-                member _.Subscribe(cid: CID, filter: IMessageWithCID -> bool, take, ?callback, ?cancellationToken) = subs.Subscribe(cid, filter, take, ?callback = callback, ?cancellationToken = cancellationToken) })
+                member _.Subscribe(cid: CID, filter: IMessageWithCID -> bool, take, ?callback, ?cancellationToken) = subs.Subscribe(cid, filter, take, ?callback = callback, ?cancellationToken = cancellationToken)
+
+              // sendAwaiting reads the command timeout from here; without it the wait falls back to 30 s.
+              interface FCQRS.Query.IHasNotificationTimeout with
+                  member _.Timeout =
+                      match box subs with
+                      | :? FCQRS.Query.IHasNotificationTimeout as t -> t.Timeout
+                      | _ -> TimeSpan.FromSeconds 30.0 })
         |> ignore
         this
 
@@ -398,16 +406,15 @@ type internal FcqrsHostedService(sp: IServiceProvider, builder: FcqrsBuilder, ru
             for step in builder.AggregateSteps do
                 step sp actor runtime
 
-            // Then sagas (each records its start-trigger).
-            for step in builder.SagaSteps do
-                step sp actor runtime
+            // Then sagas (each returns its start-trigger for this actor system).
+            let sagaStarters = [ for step in builder.SagaSteps -> step sp actor runtime ]
 
             // One saga-starter over all registered sagas (or empty if none).
-            if builder.SagaStarters.Count > 0 then
+            if not sagaStarters.IsEmpty then
                 let combined =
                     Func<obj, IList<AggregateFactory>>(fun evt ->
                         let result = List<AggregateFactory>()
-                        for starter in builder.SagaStarters do
+                        for starter in sagaStarters do
                             match starter evt with
                             | Some f -> result.Add f
                             | None -> ()

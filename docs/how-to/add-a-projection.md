@@ -175,6 +175,11 @@ registration on this page, FCQRS terminates the process when a handler fails so 
 silently while the host appears healthy. The process supervisor can restart it from the last committed
 offset after the storage problem or handler bug is corrected.
 
+A failure to read the journal itself is handled differently: FCQRS logs the error and retries the read
+with a backoff that starts at 1 second and grows to 30 seconds, plus up to 20 percent random delay.
+It resumes after the last handled offset. Monitor that error log; the read model stays behind until
+the journal is readable again.
+
 A projection writing to several stores cannot use one local transaction for all updates. Make each
 destination idempotent and record enough progress to retry safely.
 

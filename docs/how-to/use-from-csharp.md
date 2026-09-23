@@ -162,9 +162,11 @@ and `offset` in the same transaction. On the next start, pass the committed offs
 
 Registration adds a typed `Handler<DocumentCommand, DocumentEvent>` to dependency injection. The
 handler waits for the matching aggregate reply. It does not by itself wait for a projection. If no
-matching reply arrives within `akka.fcqrs.command-timeout` (default 30s) — for example because the
-aggregate decided `UnhandledEvent` or the filter never matches — the handler raises
-`TimeoutException` instead of waiting forever.
+matching reply arrives within `akka.fcqrs.command-timeout` (default 30s), for example because the
+aggregate decided `UnhandledEvent` or the filter never matches, the handler raises
+`TimeoutException` instead of waiting forever. If the actor system stops while the handler waits, the
+handler raises `OperationCanceledException`. In both cases the command may or may not have been
+applied.
 
 Handlers are keyed by command/event type pair. Two aggregates sharing the same `TCommand`/`TEvent`
 pair make the plain registration ambiguous; resolving it then throws with guidance. Resolve the

@@ -105,6 +105,12 @@ Complete C# builder registrations before building or resolving the host. The bui
 freezes when dependency injection first resolves `IActor`, and the builder installs its conversions
 before any registered consumer starts.
 
+A payload without a stable name is stored under its CLR type name, without an assembly version, so
+nodes on different FCQRS releases can read it during a rolling upgrade. Renaming or moving such a type
+breaks its existing rows. The state rows and snapshots of sagas built with `Fcqrs.saga` or the C# saga
+builder still use CLR names that include the saga's state type and its originator's event type, even
+when those types have stable names. Keep those types in place while such sagas can recover.
+
 Stable journal names use the existing process-wide registry. Upcasters are scoped to one actor
 system; configuring another actor system does not add conversions to this one. The actor system's
 conversion registry freezes when the first aggregate, saga, or projection initializes, so complete

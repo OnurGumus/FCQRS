@@ -90,6 +90,113 @@ let private hostedConstructorInjection =
             for path in [ database; database + "-wal"; database + "-shm" ] do
                 if File.Exists path then File.Delete path
 
+type RenewalAggregate() =
+    inherit Aggregate<int, int, int>()
+    override _.InitialState = 0
+    override _.EntityName = "HostedRenewal"
+    override _.HandleCommand(command, state) = PersistEvent(state + command.CommandDetails)
+    override _.ApplyEvent(event, _) = event.EventDetails
+
+type RenewalSaga(originator: AggregateFactory) =
+    inherit Saga<int, int, string>()
+    override _.InitialData = 0
+    override _.SagaName = "HostedRenewalSaga"
+    override _.Originator = originator
+    override _.HandleEvent(event, state) =
+        match event, state.State with
+        | :? Event<int>, None -> Saga<int, int, string>.StateChanged "renewed"
+        | _ -> Saga<int, int, string>.Unhandled()
+    override _.ApplySideEffects(_, _) =
+        SagaSideEffectResult<string>(Transition = Saga<int, int, string>.StopSaga())
+
+let private repeatedStart =
+    testCase "hosting: each start of a shared builder uses only its own saga rules"
+    <| fun _ ->
+        let database = Path.Combine(Path.GetTempPath(), $"fcqrs-repeated-start-{Guid.NewGuid():N}.db")
+        let ruleChecks = ref 0
+        let services = ServiceCollection()
+        services.AddSingleton<Microsoft.Extensions.Configuration.IConfiguration>(
+            Microsoft.Extensions.Configuration.ConfigurationBuilder().Build())
+        |> ignore
+        services.AddLogging() |> ignore
+        services
+            .AddFcqrs($"Data Source={database};", "RepeatedStart")
+            .AddAggregate<RenewalAggregate, int, int, int>()
+            .AddSaga<RenewalSaga, int, int, string>(
+                Func<IServiceProvider, RenewalSaga>(fun sp -> RenewalSaga(sp.AggregateFactory<RenewalAggregate>())),
+                Func<obj, bool>(fun event ->
+                    Interlocked.Increment(&ruleChecks.contents) |> ignore
+                    event :? Event<int>))
+        |> ignore
+
+        // Two providers built from one service collection share the FcqrsBuilder.
+        let run () =
+            use provider = services.BuildServiceProvider()
+            let hosted = provider.GetServices<IHostedService>() |> Seq.toList
+            for service in hosted do
+                service.StartAsync(CancellationToken.None).GetAwaiter().GetResult()
+            try
+                ruleChecks.Value <- 0
+                let handler = provider.GetRequiredService<Handler<int, int>>()
+                let reply =
+                    handler
+                        .Invoke(Func<int, bool>(fun _ -> true), Values.NewCID(), Values.CreateAggregateId "renewal", 1)
+                        .WaitAsync(TimeSpan.FromSeconds 20.0)
+                        .GetAwaiter()
+                        .GetResult()
+                Expect.isGreaterThan reply.EventDetails 0 "the renewal was journaled"
+                ruleChecks.Value
+            finally
+                for service in hosted do
+                    service.StopAsync(CancellationToken.None).GetAwaiter().GetResult()
+
+        try
+            Expect.equal (run ()) 1 "the first start checks the saga rule once per event"
+            Expect.equal (run ()) 1 "a second start does not keep the stopped system's saga rule"
+        finally
+            for path in [ database; database + "-wal"; database + "-shm" ] do
+                if File.Exists path then File.Delete path
+
+type LedgerCommand = Record
+type LedgerEvent = Recorded
+
+// FCQRS.FSharp's Aggregate record would shadow the C# Aggregate class used above.
+module private LongConnection =
+    open FCQRS.FSharp
+
+    let test =
+        testCase "hosting: a connection string longer than 255 characters starts the actor system"
+        <| fun _ ->
+            let database = Path.Combine(Path.GetTempPath(), $"fcqrs-long-connection-{Guid.NewGuid():N}.db")
+            // Provider settings such as TLS, pooling and timeouts make production strings this long.
+            let connectionString = $"Data Source={database};" + String.replicate 15 "Default Timeout=30;"
+            Expect.isGreaterThan connectionString.Length 255 "the connection string exceeds a ShortString"
+            let configuration = Microsoft.Extensions.Configuration.ConfigurationBuilder().Build()
+            let loggers = Microsoft.Extensions.Logging.Abstractions.NullLoggerFactory.Instance
+            let api =
+                Fcqrs.actor configuration loggers
+                    (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite connectionString)) "LongConnection"
+            try
+                let ledger =
+                    Fcqrs.aggregate api
+                        { Name = "Ledger"
+                          Initial = 0
+                          Decide = fun (_: Command<LedgerCommand>) _ -> PersistEvent Recorded
+                          Fold = fun (_: Event<LedgerEvent>) state -> state + 1
+                          Snapshots = NoSnapshots
+                          Passivation = PassivationPolicy.Default }
+                Fcqrs.wireSagaStarters api []
+                let reply =
+                    Async.RunSynchronously(
+                        ledger.Send (Fcqrs.newCid ()) (Fcqrs.aggregateId "ledger") Record (fun _ -> true), 20000)
+                Expect.equal reply.EventDetails Recorded "the journal accepts writes over the long connection string"
+                let csharpApi = ActorApi.Create(configuration, loggers, connectionString, "LongConnectionCSharp")
+                csharpApi.Stop().Wait(TimeSpan.FromSeconds 30.0) |> ignore
+            finally
+                api.Stop().Wait(TimeSpan.FromSeconds 30.0) |> ignore
+                for path in [ database; database + "-wal"; database + "-shm" ] do
+                    if File.Exists path then File.Delete path
+
 type RegistryLeft = { Left: int }
 type RegistryRight = { Right: string }
 type RegistryRejected = { Rejected: bool }
@@ -132,7 +239,9 @@ let private concurrentRegistry =
         let recovered = serializer.FromBinary(bytes, manifest)
         Expect.equal (recovered.GetType()) (winner.GetType()) "the same manifest reads its writer's type"
         Expect.equal (serializer.FromBinary(bytes, "fcqrs:" + winningAliases[0])) winner "winning aliases recover the payload"
-        Expect.equal (serializer.Manifest loser) (loser.GetType().AssemblyQualifiedName |> string) "the losing type acquired no writer mapping"
+        // Unmapped types fall back to their CLR name without an assembly version.
+        let loserType = loser.GetType()
+        Expect.equal (serializer.Manifest loser) $"{loserType.FullName}, {loserType.Assembly.GetName().Name}" "the losing type acquired no writer mapping"
 
         // A conflict at the end of a later registration must not install its
         // earlier primary name or alias, including when another registration lost.
@@ -145,4 +254,9 @@ let private concurrentRegistry =
         let accepted = box { Rejected = false }
         Expect.equal (serializer.Manifest accepted) ("fcqrs:" + cleanAlias) "rejected registrations reserved no primary names or aliases"
 
-let tests = testSequenced (testList "hosting and registry" [ hostedConstructorInjection; concurrentRegistry ])
+let tests =
+    testSequenced (
+        testList
+            "hosting and registry"
+            [ hostedConstructorInjection; repeatedStart; LongConnection.test; concurrentRegistry ]
+    )

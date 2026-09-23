@@ -10,6 +10,7 @@ module public Serialization =
     open System.Reflection
     open System.Text.Json
     open System.Text.Json.Serialization
+    open System.Text.RegularExpressions
 
     // -------------------------------------------------------------------------
     // C# 15 discriminated union ("union") interop
@@ -36,6 +37,14 @@ module public Serialization =
         match t.FullName with
         | null -> t.Name
         | name -> name
+
+    /// A case key without assembly versions. The full name of a generic case type
+    /// embeds its arguments' assembly versions, which change with every runtime or
+    /// application release. Readers match on this form, so both old and version-free
+    /// keys resolve; writers keep the full name until every reader has this lookup.
+    /// An escaped comma inside a type name is not a separator.
+    let private versionFree (key: string) =
+        Regex.Replace(key, @"(?<!\\), (?:Version|Culture|PublicKeyToken)=[^,\]]*", "")
 
     /// True when <paramref name="t"/> is a C# 15 discriminated union.
     let private isUnionType (t: Type) =
@@ -73,7 +82,7 @@ module public Serialization =
                 | _ -> None)
         let ctorByCase = Dictionary<string, ConstructorInfo>()
         for caseType, ctor in cases do
-            ctorByCase[typeKey caseType] <- ctor
+            ctorByCase[typeKey caseType |> versionFree] <- ctor
         { ValueProperty = valueProperty
           CasesByDepth = cases |> Array.sortByDescending (fst >> inheritanceDepth)
           CtorByCase = ctorByCase }
@@ -88,7 +97,12 @@ module public Serialization =
         override _.HandleNull = true
 
         override _.Write(writer, value, options) =
-            match shape.ValueProperty.GetValue(box value) with
+            // HandleNull also passes null references of a class-based union here.
+            let caseValue =
+                match box value with
+                | null -> null
+                | union -> shape.ValueProperty.GetValue(union)
+            match caseValue with
             | null -> writer.WriteNullValue()
             | caseValue ->
                 let caseType =
@@ -116,7 +130,7 @@ module public Serialization =
                 | null ->
                     failwithf "C# union JSON for '%s' is missing the '$case' discriminator" (typeKey typeToConvert)
                 | name ->
-                    match shape.CtorByCase.TryGetValue name with
+                    match shape.CtorByCase.TryGetValue(versionFree name) with
                     | false, _ -> failwithf "C# union '%s' has no case '%s'" (typeKey typeToConvert) name
                     | true, ctor ->
                         let caseType = ctor.GetParameters().[0].ParameterType

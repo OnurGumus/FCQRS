@@ -19,6 +19,57 @@ type private TestEvent =
     | Incremented of int
     | Poked
 
+type private SlowEffect = Compute
+
+type private SlowCommand =
+    | Begin
+    | Complete
+    | Check
+
+type private SlowEvent =
+    | Completed
+    | Checked
+
+let private runnerOffTheAggregateThread =
+    testCase "a runner's synchronous work does not block its aggregate" <| fun _ ->
+        let db = Path.Combine(Path.GetTempPath(), $"fcqrs_runner_thread_{Guid.NewGuid():N}.db")
+        let api =
+            Fcqrs.actor (ConfigurationBuilder().Build()) NullLoggerFactory.Instance
+                (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite $"Data Source={db};")) "RunnerThread"
+        try
+            use runnerStarted = new ManualResetEventSlim(false)
+            let runner (_: SlowEffect) : Async<SlowCommand> =
+                // Synchronous work before the runner's first asynchronous step.
+                runnerStarted.Set()
+                Thread.Sleep 2000
+                async { return Complete }
+            let slow =
+                Fcqrs.aggregateWithEffects api
+                    { Name = "SlowRunner"
+                      Initial = 0
+                      Decide =
+                        fun (command: Command<SlowCommand>) _ ->
+                            match command.CommandDetails with
+                            | Begin -> dispatch Compute
+                            | Complete -> PersistEvent Completed
+                            | Check -> DeferEvent Checked
+                      Fold = fun (_: Event<SlowEvent>) state -> state
+                      Snapshots = NoSnapshots
+                      Passivation = PassivationPolicy.Default }
+                    runner
+            Fcqrs.wireSagaStarters api []
+            let id = Fcqrs.aggregateId "slow"
+            let completion =
+                slow.Send (Fcqrs.newCid ()) id Begin (function Completed -> true | _ -> false) |> Async.StartAsTask
+            Expect.isTrue (runnerStarted.Wait(TimeSpan.FromSeconds 5.0)) "the runner started"
+            let timer = Diagnostics.Stopwatch.StartNew()
+            slow.Send (Fcqrs.newCid ()) id Check (fun _ -> true) |> Async.RunSynchronously |> ignore
+            Expect.isLessThan timer.ElapsedMilliseconds 1000L "the aggregate answered while its runner was busy"
+            Expect.equal (completion.WaitAsync(TimeSpan.FromSeconds 10.0).GetAwaiter().GetResult().EventDetails) Completed
+                "the runner's command still completes the first request"
+        finally
+            api.Stop().Wait(TimeSpan.FromSeconds 30.0) |> ignore
+
 let private withAggregates timeoutSeconds run =
     let db = Path.Combine(Path.GetTempPath(), $"fcqrs_command_regression_{Guid.NewGuid():N}.db")
     let config =
@@ -63,6 +114,8 @@ let private withAggregates timeoutSeconds run =
 
 let tests =
     testList "command subscriptions" [
+        runnerOffTheAggregateThread
+
         testCase "application handler registers eagerly and preserves command delivery" <| fun _ ->
             withAggregates 2 <| fun api _ _ _ _ ->
                 let seenCids = Collections.Concurrent.ConcurrentQueue<FCQRS.Model.Data.CID>()
@@ -114,6 +167,24 @@ let tests =
 
                 let reply = waiting.WaitAsync(TimeSpan.FromSeconds 5.0).GetAwaiter().GetResult()
                 Expect.equal reply.EventDetails (Incremented 9) "TypeA must receive TypeA's event, not TypeB's earlier event"
+
+        testCase "stopping the actor system releases a waiting send" <| fun _ ->
+            withAggregates 120 <| fun api a _ id silentReceived ->
+                let pending = a.Send (Fcqrs.newCid ()) id Silent (fun _ -> true) |> Async.StartAsTask
+                Expect.isTrue (silentReceived.Wait(TimeSpan.FromSeconds 5.0)) "the command reached its aggregate"
+                api.Stop().Wait(TimeSpan.FromSeconds 30.0) |> ignore
+                let released = (pending :> Task).ContinueWith(fun (_: Task) -> ()).Wait(TimeSpan.FromSeconds 10.0)
+                Expect.isTrue released "the caller is released well before its two-minute command timeout"
+                Expect.notEqual pending.Status TaskStatus.RanToCompletion "no reply arrived"
+                if pending.IsFaulted then
+                    let error = pending.Exception.GetBaseException()
+                    Expect.isTrue (error :? OperationCanceledException) $"shutdown is reported as cancellation, not {error.GetType().Name}"
+
+        testCase "a command timeout beyond the ask timer's limit still delivers the reply" <| fun _ ->
+            // Sixty days, beyond the ~49.7 days a cancellation timer accepts.
+            withAggregates (60 * 24 * 3600) <| fun _ a _ id _ ->
+                let reply = Async.RunSynchronously(a.Send (Fcqrs.newCid ()) id (Increment 1) (fun _ -> true), 20000)
+                Expect.equal reply.EventDetails (Incremented 1) "the send completes"
 
         testCase "nonmatching events do not postpone the command deadline" <| fun _ ->
             withAggregates 1 <| fun _ a _ id silentReceived ->

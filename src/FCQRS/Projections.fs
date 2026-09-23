@@ -14,8 +14,13 @@ open FCQRS.Model.Data
 open FCQRS.ProjectionStorage
 
 /// A transactional projection and its request-scoped notification subscriptions.
-/// Catch-up covers every persistence ID in one committed journal snapshot. It does
-/// not wait for other projections, later writes, or external effects.
+/// Catch-up covers every application persistence ID in one committed journal snapshot.
+/// Akka's own cluster-sharding records (IDs starting with "/sharding/") are excluded.
+/// It does not wait for other projections, later writes, or external effects.
+/// A correlation-ID subscription (`Subscribe(cid, ...)`, which `sendAwaiting` uses) receives
+/// its notifications after the whole snapshot containing them commits, so it can wait longer
+/// than the commit of its own event. If the projection fails before then, the subscription is
+/// cancelled. Other subscriptions receive each notification when its event commits.
 type IProjection =
     inherit FCQRS.Query.ISubscribe
     inherit IDisposable
@@ -143,7 +148,7 @@ let start
         | Some error -> raise (InvalidOperationException($"Projection '{name}' has stopped after an error.", error))
         | None -> lifetime.Token.ThrowIfCancellationRequested()
 
-    let apply (envelope: EventEnvelope) = task {
+    let apply (held: ResizeArray<unit -> unit>) (envelope: EventEnvelope) = task {
         use! connection = store.OpenProjectionAsync(lifetime.Token)
         use! transaction = connection.BeginTransactionAsync(lifetime.Token)
         do! store.LockProjectionAsync(connection, transaction, name, lifetime.Token)
@@ -159,7 +164,8 @@ let start
             do! store.WritePositionAsync(connection, transaction, name, envelope.PersistenceId, position, envelope.SequenceNr, lifetime.Token)
             do! transaction.CommitAsync(lifetime.Token)
             match envelope.Event with
-            | :? IMessageWithCID as event -> notifications.Publish event
+            | :? IMessageWithCID as event ->
+                notifications.PublishExceptWaiters event |> Option.iter held.Add
             | _ -> ()
             return envelope.SequenceNr
         else
@@ -180,6 +186,13 @@ let start
 
     let processTargets (targets: Map<string, int64>) = task {
         let! positions = store.ReadPositionsAsync(name, lifetime.Token)
+        // Persistence IDs are processed in key order, not causal order, so a saga's follow-up
+        // event can commit before the originator event that caused it. Both share a correlation
+        // ID, and a snapshot holding the follow-up also holds its cause. Correlation-ID waiters
+        // therefore receive their notifications only after the whole snapshot commits, so
+        // whichever one wakes them, the events that caused it are already readable. Subscribers
+        // without a correlation ID still receive every notification as its event commits.
+        let held = ResizeArray<unit -> unit>()
         for KeyValue(persistenceId, target) in targets do
             let mutable position = positions |> Map.tryFind persistenceId |> Option.defaultValue 0L
             while position < target do
@@ -190,11 +203,13 @@ let start
                 for envelope in events do
                     if envelope.PersistenceId <> persistenceId || lastRead = Int64.MaxValue || envelope.SequenceNr <> lastRead + 1L then
                         invalidOp $"Projection '{name}' found a noncontiguous journal event after sequence {lastRead} for '{persistenceId}'. Missing history and expanding event adapters cannot be checkpointed."
-                    let! committed = apply envelope
+                    let! committed = apply held envelope
                     position <- max position committed
                     lastRead <- envelope.SequenceNr
                 if lastRead < last then
                     invalidOp $"Projection '{name}' could not read journal sequence {lastRead + 1L} for '{persistenceId}'. Retain or restore its journal history."
+        for deliver in held do
+            deliver ()
     }
 
     let suppressAmbient () =

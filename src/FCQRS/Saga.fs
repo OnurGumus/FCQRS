@@ -297,6 +297,7 @@ let private runSaga<'TEvent, 'SagaData, 'State when 'TEvent : not null and 'Stat
     innerStateDefaults
     (currentSagaActivityRef: (Activity | null) ref)
     (cleanupOnStop: unit -> unit)
+    (abortIsCurrent: int64 -> bool)
     =
     let upcastHistory (message: obj) =
         try
@@ -374,6 +375,11 @@ let private runSaga<'TEvent, 'SagaData, 'State when 'TEvent : not null and 'Stat
                         currentSagaActivityRef.Value <- act
 
             match msg with
+            | :? Event<AbortedEvent> when not (abortIsCurrent state.Version) ->
+                // The abort answers a recovery check this saga sent before it stored a newer
+                // state, so it no longer describes this workflow.
+                log.LogInformation("Saga {Saga} ignored an abort that answered an earlier recovery check.", mailbox.Self.Path.ToString())
+                return! innerSet hs
             | :? Event<AbortedEvent> ->
                 // Mark the state span Error before cleanupOnStop disposes it, so the
                 // aborted saga is flagged in the trace rather than ending silently.
@@ -384,9 +390,10 @@ let private runSaga<'TEvent, 'SagaData, 'State when 'TEvent : not null and 'Stat
                     |> ignore
 
                 cleanupOnStop ()
-                let poision = Akka.Cluster.Sharding.Passivate <| Actor.PoisonPill.Instance
+                // StopEntity, not PoisonPill: it waits for a save in flight.
+                let passivate = Akka.Cluster.Sharding.Passivate(StopEntity)
                 log.LogInformation("Aborting")
-                mailbox.Parent() <! poision
+                mailbox.Parent() <! passivate
                 return! innerSet hs
 
             | :? Persistence.RecoveryCompleted ->
@@ -431,6 +438,28 @@ let private runSaga<'TEvent, 'SagaData, 'State when 'TEvent : not null and 'Stat
                 // already ran cleanupOnStop and emptied the list.
                 cleanupOnStop ()
                 return! innerSet hs
+            | PersistentLifecycleEvent(PersistFailed(error, _, sequenceNr)) ->
+                // Akka stops the saga after this callback; remember-entities recovers it from the journal.
+                log.LogError(error, "Saga {Saga} could not persist at sequence {SequenceNr}; the saga stops.", mailbox.Self.Path.ToString(), sequenceNr)
+                return! innerSet hs
+            | PersistentLifecycleEvent(PersistRejected(error, _, sequenceNr)) ->
+                // Akka keeps the saga running with this sequence number used, so its next event
+                // would leave a journal gap that stops transactional projections. Crash, as a
+                // serialization error does.
+                log.LogError(error, "The journal rejected saga {Saga}'s event at sequence {SequenceNr}. Terminating the process.", mailbox.Self.Path.ToString(), sequenceNr)
+                fatalFailFast currentSagaActivityRef.Value "Process terminated because the journal rejected a saga event" error
+                return! innerSet hs
+            | PersistentLifecycleEvent(ReplayFailed(error, _)) ->
+                log.LogError(error, "Saga {Saga} could not recover from the journal; the saga stops.", mailbox.Self.Path.ToString())
+                return! innerSet hs
+            | :? Persistence.SaveSnapshotFailure as failure ->
+                // A snapshot only shortens replay; the journal still holds the history.
+                log.LogWarning(failure.Cause, "Saga {Saga} could not save a snapshot.", mailbox.Self.Path.ToString())
+                return! innerSet hs
+            // Shard hand-off, or the saga's own passivation. As an ordinary message it waits for
+            // any save in flight, unlike PoisonPill; after a hand-off, remember-entities restarts
+            // the saga on its next node.
+            | :? StopEntity -> return! Stop
             | PersistentLifecycleEvent _
             | :? Persistence.SaveSnapshotSuccess
             | LifecycleEvent _ ->
@@ -664,7 +693,7 @@ let private runSaga<'TEvent, 'SagaData, 'State when 'TEvent : not null and 'Stat
                 return! innerSet hs
 
             | _ ->
-                return! body msg
+                return! body hs msg
         }
 
     innerSet innerStateDefaults
@@ -761,6 +790,9 @@ let private actorProp<'SagaData, 'State, 'TEvent when 'TEvent : not null and 'St
     // Latest starting event seen by applySideEffects, so the reminder path can
     // dispatch re-sends with the same metadata a state-entry dispatch carries.
     let lastStartingEventRef: option<SagaStarter.SagaStartingEvent<Event<'TEvent>>> ref = ref None
+    // The saga version the last ContinueOrAbort of this incarnation answers for: the version
+    // after any transition returned with it. An AbortedEvent applies only at that version.
+    let continueOrAbortVersionRef: int64 option ref = ref None
 
     let cleanupOnStop () =
         disposeCurrentActivity ()
@@ -1031,6 +1063,21 @@ let private actorProp<'SagaData, 'State, 'TEvent when 'TEvent : not null and 'St
         let pendingBefore = pendingCancelablesRef.Value
         let selfDelayed = ResizeArray<Akka.Actor.ICancelable * DateTime>()
 
+        let asksContinueOrAbort (cmd: ExecuteCommand) =
+            let t = cmd.Command.GetType()
+            t.IsGenericType && t.GetGenericTypeDefinition() = typedefof<ContinueOrAbort<_>>
+
+        // The answer applies to the state this call leaves the saga in. A NextState returned
+        // with the check (the builder's NotStarted -> Started) is persisted before the answer
+        // is processed, because persisting stashes incoming messages.
+        if cmds |> List.exists asksContinueOrAbort then
+            continueOrAbortVersionRef.Value <-
+                Some(
+                    match transition with
+                    | NextState _ -> sagaState.Version + 1L
+                    | _ -> sagaState.Version
+                )
+
         dispatchCommands startingEvent selfDelayed cmds
 
         // Handle ResumeFirstEvent behavior internally when needed
@@ -1064,13 +1111,17 @@ let private actorProp<'SagaData, 'State, 'TEvent when 'TEvent : not null and 'St
                      (InvalidOperationException reason)
              | None ->
                  // Effective entry: the persisted state-entry time. A saga expecting
-                 // from its never-persisted initial state anchors at now instead
-                 // (recovery then re-anchors at recovery time — best effort there).
+                 // from its never-persisted initial state entered it with its
+                 // journaled starting event, so it anchors at that event's creation
+                 // time and recovery keeps the deadline. Only a saga recovered from a
+                 // snapshot that carries no starting event anchors at now.
                  let entered =
-                     if sagaState.StateEnteredAt = DateTime.MinValue then
-                         mailbox.System.Scheduler.Now.UtcDateTime
-                     else
+                     if sagaState.StateEnteredAt <> DateTime.MinValue then
                          sagaState.StateEnteredAt
+                     else
+                         match startingEvent with
+                         | Some started -> started.Event.CreationDate
+                         | None -> mailbox.System.Scheduler.Now.UtcDateTime
 
                  armedExpectationRef.Value <- Some(exp, entered)
                  dispatchCommands startingEvent selfDelayed exp.Resend
@@ -1094,8 +1145,9 @@ let private actorProp<'SagaData, 'State, 'TEvent when 'TEvent : not null and 'St
             // with StopSaga: they are the saga's final act and must still be delivered.
             cancelScheduled (pendingBefore @ List.ofSeq selfDelayed)
             pendingCancelablesRef.Value <- []
-            let poision = Cluster.Sharding.Passivate <| Actor.PoisonPill.Instance
-            mailbox.Parent() <! poision
+            // StopEntity, not PoisonPill: it waits for a save in flight.
+            let passivate = Cluster.Sharding.Passivate(StopEntity)
+            mailbox.Parent() <! passivate
             log.Info("{0} Completed", name)
 
             if messageFlowEnabled flowLogger then
@@ -1108,7 +1160,10 @@ let private actorProp<'SagaData, 'State, 'TEvent when 'TEvent : not null and 'St
 
     let rec set innerStateDefaults (sagaState: ParentSaga<'SagaData, 'State>) =
 
-        let body (msg: obj) =
+        // runSaga passes its current handshake with each message. Capturing the handshake
+        // from when `set` ran would restore stale readiness flags on every IgnoreEvent or
+        // expectation tick, so a re-delivered start would never be answered.
+        let body (handshake: Handshake<'TEvent>) (msg: obj) =
             actor {
                 match msg, sagaState with
                 | (:? ExpectationReminder as reminder), state ->
@@ -1124,7 +1179,7 @@ let private actorProp<'SagaData, 'State, 'TEvent when 'TEvent : not null and 'St
                             // retry-safe contract recovery re-drives already require.
                             dispatchCommands lastStartingEventRef.Value (ResizeArray()) exp.Resend
                             armExpectationReminder exp entered None
-                            return! state |> set innerStateDefaults
+                            return! state |> set handshake
                         else
                             let attempts, _ = expectationPosition exp elapsed
 
@@ -1167,12 +1222,12 @@ let private actorProp<'SagaData, 'State, 'TEvent when 'TEvent : not null and 'St
                                     exp.Deadline)
 
                                 armExpectationReminder exp entered (Some exp.Deadline)
-                                return! state |> set innerStateDefaults
+                                return! state |> set handshake
                     | _ ->
                         // Stale: superseded by a later arm (the epoch moved on) or
                         // already cleaned up. Fired schedules are no-ops to cancel,
                         // so staleness has to be decided here, on receipt.
-                        return! sagaState |> set innerStateDefaults
+                        return! sagaState |> set handshake
                 | msg, state ->
                     try
                         let state: EventAction<'State> = handleEvent msg state.SagaState
@@ -1189,7 +1244,7 @@ let private actorProp<'SagaData, 'State, 'TEvent when 'TEvent : not null and 'St
                         | StateChangedEvent newState ->
                             let newState = newState |> toStateChange mailbox.System.Scheduler.Now.UtcDateTime
                             return! newState
-                        | IgnoreEvent -> return! sagaState |> set innerStateDefaults
+                        | IgnoreEvent -> return! sagaState |> set handshake
                         | Stash _
                         | Unstash _
                         | UnstashAll _
@@ -1230,6 +1285,10 @@ let private actorProp<'SagaData, 'State, 'TEvent when 'TEvent : not null and 'St
             innerStateDefaults
             currentSagaActivityRef
             cleanupOnStop
+            (fun version ->
+                match continueOrAbortVersionRef.Value with
+                | Some asked -> asked = version
+                | None -> true)
 
     set
         { StartingEvent = None
@@ -1257,7 +1316,7 @@ let internal init<'SagaData, 'State, 'TEvent when 'TEvent : not null and 'State 
         { Version = 0L
           SagaState = initialState
           // Sentinel: no state has been persisted yet. An expectation armed from
-          // this initial state anchors at arming time instead.
+          // this initial state anchors at the starting event's creation time.
           StateEnteredAt = DateTime.MinValue }
 
     entityFactoryFor actorApi.System shardResolver name

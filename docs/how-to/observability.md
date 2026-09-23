@@ -97,8 +97,9 @@ events. A secret stored in an event remains in the journal regardless of the dia
 ## Flush telemetry on a fatal exit
 
 FCQRS terminates the process when a fold, aggregate handler, saga handler, effect runner, or projection
-handler fails in a way that could leave state processing inconsistent. Fail-fast skips normal finalizer
-and process-exit flushing. Register a bounded flush hook for buffered telemetry:
+handler fails in a way that could leave state processing inconsistent. It also terminates when a
+payload cannot be serialized or the journal rejects an event. Fail-fast skips normal finalizer and
+process-exit flushing. Register a bounded flush hook for buffered telemetry:
 
 ```fsharp
 FCQRS.Common.Telemetry.FatalFlush <- System.Action(fun () ->

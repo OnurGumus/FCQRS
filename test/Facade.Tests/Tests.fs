@@ -775,9 +775,26 @@ let private manifestTest =
         let legacy = ser.FromBinary(bytes, aqn) :?> Event<Counter.Event>
         Expect.equal legacy.EventDetails (Counter.Incremented 3) "legacy AQN manifests keep reading"
 
-        // 3. unregistered payload -> legacy manifest (no fcqrs: scheme)
+        // 3. unregistered payload -> legacy manifest (no fcqrs: scheme). It omits
+        // assembly versions, so a node on an older FCQRS release can still bind it.
         let unregistered = ser.Manifest(box "plain string")
         Expect.isFalse (unregistered.StartsWith "fcqrs:") "unregistered types fall back to AQN"
+        Expect.isFalse (unregistered.Contains "Version=") "fallback names omit assembly versions"
+        let versionFree =
+            System.Text.RegularExpressions.Regex.Replace(aqn, @", (?:Version|Culture|PublicKeyToken)=[^,\]]*", "")
+        let simple = ser.FromBinary(bytes, versionFree) :?> Event<Counter.Event>
+        Expect.equal simple.EventDetails (Counter.Incremented 3) "version-free names resolve"
+
+        // 3b. A tag this release reads before any release writes it.
+        let manifests = typeof<FCQRS.ActorSerialization.STJSerializer>.Assembly.GetType("FCQRS.ActorSerialization+Manifests", true)
+        let resolve =
+            manifests.GetMethod("resolve", Reflection.BindingFlags.Static ||| Reflection.BindingFlags.Public ||| Reflection.BindingFlags.NonPublic)
+            |> Unchecked.nonNull
+        let wrapped = resolve.Invoke(null, [| box "fcqrs:saga-ev(saga-wrap(counter.event,counter.event))" |]) :?> Type
+        Expect.equal
+            (wrapped.GetGenericArguments().[0].GetGenericTypeDefinition())
+            typedefof<SagaBuilder.SagaStateWrapper<obj, obj>>
+            "the saga state wrapper tag resolves"
 
         // 4. THE rename test: point the logical name at a different CLR type and
         // the same journal bytes deserialize as the new type. This is the exact
@@ -2515,16 +2532,22 @@ let tests =
 
 [<EntryPoint>]
 let main argv =
-    let allTests =
-        testSequenced (testList "FCQRS" [
-            tests
-            CommandSubscriptionTests.tests
-            SagaHandshakeTests.tests
-            ProjectionSubscriptionTests.tests
-            ProjectionCatchUpTests.tests
-            ExpectedVersionTests.tests
-            ConditionalCommandSerializationTests.tests
-            EventUpcastingTests.tests
-            HostingAndRegistryTests.tests
-        ])
-    runTestsWithCLIArgs [] argv allTests
+    match argv with
+    // A scenario that must terminate its process runs in a child started by its test.
+    | [| flag; scenario; db |] when flag = JournalRejectionTests.ChildFlag -> JournalRejectionTests.runChild scenario db
+    | _ ->
+        let allTests =
+            testSequenced (testList "FCQRS" [
+                tests
+                CommandSubscriptionTests.tests
+                SagaHandshakeTests.tests
+                SagaLifecycleTests.tests
+                ProjectionSubscriptionTests.tests
+                ProjectionCatchUpTests.tests
+                ExpectedVersionTests.tests
+                ConditionalCommandSerializationTests.tests
+                EventUpcastingTests.tests
+                HostingAndRegistryTests.tests
+                JournalRejectionTests.tests
+            ])
+        runTestsWithCLIArgs [] argv allTests
