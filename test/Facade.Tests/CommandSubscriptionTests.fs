@@ -104,10 +104,17 @@ let private withAggregates timeoutSeconds run =
         let b = register "TypeB"
         Fcqrs.wireSagaStarters api []
         let id = Fcqrs.aggregateId "shared entity"
+        // The first command to each type starts its shard, which can outlast a one-second command
+        // timeout on a busy machine. Repeat it until the shard answers.
         for aggregate in [ a; b ] do
-            aggregate.Send (Fcqrs.newCid ()) id Poke (fun _ -> true)
-            |> Async.RunSynchronously
-            |> ignore
+            let rec warm attempt =
+                try
+                    aggregate.Send (Fcqrs.newCid ()) id Poke (fun _ -> true)
+                    |> Async.RunSynchronously
+                    |> ignore
+                with :? TimeoutException when attempt < 5 ->
+                    warm (attempt + 1)
+            warm 1
         run api a b id silentReceived
     finally
         api.Stop().Wait(TimeSpan.FromSeconds 30.0) |> ignore
