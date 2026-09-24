@@ -247,7 +247,7 @@ module DualStart =
           Snapshots = Default }
 
 // Multi-event handler shape: return exactly what to publish.
-let private projection (_offset: int64) (ev: obj) : IMessageWithCID list =
+let private projection (ev: obj) : IMessageWithCID list =
     match ev with
     | :? (Event<Counter.Event>) as e -> [ e :> IMessageWithCID ]
     | _ -> []
@@ -310,7 +310,7 @@ let private boot () =
     let saga = Fcqrs.saga api (AutoReset.definition counter.Factory)
     Fcqrs.wireSagaStarters api [ saga ]
     // The projection stream invokes the handler sequentially, so a plain incr is safe.
-    let subs = Fcqrs.projection api (Projection.single 0 (fun _ _ -> incr singleHandled))
+    let subs = Fcqrs.projection api (Projection.single FromStart (fun _ -> incr singleHandled))
     counter, subs
 
 /// Boot a system with BOTH aggregate types and a DualStart saga per type, so
@@ -490,7 +490,7 @@ let private snapshotRecoveryTest =
         // Saga journal: wrapper(seq1), Started(v1), Pinging(v2 -> snapshot).
         // Counter journal: Incremented(v1), WasReset(v2) from the parked side effect.
         let api1, counter1 = bootParked db lmdb
-        let subs1 = Fcqrs.projection api1 { LastOffset = 0; Handle = projection }
+        let subs1 = Fcqrs.projection api1 { Progress = FromStart; Handle = projection }
         use sawReset = subs1.Subscribe(isWasReset, 1)
 
         counter1.Send (Fcqrs.newCid ()) (Fcqrs.aggregateId "big") (Counter.Increment 100)
@@ -543,7 +543,7 @@ let private snapshotRecoveryTest =
 
         while not seen && attempts < 15 do
             attempts <- attempts + 1
-            let subs = Fcqrs.projection api2 { LastOffset = 0; Handle = projection }
+            let subs = Fcqrs.projection api2 { Progress = FromStart; Handle = projection }
             use awaiter = subs.Subscribe(isFreshReset, 1)
             seen <- awaiter.Task.Wait(TimeSpan.FromSeconds 2.0)
 
@@ -725,7 +725,7 @@ let private overflowTest =
             Fcqrs.aggregate api { Name = "Counter"; Initial = Counter.initial; Decide = Counter.decide; Fold = Counter.fold; Snapshots = Default; Passivation = PassivationPolicy.Default }
 
         Fcqrs.wireSagaStarters api []
-        let subs = Fcqrs.projection api { LastOffset = 0; Handle = projection }
+        let subs = Fcqrs.projection api { Progress = FromStart; Handle = projection }
 
         // 40 notification-producing events with NO subscriber attached: with the
         // old Fail strategy this faulted the offer and killed the process.
@@ -830,14 +830,14 @@ let private filteredProjectionTest =
         let cid = Fcqrs.newCid ()
         let msg = { new IMessageWithCID with member _.CID = cid }
 
-        let publishAll = FCQRS.Query.filterPublish (fun _ _ -> Publish)
-        let suppressAll = FCQRS.Query.filterPublish (fun _ _ -> Suppress)
+        let publishAll = FCQRS.Query.filterPublish (fun _ -> Publish)
+        let suppressAll = FCQRS.Query.filterPublish (fun _ -> Suppress)
 
         let boxedMsg = box msg |> Unchecked.nonNull
         let boxedInt = box 42 |> Unchecked.nonNull
-        Expect.equal (publishAll 0L boxedMsg) [ msg ] "Publish forwards the event when it carries a CID"
-        Expect.isEmpty (publishAll 0L boxedInt) "Publish on a non-CID event notifies nothing"
-        Expect.isEmpty (suppressAll 0L boxedMsg) "Suppress notifies nothing even for a CID-bearing event"
+        Expect.equal (publishAll boxedMsg) [ msg ] "Publish forwards the event when it carries a CID"
+        Expect.isEmpty (publishAll boxedInt) "Publish on a non-CID event notifies nothing"
+        Expect.isEmpty (suppressAll boxedMsg) "Suppress notifies nothing even for a CID-bearing event"
 
 /// persistIf (C# EventActions.PersistConditionally): persist when the guard holds,
 /// otherwise defer the same event (returned to the caller but not journalled).
@@ -1150,7 +1150,7 @@ let private stopSagaDelayedTest =
 
         let saga = Fcqrs.saga api (FinalPing.definition counter.Factory)
         Fcqrs.wireSagaStarters api [ saga ]
-        let subs = Fcqrs.projection api { LastOffset = 0; Handle = projection }
+        let subs = Fcqrs.projection api { Progress = FromStart; Handle = projection }
         use sawReset = subs.Subscribe(isWasReset, 1)
 
         counter.Send (Fcqrs.newCid ()) (Fcqrs.aggregateId "fin") (Counter.Increment 100)
@@ -1478,7 +1478,7 @@ let private sagaStartFanoutTest =
 
         // Subscribe before sending: each saga drives one Reset back into its own
         // originator, so a complete run yields exactly `fanout` WasReset events.
-        let subs = Fcqrs.projection api { LastOffset = 0; Handle = projection }
+        let subs = Fcqrs.projection api { Progress = FromStart; Handle = projection }
         use sawResets = subs.Subscribe(isWasReset, fanout)
 
         let acks =
@@ -1676,7 +1676,7 @@ let private sendAwaitingTimeoutTest =
         // A multi handler that returns [] suppresses every notification — the
         // exact shape whose awaited ack never arrives. Before the bound was
         // added, this hung the caller forever (unrunnable as a failing test).
-        let subs = Fcqrs.projection api { LastOffset = 0; Handle = fun _ _ -> [] }
+        let subs = Fcqrs.projection api { Progress = FromStart; Handle = fun _ -> [] }
 
         let sw = Stopwatch.StartNew()
 
@@ -1715,7 +1715,7 @@ let private slowSubscriberIsolationTest =
             Fcqrs.aggregate api { Name = "Counter"; Initial = Counter.initial; Decide = Counter.decide; Fold = Counter.fold; Snapshots = Default; Passivation = PassivationPolicy.Default }
 
         Fcqrs.wireSagaStarters api []
-        let subs = Fcqrs.projection api { LastOffset = 0; Handle = projection }
+        let subs = Fcqrs.projection api { Progress = FromStart; Handle = projection }
 
         // A standing subscriber that blocks hard on its first event. Without
         // per-consumer isolation it pinned the shared hub: every later
@@ -2187,9 +2187,9 @@ let private bootExpecting (systemName: string) (sagaName: string) deadline retry
 /// Projection counting the expectation's Increment 1 markers while forwarding
 /// every counter event for read-your-writes subscriptions.
 let private markerProjection (markers: int ref) =
-    { LastOffset = 0
+    { Progress = FromStart
       Handle =
-        fun (_offset: int64) (ev: obj) ->
+        fun (ev: obj) ->
             match ev with
             | :? (Event<Counter.Event>) as e ->
                 (match e.EventDetails with
@@ -2361,7 +2361,7 @@ let private expectationRestartTest =
 
         while not seen && tries < 15 do
             tries <- tries + 1
-            let subs = Fcqrs.projection api2 { LastOffset = 0; Handle = projection }
+            let subs = Fcqrs.projection api2 { Progress = FromStart; Handle = projection }
             use awaiter = subs.Subscribe(isWasReset, 1)
             seen <- awaiter.Task.Wait(TimeSpan.FromSeconds 2.0)
 

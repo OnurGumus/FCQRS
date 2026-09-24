@@ -51,8 +51,9 @@ too.
 ## Register a transactional projection
 
 Use `Fcqrs.transactionalProjection` in F# or `AddTransactionalProjection` in C#. These are separate
-from the offset-based registration in [Add a projection](add-a-projection.html). The transactional
-runner stores one checkpoint per persistence identity under a stable projection name.
+from the registration in [Add a projection](add-a-projection.html), whose handler writes outside the
+transaction. The transactional runner stores one checkpoint per persistence identity under a stable
+projection name.
 
 The application supplies a SQL connection factory and a handler. FCQRS opens a transaction, passes
 its connection and transaction to the handler, records progress, and commits them together. Return
@@ -245,7 +246,6 @@ aggregates must tolerate their arrival order or explicitly coordinate those depe
 The runner requires a complete history through each captured target. It does not treat the largest
 observed sequence number as proof that missing earlier events were handled. Preserve journal events
 needed by this projection, and begin with a new read model when starting a new checkpoint history.
-An existing global offset cannot establish these per-identity checkpoints.
 
 The completion boundary covers one projection and the database transaction used by its handler.
 It does not wait for another projection, an external HTTP call, or work started without awaiting it.

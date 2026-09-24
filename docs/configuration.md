@@ -85,7 +85,9 @@ dropped, which is correct for the request-scoped read-your-writes mechanism.
 Transactional projections use `TransactionalProjectionOptions` for background discovery
 (`PollInterval`, default 1s), per-identity batch size (`BatchSize`, default 500), and the complete
 catch-up deadline (`CatchUpTimeout`, default 30s). These are registration options rather than HOCON
-keys. See [Catch up projections](how-to/catch-up-projections.html) for their transaction and snapshot
+keys. Projections registered with `Fcqrs.projection` or `AddProjection` use the same defaults. An
+aggregate that stores an event wakes the projections on its node before the next poll. See
+[Catch up projections](how-to/catch-up-projections.html) for their transaction and snapshot
 boundaries.
 
 The saga-start handshake holds no thread: an aggregate waits for the sagas an event starts as

@@ -98,4 +98,5 @@ let userSubs cid actorId command filter metadata =  actorApi.CreateCommandSubscr
 
 // Initializes the query side.But also gets subscription for the query side. 
 // The only use case for subscription is to wait for the query side to catch up with the command side.
-let sub handleEventWrapper offsetCount= FCQRS.Query.init actorApi offsetCount handleEventWrapper
+let sub handleEventWrapper =
+    FCQRS.FSharp.Fcqrs.projection actorApi (FCQRS.FSharp.Projection.multi FCQRS.FSharp.FromStart handleEventWrapper)

@@ -7,182 +7,115 @@ index: 4
 
 # Add a projection
 
-A projection receives journal events in order and updates data designed for queries. It also records an
-offset identifying the last event it committed. This page's single most important rule: commit the
-read-model update and the new offset in the same database transaction.
+A projection hands each stored event to a handler that updates data shaped for queries. This page
+keeps each account's balance for a list of accounts. FCQRS follows each aggregate's versions, so the
+handler receives every stored event, including one whose write committed after later writes.
+[The read side](../concepts/read-models.html#Track-progress-per-aggregate) explains why that matters.
+Projections require a SQLite or PostgreSQL journal.
 
-For a handler that receives a library-owned transaction and can wait for a journal snapshot, follow
-[Catch up projections](catch-up-projections.html). The offset-based registration on this page remains
-available when the application manages its own progress and transaction.
+## Choose where the read model lives
 
-The rule matters because a crash can land between any two separate writes, and each ordering fails
-differently:
+Where the read model lives decides where the projection keeps its progress, and what a crash means
+for the handler:
 
-- **Offset first, then data.** A crash in between advances the bookmark past an event that never
-  reached the read model. On restart the projection resumes after it. Nothing errors; the view is
-  missing that update and stays wrong until the read model is rebuilt.
-- **Data first, then offset.** A crash in between leaves the bookmark behind, so the event is applied
-  again on restart. An insert-or-replace absorbs the repeat; a running total or an append does not,
-  and the view drifts.
-- **Same transaction.** The crash commits both or neither. Retrying the uncommitted event gives
-  exactly-once updates within that store.
+| Read model | Register with | Progress | After a crash or restart |
+|---|---|---|---|
+| In memory | `Projection.single FromStart` or `AddProjection(handler)` | in memory | the whole journal is read again |
+| In the journal's SQL database | `Fcqrs.transactionalProjection` or `AddTransactionalProjection` | committed with each change | each event is applied once |
+| Elsewhere, such as a search index | `Projection.single (Named "...")` or `AddProjection(handler, name: "...")` | stored after the handler returns | the handler can receive an event again |
 
-> **Motivation:** Storing data and offset together removes ambiguity after a restart. The projection
-> either committed the event and moves past it, or committed neither and can safely try it again.
+For a SQL read model in the journal's database, follow [Catch up projections](catch-up-projections.html).
+Its handler writes through a transaction that FCQRS commits together with the progress.
 
-The example keeps each account's current balance for a list of accounts. The balance is a running
-total: each deposit or withdrawal adds to the stored value, so an event applied twice would be counted
-twice. Create the read model and one offset row for this projection:
+## Keep a read model in memory
 
-```sql
-create table if not exists Balances (
-    Id text primary key,
-    Owner text not null,
-    Balance numeric not null
-);
-
-create table if not exists Offsets (
-    OffsetName text primary key,
-    OffsetCount integer not null
-);
-
-insert or ignore into Offsets (OffsetName, OffsetCount)
-values ('Balances', 0);
-```
-
-## Handle every event transactionally
-
-The handler receives the journal offset and an `obj` because the stream contains events from every
-aggregate and saga. Match the envelope types this projection needs. Advance the offset for every event,
-including event types that do not change this read model.
+The handler receives an `obj` because the journal holds events from every aggregate and saga. Match the
+event types this projection needs and ignore the rest:
 
 ```fsharp
-// NuGet: Dapper, Microsoft.Data.Sqlite
-open Dapper
-open Microsoft.Data.Sqlite
-open FCQRS.Common
-open FCQRS.FSharp
+open System.Collections.Concurrent
 
-let openAccount =
-    "insert into Balances (Id, Owner, Balance) values (@Id, @Owner, 0)"
-let changeBalance =
-    "update Balances set Balance = Balance + @Amount where Id = @Id"
-let saveOffset =
-    "update Offsets set OffsetCount = @n where OffsetName = 'Balances'"
+// Each account's balance, rebuilt from the journal at every start.
+let balances = ConcurrentDictionary<string, decimal>()
 
-let handle (connString: string) (offset: int64) (event: obj) : unit =
-    use conn = new SqliteConnection(connString)
-    conn.Open()
-    use tx = conn.BeginTransaction()
-
-    match event with
+let handle (message: obj) =
+    match message with
     // Sender is the ID of the account that stored the event.
-    | :? Event<AccountEvent> as e ->
-        let id = string e.Sender.Value
-        let add (amount: decimal) =
-            let row = {| Id = id; Amount = amount |}
-            conn.Execute(changeBalance, row, tx) |> ignore
-        match e.EventDetails with
-        | Opened owner ->
-            let row = {| Id = id; Owner = owner |}
-            conn.Execute(openAccount, row, tx) |> ignore
-        | Deposited amount -> add amount
-        | Withdrawn amount -> add -amount
-        | Rejected _ -> ()
+    | :? Event<AccountEvent> as event ->
+        let id = string event.Sender.Value
+        match event.EventDetails with
+        | Opened _ -> balances[id] <- 0m
+        | Deposited amount -> balances[id] <- balances[id] + amount
+        | Withdrawn amount -> balances[id] <- balances[id] - amount
+        | _ -> ()
     | _ -> ()
-
-    // Advance for every event, in the same transaction as the read-model write.
-    conn.Execute(saveOffset, {| n = offset |}, tx) |> ignore
-    tx.Commit()
 ```
 
-<div class="cs-alt"></div>
-
-```csharp
-// C#: the same projection as a void method.
-using static FCQRS.Common;   // Event<>
-using Dapper;
-using Microsoft.Data.Sqlite;
-
-const string OpenAccount =
-    "insert into Balances (Id, Owner, Balance) values (@Id, @Owner, 0)";
-const string ChangeBalance =
-    "update Balances set Balance = Balance + @Amount where Id = @Id";
-const string SaveOffset =
-    "update Offsets set OffsetCount = @n where OffsetName = 'Balances'";
-
-public static void Handle(string connString, long offset, object eventObj)
-{
-    using var conn = new SqliteConnection(connString);
-    conn.Open();
-    using var tx = conn.BeginTransaction();
-
-    // Sender is the ID of the account that stored the event.
-    if (eventObj is Event<AccountEvent> { Sender: { } sender } e)
-    {
-        var id = sender.Value.ToString();
-        void Add(decimal amount) =>
-            conn.Execute(ChangeBalance, new { Id = id, Amount = amount }, tx);
-
-        switch (e.EventDetails)
-        {
-            case Opened opened:
-                conn.Execute(OpenAccount, new { Id = id, opened.Owner }, tx);
-                break;
-            case Deposited deposited: Add(deposited.Amount); break;
-            case Withdrawn withdrawn: Add(-withdrawn.Amount); break;
-        }
-    }
-
-    // Advance for every event, in the same transaction as the read-model write.
-    conn.Execute(SaveOffset, new { n = offset }, tx);
-    tx.Commit();
-}
-```
-
-## Resume from the stored offset
-
-Read the `Balances` row from `Offsets` during startup and pass that value to the projection:
+Register it with its progress in memory:
 
 ```fsharp
-let getLastOffset (connString: string) : int64 =
-    use conn = new SqliteConnection(connString)
-    conn.Open()
-
-    conn.ExecuteScalar<int64>(
-        "select OffsetCount from Offsets where OffsetName = 'Balances'")
-
-let subscriptions =
-    Fcqrs.projection api
-        (Projection.single (getLastOffset connString) (handle connString))
+let balanceView = Fcqrs.projection api (Projection.single FromStart handle)
 ```
 
 <div class="cs-alt"></div>
 
 ```csharp
-// C#: resolve both the handler and last offset from application services.
-static long GetLastOffset(string connString)
+using System.Collections.Concurrent;
+using static FCQRS.Common;   // Event<>
+
+// Each account's balance, rebuilt from the journal at every start.
+var balances = new ConcurrentDictionary<string, decimal>();
+
+void Handle(object message)
 {
-    using var conn = new SqliteConnection(connString);
-    conn.Open();
-    return conn.ExecuteScalar<long>(
-        "select OffsetCount from Offsets where OffsetName = 'Balances'");
+    // Sender is the ID of the account that stored the event.
+    if (message is not Event<AccountEvent> { Sender: { } sender } stored)
+        return;
+    var id = sender.Value.ToString();
+    switch (stored.EventDetails)
+    {
+        case Opened: balances[id] = 0m; break;
+        case Deposited deposited: balances[id] += deposited.Amount; break;
+        case Withdrawn withdrawn: balances[id] -= withdrawn.Amount; break;
+    }
 }
 
-services.AddProjection(
-    handler: sp => (offset, evt) => Handle(connString, offset, evt),
-    lastOffset: _ => GetLastOffset(connString));
+builder.Services.AddFcqrs(connectionString, "accounts")
+    .AddAggregate<Account>()
+    .AddProjection(Handle);
 ```
 
-`Fcqrs.projection` returns an `ISubscribe`. A client can subscribe to a correlation id and wait until
-this handler commits the matching event. Aggregate `.Send` waits only for the aggregate reply; the
-projection subscription is the separate read-side confirmation.
+The handler runs for one event at a time. It receives one account's events in version order, and
+events of different accounts in no particular order relative to each other. With its progress in
+memory, the projection reads the whole journal each time it starts, so start-up takes longer as the
+journal grows. Keep the read model somewhere durable when that time matters.
 
-The C# host builder supports one projection per FCQRS runtime: a second `AddProjection` call throws
-`InvalidOperationException` at registration. A handler may update several read models in the same
-process, and a side-by-side rebuild runs as a separate process (see
-[Rebuild a read model](rebuild-a-read-model.html)). Independently deployed projection consumers should
-keep independent offsets.
+## Keep a read model outside the journal database
+
+Give the projection a name to store its progress in the journal database. After a restart, it resumes
+after the last event it recorded:
+
+```fsharp
+let search =
+    Projection.single (Named "balance-search") updateSearch
+    |> Fcqrs.projection api
+```
+
+<div class="cs-alt"></div>
+
+```csharp
+builder.Services.AddFcqrs(connectionString, "accounts")
+    .AddAggregate<Account>()
+    .AddProjection(UpdateSearch, name: "balance-search");
+```
+
+FCQRS records an event as handled after the handler returns. If the process stops in between, the
+handler receives that event again after the restart. Make the write idempotent: for example, store each
+account's last applied `Version` with its data, and ignore an event whose version is not newer. A
+handler that writes to several stores needs that for each of them.
+
+The name identifies the projection's stored progress. A new name reads the whole journal once. Reusing
+a name resumes that projection, so do not reuse one for a different read model.
 
 ## Choose which events notify callers
 
@@ -193,24 +126,34 @@ keep independent offsets.
 | `Projection.multi` | `IMessageWithCID list` | publish the exact notification list returned |
 
 Use filtering when one command produces several events but a caller should wake only after the event
-that completes all required read-model updates. The notification must be published only after those
-updates commit.
+that completes all required read-model updates.
+
+## Wait for the projection
+
+`Fcqrs.projection` returns an `IProjection`; the C# host registers it for dependency injection. A
+client can subscribe to a correlation id and wait until this handler has handled the matching event, or
+call `CatchUpAsync` to wait until it has handled every event stored before the call.
+[Read your writes](read-your-writes.html) shows both. Aggregate `.Send` waits only for the aggregate
+reply; the projection is the separate read-side confirmation.
+
+The C# host builder supports one projection per FCQRS runtime: a second `AddProjection` call throws
+`InvalidOperationException` at registration. A handler may update several read models in the same
+process, and a side-by-side rebuild runs as a separate process (see
+[Rebuild a read model](rebuild-a-read-model.html)).
 
 ## Handle failures visibly
 
-Do not catch a storage exception and advance the offset. Let the handler fail. For the offset-based
-registration on this page, FCQRS terminates the process when a handler fails so the stream cannot stop
-silently while the host appears healthy. The process supervisor can restart it from the last committed
-offset after the storage problem or handler bug is corrected.
-[When FCQRS stops the process](../concepts/process-termination.html) explains the policy.
+Do not catch an exception and carry on. A handler that throws terminates the process, so the
+projection cannot stop silently while the host appears healthy. The process supervisor restarts it:
+a projection with its progress in memory reads the journal again, and a named one resumes after the
+last event it recorded. [When FCQRS stops the process](../concepts/process-termination.html) explains
+the policy.
 
-A failure to read the journal itself is handled differently: FCQRS logs the error and retries the read
-with a backoff that starts at 1 second and grows to 30 seconds, plus up to 20 percent random delay.
-It resumes after the last handled offset. Monitor that error log; the read model stays behind until
-the journal is readable again.
-
-A projection writing to several stores cannot use one local transaction for all updates. Make each
-destination idempotent and record enough progress to retry safely.
+A failure to read the journal or to store progress is handled differently: FCQRS logs the error and
+retries with a backoff that starts at 1 second and grows to 30 seconds, plus up to 20 percent random
+delay. Monitor that error log; the read model stays behind until the database is reachable again.
+Missing journal history, such as a deleted journal row, terminates the process, because reading again
+cannot bring it back.
 
 To correct derived data, follow [Rebuild a read model](rebuild-a-read-model.html). Do not edit the event
 journal to repair a projection. Background: [The read side](../concepts/read-models.html).

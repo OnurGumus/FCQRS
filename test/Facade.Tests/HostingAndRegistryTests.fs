@@ -78,7 +78,7 @@ let private hostedConstructorInjection =
             services
                 .AddFcqrs($"Data Source={database};", "HostedInjectionRegression")
                 .AddAggregate<HostedAggregate, int, int, int>()
-                .AddProjection(Action<int64, obj>(fun _ _ -> ()))
+                .AddProjection(Action<obj>(fun _ -> ()))
             |> ignore
             services.AddSingleton<HostedResult>(result) |> ignore
             services.AddHostedService<InjectedWorker>() |> ignore))

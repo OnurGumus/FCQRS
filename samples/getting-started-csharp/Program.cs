@@ -21,7 +21,7 @@ var readModel = new ConcurrentDictionary<string, Document>();
 var published = new TaskCompletionSource<Event<DocumentEvent>>(TaskCreationOptions.RunContinuationsAsynchronously);
 var paused = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
-void HandleProjection(long offset, object message)
+void HandleProjection(object message)
 {
     // Query journals can supply the old envelope too; use the same reader as recovery.
     if (LegacyCreationReader.Read(message) is not Event<DocumentEvent> stored) return;
@@ -47,7 +47,7 @@ builder.Services.AddFcqrs($"Data Source={database};", "getting-started-csharp")
     .AddAggregate<DocumentAggregate>()
     .AddAggregate<SlugAggregate>()
     .AddSaga(sp => new PublicationSaga(sp.AggregateFactory<DocumentAggregate>(), sp.AggregateFactory<SlugAggregate>(), pause, paused))
-    .AddProjection(HandleProjection, lastOffset: 0);
+    .AddProjection(HandleProjection);
 // docs:end
 using var host = builder.Build();
 await host.StartAsync();

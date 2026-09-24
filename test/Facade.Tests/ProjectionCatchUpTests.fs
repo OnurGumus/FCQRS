@@ -710,18 +710,21 @@ let private observedTimeout =
             let tallies = tallyAggregate api "ObservedTimeoutTally"
             Fcqrs.wireSagaStarters api []
             let options = TransactionalProjectionOptions("observed-timeout", sqliteStore journalPath projectionPath)
-            // No catch-up runs, so the notification never arrives.
-            options.PollInterval <- TimeSpan.FromMinutes 10.0
-            use projection = Fcqrs.transactionalProjection api options (fun _ _ _ -> Task.CompletedTask)
+            // The handler holds the event until the wait has timed out, so the notification never arrives.
+            let held = TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously)
+            use projection = Fcqrs.transactionalProjection api options (fun _ _ _ -> held.Task)
             wait (projection.CatchUpAsync())
             let outcome =
                 try
-                    Fcqrs.sendAwaiting (projection :> FCQRS.Query.ISubscribe<IMessageWithCID>)
-                        tallies (Fcqrs.newCid ()) (Fcqrs.aggregateId "tally") (Tally 1) (fun _ -> true)
-                    |> fun work -> Async.RunSynchronously(work, 20000)
-                    |> ignore
-                    None
-                with error -> Some(error.GetType())
+                    try
+                        Fcqrs.sendAwaiting (projection :> FCQRS.Query.ISubscribe<IMessageWithCID>)
+                            tallies (Fcqrs.newCid ()) (Fcqrs.aggregateId "tally") (Tally 1) (fun _ -> true)
+                        |> fun work -> Async.RunSynchronously(work, 20000)
+                        |> ignore
+                        None
+                    with error -> Some(error.GetType())
+                finally
+                    held.TrySetResult() |> ignore
             // Finalizing a faulted task that nothing observed raises UnobservedTaskException.
             for _ in 1..5 do
                 GC.Collect()
@@ -840,6 +843,117 @@ let private postgresAmbientSnapshot connectionString =
         ()
     Expect.equal (fixture.Scalar "SELECT COUNT(*) FROM applied_events") 2L "catch-up captures fresh committed history independently of the caller's ambient snapshot"
 
+
+// A projection started with Fcqrs.projection tracks each aggregate's sequence numbers, so an
+// event that commits after later-numbered events still reaches its handler.
+let private postgresLateCommitProjection connectionString =
+    use fixture = new Fixture(Some connectionString)
+    let seen = Collections.Concurrent.ConcurrentQueue<string * int64>()
+    use projection =
+        Fcqrs.projection fixture.Api
+            (Projection.single FromStart (fun message ->
+                match message with
+                | :? Event<CatchUpEvent> as event -> seen.Enqueue(string event.Sender, ValueLens.Value event.Version)
+                | _ -> ()))
+    fixture.Send("template", 1)
+    wait (projection.CatchUpAsync())
+    use delayed = fixture.OpenJournal()
+    use transaction = delayed.BeginTransaction()
+    use columnsCommand = delayed.CreateCommand()
+    columnsCommand.Transaction <- transaction
+    columnsCommand.CommandText <- "SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'journal' AND column_name <> 'ordering' ORDER BY ordinal_position"
+    let columns = ResizeArray<string>()
+    do
+        use reader = columnsCommand.ExecuteReader()
+        while reader.Read() do columns.Add(reader.GetString 0)
+    let quoted = columns |> Seq.map (fun name -> "\"" + name + "\"") |> String.concat ", "
+    let values = columns |> Seq.map (function "sequence_number" -> "2" | name -> "\"" + name + "\"") |> String.concat ", "
+    // Takes a journal number and holds its commit while a later-numbered event commits.
+    execute delayed (Some transaction) $"INSERT INTO journal ({quoted}) SELECT {values} FROM journal LIMIT 1" []
+    fixture.Send("commits-first", 2)
+    wait (projection.CatchUpAsync())
+    // Longer than Akka's global-offset reader waits for a missing number before skipping it.
+    Thread.Sleep 3000
+    Expect.equal seen.Count 2 "the uncommitted event is not delivered yet"
+    transaction.Commit()
+    wait (projection.CatchUpAsync())
+    Expect.equal seen.Count 3 "the event that committed late is delivered"
+
+let private namedProgress =
+    testCase "projection: named progress resumes after a restart, and FromStart reads everything again"
+    <| fun _ ->
+        let suffix, journalPath, projectionPath = sqlitePaths ()
+        let run (events: int list) (progress: ProjectionProgress) =
+            let api =
+                Fcqrs.actor (VerifySerialization.configuration().Build()) NullLoggerFactory.Instance
+                    (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite (sqliteString journalPath))) ("NamedProgress" + suffix)
+            try
+                let tallies = tallyAggregate api "NamedProgressTally"
+                Fcqrs.wireSagaStarters api []
+                let seen = Collections.Concurrent.ConcurrentQueue<int>()
+                use projection =
+                    Fcqrs.projection api
+                        (Projection.single progress (fun message ->
+                            match message with
+                            | :? Event<TallyEvent> as event -> let (Tallied amount) = event.EventDetails in seen.Enqueue amount
+                            | _ -> ()))
+                for amount in events do
+                    tallies.Send (Fcqrs.newCid ()) (Fcqrs.aggregateId "tally") (Tally amount) (fun _ -> true)
+                    |> fun work -> Async.RunSynchronously(work, 20000)
+                    |> ignore
+                wait (projection.CatchUpAsync())
+                List.ofSeq seen
+            finally
+                wait (api.Stop())
+        try
+            Expect.equal (run [ 1; 2 ] (Named "tallies")) [ 1; 2 ] "the first run handles both events"
+            Expect.equal (run [ 3 ] (Named "tallies")) [ 3 ] "a named projection resumes after the events it handled"
+            Expect.equal (run [] FromStart) [ 1; 2; 3 ] "FromStart reads the whole journal again"
+            Expect.equal (run [] (Named "another")) [ 1; 2; 3 ] "a new name reads the whole journal once"
+        finally
+            deleteDatabases [ journalPath; projectionPath ]
+
+
+let private transientJournalFailure =
+    testCase "projection: a journal that cannot be read for a while delays the projection without stopping it"
+    <| fun _ ->
+        let suffix, journalPath, projectionPath = sqlitePaths ()
+        let api =
+            Fcqrs.actor (VerifySerialization.configuration().Build()) NullLoggerFactory.Instance
+                (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite (sqliteString journalPath))) ("TransientJournal" + suffix)
+        try
+            let tallies = tallyAggregate api "TransientJournalTally"
+            Fcqrs.wireSagaStarters api []
+            let seen = Collections.Concurrent.ConcurrentQueue<int>()
+            use projection =
+                Fcqrs.projection api
+                    (Projection.single FromStart (fun message ->
+                        match message with
+                        | :? Event<TallyEvent> as event -> let (Tallied amount) = event.EventDetails in seen.Enqueue amount
+                        | _ -> ()))
+            let tally amount =
+                tallies.Send (Fcqrs.newCid ()) (Fcqrs.aggregateId "tally") (Tally amount) (fun _ -> true)
+                |> fun work -> Async.RunSynchronously(work, 20000)
+                |> ignore
+            tally 1
+            wait (projection.CatchUpAsync())
+            let rename (from: string) (target: string) =
+                use connection = new SqliteConnection(sqliteString journalPath)
+                connection.Open()
+                execute connection None $"ALTER TABLE {from} RENAME TO {target}" []
+            // The journal cannot be read: background polls and this caller's wait fail.
+            rename "journal" "journal_away"
+            Expect.throws (fun () -> wait (projection.CatchUpAsync())) "a wait during the outage fails"
+            Thread.Sleep 2500
+            Expect.isFalse projection.Completion.IsCompleted "the projection keeps running through the outage"
+            rename "journal_away" "journal"
+            tally 2
+            wait (projection.CatchUpAsync())
+            Expect.equal (List.ofSeq seen) [ 1; 2 ] "the projection resumes after the outage"
+        finally
+            wait (api.Stop())
+            deleteDatabases [ journalPath; projectionPath ]
+
 let tests =
     let postgres =
         match Environment.GetEnvironmentVariable "FCQRS_TEST_POSTGRES" with
@@ -861,12 +975,15 @@ let tests =
               heldWaiterOrder
               observedTimeout
               nullCorrelationId
+              namedProgress
+              transientJournalFailure
               testCase "SQLite: competing projection instances do not double-apply" (fun _ -> concurrentInstances None)
               match postgres with
               | Some connection ->
                   testCase "PostgreSQL: catch-up spans all aggregate histories" (fun _ -> allAggregates postgres)
                   testCase "PostgreSQL: competing projection instances do not double-apply" (fun _ -> concurrentInstances postgres)
                   testCase "PostgreSQL: a late commit below the previous global offset is processed" (fun _ -> postgresCommitInversion connection)
+                  testCase "PostgreSQL: a projection receives an event that commits after later-numbered ones" (fun _ -> postgresLateCommitProjection connection)
                   testCase "PostgreSQL: an older ambient snapshot cannot weaken catch-up" (fun _ -> postgresAmbientSnapshot connection)
               | None ->
                   ptestCase "PostgreSQL integration: set FCQRS_TEST_POSTGRES to run" ignore ])

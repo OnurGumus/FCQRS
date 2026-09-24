@@ -22,12 +22,13 @@ Identify these four values:
 
 - the projection handler and the event types it accepts;
 - the read-model tables, index, or collection it owns;
-- the progress stored for that projection: its rows in `fcqrs_projection_progress` for a transactional
-  projection, or its offset row for an [offset-based projection](add-a-projection.html);
+- the progress stored for that projection: its rows in `fcqrs_projection_progress`, under its name. A
+  [projection that keeps its progress in memory](add-a-projection.html) stores none and reads the
+  whole journal at every start;
 - the application queries that read the model.
 
-Do not reuse one projection name or offset for independently deployed projections. Each consumer needs
-progress that describes its own work.
+Do not reuse one projection name for independently deployed projections. Each consumer needs progress
+that describes its own work.
 
 ## Rebuild in place
 
@@ -48,17 +49,19 @@ DELETE FROM fcqrs_projection_progress
 WHERE projection_name = 'Statement';
 ```
 
-For an offset-based projection, set its offset row back to `0` instead.
+A named projection that writes outside the journal database stores its progress in the same table,
+so the same `DELETE`, with its name, resets it.
 
-The progress update must remain in the same transaction as each read-model update. A transactional
-projection does this itself. A crash during the rebuild then retries the uncommitted event.
+A transactional projection commits its progress with each read-model update, so a crash during the
+rebuild retries only the uncommitted event. A named projection stores its progress after its handler
+returns, so its handler can receive the last event again.
 
 ## Rebuild beside the live model
 
 For a large model or one that must remain available:
 
 1. create new tables or an index with a versioned name, such as `statement_v2`;
-2. run a second projection with its own name or offset into the new destination, **in a separate
+2. run a second projection with its own name into the new destination, **in a separate
    process or deployment**: one FCQRS host supports one projection, and a second `AddProjection` or
    `AddTransactionalProjection` call throws `InvalidOperationException` at registration;
 3. let it replay and catch up while queries continue using the old model;
@@ -67,8 +70,8 @@ For a large model or one that must remain available:
 6. keep the old model until rollback is no longer required.
 
 Events written during the rebuild are consumed as the new projection catches up. The cutover should
-occur only after it reaches the live stream. For a transactional projection, `CatchUpAsync` confirms
-that it has handled every event committed before the call.
+occur only after it reaches the live stream. `CatchUpAsync` confirms that the projection has handled
+every event committed before the call.
 
 The tutorial's [add a memo](../tutorial/add-a-memo.html) step uses the first half of this sequence:
 the projection `StatementV2` fills `statement_v2` from the first event, and the old `statement` table
@@ -76,7 +79,7 @@ stays as it is. That step replaces the old projection in the same host rather th
 
 ## When replay fails
 
-Stop at the first failing event. Record its offset, type, correlation id, and exception. Then determine
+Stop at the first failing event. Record its aggregate, version, type, correlation id, and exception. Then determine
 whether the problem is:
 
 - a projection bug;
@@ -84,8 +87,8 @@ whether the problem is:
 - an invariant that older history legitimately does not satisfy;
 - unavailable read-model storage.
 
-Do not skip an event merely to advance the offset. A skipped event makes every later result suspect.
-Correct the handler or compatibility code, reset to a known good offset, and resume.
+Do not skip an event merely to advance the projection. A skipped event makes every later result
+suspect. Correct the handler or compatibility code, and resume.
 
-See [Add a projection](add-a-projection.html) for the handler and transaction pattern, and
+See [Add a projection](add-a-projection.html) for the kinds of projection and their handlers, and
 [Evolve persisted events](evolve-events.html) for old event shapes.

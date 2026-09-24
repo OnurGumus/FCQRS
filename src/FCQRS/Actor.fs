@@ -652,6 +652,7 @@ module internal Internal =
                 journaledStateRef.Value <- journaledState
                 lastJournaledIdRef.Value <- Some event.Id
                 publishEvent true event
+                Common.JournalActivity.stored mailbox.System
 
                 match activity with
                 | null -> ()

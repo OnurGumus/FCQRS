@@ -315,10 +315,10 @@ let private projections =
             let legacy = ConcurrentQueue<int64 * Event<CurrentEvent>>()
             let completed = signal<unit>()
             Fcqrs.projection api
-                (Projection.single 0L (fun offset value ->
+                (Projection.single FromStart (fun value ->
                     match value with
                     | :? Event<CurrentEvent> as event ->
-                        legacy.Enqueue(offset, event)
+                        legacy.Enqueue(FCQRS.Model.Data.ValueLens.Value event.Version, event)
                         if legacy.Count = 3 then completed.TrySetResult() |> ignore
                     | _ -> failwith "The legacy projection received a historical event type."))
             |> ignore

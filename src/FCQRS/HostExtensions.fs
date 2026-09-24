@@ -15,7 +15,7 @@ namespace FCQRS
 //
 // (An aggregate's TState/TCommand/TEvent come off its Aggregate<,,> base; see
 // FcqrsBuilderExtensions at the bottom. A saga's come off the class `create` returns.)
-//         .AddProjection((offset, evt) => Projection.HandleEventWrapper(lf, conn, offset, evt));
+//         .AddProjection(evt => Projection.Handle(evt));
 //
 // The actual wiring runs once at host startup (an IHostedService), in the order
 // aggregates -> sagas -> saga-starter -> projection, so a saga can resolve the
@@ -296,77 +296,17 @@ type FcqrsBuilder internal (services: IServiceCollection, connectionString: stri
 
         projectionStep <- Some step
 
-    /// Register the read-model projection, resuming from the given offset (default 0).
-    member this.AddProjection(handler: Func<int64, obj, IList<IMessageWithCID>>, [<Optional; DefaultParameterValue(0L)>] lastOffset: int64) : FcqrsBuilder =
+    // Starts the projection at host startup and registers it as IProjection, which also
+    // serves ISubscribe resolution and read-your-writes waits.
+    member private this.RegisterProjection(start: IServiceProvider -> IActor -> FCQRS.Projections.IProjection) =
         this.RegisterSubscriptionResolver()
-        this.SetProjectionStep(fun _sp actor -> QueryApi.Init(actor, lastOffset, handler))
-        this
-
-    /// Register the read-model projection with a single-event handler: the
-    /// handler just updates the read model (returns void); each aggregate event
-    /// is then published to subscribers as-is. Use the list-returning overload
-    /// when notifications must be filtered — e.g. suppressing intermediate
-    /// events so read-your-writes only wakes on the final one.
-    member this.AddProjection(handler: Action<int64, obj>, [<Optional; DefaultParameterValue(0L)>] lastOffset: int64) : FcqrsBuilder =
-        this.RegisterSubscriptionResolver()
-        this.SetProjectionStep(fun _sp actor -> QueryApi.Init(actor, lastOffset, handler))
-        this
-
-    /// Register the read-model projection with a filtered single-event handler:
-    /// the handler updates the read model and returns Publish/Suppress per event
-    /// to control whether it wakes subscribers. The middle ground between the void
-    /// overload (publish all) and the list-returning one (full control) — e.g.
-    /// suppress an intermediate event so read-your-writes wakes only on the final.
-    member this.AddProjection(handler: Func<int64, obj, Notify>, [<Optional; DefaultParameterValue(0L)>] lastOffset: int64) : FcqrsBuilder =
-        this.RegisterSubscriptionResolver()
-        this.SetProjectionStep(fun _sp actor -> QueryApi.Init(actor, lastOffset, handler))
-        this
-
-    /// Register the read-model projection, building the handler (and resuming offset)
-    /// from DI. Use this overload when the projection needs services — e.g. an
-    /// ILoggerFactory — so it resolves them the same way the actor system does.
-    member this.AddProjection(
-            handler: Func<IServiceProvider, Func<int64, obj, IList<IMessageWithCID>>>,
-            lastOffset: Func<IServiceProvider, int64>) : FcqrsBuilder =
-        this.RegisterSubscriptionResolver()
-        this.SetProjectionStep(fun sp actor -> QueryApi.Init(actor, lastOffset.Invoke sp, handler.Invoke sp))
-        this
-
-    /// DI variant of the single-event handler overload.
-    member this.AddProjection(
-            handler: Func<IServiceProvider, Action<int64, obj>>,
-            lastOffset: Func<IServiceProvider, int64>) : FcqrsBuilder =
-        this.RegisterSubscriptionResolver()
-        this.SetProjectionStep(fun sp actor -> QueryApi.Init(actor, lastOffset.Invoke sp, handler.Invoke sp))
-        this
-
-    /// DI variant of the filtered single-event handler overload.
-    member this.AddProjection(
-            handler: Func<IServiceProvider, Func<int64, obj, Notify>>,
-            lastOffset: Func<IServiceProvider, int64>) : FcqrsBuilder =
-        this.RegisterSubscriptionResolver()
-        this.SetProjectionStep(fun sp actor -> QueryApi.Init(actor, lastOffset.Invoke sp, handler.Invoke sp))
-        this
-
-    /// Register a transactional projection with journal-wide CatchUpAsync support.
-    /// The handler must write through the supplied connection and transaction and
-    /// await all database work. FCQRS commits updates with durable contiguous progress.
-    /// Resolve FCQRS.Projections.IProjection from DI to wait after an aggregate reply.
-    /// Ordering is per persistence ID, and unprocessed journal history must be retained.
-    member this.AddTransactionalProjection(
-            options: FCQRS.Projections.TransactionalProjectionOptions,
-            handler: Func<System.Data.Common.DbConnection, System.Data.Common.DbTransaction, Akka.Persistence.Query.EventEnvelope, Task>) : FcqrsBuilder =
-        if isNull (box handler) then nullArg (nameof handler)
-        this.RegisterSubscriptionResolver()
-        this.SetProjectionStep(fun _sp actor ->
-            FCQRS.Projections.start actor options (fun connection transaction envelope -> handler.Invoke(connection, transaction, envelope))
-            :> FCQRS.Query.ISubscribe)
+        this.SetProjectionStep(fun sp actor -> start sp actor :> FCQRS.Query.ISubscribe)
         services.AddSingleton<FCQRS.Projections.IProjection>(fun (sp: IServiceProvider) ->
             let runtime = sp.GetRequiredService<FcqrsRuntime>()
             let current () =
                 match runtime.Subscription with
                 | :? FCQRS.Projections.IProjection as projection -> projection
-                | _ -> invalidOp "Transactional projection is not initialized yet (the host has not started)."
+                | _ -> invalidOp "The projection is not initialized yet (the host has not started)."
             let subs = sp.GetRequiredService<FCQRS.Query.ISubscribe>()
             { new FCQRS.Projections.IProjection with
                 member _.CatchUpAsync() = (current ()).CatchUpAsync()
@@ -389,6 +329,65 @@ type FcqrsBuilder internal (services: IServiceCollection, connectionString: stri
                       | _ -> TimeSpan.FromSeconds 30.0 })
         |> ignore
         this
+
+    /// Register the read-model projection. It follows each aggregate's and saga's own sequence
+    /// numbers, so it never skips a stored event. Without a name it keeps its progress in memory
+    /// and reads the whole journal at each start, for a read model kept in memory. With a name it
+    /// stores its progress in the journal database and resumes, and a handler can see an event
+    /// again after a crash. A handler that throws terminates the process. The handler returns the
+    /// notifications to publish. Resolve FCQRS.Projections.IProjection to wait for it.
+    member this.AddProjection(
+            handler: Func<obj, IList<IMessageWithCID>>,
+            [<Optional; DefaultParameterValue(null: string | null)>] name: string | null) : FcqrsBuilder =
+        this.RegisterProjection(fun _ actor -> QueryApi.Init(actor, handler, name))
+
+    /// Register the read-model projection with a single-event handler: the handler just
+    /// updates the read model (returns void); each aggregate event is then published to
+    /// subscribers as-is. Use the list-returning overload when notifications must be
+    /// filtered, e.g. suppressing intermediate events so read-your-writes only wakes on the final one.
+    member this.AddProjection(
+            handler: Action<obj>,
+            [<Optional; DefaultParameterValue(null: string | null)>] name: string | null) : FcqrsBuilder =
+        this.RegisterProjection(fun _ actor -> QueryApi.Init(actor, handler, name))
+
+    /// Register the read-model projection with a filtered single-event handler: the handler
+    /// updates the read model and returns Publish/Suppress per event to control whether it
+    /// wakes subscribers.
+    member this.AddProjection(
+            handler: Func<obj, Notify>,
+            [<Optional; DefaultParameterValue(null: string | null)>] name: string | null) : FcqrsBuilder =
+        this.RegisterProjection(fun _ actor -> QueryApi.Init(actor, handler, name))
+
+    /// Register the read-model projection, building the handler from DI. Use this overload
+    /// when the projection needs services, e.g. an ILoggerFactory.
+    member this.AddProjection(
+            handler: Func<IServiceProvider, Func<obj, IList<IMessageWithCID>>>,
+            [<Optional; DefaultParameterValue(null: string | null)>] name: string | null) : FcqrsBuilder =
+        this.RegisterProjection(fun sp actor -> QueryApi.Init(actor, handler.Invoke sp, name))
+
+    /// DI variant of the single-event handler overload.
+    member this.AddProjection(
+            handler: Func<IServiceProvider, Action<obj>>,
+            [<Optional; DefaultParameterValue(null: string | null)>] name: string | null) : FcqrsBuilder =
+        this.RegisterProjection(fun sp actor -> QueryApi.Init(actor, handler.Invoke sp, name))
+
+    /// DI variant of the filtered single-event handler overload.
+    member this.AddProjection(
+            handler: Func<IServiceProvider, Func<obj, Notify>>,
+            [<Optional; DefaultParameterValue(null: string | null)>] name: string | null) : FcqrsBuilder =
+        this.RegisterProjection(fun sp actor -> QueryApi.Init(actor, handler.Invoke sp, name))
+
+    /// Register a transactional projection with journal-wide CatchUpAsync support.
+    /// The handler must write through the supplied connection and transaction and
+    /// await all database work. FCQRS commits updates with durable contiguous progress.
+    /// Resolve FCQRS.Projections.IProjection from DI to wait after an aggregate reply.
+    /// Ordering is per persistence ID, and unprocessed journal history must be retained.
+    member this.AddTransactionalProjection(
+            options: FCQRS.Projections.TransactionalProjectionOptions,
+            handler: Func<System.Data.Common.DbConnection, System.Data.Common.DbTransaction, Akka.Persistence.Query.EventEnvelope, Task>) : FcqrsBuilder =
+        if isNull (box handler) then nullArg (nameof handler)
+        this.RegisterProjection(fun _ actor ->
+            FCQRS.Projections.start actor options (fun connection transaction envelope -> handler.Invoke(connection, transaction, envelope)))
 
 /// The single startup step: creates the actor system (via the IActor singleton),
 /// runs the recorded registration steps in order, wires the saga-starter from all

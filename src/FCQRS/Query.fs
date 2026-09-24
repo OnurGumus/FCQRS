@@ -1,3 +1,4 @@
+/// Correlation subscriptions and the notifications projections publish to them.
 module FCQRS.Query
 
 open Akka.Persistence.Query
@@ -150,9 +151,9 @@ let asDefaultSubscribe (inner: ISubscribe<IMessageWithCID>) : ISubscribe =
 /// projection (notify with each event as-is); write a list-returning handler
 /// when notifications must be filtered or transformed — e.g. suppressing
 /// intermediate events so read-your-writes only wakes on the final one.
-let autoPublish (handle: int64 -> obj -> unit) : int64 -> obj -> IMessageWithCID list =
-    fun offset evt ->
-        handle offset evt
+let autoPublish (handle: obj -> unit) : obj -> IMessageWithCID list =
+    fun evt ->
+        handle evt
 
         match evt with
         | :? IMessageWithCID as m -> [ m ]
@@ -164,9 +165,9 @@ let autoPublish (handle: int64 -> obj -> unit) : int64 -> obj -> IMessageWithCID
 /// wake: on Publish the journal event itself is notified (when it is an
 /// IMessageWithCID), on Suppress nothing is. The middle ground between autoPublish
 /// (always notify) and a hand-written list handler (notify anything).
-let filterPublish (handle: int64 -> obj -> Notify) : int64 -> obj -> IMessageWithCID list =
-    fun offset evt ->
-        match handle offset evt with
+let filterPublish (handle: obj -> Notify) : obj -> IMessageWithCID list =
+    fun evt ->
+        match handle evt with
         | Publish ->
             match evt with
             | :? IMessageWithCID as m -> [ m ]
@@ -365,99 +366,31 @@ module internal Internal =
 
 let private activitySource = new ActivitySource(Telemetry.QueryActivitySourceName)
 
-let init<'TDataEvent, 'TPredicate, 't when 'TDataEvent :> IMessageWithCID> (actorApi: IActor) offsetCount handler =
-    FCQRS.EventUpcasting.Internal.freeze actorApi.System
-    let logger = actorApi.LoggerFactory.CreateLogger "Query"
-    logger.LogInformation "Query started"
+/// The span of one projected event, a child of the trace in the event's metadata: it closes the
+/// trace from command to event to projection. Null when nothing listens or the event has no CID.
+let internal projectionActivity (event: obj) (sequenceNr: int64) : Activity | null =
+    if activitySource.HasListeners() then
+        match event with
+        | :? FCQRS.Model.Data.IMessage as msg ->
+            let cidStr = msg.CID |> ValueLens.Value |> ValueLens.Value
 
-    // Each active subscriber has its own bounded, ephemeral notification queue.
-    // Publications without subscribers are discarded; a full subscriber queue
-    // drops its oldest item without blocking projection or other subscribers.
-    let bufferSize =
-        let s: string | null = actorApi.Configuration["config:akka:fcqrs:notification-buffer"]
+            let payloadName =
+                match event with
+                | :? IEnvelope as env -> env.Payload.GetType().Name
+                | other -> other.GetType().Name
 
-        match System.Int32.TryParse s with
-        | true, v when v > 0 -> v
-        | _ -> 1024
+            let act =
+                match tryTraceContext msg.Metadata cidStr with
+                | Some p -> activitySource.StartActivity($"Projection:{payloadName}", ActivityKind.Internal, p)
+                | None -> activitySource.StartActivity($"Projection:{payloadName}", ActivityKind.Internal)
 
-    let notificationTimeout =
-        CommandHandler.Internal.resolveCommandTimeout actorApi.System.Settings.Config
-    let notifications = NotificationHub<'TDataEvent>(bufferSize, logger, notificationTimeout)
-    actorApi.System.RegisterOnTermination(Action(fun () -> notifications.Stop()))
+            match act with
+            | null -> ()
+            | act ->
+                act.SetTag("cid", cidStr) |> ignore
+                act.SetTag("sequence", sequenceNr) |> ignore
 
-    // A journal-read error must never silently complete the projection stream
-    // (frozen read models in a healthy-looking process). Restart the source
-    // with backoff instead — resuming from the last offset the handler actually
-    // processed, so a restart never replays already-projected events.
-    let mutable lastProcessedOffset = offsetCount
-
-    let restartSettings =
-        RestartSettings.Create(TimeSpan.FromSeconds 1.0, TimeSpan.FromSeconds 30.0, 0.2)
-
-    let source =
-        RestartSource.WithBackoff(
-            (fun () ->
-                (readJournal actorApi.System)
-                    .AllEvents(Offset.Sequence lastProcessedOffset)
-                    // Akka reports restarts only through its own logging, which FCQRS turns off,
-                    // so a journal that keeps failing would otherwise freeze the read model silently.
-                    .SelectError(fun error ->
-                        logger.LogError(
-                            error,
-                            "Query projection could not read the journal after offset {Offset}; retrying with backoff.",
-                            lastProcessedOffset)
-                        error)),
-            restartSettings)
-
-    source
-    |> Source.runForEach actorApi.Materializer (fun envelop ->
-        try
-            let offsetValue = (envelop.Offset :?> Sequence).Value
-            let event = FCQRS.EventUpcasting.Internal.upcastEvent actorApi.System envelop.Event
-            logger.LogTrace("data event : {@dataevent}", event)
-
-            // Projection span: closes the trace end-to-end (command -> event ->
-            // projection). Parent comes from the event's metadata traceparent.
-            use activity =
-                if activitySource.HasListeners() then
-                    match event with
-                    | :? FCQRS.Model.Data.IMessage as msg ->
-                        let cidStr = msg.CID |> ValueLens.Value |> ValueLens.Value
-
-                        let payloadName =
-                            match event with
-                            | :? IEnvelope as env -> env.Payload.GetType().Name
-                            | other -> other.GetType().Name
-
-                        let act =
-                            match tryTraceContext msg.Metadata cidStr with
-                            | Some p ->
-                                activitySource.StartActivity($"Projection:{payloadName}", ActivityKind.Internal, p)
-                            | None -> activitySource.StartActivity($"Projection:{payloadName}", ActivityKind.Internal)
-
-                        match act with
-                        | null -> ()
-                        | act ->
-                            act.SetTag("cid", cidStr) |> ignore
-                            act.SetTag("offset", offsetValue) |> ignore
-
-                        act
-                    | _ -> null
-                else
-                    null
-
-            let res = handler offsetValue event
-
-            res |> List.iter notifications.Publish
-
-            lastProcessedOffset <- offsetValue
-        with ex ->
-            logger.LogCritical(ex, "Error in query handler")
-            // FailFast, not Exit: Exit runs ProcessExit handlers (which can hang);
-            // a broken projection must kill the process immediately and loudly.
-            // (The projection span was already disposed by `use` during unwind,
-            // so it sits in the exporter queue — the flush below gets it out.)
-            fatalFailFast null "Process terminated due to query projection error" ex)
-    |> Async.Start
-
-    notifications :> ISubscribe<'TDataEvent>
+            act
+        | _ -> null
+    else
+        null

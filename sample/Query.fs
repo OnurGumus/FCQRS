@@ -5,8 +5,8 @@ module Query
 open Microsoft.Extensions.Logging
 open FCQRS.Common
 open FCQRS.Model.Data
-// All persisted events will come with monotonically increasing offset value.
-let handleEventWrapper (loggerFactory:ILoggerFactory) (offsetValue: int64) (event:obj)=
+// Receives every stored event, in version order within each aggregate.
+let handleEventWrapper (loggerFactory:ILoggerFactory) (event:obj)=
     let log = loggerFactory.CreateLogger "Event"
     log.LogInformation("Event: {0}", event.ToString())
 
@@ -15,8 +15,8 @@ let handleEventWrapper (loggerFactory:ILoggerFactory) (offsetValue: int64) (even
         | :? FCQRS.Common.Event<User.Event> as  event ->
 
             // typically do your regular insert , update ,delete for read side projection.
-            // then 'update' the offset value to a table or  persistent storage in the same transaction.
-            // This is to ensure that if the query side crashes, it can start from the last offset value.
+            // A projection with a name stores how far it has read after this handler returns,
+            // so after a crash it can hand the same event again: make the update idempotent.
             // commit them atomically.
             // if you are using a database, you can use a transaction.
             // This logic can also be batched. You don't have to do it one by one.

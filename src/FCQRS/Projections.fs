@@ -13,7 +13,7 @@ open FCQRS.Common
 open FCQRS.Model.Data
 open FCQRS.ProjectionStorage
 
-/// A transactional projection and its request-scoped notification subscriptions.
+/// A running projection and its request-scoped notification subscriptions.
 /// Catch-up covers every application persistence ID in one committed journal snapshot.
 /// Akka's own cluster-sharding records (IDs starting with "/sharding/") are excluded.
 /// It does not wait for other projections, later writes, or external effects.
@@ -47,7 +47,8 @@ type TransactionalProjectionOptions(name: string, store: SqlProjectionStore) =
     member _.Name = name
     /// Authoritative journal connection and transactional read-model store.
     member _.Store = store
-    /// Delay between background journal-head queries, after the previous batch finishes.
+    /// Delay between background journal-head queries, after the previous batch finishes. An
+    /// aggregate on this node that stores an event starts the next query at once, and
     /// CatchUpAsync captures its own snapshot immediately. Default: one second.
     member val PollInterval = TimeSpan.FromSeconds 1.0 with get, set
     /// Maximum number of events fetched for one persistence ID per query. Default: 500.
@@ -55,73 +56,74 @@ type TransactionalProjectionOptions(name: string, store: SqlProjectionStore) =
     /// Bound for the entire catch-up call, including snapshot capture. Default: 30 seconds.
     member val CatchUpTimeout = TimeSpan.FromSeconds 30.0 with get, set
 
-/// Creates an independently running projection. The handler must write exclusively
-/// through the supplied connection and transaction, and await all its database work.
-/// FCQRS commits the handler's updates and contiguous journal position together.
-/// Events are processed in sequence order within each persistence ID; there is no
-/// cross-persistence-ID order. Retain journal history until it has been processed.
-/// Configured Akka event adapters are currently unsupported by this projection reader.
-/// Configure the SQL journal through HOCON; DataOptionsSetup overrides are rejected
-/// because capture and replay must be validated against the same database and mapping.
-let start
-    (actor: IActor)
-    (options: TransactionalProjectionOptions)
-    (handler: DbConnection -> DbTransaction -> EventEnvelope -> Task)
-    : IProjection =
+/// Journal history a projection needs is missing or out of order, for example after journal rows
+/// were deleted. Reading again cannot repair it: restore the history or rebuild the read model.
+type JournalHistoryException(message: string) =
+    inherit InvalidOperationException(message)
 
-    if isNull (box options) then nullArg (nameof options)
-    if isNull (box handler) then nullArg (nameof handler)
-    let validateDuration name (value: TimeSpan) =
-        if value <= TimeSpan.Zero || value.TotalMilliseconds > float (UInt32.MaxValue - 1u) then
-            invalidArg name "The duration must be positive and less than 49.7 days."
-    validateDuration "PollInterval" options.PollInterval
-    validateDuration "CatchUpTimeout" options.CatchUpTimeout
-    if options.BatchSize < 1 then invalidArg "BatchSize" "BatchSize must be positive."
-    FCQRS.EventUpcasting.Internal.freeze actor.System
+// The journal settings both projection kinds read and validate.
+type private JournalSettings =
+    { Config: Akka.Configuration.Config
+      Provider: string
+      ConnectionString: string
+      Table: string
+      Schema: string option
+      PersistenceIdColumn: string
+      SequenceNumberColumn: string
+      WriteConfig: Akka.Configuration.Config
+      WriteMapping: string }
 
-    let name, store = options.Name, options.Store
-    let interval, batchSize, timeout = options.PollInterval, int64 options.BatchSize, options.CatchUpTimeout
-    let logger = actor.LoggerFactory.CreateLogger "TransactionalProjection"
+let private journalSettings (actor: IActor) (allowAdapters: bool) =
     if actor.System.Settings.Setup.Get<Akka.Persistence.Sql.Config.DataOptionsSetup>().HasValue
        || actor.System.Settings.Setup.Get<Akka.Persistence.Sql.Config.MultiDataOptionsSetup>().HasValue then
-        invalidArg "options" "Transactional projections require SQL journal settings in HOCON; DataOptionsSetup overrides cannot be validated."
+        invalidArg "options" "Projections require SQL journal settings in HOCON; DataOptionsSetup overrides cannot be validated."
     let config = actor.System.Settings.Config.WithFallback(Akka.Persistence.Sql.SqlPersistence.Get(actor.System).DefaultConfig)
-    let notificationTimeout = CommandHandler.Internal.resolveCommandTimeout config
     let writePlugin = config.GetString("akka.persistence.journal.plugin")
     if writePlugin <> "akka.persistence.journal.sql" then
-        invalidArg "options" "Transactional projections require the Akka.Persistence.Sql write journal."
+        invalidArg "options" "Projections require the Akka.Persistence.Sql write journal."
     let adapters = config.GetConfig(writePlugin + ".event-adapters")
-    if not (isNull adapters) && not adapters.IsEmpty then
+    if not allowAdapters && not (isNull adapters) && not adapters.IsEmpty then
         invalidArg "options" "Transactional projections currently require an identity journal reader (no Akka event-adapters)."
-
     let readConfig = config.GetConfig(Akka.Persistence.Sql.Query.SqlReadJournal.Identifier)
     let readerWritePlugin = readConfig.GetString("write-plugin", "")
     if not (String.IsNullOrEmpty readerWritePlugin) && readerWritePlugin <> writePlugin then
         invalidArg "options" "The SQL query journal must use the active write journal and its event adapters."
     let mapping = readConfig.GetString("table-mapping", "default")
-    let schema = readConfig.GetString(mapping + ".schema-name", null) |> Option.ofObj
     let provider = readConfig.GetString("provider-name", "")
-    if (store.Dialect = ProjectionSqlDialect.Sqlite && not (provider.StartsWith("SQLite", StringComparison.OrdinalIgnoreCase)))
-       || (store.Dialect = ProjectionSqlDialect.PostgreSql && not (provider.StartsWith("PostgreSQL", StringComparison.OrdinalIgnoreCase))) then
-        invalidArg "options" "The projection store dialect must match the actor's SQL journal provider."
-    store.ValidateJournal(
-        readConfig.GetString("connection-string", ""),
-        readConfig.GetString(mapping + ".journal.table-name", "journal"), schema,
-        readConfig.GetString(mapping + ".journal.columns.persistence-id", "persistence_id"),
-        readConfig.GetString(mapping + ".journal.columns.sequence-number", "sequence_number"))
-
     let writeConfig = config.GetConfig(writePlugin)
-    let writeProvider = writeConfig.GetString("provider-name", "")
-    if not (String.Equals(provider, writeProvider, StringComparison.OrdinalIgnoreCase)) then
+    if not (String.Equals(provider, writeConfig.GetString("provider-name", ""), StringComparison.OrdinalIgnoreCase)) then
         invalidArg "options" "The SQL read and write journal providers must match."
-    let writeMapping = writeConfig.GetString("table-mapping", "default")
-    store.ValidateJournal(
-        writeConfig.GetString("connection-string", ""),
-        writeConfig.GetString(writeMapping + ".journal.table-name", "journal"),
-        writeConfig.GetString(writeMapping + ".schema-name", null) |> Option.ofObj,
-        writeConfig.GetString(writeMapping + ".journal.columns.persistence-id", "persistence_id"),
-        writeConfig.GetString(writeMapping + ".journal.columns.sequence-number", "sequence_number"))
+    { Config = config
+      Provider = provider
+      ConnectionString = readConfig.GetString("connection-string", "")
+      Table = readConfig.GetString(mapping + ".journal.table-name", "journal")
+      Schema = readConfig.GetString(mapping + ".schema-name", null) |> Option.ofObj
+      PersistenceIdColumn = readConfig.GetString(mapping + ".journal.columns.persistence-id", "persistence_id")
+      SequenceNumberColumn = readConfig.GetString(mapping + ".journal.columns.sequence-number", "sequence_number")
+      WriteConfig = writeConfig
+      WriteMapping = writeConfig.GetString("table-mapping", "default") }
 
+// What distinguishes the two projection kinds: where positions live, and what applying an event means.
+type private Tracking =
+    { /// Names the projection in logs and errors.
+      Name: string
+      /// Retries a failed journal read or progress write with backoff instead of stopping, and
+      /// terminates the process on missing journal history. Otherwise any error stops the projection.
+      Resilient: bool
+      Initialize: CancellationToken -> Task
+      /// Each persistence ID's last sequence number in one committed journal snapshot.
+      Capture: CancellationToken -> Task<Map<string, int64>>
+      ReadPositions: CancellationToken -> Task<Map<string, int64>>
+      /// Applies an event that is next for its persistence ID, publishes its notifications
+      /// through the function given, and returns the persistence ID's position afterwards.
+      Apply: (IMessageWithCID -> unit) -> EventEnvelope -> CancellationToken -> Task<int64> }
+
+// Reads the journal per persistence ID, from each one's position to the captured snapshot, so a
+// write that commits after later-numbered writes is read on the next pass instead of skipped.
+let private run (actor: IActor) (logger: ILogger) (settings: JournalSettings)
+                (interval: TimeSpan) (batchSize: int64) (timeout: TimeSpan) (tracking: Tracking) : IProjection =
+    let name = tracking.Name
+    let notificationTimeout = CommandHandler.Internal.resolveCommandTimeout settings.Config
     let journal = FCQRS.Query.Internal.readJournal actor.System
     let gate = new SemaphoreSlim(1, 1)
     let lifetime = new CancellationTokenSource()
@@ -131,14 +133,23 @@ let start
     let mutable stopped = 0
     let notifications =
         FCQRS.Query.Internal.NotificationHub<IMessageWithCID>(
-            max 1 (config.GetInt("akka.fcqrs.notification-buffer", 1024)), logger, notificationTimeout)
+            max 1 (settings.Config.GetInt("akka.fcqrs.notification-buffer", 1024)), logger, notificationTimeout)
     let subscriptions = FCQRS.Query.asDefaultSubscribe (notifications :> FCQRS.Query.ISubscribe<IMessageWithCID>)
+    // An aggregate on this node stored an event: read the journal now instead of at the next poll.
+    let wake = new SemaphoreSlim(0, 1)
+    let stored =
+        JournalActivity.listen actor.System (fun () ->
+            try
+                if wake.CurrentCount = 0 then wake.Release() |> ignore
+            with
+            | :? SemaphoreFullException
+            | :? ObjectDisposedException -> ())
 
     let fail error =
         lock errorGate (fun () ->
             if failure.IsNone then
                 failure <- Some error
-                logger.LogError(error, "Transactional projection {Projection} stopped", name)
+                logger.LogError(error, "Projection {Projection} stopped", name)
                 completion.TrySetException(error) |> ignore)
         lifetime.Cancel()
         notifications.Stop()
@@ -148,29 +159,18 @@ let start
         | Some error -> raise (InvalidOperationException($"Projection '{name}' has stopped after an error.", error))
         | None -> lifetime.Token.ThrowIfCancellationRequested()
 
-    let apply (held: ResizeArray<unit -> unit>) (envelope: EventEnvelope) = task {
-        use! connection = store.OpenProjectionAsync(lifetime.Token)
-        use! transaction = connection.BeginTransactionAsync(lifetime.Token)
-        do! store.LockProjectionAsync(connection, transaction, name, lifetime.Token)
-        let! position = store.ReadPositionAsync(connection, transaction, name, envelope.PersistenceId, lifetime.Token)
-        if envelope.SequenceNr > position then
-            if position = Int64.MaxValue || envelope.SequenceNr <> position + 1L then
-                invalidOp $"Projection '{name}' found a journal gap for '{envelope.PersistenceId}' after sequence {position}. Retain or restore its journal history."
-            let event = FCQRS.EventUpcasting.Internal.upcastEvent actor.System envelope.Event
-            let envelope =
-                if obj.ReferenceEquals(event, envelope.Event) then envelope
-                else EventEnvelope(envelope.Offset, envelope.PersistenceId, envelope.SequenceNr, event, envelope.Timestamp, envelope.Tags)
-            do! handler connection transaction envelope
-            do! store.WritePositionAsync(connection, transaction, name, envelope.PersistenceId, position, envelope.SequenceNr, lifetime.Token)
-            do! transaction.CommitAsync(lifetime.Token)
-            match envelope.Event with
-            | :? IMessageWithCID as event ->
-                notifications.PublishExceptWaiters event |> Option.iter held.Add
-            | _ -> ()
-            return envelope.SequenceNr
-        else
-            return position
-    }
+    // Missing history cannot be read again; a resilient projection would otherwise retry forever.
+    let fatal (error: exn) =
+        logger.LogCritical(error, "Projection {Projection} cannot continue: its journal history is missing.", name)
+        fatalFailFast null "Process terminated because a projection's journal history is missing" error
+
+    let transient (error: exn) =
+        tracking.Resilient && not (error :? JournalHistoryException) && not lifetime.IsCancellationRequested
+
+    // 1 s, doubling to 30 s, plus up to 20 percent random delay.
+    let retryAfter (failures: int) =
+        let seconds = min 30.0 (Math.Pow(2.0, float (failures - 1)))
+        TimeSpan.FromSeconds(seconds * (1.0 + Random.Shared.NextDouble() * 0.2))
 
     let readBatch persistenceId first last = task {
         let source = journal.CurrentEventsByPersistenceId(persistenceId, first, last)
@@ -185,7 +185,7 @@ let start
     }
 
     let processTargets (targets: Map<string, int64>) = task {
-        let! positions = store.ReadPositionsAsync(name, lifetime.Token)
+        let! positions = tracking.ReadPositions lifetime.Token
         // Persistence IDs are processed in key order, not causal order, so a saga's follow-up
         // event can commit before the originator event that caused it. Both share a correlation
         // ID, and a snapshot holding the follow-up also holds its cause. Correlation-ID waiters
@@ -193,6 +193,7 @@ let start
         // whichever one wakes them, the events that caused it are already readable. Subscribers
         // without a correlation ID still receive every notification as its event commits.
         let held = ResizeArray<unit -> unit>()
+        let publish message = notifications.PublishExceptWaiters message |> Option.iter held.Add
         for KeyValue(persistenceId, target) in targets do
             let mutable position = positions |> Map.tryFind persistenceId |> Option.defaultValue 0L
             while position < target do
@@ -202,12 +203,12 @@ let start
                 let mutable lastRead = position
                 for envelope in events do
                     if envelope.PersistenceId <> persistenceId || lastRead = Int64.MaxValue || envelope.SequenceNr <> lastRead + 1L then
-                        invalidOp $"Projection '{name}' found a noncontiguous journal event after sequence {lastRead} for '{persistenceId}'. Missing history and expanding event adapters cannot be checkpointed."
-                    let! committed = apply held envelope
+                        raise (JournalHistoryException $"Projection '{name}' found a noncontiguous journal event after sequence {lastRead} for '{persistenceId}'. Missing history and expanding event adapters cannot be checkpointed.")
+                    let! committed = tracking.Apply publish envelope lifetime.Token
                     position <- max position committed
                     lastRead <- envelope.SequenceNr
                 if lastRead < last then
-                    invalidOp $"Projection '{name}' could not read journal sequence {lastRead + 1L} for '{persistenceId}'. Retain or restore its journal history."
+                    raise (JournalHistoryException $"Projection '{name}' could not read journal sequence {lastRead + 1L} for '{persistenceId}'. Retain or restore its journal history, and make every event adapter return exactly one event.")
         for deliver in held do
             deliver ()
     }
@@ -219,7 +220,23 @@ let start
 
     let initialize = Task.Run(Func<Task>(fun () -> task {
         use ambient = suppressAmbient ()
-        do! store.InitializeAsync(lifetime.Token)
+        let mutable failures = 0
+        let mutable ready = false
+        while not ready do
+            let! failed = task {
+                try
+                    do! tracking.Initialize lifetime.Token
+                    return None
+                with error when transient error ->
+                    return Some error
+            }
+            match failed with
+            | None -> ready <- true
+            | Some error ->
+                failures <- failures + 1
+                let delay = retryAfter failures
+                logger.LogError(error, "Projection {Projection} could not prepare its progress store; retrying in {Delay}.", name, delay)
+                do! Task.Delay(delay, lifetime.Token)
     }))
 
     let processSerialized targets (waitToken: CancellationToken) = task {
@@ -235,12 +252,29 @@ let start
         use ambient = suppressAmbient ()
         try
             do! initialize
+            let mutable failures = 0
             while not lifetime.IsCancellationRequested do
-                let! targets = store.CaptureAsync(lifetime.Token)
-                do! processSerialized targets lifetime.Token
-                do! Task.Delay(interval, lifetime.Token)
+                let! failed = task {
+                    try
+                        let! targets = tracking.Capture lifetime.Token
+                        do! processSerialized targets lifetime.Token
+                        return None
+                    with error when transient error ->
+                        return Some error
+                }
+                match failed with
+                | None ->
+                    failures <- 0
+                    let! _ = wake.WaitAsync(interval, lifetime.Token)
+                    ()
+                | Some error ->
+                    failures <- failures + 1
+                    let delay = retryAfter failures
+                    logger.LogError(error, "Projection {Projection} could not read the journal or store its progress; retrying in {Delay}.", name, delay)
+                    do! Task.Delay(delay, lifetime.Token)
         with
         | :? OperationCanceledException when lifetime.IsCancellationRequested -> ()
+        | :? JournalHistoryException as error when tracking.Resilient -> fatal error
         | error -> fail error
         do! gate.WaitAsync()
         gate.Release() |> ignore
@@ -249,6 +283,7 @@ let start
 
     let dispose () =
         if Interlocked.Exchange(&stopped, 1) = 0 then
+            stored.Dispose()
             lifetime.Cancel()
             notifications.Stop()
     actor.System.RegisterOnTermination(Action dispose)
@@ -273,13 +308,18 @@ let start
                 do! initialize.WaitAsync(waitToken)
                 // Microsoft.Data.Sqlite executes its async ADO.NET calls synchronously.
                 // Keep snapshot acquisition off the calling thread and bound the wait.
-                let capture = Task.Run<Map<string, int64>>(Func<Task<Map<string, int64>> | null>(fun () -> store.CaptureAsync(waitToken)), waitToken)
+                let capture = Task.Run<Map<string, int64>>(Func<Task<Map<string, int64>> | null>(fun () -> tracking.Capture waitToken), waitToken)
                 let! targets = capture.WaitAsync(waitToken)
                 let work = task {
                     try
                         do! processSerialized targets waitToken
                     with
                     | :? OperationCanceledException as error when waitToken.IsCancellationRequested -> return raise error
+                    | :? JournalHistoryException as error when tracking.Resilient ->
+                        fatal error
+                        return raise error
+                    // The caller's wait fails; the projection keeps running and retries.
+                    | error when transient error -> return raise error
                     | error ->
                         fail error
                         return raise error
@@ -314,3 +354,181 @@ let start
 
       interface FCQRS.Query.IHasNotificationTimeout with
         member _.Timeout = notificationTimeout }
+
+let private upcastEnvelope (actor: IActor) (envelope: EventEnvelope) =
+    let event = FCQRS.EventUpcasting.Internal.upcastEvent actor.System envelope.Event
+    if obj.ReferenceEquals(event, envelope.Event) then envelope
+    else EventEnvelope(envelope.Offset, envelope.PersistenceId, envelope.SequenceNr, event, envelope.Timestamp, envelope.Tags)
+
+let private gap name (envelope: EventEnvelope) (position: int64) =
+    if position = Int64.MaxValue || envelope.SequenceNr <> position + 1L then
+        raise (JournalHistoryException $"Projection '{name}' found a journal gap for '{envelope.PersistenceId}' after sequence {position}. Retain or restore its journal history, and make every event adapter return exactly one event.")
+
+/// Creates an independently running projection. The handler must write exclusively
+/// through the supplied connection and transaction, and await all its database work.
+/// FCQRS commits the handler's updates and contiguous journal position together.
+/// Events are processed in sequence order within each persistence ID; there is no
+/// cross-persistence-ID order. Retain journal history until it has been processed.
+/// Configured Akka event adapters are currently unsupported by this projection reader.
+/// Configure the SQL journal through HOCON; DataOptionsSetup overrides are rejected
+/// because capture and replay must be validated against the same database and mapping.
+let start
+    (actor: IActor)
+    (options: TransactionalProjectionOptions)
+    (handler: DbConnection -> DbTransaction -> EventEnvelope -> Task)
+    : IProjection =
+
+    if isNull (box options) then nullArg (nameof options)
+    if isNull (box handler) then nullArg (nameof handler)
+    let validateDuration name (value: TimeSpan) =
+        if value <= TimeSpan.Zero || value.TotalMilliseconds > float (UInt32.MaxValue - 1u) then
+            invalidArg name "The duration must be positive and less than 49.7 days."
+    validateDuration "PollInterval" options.PollInterval
+    validateDuration "CatchUpTimeout" options.CatchUpTimeout
+    if options.BatchSize < 1 then invalidArg "BatchSize" "BatchSize must be positive."
+    FCQRS.EventUpcasting.Internal.freeze actor.System
+
+    let name, store = options.Name, options.Store
+    let logger = actor.LoggerFactory.CreateLogger "TransactionalProjection"
+    let settings = journalSettings actor false
+    if (store.Dialect = ProjectionSqlDialect.Sqlite && not (settings.Provider.StartsWith("SQLite", StringComparison.OrdinalIgnoreCase)))
+       || (store.Dialect = ProjectionSqlDialect.PostgreSql && not (settings.Provider.StartsWith("PostgreSQL", StringComparison.OrdinalIgnoreCase))) then
+        invalidArg "options" "The projection store dialect must match the actor's SQL journal provider."
+    store.ValidateJournal(
+        settings.ConnectionString, settings.Table, settings.Schema,
+        settings.PersistenceIdColumn, settings.SequenceNumberColumn)
+    let writeConfig, writeMapping = settings.WriteConfig, settings.WriteMapping
+    store.ValidateJournal(
+        writeConfig.GetString("connection-string", ""),
+        writeConfig.GetString(writeMapping + ".journal.table-name", "journal"),
+        writeConfig.GetString(writeMapping + ".schema-name", null) |> Option.ofObj,
+        writeConfig.GetString(writeMapping + ".journal.columns.persistence-id", "persistence_id"),
+        writeConfig.GetString(writeMapping + ".journal.columns.sequence-number", "sequence_number"))
+
+    let apply (publish: IMessageWithCID -> unit) (envelope: EventEnvelope) (token: CancellationToken) = task {
+        use! connection = store.OpenProjectionAsync(token)
+        use! transaction = connection.BeginTransactionAsync(token)
+        do! store.LockProjectionAsync(connection, transaction, name, token)
+        let! position = store.ReadPositionAsync(connection, transaction, name, envelope.PersistenceId, token)
+        if envelope.SequenceNr > position then
+            gap name envelope position
+            let envelope = upcastEnvelope actor envelope
+            do! handler connection transaction envelope
+            do! store.WritePositionAsync(connection, transaction, name, envelope.PersistenceId, position, envelope.SequenceNr, token)
+            do! transaction.CommitAsync(token)
+            match envelope.Event with
+            | :? IMessageWithCID as event -> publish event
+            | _ -> ()
+            return envelope.SequenceNr
+        else
+            return position
+    }
+
+    run actor logger settings options.PollInterval (int64 options.BatchSize) options.CatchUpTimeout
+        { Name = name
+          Resilient = false
+          Initialize = store.InitializeAsync
+          Capture = store.CaptureAsync
+          ReadPositions = fun token -> store.ReadPositionsAsync(name, token)
+          Apply = apply }
+
+/// Where a tracked projection keeps how far it has read.
+type internal TrackedProgress =
+    /// In memory: every start reads the whole journal again.
+    | InMemory
+    /// In the journal database under this name: a start resumes where the last one stopped.
+    | Stored of string
+
+/// Creates a projection that follows each persistence ID's own sequence numbers, so it never skips
+/// an event that commits after later-numbered ones, and hands each event to `handler`. Events are
+/// processed in sequence order within each persistence ID; there is no cross-persistence-ID order.
+/// With stored progress, a handler can see an event again after a crash: its position is stored
+/// after the handler returns. A handler that throws terminates the process. The journal must be
+/// SQLite or PostgreSQL, configured through HOCON.
+let internal startTracked (actor: IActor) (progress: TrackedProgress) (handler: obj -> IMessageWithCID list) : IProjection =
+    if isNull (box handler) then nullArg (nameof handler)
+    match progress with
+    | Stored name when String.IsNullOrWhiteSpace name -> invalidArg (nameof progress) "A stored projection needs a name."
+    | _ -> ()
+    FCQRS.EventUpcasting.Internal.freeze actor.System
+    let logger = actor.LoggerFactory.CreateLogger "Projection"
+    // An Akka event adapter must turn each journal row into exactly one event; the sequence
+    // checks stop the projection when one returns several events or none.
+    let settings = journalSettings actor true
+    let dialect =
+        if settings.Provider.StartsWith("SQLite", StringComparison.OrdinalIgnoreCase) then ProjectionSqlDialect.Sqlite
+        elif settings.Provider.StartsWith("PostgreSQL", StringComparison.OrdinalIgnoreCase) then ProjectionSqlDialect.PostgreSql
+        else invalidArg (nameof actor) $"Projections require a SQLite or PostgreSQL journal; this one uses '{settings.Provider}'."
+    // The connections Akka.Persistence.Sql makes: the same provider and connection string.
+    let provider =
+        match LinqToDB.Data.DataConnection.GetDataProvider(settings.Provider, settings.ConnectionString) with
+        | null -> invalidArg (nameof actor) $"No data provider is available for the journal provider '{settings.Provider}'."
+        | provider -> provider
+    let connect = Func<DbConnection>(fun () -> provider.CreateConnection settings.ConnectionString)
+    let store =
+        SqlProjectionStore(
+            dialect, connect, connect,
+            journalTable = settings.Table,
+            ?journalSchema = settings.Schema,
+            ?progressSchema = settings.Schema,
+            journalPersistenceIdColumn = settings.PersistenceIdColumn,
+            journalSequenceNumberColumn = settings.SequenceNumberColumn)
+
+    let handle (envelope: EventEnvelope) =
+        let envelope = upcastEnvelope actor envelope
+        try
+            use activity = FCQRS.Query.projectionActivity envelope.Event envelope.SequenceNr
+            handler envelope.Event
+        with error ->
+            logger.LogCritical(error, "Error in query handler")
+            // FailFast, not Exit: Exit runs ProcessExit handlers, which can hang.
+            fatalFailFast null "Process terminated due to query projection error" error
+            failwith "unreachable"
+
+    let tracking =
+        match progress with
+        | InMemory ->
+            let positions = System.Collections.Concurrent.ConcurrentDictionary<string, int64>()
+            { Name = "in-memory"
+              Resilient = true
+              Initialize = fun _ -> Task.CompletedTask
+              Capture = store.CaptureAsync
+              ReadPositions = fun _ -> Task.FromResult(positions |> Seq.map (fun pair -> pair.Key, pair.Value) |> Map.ofSeq)
+              Apply =
+                fun publish envelope _ ->
+                    let position =
+                        match positions.TryGetValue envelope.PersistenceId with
+                        | true, position -> position
+                        | _ -> 0L
+                    if envelope.SequenceNr > position then
+                        gap "in-memory" envelope position
+                        handle envelope |> List.iter publish
+                        positions[envelope.PersistenceId] <- envelope.SequenceNr
+                        Task.FromResult envelope.SequenceNr
+                    else
+                        Task.FromResult position }
+        | Stored name ->
+            { Name = name
+              Resilient = true
+              Initialize = store.InitializeAsync
+              Capture = store.CaptureAsync
+              ReadPositions = fun token -> store.ReadPositionsAsync(name, token)
+              Apply =
+                fun publish envelope token -> task {
+                    use! connection = store.OpenProjectionAsync(token)
+                    use! transaction = connection.BeginTransactionAsync(token)
+                    do! store.LockProjectionAsync(connection, transaction, name, token)
+                    let! position = store.ReadPositionAsync(connection, transaction, name, envelope.PersistenceId, token)
+                    if envelope.SequenceNr > position then
+                        gap name envelope position
+                        let notifications = handle envelope
+                        do! store.WritePositionAsync(connection, transaction, name, envelope.PersistenceId, position, envelope.SequenceNr, token)
+                        do! transaction.CommitAsync(token)
+                        notifications |> List.iter publish
+                        return envelope.SequenceNr
+                    else
+                        return position
+                } }
+
+    let defaults = TransactionalProjectionOptions(tracking.Name, store)
+    run actor logger settings defaults.PollInterval (int64 defaults.BatchSize) defaults.CatchUpTimeout tracking

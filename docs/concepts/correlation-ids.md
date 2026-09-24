@@ -35,7 +35,7 @@ That continuity supports two jobs:
 
 A CID is context, not a correctness guarantee. It does not serialize commands, deduplicate retries,
 make delivery exactly once, or prove that every projection is current. Aggregate boundaries,
-idempotency rules, journal writes, and projection offsets provide those guarantees separately.
+idempotency rules, journal writes, and projection progress provide those guarantees separately.
 
 ## Why a successful command can still look stale
 
@@ -78,7 +78,7 @@ unsafe: send -------- projection publishes -------- subscribe
 safe:   subscribe --- send --- projection publishes --- wait completes
 ```
 
-The journal event and projection offset are durable. The notification is deliberately ephemeral. It
+The journal event is durable. The notification is deliberately ephemeral. It
 coordinates one active request; it is not a queue for disconnected clients. Bound the wait so the
 request has a defined outcome if the projection cannot catch up: the F# `sendAwaiting` helper is
 bounded by `akka.fcqrs.command-timeout` (default 30s) and raises `TimeoutException`; raw subscriptions
@@ -87,7 +87,7 @@ and the C# awaiter take an explicit timeout or cancellation token.
 ## Wait for the projection you will query
 
 A notification means that the projection publishing it has finished handling the matching event. It
-says nothing about another projection with its own offset.
+says nothing about another projection with its own progress.
 
 For example, a statement projection and a monthly-report projection may consume the same event at
 different speeds. If the response queries only the statement, wait for that projection. If it

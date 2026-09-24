@@ -8,6 +8,9 @@ module Account =
         | Rejected of reason: string
 open Account
 // snippet: 1
-let register (api: IActor) (connString: string) =
+let register (api: IActor) =
     // snippet: 2
-    subscriptions
+    balanceView
+let registerNamed (api: IActor) (updateSearch: obj -> unit) =
+    // snippet: 3
+    search

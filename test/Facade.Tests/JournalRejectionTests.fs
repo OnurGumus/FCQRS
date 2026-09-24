@@ -54,7 +54,37 @@ type RefusingJournal() =
 [<Literal>]
 let ChildFlag = "--journal-rejection-child"
 
-let runChild (scenario: string) (db: string) : int =
+// A projection that finds a journal row missing terminates the process: reading again cannot
+// bring the row back, and skipping it would leave the read model wrong without a sign.
+let private missingHistory (db: string) : int =
+    let api =
+        Fcqrs.actor (VerifySerialization.configuration().Build()) NullLoggerFactory.Instance
+            (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite $"Data Source={db};")) "MissingHistory"
+    let tolls =
+        Fcqrs.aggregate api
+            { Name = "Toll"
+              Initial = 0
+              Decide = fun (_: Command<TollCommand>) _ -> PersistEvent Passed
+              Fold = fun (_: Event<TollEvent>) state -> state + 1
+              Snapshots = NoSnapshots
+              Passivation = PassivationPolicy.Default }
+    Fcqrs.wireSagaStarters api []
+    for _ in 1..2 do
+        Async.RunSynchronously(tolls.Send (Fcqrs.newCid ()) (Fcqrs.aggregateId "gate") Pass (fun _ -> true), 30000) |> ignore
+    do
+        use connection = new Microsoft.Data.Sqlite.SqliteConnection($"Data Source={db};")
+        connection.Open()
+        use command = connection.CreateCommand()
+        command.CommandText <- "DELETE FROM journal WHERE persistence_id LIKE 'Toll/%' AND sequence_number = 1"
+        command.ExecuteNonQuery() |> ignore
+    printfn "journal-rejection-child: the actor system started"
+    Fcqrs.projection api (Projection.single FromStart ignore) |> ignore
+    Thread.Sleep 10000
+    printfn "journal-rejection-child: the process survived the missing history"
+    api.Stop().Wait(TimeSpan.FromSeconds 30.0) |> ignore
+    0
+
+let private rejectedWrites (scenario: string) (db: string) : int =
     let kv (key: string) (value: string) = KeyValuePair<string, string | null>(key, value)
     let configuration =
         VerifySerialization.configuration()
@@ -108,6 +138,11 @@ let runChild (scenario: string) (db: string) : int =
     api.Stop().Wait(TimeSpan.FromSeconds 30.0) |> ignore
     0
 
+let runChild (scenario: string) (db: string) : int =
+    match scenario with
+    | "missing-history" -> missingHistory db
+    | _ -> rejectedWrites scenario db
+
 let private runScenario (scenario: string) =
     let db = Path.Combine(Path.GetTempPath(), $"fcqrs_journal_rejection_{Guid.NewGuid():N}.db")
     let host = Environment.ProcessPath |> Unchecked.nonNull
@@ -140,10 +175,21 @@ let private rejectedWrite (scenario: string) (message: string) =
         Expect.notEqual exitCode 0 "the process terminated"
         Expect.stringContains errors message "the termination names the rejected write"
 
+let private missingHistoryTerminates =
+    testCase "journal history: a projection that finds a journal row missing terminates the process"
+    <| fun _ ->
+        let exited, exitCode, output, errors = runScenario "missing-history"
+        Expect.isTrue exited "the child process finished"
+        Expect.stringContains output "the actor system started" "the scenario ran"
+        Expect.isFalse (output.Contains "survived the missing history") "the process did not continue past the missing row"
+        Expect.notEqual exitCode 0 "the process terminated"
+        Expect.stringContains errors "journal history is missing" "the termination names the missing history"
+
 let tests =
     testSequenced (
         testList
             "journal rejection"
             [ rejectedWrite "aggregate" "the journal rejected an event"
-              rejectedWrite "saga" "the journal rejected a saga event" ]
+              rejectedWrite "saga" "the journal rejected a saga event"
+              missingHistoryTerminates ]
     )

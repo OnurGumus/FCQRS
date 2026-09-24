@@ -18,7 +18,7 @@ async {
     System.IO.File.Delete "demo.db"
 
     printfn "%s Query started" (timestamp())
-    let sub = Bootstrap.sub (Query.handleEventWrapper Bootstrap.loggerF) 0L
+    let sub = Bootstrap.sub (Query.handleEventWrapper Bootstrap.loggerF)
 
     let userName = "testuser"
     let password = "password"

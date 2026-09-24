@@ -154,8 +154,8 @@ await app.RunAsync();
 ```
 
 `Statement.Handle` is the tutorial's [statement projection](../tutorial/show-a-statement.html). FCQRS
-commits its read-model changes and progress in one transaction. For a projection that stores its own
-offset, see [Add a projection](add-a-projection.html).
+commits its read-model changes and progress in one transaction. For a read model kept in memory or
+outside the journal database, see [Add a projection](add-a-projection.html).
 
 ## 4. Send from an endpoint or application service
 

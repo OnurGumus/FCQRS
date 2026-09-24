@@ -93,5 +93,5 @@ UserSaga.init actorApi |> ignore
 let userSubs cid actorId command filter metadata =
     actorApi.CreateCommandSubscription userShard cid actorId command filter metadata
 
-let sub handleEventWrapper offsetCount =
-    FCQRS.Query.init actorApi offsetCount handleEventWrapper
+let sub handleEventWrapper =
+    FCQRS.FSharp.Fcqrs.projection actorApi (FCQRS.FSharp.Projection.multi FCQRS.FSharp.FromStart handleEventWrapper)

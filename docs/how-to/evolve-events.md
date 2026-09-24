@@ -151,7 +151,7 @@ FCQRS converts journal events after deserialization, before passing them into th
   embedded in an FCQRS saga snapshot.
 
 The journal rows are unchanged. Conversion preserves the event envelope's ID, creation date, sender,
-correlation ID, persisted version, and metadata. Projection offsets, persistence IDs, and journal
+correlation ID, persisted version, and metadata. Projection progress, persistence IDs, and journal
 sequence numbers also stay unchanged. One old event still represents one position in its history.
 
 Upcasting does not run for live commands, published replies, or the live `Persisted` and `Deferred`

@@ -23,7 +23,7 @@ let run (args: string array) =
         let paused = TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
         let pause = args.Length > 0 && args[0] = "--pause-publication"
         let publishing = pause || (args.Length > 0 && args[0] = "--publish")
-        let handleProjection (_offset: int64) (message: obj) =
+        let handleProjection (message: obj) =
             match message with
             | :? Event<DocumentEvent> as event ->
                 match event.EventDetails with
@@ -53,7 +53,7 @@ let run (args: string array) =
                       Snapshots = Default; Passivation = PassivationPolicy.Default }
             let publication = Fcqrs.saga api (Publication.definition documents.Factory slugs.Factory pause paused)
             Fcqrs.wireSagaStarters api [ publication ]
-            let subscriptions = Fcqrs.projection api (Projection.single 0 handleProjection)
+            let subscriptions = Fcqrs.projection api (Projection.single FromStart handleProjection)
             // docs:end
             let aggregateId = Fcqrs.aggregateId documentId
             let send command = documents.Send (Fcqrs.newCid ()) aggregateId command (fun _ -> true)

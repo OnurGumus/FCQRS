@@ -107,10 +107,12 @@ An aggregate stores an event that starts a saga only after that saga reports it 
 - An event upcaster throws, or returns a type the aggregate or saga cannot fold, while history is read.
 - An event or message cannot be serialized.
 
-### Offset-based projections
+### Projections
 
 - The handler registered with `Fcqrs.projection` or `AddProjection` throws, including a failure of its
   own database. See [Add a projection](../how-to/add-a-projection.html#Handle-failures-visibly).
+- A projection started with `Fcqrs.projection` or `AddProjection` finds journal history missing, for
+  example a deleted journal row. Reading again cannot bring it back.
 
 ## Failures that do not stop the process
 
@@ -123,7 +125,7 @@ Some failures have a place to go, so FCQRS reports them there instead:
 | The journal cannot store an event, for example because the database is down | The aggregate stops and recovers on its next command; a saga stops and restarts from its journal |
 | An aggregate cannot read its history from the journal | The aggregate stops; its next command tries again |
 | No reply arrives within `akka.fcqrs.command-timeout` | The caller gets `TimeoutException` |
-| An offset-based projection cannot read the journal | FCQRS logs the error and retries with backoff |
+| A projection started with `Fcqrs.projection` or `AddProjection` cannot read the journal or store its progress | FCQRS logs the error and retries with backoff |
 | A transactional projection's handler throws | The transaction rolls back, the projection stops, and `IProjection.Completion` faults |
 | A saga's handler throws on `ExpectationExhausted` | FCQRS logs the error and delivers it again one deadline later |
 

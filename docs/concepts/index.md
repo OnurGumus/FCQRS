@@ -36,7 +36,7 @@ their state.
 - A **fold** rebuilds current aggregate state by applying those events in order.
 - A **projection** consumes journal events and updates query-ready data.
 - A **read model** is the data produced by a projection for a particular query or screen.
-- An **offset** records how far a projection has consumed the journal.
+- A projection's **progress** records the last version of each aggregate it has handled.
 - A **saga** stores the progress of work that crosses aggregate or service boundaries.
 - A [**correlation id**](correlation-ids.html) ties one request to the commands, events, saga steps,
   and projection signal it causes.
@@ -53,7 +53,7 @@ read-model rows are not three names for the same data.
 |---|---|
 | Why separate decisions, history, and queries? | [CQRS and event sourcing](cqrs-and-event-sourcing.html) |
 | Where should one business rule live? | [Aggregates and the write side](aggregates.html) |
-| How do projections, offsets, and query models differ? | [The read side](read-models.html) |
+| How do projections, their progress, and query models differ? | [The read side](read-models.html) |
 | How does one request wait for the correct projection? | [Correlation IDs and read-your-writes](correlation-ids.html) |
 | How do independent owners coordinate after failures? | [Sagas](sagas.html) |
 | What do defer, snapshot, and passivation each do? | [Deferring, snapshots, and passivation](aggregate-lifecycle.html) |

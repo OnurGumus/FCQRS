@@ -15,7 +15,7 @@ let timestamp() = sprintf "[%d ms]" sw.ElapsedMilliseconds
 
 // Start query side and get an ISubscribe to wait for the query side to catch up with the command side.
 printfn "%s Query started" (timestamp())
-let sub = Bootstrap.sub (Query.handleEventWrapper Bootstrap.loggerF) 0L
+let sub = Bootstrap.sub (Query.handleEventWrapper Bootstrap.loggerF)
 
 // Helper to create a traceparent CID from current activity context for distributed tracing
 // Format: "00-{traceId}-{spanId}-{flags}" (W3C traceparent)

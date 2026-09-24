@@ -4,7 +4,7 @@
 /// (HostExtensions.fs) gives C#, but with F# idioms: records-of-functions for the
 /// definitions, typed handles for the results, an explicit wiring pipeline, and
 /// plain helpers for saga side effects. It is a *pure addition* that wraps only the
-/// existing primitives (IActor.InitializeActor / SagaBuilder.initSimple / Query.init
+/// existing primitives (IActor.InitializeActor / SagaBuilder.initSimple / Projections.startTracked
 /// / InitializeSagaStarter / CreateCommandSubscription / Actor.api) and changes
 /// nothing in the C# interop layer or the core.
 ///
@@ -86,14 +86,23 @@ type SagaHandle =
       StartOn: obj -> bool }
 
 /// A read-model projection definition.
-type Projection =
-    { /// Resume from this journal offset (e.g. the last committed offset).
-      LastOffset: int64
-      /// Called per persisted event; returns the read-model events to publish
-      /// to subscribers (empty list = nothing to notify).
-      Handle: int64 -> obj -> IMessageWithCID list }
+/// Where a projection keeps how far it has read.
+type ProjectionProgress =
+    /// In memory: the projection reads the whole journal each time it starts, then follows new
+    /// events. For a read model the process keeps in memory.
+    | FromStart
+    /// Stored in the journal database under this name: the projection resumes where it stopped.
+    /// For a read model that outlives the process. A new name reads the whole journal once.
+    | Named of string
 
-/// Constructors for the two projection-handler shapes.
+/// A projection: where it keeps its progress, and what it does with each stored event.
+type Projection =
+    { Progress: ProjectionProgress
+      /// Called per stored event; returns the read-model events to publish
+      /// to subscribers (empty list = nothing to notify).
+      Handle: obj -> IMessageWithCID list }
+
+/// Constructors for the projection-handler shapes.
 [<CompilationRepresentation(CompilationRepresentationFlags.ModuleSuffix)>]
 module Projection =
 
@@ -101,14 +110,14 @@ module Projection =
     /// publish (empty list = nothing). Use when notifications must be filtered
     /// or transformed, e.g. suppressing intermediate events so read-your-writes
     /// only wakes on the final one.
-    let multi (lastOffset: int64) (handle: int64 -> obj -> IMessageWithCID list) : Projection =
-        { LastOffset = lastOffset; Handle = handle }
+    let multi (progress: ProjectionProgress) (handle: obj -> IMessageWithCID list) : Projection =
+        { Progress = progress; Handle = handle }
 
     /// Single-event handler: just update the read model (returns unit); each
     /// aggregate event is then published to subscribers as-is. The common case
     /// when every event is worth notifying.
-    let single (lastOffset: int64) (handle: int64 -> obj -> unit) : Projection =
-        { LastOffset = lastOffset
+    let single (progress: ProjectionProgress) (handle: obj -> unit) : Projection =
+        { Progress = progress
           Handle = FCQRS.Query.autoPublish handle }
 
     /// Filtered single-event handler: update the read model, then return
@@ -116,8 +125,8 @@ module Projection =
     /// middle rung between `single` (always publish) and `multi` (return an
     /// arbitrary notification list). Use it for the common "publish each
     /// event except the intermediate ones" case, without building a list.
-    let filtered (lastOffset: int64) (handle: int64 -> obj -> Notify) : Projection =
-        { LastOffset = lastOffset
+    let filtered (progress: ProjectionProgress) (handle: obj -> Notify) : Projection =
+        { Progress = progress
           Handle = FCQRS.Query.filterPublish handle }
 
 // ---------------------------------------------------------------------------
@@ -389,8 +398,17 @@ module Fcqrs =
         api
 
     /// Register the read-model projection and return the subscription stream.
-    let projection (api: IActor) (p: Projection) : FCQRS.Query.ISubscribe =
-        FCQRS.Query.init api p.LastOffset p.Handle |> FCQRS.Query.asDefaultSubscribe
+    /// Starts a projection. It follows each aggregate's and saga's own sequence numbers, so it never
+    /// skips a stored event, and it hands each event to the handler in sequence order per aggregate,
+    /// with no order between aggregates. With `Named` progress, a handler can see an event again
+    /// after a crash. A handler that throws terminates the process. Requires a SQLite or
+    /// PostgreSQL journal; an Akka event adapter must turn each journal row into one event.
+    let projection (api: IActor) (p: Projection) : FCQRS.Projections.IProjection =
+        let progress =
+            match p.Progress with
+            | FromStart -> FCQRS.Projections.InMemory
+            | Named name -> FCQRS.Projections.Stored name
+        FCQRS.Projections.startTracked api progress p.Handle
 
     /// Starts a transactional projection with journal-wide CatchUpAsync support.
     /// Write the read model through the supplied connection and transaction; FCQRS

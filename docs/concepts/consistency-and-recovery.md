@@ -12,7 +12,7 @@ or visible at different times:
 
 - an aggregate serializes decisions for one identity;
 - the journal durably stores an accepted event;
-- a projection later commits query data and its offset;
+- a projection later handles the event and records its progress;
 - a saga stores workflow progress between independent participants;
 - an external service has its own durability and retry rules.
 
@@ -32,7 +32,7 @@ command received
   -> aggregate state folded in memory
   -> event published
   -> projection handles event
-  -> read model and offset committed
+  -> read model and progress committed
   -> projection notification published
 ```
 
@@ -51,7 +51,7 @@ a promise that every read model is current. [Correlation IDs and
 read-your-writes](correlation-ids.html) develops the complete model, including why callers subscribe
 before sending and why deferred replies must skip the wait.
 
-## Version, offset, and correlation id are not interchangeable
+## Version, projection progress, and correlation id are not interchangeable
 
 These three values recur at every recovery boundary, so it pays to restate them together (they are
 introduced individually with [the read side](read-models.html) and
@@ -60,7 +60,7 @@ introduced individually with [the read side](read-models.html) and
 | Value | Scope | What it tells you |
 |---|---|---|
 | Aggregate version | one aggregate identity | how many persisted events that identity has applied |
-| Projection offset | one projection stream position | how far that projection has committed |
+| Projection progress | one projection, per aggregate | the last version of each aggregate that projection has handled |
 | Correlation id | one request flow | which commands, events, and notifications belong together |
 
 Every persisted aggregate event receives the next version. A deferred reply is not stored and does not
@@ -68,8 +68,8 @@ increment the persisted version. Its live fold must preserve recoverable state b
 reproduce it. [Deferring, snapshots, and passivation](aggregate-lifecycle.html) follows those paths in
 detail.
 
-Projection offsets advance independently. Event version 8 of Alice's account might appear at offset
-52,413 in the global stream.
+Each projection keeps its own progress. One projection may have handled version 8 of Alice's account
+while another is still at version 5.
 
 ## Each component recovers from different evidence
 
@@ -85,9 +85,10 @@ An [event upcaster](../how-to/evolve-events.html) can adapt historical journal p
 It does not recompute state already loaded from a snapshot. A change to how old events affect state
 therefore needs compatible snapshot state or a tested plan to recover the complete history.
 
-A projection recovers differently. It loads its committed offset and resumes the event stream after
-that point. Its read-model data and offset must share a transaction or another explicit reliability
-mechanism.
+A projection recovers differently. It loads the last version it handled for each aggregate and
+continues after it, or reads the journal from the start when it keeps its progress in memory. Its
+read-model data and stored progress must share a transaction, or its handler must tolerate an event it
+has already handled.
 
 A saga recovers its stored state and then re-drives the current step. Because delivery to another
 participant is outside the saga journal transaction, repeated commands must be safe.

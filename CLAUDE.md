@@ -80,7 +80,11 @@ Keep these distinctions intact in code comments and documentation.
 ### Projection
 
 - A projection updates query data asynchronously from the journal.
-- Commit a read-model update and its source offset in the same transaction when they share a store.
+- A projection follows each aggregate's and saga's own sequence numbers, never a global journal
+  number, so it cannot skip an event that commits after later-numbered ones. It orders events within
+  one aggregate, not across aggregates.
+- Commit a read-model update and its progress in the same transaction when they share a store. A
+  projection that stores progress after its handler returns can hand an event to it again.
 - Read-your-writes means one selected projection has published the matching notification.
 - It does not mean every projection or external system is current.
 - Subscribe before sending. Subscribing afterward can miss the notification.
@@ -115,7 +119,8 @@ Keep these distinctions intact in code comments and documentation.
 - `src/FCQRS.Model/`: validated domain values and query model types.
 - `src/FCQRS/Actor.fs`: aggregate persistence, replay, snapshots, and command delivery.
 - `src/FCQRS/Saga.fs`: saga state machines, recovery, and command dispatch.
-- `src/FCQRS/Query.fs`: journal projection and correlation subscriptions.
+- `src/FCQRS/Query.fs`: correlation subscriptions and projection notifications.
+- `src/FCQRS/Projections.fs`: projections, their per-aggregate progress, catch-up, and retries.
 - `src/FCQRS/FSharp.fs`: F# facade.
 - `src/FCQRS/CSharpInterop.fs`: C# types and lower-level interop.
 - `src/FCQRS/HostExtensions.fs`: C# host-builder and dependency-injection registration.

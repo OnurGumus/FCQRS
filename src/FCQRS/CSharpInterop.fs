@@ -5,6 +5,7 @@ module FCQRS.CSharp
 open System
 open System.Threading.Tasks
 open System.Runtime.CompilerServices
+open System.Runtime.InteropServices
 open Microsoft.Extensions.Logging
 open FCQRS.Model.Data
 open FCQRS.Common
@@ -276,46 +277,48 @@ type ActorApi =
         clusterName: string) : IActor =
         ActorApi.Create(configuration, loggerFactory, sqliteConnectionString, clusterName, Actor.DBType.Sqlite)
 
-/// C#-friendly Query API
+/// C#-friendly projection API. A projection follows each aggregate's and saga's own sequence
+/// numbers, so it never skips a stored event. Without a name, it keeps its progress in memory and
+/// reads the whole journal each time it starts. With a name, it stores its progress in the journal
+/// database under that name and resumes where it stopped; a handler can then see an event again
+/// after a crash. A handler that throws terminates the process.
 type QueryApi =
-    /// Initialize the query subscription (F# list version)
-    static member Init(
-        actorApi: IActor,
-        lastOffset: int64,
-        eventHandler: Func<int64, obj, IMessageWithCID list>) : FCQRS.Query.ISubscribe =
-        let handler offset evt = eventHandler.Invoke(offset, evt)
-        Query.init actorApi lastOffset handler |> Query.asDefaultSubscribe
+    static member private Progress(name: string | null) =
+        match name with
+        | null -> Projections.InMemory
+        | name -> Projections.Stored name
 
-    /// Initialize the query subscription (C# IList version - converts to F# list
-    /// internally). An overload of Init, distinguished by the handler's return type.
+    /// Starts a projection whose handler returns the notifications to publish (F# list).
     static member Init(
         actorApi: IActor,
-        lastOffset: int64,
-        eventHandler: Func<int64, obj, System.Collections.Generic.IList<IMessageWithCID>>) : FCQRS.Query.ISubscribe =
-        let handler offset evt = eventHandler.Invoke(offset, evt) |> List.ofSeq
-        Query.init actorApi lastOffset handler |> Query.asDefaultSubscribe
+        eventHandler: Func<obj, IMessageWithCID list>,
+        [<Optional; DefaultParameterValue(null: string | null)>] name: string | null) : Projections.IProjection =
+        Projections.startTracked actorApi (QueryApi.Progress name) eventHandler.Invoke
 
-    /// Initialize the query subscription with a single-event handler: the
-    /// handler just updates the read model (returns void); each aggregate event
-    /// is then published to subscribers as-is. Use a list-returning overload
-    /// when notifications must be filtered or transformed.
+    /// Starts a projection whose handler returns the notifications to publish. An overload of
+    /// Init, distinguished by the handler's return type.
     static member Init(
         actorApi: IActor,
-        lastOffset: int64,
-        eventHandler: Action<int64, obj>) : FCQRS.Query.ISubscribe =
-        let handler = Query.autoPublish (fun offset evt -> eventHandler.Invoke(offset, evt))
-        Query.init actorApi lastOffset handler |> Query.asDefaultSubscribe
+        eventHandler: Func<obj, System.Collections.Generic.IList<IMessageWithCID>>,
+        [<Optional; DefaultParameterValue(null: string | null)>] name: string | null) : Projections.IProjection =
+        Projections.startTracked actorApi (QueryApi.Progress name) (fun evt -> eventHandler.Invoke evt |> List.ofSeq)
 
-    /// Initialize the query subscription with a filtered single-event handler:
-    /// the handler updates the read model and returns Publish/Suppress to say
-    /// whether this event wakes subscribers. Between the void Action overload
-    /// (publish all) and the list-returning one (full control).
+    /// Starts a projection with a single-event handler: the handler just updates the read model
+    /// (returns void); each aggregate event is then published to subscribers as-is. Use a
+    /// list-returning overload when notifications must be filtered or transformed.
     static member Init(
         actorApi: IActor,
-        lastOffset: int64,
-        eventHandler: Func<int64, obj, Notify>) : FCQRS.Query.ISubscribe =
-        let handler = Query.filterPublish (fun offset evt -> eventHandler.Invoke(offset, evt))
-        Query.init actorApi lastOffset handler |> Query.asDefaultSubscribe
+        eventHandler: Action<obj>,
+        [<Optional; DefaultParameterValue(null: string | null)>] name: string | null) : Projections.IProjection =
+        Projections.startTracked actorApi (QueryApi.Progress name) (Query.autoPublish eventHandler.Invoke)
+
+    /// Starts a projection with a filtered single-event handler: the handler updates the read
+    /// model and returns Publish/Suppress to say whether this event wakes subscribers.
+    static member Init(
+        actorApi: IActor,
+        eventHandler: Func<obj, Notify>,
+        [<Optional; DefaultParameterValue(null: string | null)>] name: string | null) : Projections.IProjection =
+        Projections.startTracked actorApi (QueryApi.Progress name) (Query.filterPublish eventHandler.Invoke)
 
 /// Low-level wiring over an IActor: register the saga-starter, aggregates and
 /// actors, and send commands. Most members are plain static helpers (you call

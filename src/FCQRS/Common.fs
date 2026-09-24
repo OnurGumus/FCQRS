@@ -25,6 +25,30 @@ open System.Diagnostics
 /// Marker interface for types that can be serialized by Akka.NET.
 type ISerializable = interface end
 
+/// Tells the projections of an actor system that an aggregate on this node stored an event, so
+/// they read the journal at once instead of at their next poll. Writes on other nodes reach them
+/// through polling.
+module internal JournalActivity =
+    let private listeners =
+        System.Runtime.CompilerServices.ConditionalWeakTable<ActorSystem, System.Collections.Concurrent.ConcurrentDictionary<Guid, unit -> unit>>()
+
+    let private listenersOf (system: ActorSystem) =
+        listeners.GetValue(system, fun _ -> System.Collections.Concurrent.ConcurrentDictionary())
+
+    /// Calls `callback` after each stored event until the returned handle is disposed.
+    let listen (system: ActorSystem) (callback: unit -> unit) : IDisposable =
+        let id = Guid.NewGuid()
+        (listenersOf system)[id] <- callback
+        { new IDisposable with
+            member _.Dispose() = (listenersOf system).TryRemove id |> ignore }
+
+    let stored (system: ActorSystem) =
+        match listeners.TryGetValue system with
+        | true, callbacks ->
+            for callback in callbacks.Values do
+                callback ()
+        | _ -> ()
+
 /// Decision returned by a filtered projection handler: whether the event it just
 /// handled should be published to subscribers as-is. `Publish` notifies (so a
 /// read-your-writes awaiter wakes on it); `Suppress` updates the read model

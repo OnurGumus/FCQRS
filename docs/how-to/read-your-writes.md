@@ -19,9 +19,9 @@ read-your-writes closes the gap by waiting for the required projection before th
 Read [Correlation IDs and read-your-writes](../concepts/correlation-ids.html) first if you need the
 mental model behind the sequence, projection boundary, and ephemeral notification.
 
-To wait for every event already committed across the journal, use a transactional projection's
-`CatchUpAsync`. [Catch up projections](catch-up-projections.html) shows the registration and the
-snapshot boundary. A matching correlation notification alone does not establish that boundary.
+To wait for every event already committed across the journal, use the projection's `CatchUpAsync`.
+[Catch up projections](catch-up-projections.html) shows the snapshot boundary it waits for. A matching
+correlation notification alone does not establish that boundary.
 
 ## Use the combined F# helper
 
@@ -29,8 +29,8 @@ snapshot boundary. A matching correlation notification alone does not establish 
 notification when the aggregate reply was journaled:
 
 ```fsharp
-// The ISubscribe stream of the statement projection.
-let statement = Fcqrs.projection api (Projection.single 0 handle)
+// The statement projection, which callers can subscribe to.
+let statement = Fcqrs.projection api (Projection.single FromStart handle)
 
 // The last argument selects the account's reply: Deposited or Rejected.
 let! reply =
@@ -118,7 +118,7 @@ if (reply.Journaled?.Value != false)
 ## Wait for the right projection
 
 A notification means that the projection publishing it has completed its handler. It says nothing
-about another projection with a different offset or deployment: a statement notification does not
+about another projection with its own progress or deployment: a statement notification does not
 mean a monthly report built by another projection includes the deposit. If a response depends on several read
 models, wait for a completion signal representing all of them.
 

@@ -354,7 +354,7 @@ let private cancellation =
         wait fixture.RunnerEntered
         stopWaiting.Cancel()
         canceled pending "cancellation releases the caller"
-        let subscriptions = Fcqrs.projection fixture.Api (Projection.single 0 (fun _ _ -> ()))
+        let subscriptions = Fcqrs.projection fixture.Api (Projection.single FromStart (fun _ -> ()))
         use persisted = subscriptions.Subscribe(cid, 1)
         fixture.ReleaseRunner()
         wait persisted.Task

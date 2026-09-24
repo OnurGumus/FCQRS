@@ -42,27 +42,35 @@ Several projections can consume the same event. `TransferSent` might update a st
 large transfers, a fraud review queue, and a monthly report. Those read models can evolve
 independently because they share facts rather than one schema.
 
-## Follow the event stream with an offset
+## Track progress per aggregate
 
-The journal assigns an ordered position to the event stream. A projection keeps an **offset** recording
-the last position it committed.
-
-Imagine this stream:
+A projection records how far it has handled each aggregate's events: the version of the last event it
+handled for that account. After a restart, it continues after that version.
 
 ```text
-offset 41  Deposited 100     alice
-offset 42  Withdrawn 30      alice
-offset 43  TransferSent t1   alice
+alice   1 Opened   2 Deposited 100   3 Withdrawn 30    handled through version 2
+bob     1 Opened                                       handled through version 1
 ```
 
-If the projection has committed offset 42, it resumes after 42 and handles `TransferSent`. It does not
-ask each aggregate for current state. The journal is the source; the offset is the projection's
-bookmark.
+The projection handles Alice's version 3 next. It does not ask each aggregate for current state. The
+journal is the source; the handled versions are the projection's bookmarks.
 
-An aggregate version and a projection offset are different counters. A version orders events for one
-aggregate identity. An offset locates an event in the stream a projection consumes. The transactional
-projection in the [tutorial](../tutorial/show-a-statement.html) keeps its progress per aggregate
-instead: the version of the last event it committed for each account.
+> **Motivation:** The journal also numbers all events in one sequence, but a database that runs several
+> writes at once gives a write its number when the write starts, and shows it when the write commits. A
+> slow write can appear after higher-numbered ones. A projection that only remembered "handled through
+> number 42" would pass over it and never handle it. An aggregate's versions have no such holes: one
+> actor stores them one after another, so a projection that follows each aggregate's versions cannot
+> skip an event.
+
+The price is order across aggregates. A projection handles each aggregate's events in version order,
+but events of different aggregates reach it in no particular order relative to each other.
+
+A projection keeps its progress in one of three places:
+
+- in memory, so it reads the whole journal again each time it starts, for a read model kept in memory;
+- in the journal database under the projection's name, so it resumes where it stopped;
+- in the read model's own database, committed together with each read-model change, which is what the
+  transactional projection in the [tutorial](../tutorial/show-a-statement.html) does.
 
 ## The transaction boundary creates reliable progress
 
@@ -70,19 +78,20 @@ For a SQL read model, handle one event like this:
 
 1. Begin a database transaction.
 2. Apply the read-model insert, update, or delete.
-3. Store the new offset in the same transaction.
+3. Store the aggregate's new version as the projection's progress, in the same transaction.
 4. Commit.
 
 If the process stops before commit, neither change is durable and the event is retried. If commit
-succeeds, both the data and offset are durable. This prevents the two dangerous split states:
+succeeds, both the data and progress are durable. This prevents the two dangerous split states:
 
-- data changed but offset did not advance, so a non-idempotent update runs twice;
-- offset advanced but data did not change, so the event is skipped forever.
+- data changed but progress did not advance, so a non-idempotent update runs twice;
+- progress advanced but data did not change, so the event is skipped forever.
 
-Within one transactional store, this produces one committed update per offset. If a projection writes
-to SQL and a search service, those systems do not share the transaction. The handler must then use
-idempotency, an outbox (staging the external write in the local transaction and relaying it
-afterwards), or another explicit coordination design.
+Within one transactional store, this produces one committed update per event. If a projection writes
+to SQL and a search service, those systems do not share the transaction. A projection that stores its
+progress under a name stores it after its handler returns, so a crash in between hands the same event
+to the handler again. The handler must then use idempotency, an outbox (staging the external write in
+the local transaction and relaying it afterwards), or another explicit coordination design.
 
 ## Event order is part of the model
 
@@ -90,8 +99,8 @@ A projection should make invalid histories visible. If `Deposited` arrives for a
 `Opened` the projection never saw, silently inventing a partial row hides a broken contract or rebuild. Failing the projection exposes the
 problem at the event that caused it.
 
-Handlers should also define how repeated or superseded facts behave. A transactional offset prevents
-normal repeats in one store, but rebuild tools, migrations, or external writes may still benefit from
+Handlers should also define how repeated or superseded facts behave. Committing progress with the data
+prevents normal repeats in one store, but rebuild tools, migrations, or external writes may still benefit from
 idempotent operations keyed by event identity.
 
 ## Queries use only the read model
@@ -119,7 +128,7 @@ Because every read-model value is derived from retained events, it can be rebuil
 
 1. stop or isolate the live projection;
 2. create or clear the target schema;
-3. reset its offset to the chosen starting position;
+3. give the projection a new name, so it starts from the first event;
 4. replay and monitor failures;
 5. validate counts and representative queries;
 6. switch traffic to the rebuilt model.

@@ -14,7 +14,7 @@ module Account =
         | Withdrawn of amount: decimal
         | Rejected of reason: string
 open Account
-let deposit (api: IActor) (handle: int64 -> obj -> unit)
+let deposit (api: IActor) (handle: obj -> unit)
             (accounts: AggregateHandle<AccountCommand, AccountEvent>)
             (cid: CID) (alice: AggregateId) = async {
     // snippet: 1

@@ -9,6 +9,33 @@
   later took that version, the saga ran anyway: the bank invariant test found a transfer credited to
   its target without the debit. The originator now reads the event at that version from its journal
   and compares it.
+- **A projection no longer skips an event that commits late.** `Fcqrs.projection` and `AddProjection`
+  followed the journal's global event number. On a database that runs writes concurrently, such as
+  PostgreSQL, a write that committed about a second after later-numbered writes was passed over and
+  never handled, without an error. Projections now follow each aggregate's and saga's own sequence
+  numbers, as transactional projections already did.
+- **Projections react to local writes at once.** An aggregate that stores an event wakes the
+  projections on its node, so they no longer wait for their next poll; transactional projections
+  included. Writes on other nodes still arrive by polling.
+- A projection started with `Fcqrs.projection` or `AddProjection` retries a failed journal read or
+  progress write with backoff, from 1 to 30 seconds. Missing journal history, such as a deleted row,
+  terminates the process with `JournalHistoryException`. A transactional projection raises the same
+  exception, an `InvalidOperationException`, and stops as before.
+
+### Breaking
+
+- A projection's starting offset is replaced by its progress. `FromStart` keeps progress in memory
+  and reads the whole journal at each start, as offset 0 did. `Named "..."` stores progress in the
+  journal database under that name and resumes; its handler can receive an event again after a crash.
+  In C#, `AddProjection(handler)` starts from the beginning and `AddProjection(handler, name: "...")`
+  stores its progress, and `QueryApi.Init` takes the same optional name.
+- Handlers receive the event without an offset: `obj -> unit` in F#, `Action<object>` in C#, and the
+  same for the `Notify` and list-returning shapes, including `Query.autoPublish` and
+  `Query.filterPublish`.
+- Events reach a handler in version order within each aggregate, with no order between aggregates.
+- `Fcqrs.projection` returns `IProjection`, with `CatchUpAsync` and `Completion`, and `AddProjection`
+  registers it for dependency injection.
+- Projections require a SQLite or PostgreSQL journal. `Query.init`, the global-offset reader, is removed.
 
 ## 6.11.0 (FCQRS core)
 
