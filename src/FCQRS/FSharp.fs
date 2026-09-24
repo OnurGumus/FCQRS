@@ -58,7 +58,9 @@ type Aggregate<'State, 'Command, 'Event when 'Event: not null> =
 type AggregateHandle<'Command, 'Event when 'Event: not null> =
     { /// Entity-ref factory (DEFAULT_SHARD applied). Hand this to a saga to target it.
       Factory: AggregateFactory
-      /// Send a command and await the first matching aggregate event.
+      /// Send a command and await the first matching aggregate event. Fails with
+      /// SagaAlreadyStartedException, with nothing stored, when the command would start a saga
+      /// that its correlation ID already started on this aggregate.
       Send: CID -> AggregateId -> 'Command -> ('Event -> bool) -> Async<Event<'Event>> }
 
 /// A pure saga definition. HandleEvent is obj-based so a single saga can match

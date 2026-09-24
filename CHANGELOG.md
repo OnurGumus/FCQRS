@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased (FCQRS core)
+
+- **A saga start that would be lost is refused.** A saga is named after its originator's aggregate ID
+  and the event's correlation ID, and keeps the event that started it. Another event that started the
+  same saga, from a second command with the same correlation ID or from the same command, was stored
+  and ran no workflow: a transfer's money left the account and never arrived or came back. The
+  aggregate now refuses such a command and stores none of its events, and the caller's send fails with
+  the new `SagaAlreadyStartedException`. Give each command that can start a saga its own correlation
+  ID. A repeated starting message for the same event still counts as the same start.
+- The saga-start handshake replaces its unused `Retired` case with the refusal, so a node on an
+  earlier release cannot read a refusal. Upgrade every node together.
+
 ## 6.10.0 (FCQRS core)
 
 - **C# sagas no longer see F# options, and their registration names no types.** A C# saga used to

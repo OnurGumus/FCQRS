@@ -276,10 +276,10 @@ let private bootDoors (db: string) (lmdb: string) (recovered: ManualResetEventSl
               StartOn = fun (event: Event<DoorEvent>) -> event.EventDetails = Opened
               Snapshots = NoSnapshots }
     Fcqrs.wireSagaStarters api [ saga ]
-    api, doors
+    api, doors, saga
 
 let private recoveredReadiness =
-    testCase "saga lifecycle: a recovered saga still answers a repeated start after expectation retries"
+    testCase "saga lifecycle: a recovered saga still answers starting messages after expectation retries"
     <| fun _ ->
         let db = Path.Combine(Path.GetTempPath(), $"fcqrs_saga_readiness_{Guid.NewGuid():N}.db")
         let lmdb = Path.Combine(Path.GetTempPath(), $"fcqrs_saga_readiness_lmdb_{Guid.NewGuid():N}")
@@ -289,9 +289,14 @@ let private recoveredReadiness =
             Async.RunSynchronously(doors.Send cid door command (fun _ -> true), 30000)
 
         use firstRecovery = new ManualResetEventSlim(false)
-        let api1, doors1 = bootDoors db lmdb firstRecovery
+        let api1, doors1, _ = bootDoors db lmdb firstRecovery
+        let opened =
+            try
+                send doors1 Open
+            with error ->
+                api1.Stop().Wait(TimeSpan.FromSeconds 30.0) |> ignore
+                raise error
         try
-            send doors1 Open |> ignore
             // Rows: the starting event, Started, then Watching. The retries need Watching.
             let deadline = DateTime.UtcNow.AddSeconds 10.0
             while journalCount db "DoorWatch/%" < 3L && DateTime.UtcNow < deadline do
@@ -302,14 +307,25 @@ let private recoveredReadiness =
 
         // Remember-entities recovers the saga in Watching; its subscription is acknowledged afterwards.
         use recovered = new ManualResetEventSlim(false)
-        let api2, doors2 = bootDoors db lmdb recovered
+        let api2, doors2, saga = bootDoors db lmdb recovered
         try
             Expect.isTrue (recovered.Wait(TimeSpan.FromSeconds 20.0)) "the saga recovered and resubscribed"
             // Let several expectation retry ticks run after the resubscription.
             Thread.Sleep 1500
-            // The same correlation ID starts the same saga again; it must confirm readiness.
-            let repeated = send doors2 Open
-            Expect.equal repeated.Journaled (Some true) "the repeated start completed its handshake and was journaled"
+            // A new event with the same correlation ID would start the same saga again. The saga
+            // answers at once, with a refusal, instead of leaving the handshake to time out.
+            Expect.throwsT<SagaAlreadyStartedException> (fun () -> send doors2 Open |> ignore)
+                "the repeated start was answered with a refusal"
+            // Its own start, repeated as a waiting aggregate repeats it, is answered with readiness.
+            let sagaId =
+                use connection = new SqliteConnection($"Data Source={db};")
+                connection.Open()
+                use command = connection.CreateCommand()
+                command.CommandText <- "SELECT persistence_id FROM journal WHERE persistence_id LIKE 'DoorWatch/%' LIMIT 1"
+                (command.ExecuteScalar() :?> string).Split('/') |> Array.last |> Uri.UnescapeDataString
+            let starting: SagaStarter.SagaStartingEvent<Event<DoorEvent>> = { Event = opened }
+            let answer: obj = (saga.Factory sagaId).Ask(box starting, Some(TimeSpan.FromSeconds 10.0)) |> Async.RunSynchronously
+            Expect.stringContains (sprintf "%A" answer) "Continue" "the recovered saga confirmed readiness for its own start"
         finally
             api2.Stop().Wait(TimeSpan.FromSeconds 30.0) |> ignore
 

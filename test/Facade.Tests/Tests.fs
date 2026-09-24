@@ -1597,7 +1597,7 @@ let private cidGuardTest =
         Expect.isFalse (generated.Contains "~") "a generated CID never contains the separator"
 
 let private snapshotResurrectionTest =
-    testCase "facade: a same-CID re-trigger of a snapshot-covered completed saga completes the handshake"
+    testCase "facade: a same-CID re-trigger of a snapshot-covered completed saga is refused without waiting"
     <| fun _ ->
         let db = Path.Combine(Path.GetTempPath(), sprintf "fcqrs_oneshot_%s.db" (Guid.NewGuid().ToString("N")))
         let lmdb = Path.Combine(Path.GetTempPath(), sprintf "fcqrs_oneshot_lmdb_%s" (Guid.NewGuid().ToString("N")))
@@ -1633,17 +1633,22 @@ let private snapshotResurrectionTest =
         api1.Stop().Wait(TimeSpan.FromSeconds 30.0) |> ignore
 
         // Phase 2: reboot on the same journal and re-trigger with the SAME
-        // correlation id: the saga resurrects through its snapshot and must
-        // still signal Continue (previously the re-delivered starting event was
-        // dropped and the originator FailFasted after the saga-start timeout).
+        // correlation id. The saga resurrects through its snapshot and refuses
+        // the second start, so the command fails at once. Earlier releases
+        // dropped the re-delivered starting event, and the originator terminated
+        // the process after the saga-start timeout.
         let api2, counter2 = bootOneShot db lmdb
+        let clock = Diagnostics.Stopwatch.StartNew()
 
-        let ev =
-            counter2.Send cid (Fcqrs.aggregateId "snapres") (Counter.Increment 100)
-                (function Counter.Incremented _ -> true | _ -> false)
-            |> Async.RunSynchronously
+        Expect.throwsT<SagaAlreadyStartedException>
+            (fun () ->
+                counter2.Send cid (Fcqrs.aggregateId "snapres") (Counter.Increment 100)
+                    (function Counter.Incremented _ -> true | _ -> false)
+                |> Async.RunSynchronously
+                |> ignore)
+            "phase 2: the re-triggered command was refused"
 
-        Expect.equal ev.EventDetails (Counter.Incremented 100) "phase 2: the re-triggered command completed"
+        Expect.isLessThan clock.Elapsed (TimeSpan.FromSeconds 10.0) "phase 2: the refusal did not wait for the saga-start timeout"
         api2.Stop().Wait(TimeSpan.FromSeconds 30.0) |> ignore
 
 let private sendAwaitingTimeoutTest =
@@ -2567,6 +2572,7 @@ let main argv =
                 UnionCommandTests.tests
                 JournalRejectionTests.tests
                 BankInvariantTests.tests
+                SagaStartOnceTests.tests
                 // Last: it checks the messages every earlier test sent.
                 VerifySerialization.tests
             ])

@@ -99,6 +99,25 @@ batch. Select the event that makes the required query safe, or wait for the corr
 notifications. “First event with this CID” is correct only when the first event is the boundary the
 caller needs.
 
+## One saga start per correlation ID and aggregate
+
+FCQRS names a saga after the aggregate whose event starts it and that event's CID. Alice's transfer
+with CID `request-A` runs as the saga `alice~Saga~request-A`. The saga keeps the event that started it
+for as long as its history exists, also after it finishes.
+
+Another event that would start the same saga, from Alice's account with `request-A`, cannot get a
+workflow of its own. FCQRS refuses the command that stores it: the aggregate stores none of the
+command's events, and the caller's send fails with `SagaAlreadyStartedException`, which names the
+aggregate, the CID, and the saga. Two situations lead there:
+
+- one request sends Alice's account two `SendTransfer` commands under the same CID;
+- one command stores two events that each start a transfer.
+
+Give each command that can start a saga its own CID, including a retry of a command that failed. Keep
+retries safe with a domain ID the aggregate remembers, as the tutorial's transfer ID does, not with the
+CID. A command that stores several saga-starting events has to become several commands, or one saga
+that handles the whole batch.
+
 ## Deferred replies do not reach projections
 
 A deferred rejection such as `Rejected "Insufficient funds"` is returned to the command caller but is

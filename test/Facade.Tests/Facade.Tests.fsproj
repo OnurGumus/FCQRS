@@ -28,6 +28,7 @@
     <Compile Include="..\..\samples\accounts\5-transfer-money\fsharp\Account.fs" Link="Bank\Account.fs" />
     <Compile Include="..\..\samples\accounts\5-transfer-money\fsharp\Transfer.fs" Link="Bank\Transfer.fs" />
     <Compile Include="BankInvariantTests.fs" />
+    <Compile Include="SagaStartOnceTests.fs" />
     <Compile Include="Tests.fs" />
   </ItemGroup>
 

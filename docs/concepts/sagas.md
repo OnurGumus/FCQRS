@@ -167,7 +167,9 @@ FCQRS closes that race with a handshake between the originator and the saga:
 <img src="../img/saga-starter.svg" alt="The originator matches TransferSent with StartOn, sends the transfer saga its starting message, and stores and publishes the event only after the saga reports it is ready" width="940"/>
 
 `Fcqrs.wireSagaStarters` in F#, or `AddSaga` in C# with each saga's `StartsOn`, installs these start
-rules. An empty F# application still calls `wireSagaStarters api []` so runtime startup follows one
+rules. A saga is named after its originator's aggregate ID and the event's correlation ID, so it starts
+once per correlation ID and aggregate. A second start is refused, and the command that would cause it
+stores nothing ([Correlation IDs](correlation-ids.html#One-saga-start-per-correlation-ID-and-aggregate)). An empty F# application still calls `wireSagaStarters api []` so runtime startup follows one
 explicit path.
 
 ## Waiting costs no thread

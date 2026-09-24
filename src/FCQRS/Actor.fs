@@ -243,8 +243,13 @@ module internal Internal =
             let rulesTask = SagaStarter.Internal.startRulesOf mailbox.System
             let originatorId = mailbox.Self.Path.Name |> SagaStarter.Internal.entityIdOf
 
+            // A saga starts once per correlation ID and aggregate. Two events that start the same
+            // saga would share it, and the second would run no workflow, so such a command is
+            // refused: Error names the saga. The events of one command share its ID and differ in
+            // version.
             let sagasFor (rules: SagaStarter.Internal.StartRules) =
-                [ for event in events do
+                let starts =
+                  [ for event in events do
                       let cid =
                           SagaStarter.Internal.toCidWithExisting
                               originatorId
@@ -262,9 +267,35 @@ module internal Internal =
                           match SagaStarter.Internal.sagaIdFor logger originatorId cid prefix with
                           | Some sagaId ->
                               let saga = factory sagaId
-                              yield (saga.TypeName, saga.EntityId), (saga, payload)
+                              yield (saga.TypeName, saga.EntityId), (saga, payload, (event.Id, event.Version))
                           | None -> () ]
-                |> Map.ofList
+
+                let shared =
+                    starts
+                    |> List.groupBy fst
+                    |> List.tryFind (fun (_, group) ->
+                        group |> List.map (fun (_, (_, _, id)) -> id) |> List.distinct |> List.length > 1)
+
+                match shared with
+                | Some((sagaType, _), _) -> Error sagaType
+                | None -> Ok(starts |> List.map (fun (key, (saga, payload, _)) -> key, (saga, payload)) |> Map.ofList)
+
+            // Stores nothing and tells the command's sender, whose Send fails with
+            // SagaAlreadyStartedException.
+            let refuse (sagaType: string) (sender: Akka.Actor.IActorRef) =
+                let cid = events.Head.CorrelationId
+
+                logger.LogError(
+                    "Aggregate {Aggregate} stored nothing: correlation ID {CID} already started saga {Saga} for another event.",
+                    mailbox.Self.Path.ToString(),
+                    cid,
+                    sagaType)
+
+                sender.Tell(
+                    ({ CorrelationId = cid
+                       AggregateId = originatorId
+                       Saga = sagaType }: Common.SagaStartRefused),
+                    untyped mailbox.Self)
 
             let wait (sagas: Map<string * string, IEntityRef<obj> * obj> option) =
                 let handshake = Guid.NewGuid()
@@ -308,6 +339,13 @@ module internal Internal =
                     stash.UnstashAll()
                     stash.Prepend userStash
 
+                // The command is refused: put back what arrived during the wait and the user's stash.
+                let abandon (sagaType: string) =
+                    cancelTimers ()
+                    refuse sagaType originalSender
+                    stash.UnstashAll()
+                    stash.Prepend userStash
+
                 let rec awaitingRules () =
                     actor {
                         let! msg = mailbox.Receive()
@@ -316,12 +354,14 @@ module internal Internal =
                         | :? SagaStartSignal as signal ->
                             match signal with
                             | RulesWired id when id = handshake ->
-                                let sagas = sagasFor rulesTask.Task.Result
-
-                                if sagas.IsEmpty then
+                                match sagasFor rulesTask.Task.Result with
+                                | Error sagaType ->
+                                    abandon sagaType
+                                    return! set state
+                                | Ok sagas when sagas.IsEmpty ->
                                     release ()
                                     return! completing ()
-                                else
+                                | Ok sagas ->
                                     sagas |> Map.iter (fun _ start' -> start start')
                                     scheduleResend ()
                                     return! awaitingSagas sagas
@@ -339,7 +379,7 @@ module internal Internal =
                         let! msg = mailbox.Receive()
 
                         match msg with
-                        | :? SagaStarter.Internal.Message ->
+                        | :? SagaStarter.Internal.Message as message ->
                             // Sharded entity paths end in <type>/<shard>/<entity>, and cluster
                             // sharding escapes both names.
                             let saga = untyped (mailbox.Sender())
@@ -348,13 +388,23 @@ module internal Internal =
                                 saga.Path.Parent.Parent.Name |> SagaStarter.Internal.entityIdOf,
                                 saga.Path.Name |> SagaStarter.Internal.entityIdOf
 
-                            let pending = pending.Remove identity
-
-                            if pending.IsEmpty then
-                                release ()
-                                return! completing ()
-                            else
+                            match message with
+                            | SagaStarter.Internal.Refused when pending.ContainsKey identity ->
+                                // Sagas of this event that already stored its start end when they
+                                // next recover, because the event is never stored.
+                                abandon (fst identity)
+                                return! set state
+                            | SagaStarter.Internal.Refused ->
+                                // A repeated refusal of an earlier handshake.
                                 return! awaitingSagas pending
+                            | SagaStarter.Internal.Command _ ->
+                                let pending = pending.Remove identity
+
+                                if pending.IsEmpty then
+                                    release ()
+                                    return! completing ()
+                                else
+                                    return! awaitingSagas pending
                         | :? SagaStartSignal as signal ->
                             match signal with
                             | ResendStart id when id = handshake ->
@@ -400,9 +450,13 @@ module internal Internal =
                     awaitingRules ()
 
             if rulesTask.Task.IsCompletedSuccessfully then
-                let sagas = sagasFor rulesTask.Task.Result
+                match sagasFor rulesTask.Task.Result with
+                | Error sagaType ->
+                    refuse sagaType (untyped (mailbox.Sender()))
+                    set state
                 // Most events start no saga and are stored at once.
-                if sagas.IsEmpty then persist else wait (Some sagas)
+                | Ok sagas when sagas.IsEmpty -> persist
+                | Ok sagas -> wait (Some sagas)
             else
                 wait None
 

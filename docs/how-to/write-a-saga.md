@@ -346,6 +346,12 @@ declares `SagaName`, `InitialData`, `Originator`, and `StartsOn`, and `AddSaga` 
 Do not construct `SagaStartingEvent` yourself. FCQRS creates and stores that runtime envelope from the
 event accepted by `StartOn`.
 
+A saga starts once per correlation ID and originator aggregate. A command that would start it again
+with the same correlation ID stores nothing and fails with `SagaAlreadyStartedException`, so send each
+command that can start a saga with a new correlation ID.
+[Correlation IDs](../concepts/correlation-ids.html#One-saga-start-per-correlation-ID-and-aggregate)
+explains when that happens.
+
 > **Motivation:** The start rule lets FCQRS subscribe the saga before the originator publishes the one
 > event that begins the workflow. Without that handshake, the new saga could miss its first event.
 

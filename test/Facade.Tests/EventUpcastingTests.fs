@@ -504,9 +504,10 @@ let private sagaRecovery snapshots =
             let aggregate = currentAggregate current (ConcurrentQueue())
             let saga = registerSaga current aggregate (fun event -> event.MinorAmount) entered
             Fcqrs.wireSagaStarters current [ saga ]
-            // Explicit same-CID delivery also activates a passivated entity;
-            // success requires recovery of its historical typed start wrapper.
-            send aggregate cid (Add 700) |> ignore
+            // A same-CID start activates the stored saga, which recovers its historical typed start
+            // wrapper and then refuses the second start.
+            Expect.throwsT<SagaAlreadyStartedException> (fun () -> send aggregate cid (Add 700) |> ignore)
+                "the stored saga refused a second start"
             Expect.equal (result entered.Task) 2 "only originator events are upgraded; the persisted workflow state remains exactly two"
         finally wait (current.Stop())
 

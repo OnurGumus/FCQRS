@@ -93,6 +93,8 @@ Keep these distinctions intact in code comments and documentation.
   explicitly recovery-aware.
 - A saga recovered before it leaves `Started` continues if its originator stored its starting event,
   and ends otherwise.
+- A saga starts once per correlation ID and originator aggregate. A command that would start it again
+  stores nothing and fails with `SagaAlreadyStartedException`.
 - A persisted saga state cannot make an external operation exactly once.
 - External calls need idempotency keys, timeouts, retry policy, and compensation or intervention paths.
 - Avoid circular workflows and give every expected event a domain timeout, either hand-rolled with

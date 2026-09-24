@@ -671,13 +671,29 @@ let private runSaga<'TEvent, 'SagaData, 'State when 'TEvent : not null and 'Stat
 
                     return! state |> set hs
 
-            | :? (SagaStarter.SagaStartingEvent<Event<'TEvent>>) as e when startingEvent.IsNone ->
+            | :? (SagaStarter.SagaStartingEvent<Event<'TEvent>>) as e when startingEvent.IsNone && not subscribed ->
                 let nextInner = rememberCoordinator ()
                 return! SagaStartingEventWrapper e |> box |> Persist <@> innerSet nextInner
-            | :? (SagaStarter.SagaStartingEvent<Event<'TEvent>>) when subscribed ->
+            // The originator repeats its starting message until the saga answers. An event is the
+            // same when its ID, which is the command's, and its version match.
+            | :? (SagaStarter.SagaStartingEvent<Event<'TEvent>>) as e
+                when subscribed
+                     && startingEvent
+                        |> Option.exists (fun stored -> stored.Event.Id = e.Event.Id && stored.Event.Version = e.Event.Version) ->
                 let nextInner = rememberCoordinator ()
                 signalReady nextInner
                 return! innerSet nextInner
+            // Another event with the correlation ID this saga started for. The saga keeps its own
+            // starting event, so the new event would run no workflow: the originator stores
+            // nothing and refuses the command. A saga recovered from a snapshot that predates
+            // stored starting events cannot compare them, and refuses too.
+            | :? (SagaStarter.SagaStartingEvent<Event<'TEvent>>) when subscribed ->
+                log.LogWarning(
+                    "Saga {Saga} refused a second start: its correlation ID already started it for another event.",
+                    mailbox.Self.Path.ToString())
+
+                (untyped (mailbox.Sender())).Tell(SagaStarter.Internal.Message.Refused, untyped mailbox.Self)
+                return! innerSet hs
             | msg when msg.GetType().Name.StartsWith("SagaStartingEvent") ->
                 // A starting event whose payload type is not this saga's 'TEvent:
                 // the two cases above did not match it. Dropping it silently left

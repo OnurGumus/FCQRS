@@ -118,6 +118,7 @@ Some failures have a place to go, so FCQRS reports them there instead:
 
 | Failure | What happens |
 |---|---|
+| A command would start a saga that its correlation ID already started | The aggregate stores nothing, and the caller gets `SagaAlreadyStartedException` |
 | A business rule turns a command away | `decide` returns a rejection, as in the tutorial's [withdraw money](../tutorial/withdraw-money.html) step |
 | The journal cannot store an event, for example because the database is down | The aggregate stops and recovers on its next command; a saga stops and restarts from its journal |
 | An aggregate cannot read its history from the journal | The aggregate stops; its next command tries again |

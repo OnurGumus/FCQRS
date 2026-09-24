@@ -165,7 +165,9 @@ matching reply arrives within `akka.fcqrs.command-timeout` (default 30s), for ex
 aggregate decided `IgnoreEvent` or the filter never matches, the handler raises
 `TimeoutException` instead of waiting forever. If the actor system stops while the handler waits, the
 handler raises `OperationCanceledException`. In both cases the command may or may not have been
-applied.
+applied. A command that would start a saga its correlation ID already started raises
+`SagaAlreadyStartedException`, and the aggregate stored nothing
+([Correlation IDs](../concepts/correlation-ids.html#One-saga-start-per-correlation-ID-and-aggregate)).
 
 Handlers are keyed by command/event type pair. Two aggregates sharing the same `TCommand`/`TEvent`
 pair make the plain registration ambiguous; resolving it then throws with guidance. Resolve the

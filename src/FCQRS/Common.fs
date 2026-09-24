@@ -86,6 +86,28 @@ type AggregateVersionConflictException(aggregateId: string, expectedVersion: int
     /// The persisted version observed when the aggregate checked the command.
     member _.ActualVersion = actualVersion
 
+/// The aggregate stored nothing for a command: one of its events would start a saga that the
+/// command's correlation ID already started for another event. A saga starts once per
+/// correlation ID and aggregate, so its second start would be lost.
+type SagaAlreadyStartedException(aggregateId: string, correlationId: string, saga: string) =
+    inherit InvalidOperationException(
+        $"Aggregate '{aggregateId}' stored nothing: correlation ID '{correlationId}' already started saga '{saga}' for another event. Send each command that starts a saga with a new correlation ID.")
+    /// The target aggregate's entity ID.
+    member _.AggregateId = aggregateId
+    /// The correlation ID the command reused.
+    member _.CorrelationId = correlationId
+    /// The name of the saga that was already started.
+    member _.Saga = saga
+
+/// The aggregate's reply when it refuses a command's saga start. It crosses nodes when the
+/// caller runs on another node than the aggregate.
+type internal SagaStartRefused =
+    { CorrelationId: CID
+      AggregateId: string
+      Saga: string }
+
+    interface ISerializable
+
 // Dedicated transient wire messages. Do not implement ISerializable: older
 // receivers must reject their serializer instead of executing an unguarded command.
 type internal ConditionalCommand =
@@ -1139,13 +1161,11 @@ module SagaStarter =
         /// event is stored and it listens for the events that follow.
         type internal Command = | Continue
 
-        /// Unused. It keeps Message a two-case union, so Continue keeps the wire type
-        /// Message+Command that earlier releases read.
-        type internal Event = | Retired
-
         type internal Message =
             | Command of Command
-            | Event of Event
+            /// The saga already stored a different starting event, so it cannot start for
+            /// this one. The aggregate stores nothing and refuses the command.
+            | Refused
 
             // Continue crosses nodes when a saga runs on another node than the
             // aggregate that started it. The default Newtonsoft serializer cannot
@@ -1432,6 +1452,15 @@ module CommandHandler =
                             | None -> ()
 
                             return! Stop
+                        | :? SagaStartRefused as refused ->
+                            match state with
+                            | Some s when commandSent
+                                          && refused.CorrelationId = s.CommandDetails.Cmd.CorrelationId
+                                          && matchesTarget s.CommandDetails.EntityRef ->
+                                cancelDeadline ()
+                                reply s (refused :> obj)
+                                return! Stop
+                            | _ -> return! set state
                         | :? ConditionalCommandConflict as conflict ->
                             match state with
                             | Some s when commandSent
@@ -1547,6 +1576,15 @@ module CommandHandler =
                         raise (
                             OperationCanceledException(
                                 $"The command subscription for entity '{entityId}' [cid: {cid}] stopped before a reply arrived, because the actor system shut down or the subscription failed. The command may or may not have been applied."
+                            )
+                        )
+                | :? SagaStartRefused as refused ->
+                    return
+                        raise (
+                            SagaAlreadyStartedException(
+                                refused.AggregateId,
+                                refused.CorrelationId |> ValueLens.Value |> ValueLens.Value,
+                                refused.Saga
                             )
                         )
                 | :? ConditionalCommandConflict as conflict ->

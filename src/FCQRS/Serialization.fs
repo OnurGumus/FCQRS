@@ -392,3 +392,4 @@ type ShardEnvelopeSerializer(system: ExtendedActorSystem) =
                 ({ ShardId = shardId
                    EntityId = entityId
                    Message = message }: Akkling.Cluster.Sharding.ShardEnvelope)
+            |> Unchecked.nonNull
