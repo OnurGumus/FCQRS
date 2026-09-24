@@ -36,12 +36,42 @@ module internal Internal =
         Message: obj
         State: obj
         PublishEvent: Event<'TEvent> -> unit
-        SendToSagaStarter: Event<'TEvent> -> obj
+        /// Starts the sagas these events begin, then applies the persist effect.
+        StartSagasThenPersist: Event<'TEvent> list -> Effect<obj> -> Effect<obj>
         Mediator: IActorRef<Publish>
         Log: ILogger
         /// Set by handleEffect when the in-flight persist should be followed by
         /// an immediate snapshot (PersistAndSnapshot); cleared after saving.
         ManualSnapshotRequested: bool ref }
+    /// The self messages of one saga-start handshake, each carrying the handshake's id so a
+    /// signal left over from an earlier handshake is recognised and ignored.
+    type SagaStartSignal =
+        /// The application wired the saga start rules.
+        | RulesWired of Guid
+        /// Send the starting message again to the sagas that have not answered.
+        | ResendStart of Guid
+        /// The handshake ran out of time.
+        | StartDeadline of Guid
+        /// Every saga is ready. Put at the front of the mailbox with the command's sender,
+        /// so the events are stored while that sender is current.
+        | StartComplete of Guid
+
+    let private actorOfCell =
+        typeof<Akka.Actor.ActorCell>.GetProperty("Actor", Reflection.BindingFlags.Instance ||| Reflection.BindingFlags.Public ||| Reflection.BindingFlags.NonPublic)
+
+    /// The actor's own stash. Akkling exposes Stash, Unstash, and UnstashAll; the saga-start
+    /// handshake also needs ClearStash and Prepend, so it reads the IStash from the actor.
+    let stashOf (mailbox: Eventsourced<obj>) : Akka.Actor.IStash =
+        match actorOfCell with
+        | null -> invalidOp "FCQRS cannot reach the actor's stash: ActorCell.Actor is missing from this Akka.NET version."
+        | property ->
+            match mailbox.UntypedContext with
+            | :? Akka.Actor.ActorCell as cell ->
+                match property.GetValue cell with
+                | :? Akka.Actor.IActorStash as actor -> actor.Stash
+                | other -> invalidOp $"FCQRS cannot reach the stash of {other}."
+            | other -> invalidOp $"FCQRS cannot reach the stash of an actor with context {other}."
+
     /// Flags an aborted saga recovery in the trace, so aborted flows are findable without tag
     /// filters. An instantaneous Error span.
     let markRestartDetected (e: Event<'TEvent>) (currentVersion: int64) (actorName: string) =
@@ -202,6 +232,177 @@ module internal Internal =
                 Metadata =
                     event.Metadata
                     |> Map.add Common.JournaledMetadataKey (if journaled then "true" else "false") }
+
+        // The saga-start handshake. An event that starts a saga is stored only after that saga
+        // has stored its start and subscribed to the event's topic, so the published event
+        // cannot pass it by. The aggregate waits for the sagas' readiness as messages: commands
+        // that arrive meanwhile are stashed, and no thread is held.
+        let startSagasThenPersist (events: Event<'TEvent> list) (persist: Effect<obj>) : Effect<obj> =
+            let rulesTask = SagaStarter.Internal.startRulesOf mailbox.System
+            let originatorId = mailbox.Self.Path.Name |> SagaStarter.Internal.entityIdOf
+
+            let sagasFor (rules: SagaStarter.Internal.StartRules) =
+                [ for event in events do
+                      let cid =
+                          SagaStarter.Internal.toCidWithExisting
+                              originatorId
+                              (event.CorrelationId |> ValueLens.Value |> ValueLens.Value)
+
+                      let matched =
+                          try
+                              rules (event |> box |> Unchecked.nonNull)
+                          with error ->
+                              logger.LogError(error, "A saga start rule threw for an event of aggregate {Aggregate}.", mailbox.Self.Path.ToString())
+                              fatalFailFast null "Process terminated because a saga start rule threw" error
+                              failwith "unreachable" // FailFast never returns; satisfies the compiler
+
+                      for factory, prefix, payload in matched do
+                          match SagaStarter.Internal.sagaIdFor logger originatorId cid prefix with
+                          | Some sagaId ->
+                              let saga = factory sagaId
+                              yield (saga.TypeName, saga.EntityId), (saga, payload)
+                          | None -> () ]
+                |> Map.ofList
+
+            let wait (sagas: Map<string * string, IEntityRef<obj> * obj> option) =
+                let handshake = Guid.NewGuid()
+                let self = untyped mailbox.Self
+                let originalSender = untyped (mailbox.Sender())
+                let stash = stashOf mailbox
+                let scheduler = mailbox.System.Scheduler
+                // Commands a user stashed stay stashed: set them aside while this handshake
+                // stashes what arrives, and put them back afterwards.
+                let userStash = stash.ClearStash() |> List.ofSeq
+                let deadline =
+                    Akka.Actor.SchedulerExtensions.ScheduleTellOnceCancelable(scheduler, sagaStartTimeout, self, StartDeadline handshake, self)
+                // Only a saga that restarted during the handshake needs the starting message
+                // again, so repeat it rarely: a sixth of the deadline, at least a second.
+                let resendEvery = max (TimeSpan.FromSeconds 1.0) (TimeSpan.FromTicks(sagaStartTimeout.Ticks / 6L))
+                let mutable resend: Akka.Actor.ICancelable | null = null
+
+                let start (saga: IEntityRef<obj>, payload) = saga <! SagaStarter.Internal.unboxx payload
+
+                let scheduleResend () =
+                    resend <- Akka.Actor.SchedulerExtensions.ScheduleTellOnceCancelable(scheduler, resendEvery, self, ResendStart handshake, self)
+
+                let cancelTimers () =
+                    deadline.Cancel()
+
+                    match resend with
+                    | null -> ()
+                    | timer -> timer.Cancel()
+
+                let timedOut () =
+                    logger.LogError("The saga-start handshake of aggregate {Aggregate} did not complete within {Timeout}. Terminating the process.", mailbox.Self.Path.ToString(), sagaStartTimeout)
+                    fatalFailFast
+                        null
+                        $"FCQRS saga-start handshake did not complete within {sagaStartTimeout} for originator '{mailbox.Self.Path.Name}'. Crashing per fail-fast policy."
+                        (TimeoutException "The sagas this event starts did not report ready in time.")
+
+                // Put the complete signal first, with the command's sender, then what arrived
+                // during the wait, and restore the user's stash behind them.
+                let release () =
+                    stash.Prepend [ Akka.Actor.Envelope(StartComplete handshake, originalSender) ]
+                    stash.UnstashAll()
+                    stash.Prepend userStash
+
+                let rec awaitingRules () =
+                    actor {
+                        let! msg = mailbox.Receive()
+
+                        match msg with
+                        | :? SagaStartSignal as signal ->
+                            match signal with
+                            | RulesWired id when id = handshake ->
+                                let sagas = sagasFor rulesTask.Task.Result
+
+                                if sagas.IsEmpty then
+                                    release ()
+                                    return! completing ()
+                                else
+                                    sagas |> Map.iter (fun _ start' -> start start')
+                                    scheduleResend ()
+                                    return! awaitingSagas sagas
+                            | StartDeadline id when id = handshake ->
+                                timedOut ()
+                                return! awaitingRules ()
+                            | _ -> return! awaitingRules ()
+                        | _ ->
+                            mailbox.Stash()
+                            return! awaitingRules ()
+                    }
+
+                and awaitingSagas (pending: Map<string * string, IEntityRef<obj> * obj>) =
+                    actor {
+                        let! msg = mailbox.Receive()
+
+                        match msg with
+                        | :? SagaStarter.Internal.Message ->
+                            // Sharded entity paths end in <type>/<shard>/<entity>, and cluster
+                            // sharding escapes both names.
+                            let saga = untyped (mailbox.Sender())
+
+                            let identity =
+                                saga.Path.Parent.Parent.Name |> SagaStarter.Internal.entityIdOf,
+                                saga.Path.Name |> SagaStarter.Internal.entityIdOf
+
+                            let pending = pending.Remove identity
+
+                            if pending.IsEmpty then
+                                release ()
+                                return! completing ()
+                            else
+                                return! awaitingSagas pending
+                        | :? SagaStartSignal as signal ->
+                            match signal with
+                            | ResendStart id when id = handshake ->
+                                // A saga that restarted during the handshake lost the reference
+                                // it answers to. A repeated starting message reaches it again,
+                                // and a saga that already stored its start only answers.
+                                pending |> Map.iter (fun _ start' -> start start')
+                                scheduleResend ()
+                                return! awaitingSagas pending
+                            | StartDeadline id when id = handshake ->
+                                timedOut ()
+                                return! awaitingSagas pending
+                            | _ -> return! awaitingSagas pending
+                        | _ ->
+                            mailbox.Stash()
+                            return! awaitingSagas pending
+                    }
+
+                and completing () =
+                    actor {
+                        let! msg = mailbox.Receive()
+
+                        match msg with
+                        | :? SagaStartSignal as signal when signal = StartComplete handshake ->
+                            cancelTimers ()
+                            return! persist <@> set state
+                        | _ ->
+                            // Unreachable: release put the complete signal at the front of the
+                            // mailbox. Keep the message rather than lose it.
+                            mailbox.Stash()
+                            return! completing ()
+                    }
+
+                match sagas with
+                | Some sagas ->
+                    sagas |> Map.iter (fun _ start' -> start start')
+                    scheduleResend ()
+                    awaitingSagas sagas
+                | None ->
+                    rulesTask.Task.ContinueWith(fun (_: Threading.Tasks.Task<_>) -> self.Tell(RulesWired handshake, self))
+                    |> ignore
+
+                    awaitingRules ()
+
+            if rulesTask.Task.IsCompletedSuccessfully then
+                let sagas = sagasFor rulesTask.Task.Result
+                // Most events start no saga and are stored at once.
+                if sagas.IsEmpty then persist else wait (Some sagas)
+            else
+                wait None
 
         let publishEvent journaled (event: Event<'TEvent>) =
             let stamped = stamp journaled event
@@ -432,14 +633,15 @@ module internal Internal =
                         State = state }
 
                 return! newState |> set
+            // A readiness message or timer of a handshake that already finished.
+            | :? SagaStartSignal
+            | :? SagaStarter.Internal.Message -> return! state |> set
             | _ ->
-                let starter = SagaStarter.Internal.toSendMessage sagaStartTimeout mailbox.System mailbox.Self
-
                 let bodyInput =
                     {   Message = msg
                         State = state
                         PublishEvent = publishEvent false
-                        SendToSagaStarter = starter
+                        StartSagasThenPersist = startSagasThenPersist
                         Mediator = mediator
                         Log = logger
                         ManualSnapshotRequested = manualSnapshotRequested }
@@ -452,33 +654,38 @@ module internal Internal =
             | PersistEvent event ->
                 let nextVersion: Version =
                     (state.Version |> ValueLens.Value) + 1L |> ValueLens.TryCreate |> Result.value
-                return! event |> toEvent nextVersion |> bodyInput.SendToSagaStarter |> Persist
+                let stored = event |> toEvent nextVersion
+                return! bodyInput.StartSagasThenPersist [ stored ] (stored |> box |> Unchecked.nonNull |> Persist :> Effect<obj>)
 
             | PersistAndSnapshot event ->
                 let nextVersion: Version =
                     (state.Version |> ValueLens.Value) + 1L |> ValueLens.TryCreate |> Result.value
                 // flag consumed by the Persisted branch after the event is durable
                 bodyInput.ManualSnapshotRequested.Value <- true
-                return! event |> toEvent nextVersion |> bodyInput.SendToSagaStarter |> Persist
+                let stored = event |> toEvent nextVersion
+                return! bodyInput.StartSagasThenPersist [ stored ] (stored |> box |> Unchecked.nonNull |> Persist :> Effect<obj>)
 
             | PersistAllEvents [] -> return set state
             | PersistAllEvents events ->
                 // One journal AtomicWrite: versions are pre-allocated sequentially,
-                // each event runs the saga-start handshake (any of them may start
-                // one), then the batch persists all-or-nothing. The Persisted
+                // one saga-start handshake covers every event of the batch (any of them
+                // may start a saga), then the batch persists all-or-nothing. The Persisted
                 // callback fires per event after the WHOLE batch is durable, so
                 // folds/publishes/awaiters never observe a torn batch.
                 let baseVersion = state.Version |> ValueLens.Value
 
-                let boxedEvents =
+                let stored =
                     events
                     |> List.mapi (fun i event ->
                         let version: Version =
                             baseVersion + int64 i + 1L |> ValueLens.TryCreate |> Result.value
 
-                        event |> toEvent version |> bodyInput.SendToSagaStarter)
+                        event |> toEvent version)
 
-                return! boxedEvents |> Seq.ofList |> PersistAll
+                let persistAll =
+                    stored |> List.map (fun event -> event |> box |> Unchecked.nonNull) |> Seq.ofList |> PersistAll :> Effect<obj>
+
+                return! bodyInput.StartSagasThenPersist stored persistAll
 
             | DeferEvent event ->
                 // A deferred event is not journaled, so it does not start sagas. Saga recovery
@@ -609,10 +816,9 @@ module internal Internal =
                 | _ -> Some 30L
 
         // Upper bound for the saga-start handshake (seconds). Generous: the
-        // handshake spans two saga journal writes and normally completes in
-        // milliseconds; hitting this bound means a saga or the SagaStarter died
-        // mid-handshake, and the process FailFasts rather than parking the
-        // entity forever.
+        // handshake spans a saga journal write and normally completes in
+        // milliseconds; hitting this bound means a saga cannot start or answer,
+        // and the process FailFasts rather than parking the entity forever.
         let sagaStartTimeout: TimeSpan =
             let s: string | null = config["config:akka:fcqrs:saga-start-timeout"]
 
@@ -1200,19 +1406,19 @@ let api (config: IConfiguration) (loggerFactory: ILoggerFactory) (connection: Co
             Saga.init this initialState handleEvent applySideEffects apply name snapshotPolicy
         
         /// <summary>
-        /// Initializes the saga starter actor with specific rules for saga initiation.
-        /// The saga starter listens for incoming messages and triggers saga workflows based on configured rules.
+        /// Registers the start rules: which sagas each stored event starts.
         /// </summary>
         /// <remarks>
-        /// The rules determine which messages should launch a saga and how entities associated with the saga are created.
-        /// This enables dynamic saga management in a distributed environment.
+        /// Before an aggregate stores an event, it evaluates these rules, sends each matching saga
+        /// its starting message, and waits without holding a thread until every such saga is ready.
+        /// An event that starts no saga is stored at once. Call this once per actor system.
         /// </remarks>
         member _.InitializeSagaStarter (rules: (obj -> list<(string -> IEntityRef<obj>) * PrefixConversion * obj>)) : unit =
-            SagaStarter.Internal.init system mediator rules
+            SagaStarter.Internal.init system rules
 
         member _.InitializeSagaStarter (rules: (obj -> list<(string -> IEntityRef<obj>)>)) : unit =
             let fullRules evt =
                 rules evt
                 |> List.map (fun factory -> (factory, PrefixConversion(Some id), evt))
-            SagaStarter.Internal.init system mediator fullRules
+            SagaStarter.Internal.init system fullRules
     }

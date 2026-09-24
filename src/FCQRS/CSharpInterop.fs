@@ -236,7 +236,7 @@ type SagaDefinition() =
     /// How to derive saga entity ID from source entity ID.
     /// Defaults to identity (originatorId~Saga~correlationId). The previous default of
     /// `PrefixConversion None` produced saga names without the ~Saga~ marker, which breaks
-    /// originator/saga name resolution and the SagaStarter Continue→SagaCheckDone handshake.
+    /// originator/saga name resolution and the saga-start handshake.
     member val PrefixConversion: PrefixConversion = PrefixConversion (Some id) with get, set
     /// The event to send to start the saga. Pass the originator's event unchanged: a saga
     /// recovered before it leaves Started asks the originator whether this exact event
@@ -250,7 +250,7 @@ type PrefixConversions =
     static member Identity = PrefixConversion (Some id)
     /// Custom conversion of the correlation id part of the saga name: originatorId~Saga~f(correlationId).
     /// The saga reads its correlation id from the end of its name, so `f` must return the correlation id,
-    /// optionally after a prefix that ends with `~`, for example `cid => "audit~" + cid`. The saga starter
+    /// optionally after a prefix that ends with `~`, for example `cid => "audit~" + cid`. FCQRS
     /// logs an error and does not start the saga when `f` changes or drops the correlation id, or throws.
     static member Custom(f: Func<string, string>) = PrefixConversion (Some f.Invoke)
 
@@ -347,9 +347,8 @@ type ActorWiring =
 
     /// C#-friendly InitializeSagaStarter that accepts Func returning IList of SagaDefinition.
     /// A null list means "no sagas". Null Factory/StartingEvent members fail with a
-    /// named error: this handler runs inside the SagaStarter during the saga-start
-    /// handshake, where a bare NRE used to surface 30s later as a misleading
-    /// handshake-timeout FailFast.
+    /// named error: the aggregate runs this handler for each event it stores, and an
+    /// exception there terminates the process, so the error must say what was wrong.
     static member InitSagaStarter(
         actor: IActor,
         eventHandler: Func<obj, System.Collections.Generic.IList<SagaDefinition> | null>) : unit =

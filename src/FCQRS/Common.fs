@@ -887,7 +887,8 @@ type IActor =
         SnapshotPolicy ->
             EntityFac<obj>
 
-    /// Initializes the Saga Starter actor, configuring which events trigger which sagas.
+    /// Registers the start rules: which sagas each stored event starts. Call it once, after
+    /// registering the aggregates and sagas, with an empty rule when there are no sagas.
     /// <param name="eventHandler">A function mapping a received event object to a list of saga definitions to start: `obj -> list<(Factory * Prefix * StartingEvent)>`.</param>
     abstract InitializeSagaStarter: (obj -> list<(string -> IEntityRef<obj>) * PrefixConversion * obj>) -> unit
 
@@ -897,7 +898,7 @@ type IActor =
 
 // Internal helper to create Event records
 
-/// How the saga starter names a saga it starts for an originator event.
+/// How FCQRS names a saga it starts for an originator event.
 /// `PrefixConversion (Some f)` names the saga `originatorId~Saga~f(correlationId)`, and `Some id` gives
 /// the standard name `originatorId~Saga~correlationId`. A saga reads its originator and correlation id
 /// from its own name to receive the originator's events and to correlate the commands it sends, so `f`
@@ -1082,7 +1083,7 @@ module SagaBuilder =
             sagaName
             snapshotPolicy
 
-/// Contains types and functions related to the Saga Starter actor (internal implementation detail).
+/// The saga-start handshake: start rules, saga names, and readiness (internal implementation detail).
 module SagaStarter =
     open Microsoft.FSharp.Reflection
 
@@ -1134,122 +1135,80 @@ module SagaStarter =
         let internal sagaTopic (sagaEntityId: string) =
             correlationTopic (toOriginatorName sagaEntityId) (toRawGuid sagaEntityId)
 
-        // Internal constants for Saga Starter actor
-        [<Literal>]
-        let internal SagaStarterName = "SagaStarter"
+        /// The readiness message a saga sends each aggregate that started it: its starting
+        /// event is stored and it listens for the events that follow.
+        type internal Command = | Continue
 
-        [<Literal>]
-        let internal SagaStarterPath = "/user/SagaStarter"
-
-        // Internal messages for Saga Starter
-        type internal Command =
-            | CheckSagas of obj * originator: Actor.IActorRef * cid: string
-            | Continue
-            | PruneStale of originName: string * batchId: Guid
-
-        type internal Event = SagaCheckDone
-
-        // Default TTL for pending saga-coordination batches. If all sagas in a
-        // batch haven't reported back with Continue within this window the
-        // batch is considered orphaned (saga crashed, node failed, etc.) and
-        // pruned so the SagaStarter's state map stays bounded. Override with
-        // HOCON key `akka.fcqrs.saga-batch-ttl` (e.g. "5m", "30s").
-        let private defaultSagaBatchTtl = TimeSpan.FromMinutes(10.0)
-        [<Literal>]
-        let private sagaBatchTtlKey = "akka.fcqrs.saga-batch-ttl"
-
-        /// The ThreadPool minimums as they stood before any FCQRS saga starter
-        /// raised them. Captured ONCE per process, not per actor system: a
-        /// per-starter capture ratchets, because a second system's starter would
-        /// read the first one's raised floor as its own baseline and add on top.
-        let internal processBaselineThreads =
-            lazy
-                (let mutable w = 0
-                 let mutable io = 0
-                 Threading.ThreadPool.GetMinThreads(&w, &io)
-                 w, io)
-
-        let internal resolveSagaBatchTtl (cfg: Akka.Configuration.Config) =
-            try
-                if cfg.HasPath sagaBatchTtlKey then
-                    let t = cfg.GetTimeSpan(sagaBatchTtlKey, Nullable(defaultSagaBatchTtl))
-                    if t > TimeSpan.Zero then t else defaultSagaBatchTtl
-                else
-                    defaultSagaBatchTtl
-            with _ -> defaultSagaBatchTtl
-
-
+        /// Unused. It keeps Message a two-case union, so Continue keeps the wire type
+        /// Message+Command that earlier releases read.
+        type internal Event = | Retired
 
         type internal Message =
             | Command of Command
             | Event of Event
 
-            // Continue can cross nodes when a saga replies to its starter or
-            // re-signals readiness after recovery. The default Newtonsoft
-            // serializer cannot construct these private F# union cases; use
-            // the existing F# serializer and unchanged message shape instead.
+            // Continue crosses nodes when a saga runs on another node than the
+            // aggregate that started it. The default Newtonsoft serializer cannot
+            // construct these private F# union cases; use the existing F# serializer
+            // and unchanged message shape instead.
             interface ISerializable
 
-        // Internal helpers for Saga Starter communication
-        let internal toCheckSagas (event, originator, cid) =
-            (event |> box |> Unchecked.nonNull, originator, cid) |> CheckSagas |> Command
+        /// Which sagas an event starts: each saga's shard factory, its name conversion,
+        /// and the payload of its starting message.
+        type internal StartRules = obj -> ((string -> IEntityRef<obj>) * PrefixConversion * obj) list
 
-        // The resolved local saga starter of each actor system.
-        let private starters = System.Runtime.CompilerServices.ConditionalWeakTable<ActorSystem, Akka.Actor.IActorRef>()
+        // The start rules wired for each actor system. Aggregate and saga regions go live
+        // before the application wires its rules, and remembered sagas can re-drive
+        // commands in that window, so an aggregate can store an event first. It waits on
+        // this task.
+        let private startRules =
+            System.Runtime.CompilerServices.ConditionalWeakTable<ActorSystem, Threading.Tasks.TaskCompletionSource<StartRules>>()
 
-        /// The local saga starter. Aggregate and saga regions go live before the application
-        /// wires its saga starter, and remembered sagas can re-drive commands in that window,
-        /// so a save can arrive first. Wait for the starter until the handshake's deadline
-        /// instead of sending the check into dead letters.
-        let private resolveStarter (system: ActorSystem) (deadline: DateTime) =
-            match starters.TryGetValue system with
-            | true, starter -> starter
-            | _ ->
-                let rec attempt () =
+        let internal startRulesOf (system: ActorSystem) =
+            startRules.GetValue(
+                system,
+                fun _ ->
+                    Threading.Tasks.TaskCompletionSource<StartRules>(
+                        Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously))
+
+        /// The entity id of the saga an originator starts for a correlation id, or None when
+        /// the saga must not start. A saga reads its originator, its event topic, and the CID
+        /// of every command it sends from its own entity id, and the originator publishes the
+        /// starting event under the original CID. A name conversion that drops that CID would
+        /// leave a builder saga in Started forever, so such a saga is refused.
+        let internal sagaIdFor (log: ILogger) (originatorId: string) (cid: string) prefix =
+            match prefix with
+            | PrefixConversion None -> Some cid
+            | PrefixConversion(Some f) ->
+                let rawCid = cid |> toRawGuid
+
+                let converted =
                     try
-                        let starter =
-                            system.ActorSelection(SagaStarterPath).ResolveOne(TimeSpan.FromSeconds 1.0).GetAwaiter().GetResult()
-                        starters.AddOrUpdate(system, starter)
-                        starter
-                    with :? ActorNotFoundException when DateTime.UtcNow < deadline ->
-                        Threading.Thread.Sleep 20
-                        attempt ()
-                attempt ()
+                        Some(f rawCid)
+                    with error ->
+                        log.LogError(
+                            error,
+                            "Saga not started for originator {Originator} [cid: {CID}]: the prefix conversion threw.",
+                            originatorId,
+                            rawCid)
 
-        let internal toSendMessage (askTimeout: TimeSpan) (system: ActorSystem) (originator: IActorRef<_>) event =
-            // Build from the originator's ENTITY ID, not its escaped path name: the
-            // shard escapes the saga id we derive here when it names the saga actor,
-            // and everything downstream recovers the id by unescaping that name.
-            let cid =
-                toCidWithExisting
-                    (originator.Path.Name |> entityIdOf)
-                    (event.CorrelationId |> ValueLens.Value |> ValueLens.Value)
+                        None
 
-            // Start coordination belongs to the aggregate's own node. Every
-            // host registers this local actor, even when its start rules are
-            // empty. CheckSagas carries a local originator ref and never crosses
-            // the wire; only saga readiness replies may cross nodes.
-            let message = (event, untyped originator, cid) |> toCheckSagas
+                match converted with
+                | None -> None
+                | Some converted ->
+                    let sagaId = originatorId + SAGA_Suffix + converted
 
-            // Deliberately synchronous: the aggregate blocks here until every saga
-            // this event starts is journaled and subscribed, so the event published
-            // after persist cannot be missed (lost-wakeup race). Deliberately
-            // BOUNDED: without a timeout a saga or SagaStarter failure mid-handshake
-            // parks this entity (and its dispatcher thread) forever. If the
-            // handshake cannot complete, crash the process — fail-fast policy.
-            let deadline = DateTime.UtcNow + askTimeout
-            try
-                let coordinator = resolveStarter system deadline
-                let remaining = deadline - DateTime.UtcNow
-                let remaining = if remaining > TimeSpan.Zero then remaining else TimeSpan.FromMilliseconds 1.0
-                coordinator.Ask<obj>(message, remaining).GetAwaiter().GetResult() |> ignore
-            with ex ->
-                fatalFailFast
-                    null
-                    $"FCQRS saga-start handshake did not complete within {askTimeout} for originator '{originator.Path.Name}'. Crashing per fail-fast policy."
-                    ex
+                    if toOriginatorName sagaId = originatorId && toRawGuid sagaId = rawCid then
+                        Some sagaId
+                    else
+                        log.LogError(
+                            "Saga not started for originator {Originator} [cid: {CID}]: the prefix conversion returned '{Converted}'. A converted saga name must end with the correlation id, optionally after a prefix that ends with '~'.",
+                            originatorId,
+                            rawCid,
+                            converted)
 
-            event |> box |> Unchecked.nonNull
+                        None
 
         let internal publishEvent (logger: ILogger) (mailbox: Actor<_>) (mediator) event (cid) =
             let sender = mailbox.Sender()
@@ -1268,27 +1227,16 @@ module SagaStarter =
             mediator <! Akka.Cluster.Tools.PublishSubscribe.Publish(self.Path.Name, event)
             mediator <! Akka.Cluster.Tools.PublishSubscribe.Publish(self.Path.Name + CID_Separator + cid, event)
 
-        // The starting message's sender is the coordinator that owns the batch.
-        // Reply directly: the saga and originator may run on different nodes,
-        // each with its own /user/SagaStarter. Recovery loses these transient
-        // refs, so broadcast the existing Continue message in that case. Each
-        // coordinator only accepts readiness for the exact saga it is tracking.
-        let internal cont
-            (mediator: Akka.Actor.IActorRef)
-            (saga: Akka.Actor.IActorRef)
-            (coordinators: Akka.Actor.IActorRef list)
-            =
-            let message = Continue |> Command
+        /// Tells each aggregate that sent this saga its starting message that the saga is
+        /// ready. A recovered saga has lost those references; an aggregate still waiting
+        /// sends the starting message again, and the saga answers that one.
+        let internal cont (saga: Akka.Actor.IActorRef) (coordinators: Akka.Actor.IActorRef list) =
+            for coordinator in coordinators do
+                coordinator.Tell(Continue |> Command, saga)
 
-            match coordinators with
-            | [] -> mediator.Tell(SendToAll(SagaStarterPath, message, false), saga)
-            | coordinators ->
-                for coordinator in coordinators do
-                    coordinator.Tell(message, saga)
-
-        let internal acknowledgeReady mediator saga coordinators startingEventPersisted subscriptionAcked =
+        let internal acknowledgeReady saga coordinators startingEventPersisted subscriptionAcked =
             if startingEventPersisted && subscriptionAcked then
-                cont mediator saga coordinators
+                cont saga coordinators
 
         let internal subscriber (mediator: IActorRef<_>) (mailbox: Eventsourced<_>) =
             let topic = mailbox.Self.Path.Name |> entityIdOf |> sagaTopic
@@ -1307,258 +1255,11 @@ module SagaStarter =
 
             FSharpValue.MakeRecord(genericType, [| msg |])
 
-        // Internal implementation of the Saga Starter actor
-        let internal actorProp
-            (sagaCheck: obj -> (((string -> IEntityRef<obj>) * PrefixConversion * obj) list))
-            (mailbox: Actor<_>)
-            =
-            let log = mailbox.UntypedContext.GetLogger()
-            let sagaBatchTtl = resolveSagaBatchTtl mailbox.System.Settings.Config
-
-            // Adaptive ThreadPool floor.
-            // The saga-start handshake blocks the originator's dispatcher thread,
-            // and Akka's default executor is the CLR ThreadPool: N concurrent
-            // handshakes hold N pool threads, so the sagas that must answer them
-            // cannot be scheduled. This starter is the one actor that knows how
-            // many handshakes are in flight — raise the floor to cover them.
-            let baselineWorkers = fst processBaselineThreads.Value
-
-            // Ceiling on the adaptive floor: a blocked handshake costs a thread,
-            // so this bounds how much of the process a saga-start burst can take.
-            // Never below the baseline: the floor is only ever raised.
-            let maxWorkers =
-                let cfg = mailbox.System.Settings.Config
-                let key = "akka.fcqrs.max-worker-threads"
-
-                let configured =
-                    try
-                        if cfg.HasPath key then cfg.GetInt(key, 1024) else 1024
-                    with _ -> 1024
-
-                max baselineWorkers configured
-
-            let mutable ensuredMin = baselineWorkers
-            let mutable cappedWarned = false
-            // Set once SetMinThreads has refused a value. It only refuses values
-            // outside the pool's legal range, and `desired` only grows, so a
-            // refusal is permanent — retrying it on every message would spin.
-            let mutable raiseRefused = false
-
-            let ensureThreads (inFlight: int) =
-                // Overshoot deliberately. The starter learns the in-flight count
-                // one message at a time (and its own mailbox backlog is invisible
-                // to it), but the blocked originators arrive as a burst — tracking
-                // the count exactly means the floor trails the demand and the
-                // handshake bound expires during the climb. A flat first jump plus
-                // 2x headroom converges in a few messages.
-                let demanded = baselineWorkers + max 64 (inFlight * 2)
-                let desired = min maxWorkers demanded
-
-                if desired > ensuredMin && not raiseRefused then
-                    // Read the IO minimum at call time and pass it back unchanged:
-                    // capturing it once would clobber a raise another component
-                    // made after this actor started.
-                    let mutable currentWorkers = 0
-                    let mutable currentIo = 0
-                    Threading.ThreadPool.GetMinThreads(&currentWorkers, &currentIo)
-
-                    if Threading.ThreadPool.SetMinThreads(desired, currentIo) then
-                        log.Info(
-                            "SagaStarter raised ThreadPool min worker threads {0} -> {1} ({2} handshake(s) in flight)",
-                            ensuredMin, desired, inFlight)
-
-                        ensuredMin <- desired
-                    else
-                        // Silence here would leave the original starvation in place
-                        // with no diagnostic at all.
-                        raiseRefused <- true
-
-                        log.Error(
-                            "SagaStarter could not raise ThreadPool min worker threads to {0} (the runtime refused it; the process maximum may be lower). Concurrent saga starts block a dispatcher thread each and may now time out and crash the process.",
-                            desired)
-
-                // Warn on genuine saturation only — demand above the ceiling — not
-                // merely on reaching it, which is the steady state once raised.
-                if demanded > maxWorkers && not cappedWarned then
-                    cappedWarned <- true
-
-                    log.Warning(
-                        "SagaStarter reached the ThreadPool ceiling of {0} worker threads with {1} saga-start handshake(s) in flight. Handshakes block a dispatcher thread each, so beyond this point they may time out and crash the process. Raise akka.fcqrs.max-worker-threads or reduce saga-starting concurrency.",
-                        maxWorkers, inFlight)
-
-            // A saga reads its originator, its event topic and the CID of every
-            // command it sends from its own entity id. The originator publishes
-            // the journaled starting event under the original CID, so a saga whose
-            // name carries another CID never receives it: a builder saga then
-            // stays in Started forever. Refuse that saga instead of starting it.
-            let sagaIdFor (originator: IActorRef) cid prefix =
-                match prefix with
-                | PrefixConversion None -> Some cid
-                | PrefixConversion(Some f) ->
-                    let originatorId = originator.Path.Name |> entityIdOf
-                    let rawCid = cid |> toRawGuid
-
-                    let converted =
-                        try
-                            Some(f rawCid)
-                        with error ->
-                            log.Error(
-                                error,
-                                "Saga not started for originator {0} [cid: {1}]: the prefix conversion threw.",
-                                originatorId,
-                                rawCid)
-
-                            None
-
-                    match converted with
-                    | None -> None
-                    | Some converted ->
-                        let sagaId = originatorId + SAGA_Suffix + converted
-
-                        if toOriginatorName sagaId = originatorId && toRawGuid sagaId = rawCid then
-                            Some sagaId
-                        else
-                            log.Error(
-                                "Saga not started for originator {0} [cid: {1}]: the prefix conversion returned '{2}'. A converted saga name must end with the correlation id, optionally after a prefix that ends with '~'.",
-                                originatorId,
-                                rawCid,
-                                converted)
-
-                            None
-
-            // Different saga types share an entity id when the same event starts
-            // them. Readiness belongs to the (type, entity) pair, and a repeated
-            // Continue from one saga must never stand in for another saga.
-            let rec set (state: Map<string, (IActorRef * (Set<string * string> * Guid) list)>) =
-                let startSaga
-                    (originator: IActorRef)
-                    (list: ((string -> IEntityRef<obj>) * string * obj) list)
-                    =
-                    let sender = untyped <| mailbox.Sender()
-
-                    let sagas =
-                        [ for (factory, sagaId, e) in list do
-                              let saga = factory sagaId
-                              let msg = unboxx e
-                              saga <! msg //box (ShardRegion.StartEntity(saga.EntityId))
-                              yield saga.TypeName, saga.EntityId ]
-                        |> Set.ofList
-
-                    // Key by the full originator path, not the bare entity id: two
-                    // aggregate types can share an entity id (Order and OrderPayment
-                    // both "42"), and a name-only key made their concurrent
-                    // handshakes overwrite each other's stored reply-to.
-                    let name = string originator.Path
-                    let batchId = Guid.NewGuid()
-                    let batch = (sagas, batchId)
-
-                    let state =
-                        match state.TryFind name with
-                        | None -> state.Add(name, (sender, [ batch ]))
-                        | Some(_, batches) -> state.Remove(name).Add(name, (sender, batch :: batches))
-
-                    // Schedule a prune so a crashed/orphaned saga can't leak this batch forever.
-                    mailbox.System.Scheduler.ScheduleTellOnce(
-                        sagaBatchTtl,
-                        untyped mailbox.Self,
-                        Command(PruneStale(name, batchId)),
-                        ActorRefs.NoSender)
-
-                    state
-
-                actor {
-                    match! mailbox.Receive() with
-                    | Command Continue ->
-                        let sender = untyped <| mailbox.Sender()
-                        // Sharded entity paths end in <type>/<shard>/<entity>.
-                        // Both actor names are URI-escaped by cluster sharding.
-                        let sagaIdentity =
-                            sender.Path.Parent.Parent.Name |> entityIdOf,
-                            sender.Path.Name |> entityIdOf
-
-                        // A saga can satisfy several originators waiting on that
-                        // same (type, entity), but never another saga type with an
-                        // equal entity id. Removing from a set is idempotent.
-                        let newState, tracked =
-                            ((state, false), state)
-                            ||> Seq.fold (fun (acc, tracked) kvp ->
-                                let (originator, batches) = kvp.Value
-
-                                match batches |> List.tryFind (fun (pending, _) -> pending |> Set.contains sagaIdentity) with
-                                | None -> acc, tracked
-                                | Some(targetList, batchId) ->
-                                    let newList = Set.remove sagaIdentity targetList
-                                    let otherBatches = batches |> List.filter (fun (_, bid) -> bid <> batchId)
-
-                                    if newList.IsEmpty then
-                                        originator.Tell(SagaCheckDone, untyped mailbox.Self)
-
-                                        if otherBatches.IsEmpty then
-                                            acc.Remove kvp.Key, true
-                                        else
-                                            acc.Remove(kvp.Key).Add(kvp.Key, (originator, otherBatches)), true
-                                    else
-                                        acc.Remove(kvp.Key).Add(kvp.Key, (originator, (newList, batchId) :: otherBatches)), true)
-
-                        if not tracked then
-                            // Routine, not anomalous: recovered sagas re-signal
-                            // Continue defensively, and duplicates/pruned batches
-                            // land here too.
-                            log.Debug(
-                                "Saga {0} sent Continue but no batch tracks it (recovered saga re-signal, pruned batch, or duplicate delivery)",
-                                sagaIdentity)
-
-                        return! set newState
-                    | Command(CheckSagas(o, originator, cid)) ->
-                        // Every originator waiting on a handshake is a blocked
-                        // dispatcher thread; cover them before answering.
-                        ensureThreads (state.Count + 1)
-
-                        let sagas =
-                            [ for (factory, prefix, e) in sagaCheck o do
-                                  match sagaIdFor originator cid prefix with
-                                  | Some sagaId -> yield factory, sagaId, e
-                                  | None -> () ]
-
-                        match sagas with
-                        | [] ->
-                            mailbox.Sender() <! SagaCheckDone
-                            return! set state
-                        | sagas -> return! set <| startSaga originator sagas
-                    | Command(PruneStale(originName, batchId)) ->
-                        match state.TryFind originName with
-                        | None -> return! set state
-                        | Some(_, batches) ->
-                            match batches |> List.tryFind (fun (_, bid) -> bid = batchId) with
-                            | None -> return! set state
-                            | Some(staleSagas, _) ->
-                                // Do NOT send SagaCheckDone here — that would falsely signal
-                                // "all sagas ready" to the originator. Let the Ask's own
-                                // timeout surface the failure to the aggregate.
-                                log.Warning(
-                                    "Pruning stale saga batch for originator {0} after TTL ({1} saga(s) never reported Continue)",
-                                    originName,
-                                    Set.count staleSagas)
-                                log.Debug(
-                                    "Stale sagas for originator {0}: {1}",
-                                    originName,
-                                    staleSagas
-                                    |> Seq.map (fun (typeName, entityId) -> typeName + "/" + entityId)
-                                    |> fun names -> System.String.Join(", ", names))
-                                let remaining = batches |> List.filter (fun (_, bid) -> bid <> batchId)
-                                if remaining.IsEmpty then
-                                    return! set <| state.Remove originName
-                                else
-                                    let originator, _ = state.[originName]
-                                    return! set <| state.Remove(originName).Add(originName, (originator, remaining))
-                    | _ -> return! Unhandled
-                }
-
-            set Map.empty
-
-        let internal init system mediator sagaCheck =
-            let sagaStarter = spawn system <| SagaStarterName <| props (actorProp sagaCheck)
-            typed mediator <! (sagaStarter |> untyped |> Put)
+        /// Registers the start rules of an actor system. Aggregates waiting for them
+        /// continue once they are set.
+        let internal init (system: ActorSystem) (rules: StartRules) =
+            if not ((startRulesOf system).TrySetResult rules) then
+                invalidOp "The saga starters of this actor system are already wired. Wire them once, after registering the aggregates and sagas."
 
     /// Wraps an event that is intended to start a saga.
     /// This is typically the message sent to a saga actor upon its creation.

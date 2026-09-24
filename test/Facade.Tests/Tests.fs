@@ -1453,10 +1453,16 @@ let private concurrentSagaStartTest =
 /// NOTE: a regression here does not fail this test — it aborts the whole run with
 /// SIGABRT, because that is the failure mode being guarded.
 let private sagaStartFanoutTest =
-    testCase "facade: concurrent saga starts across distinct aggregates do not starve the thread pool"
+    testCase "facade: concurrent saga starts across distinct aggregates hold no threads"
     <| fun _ ->
-        let fanout = 50
+        // A blocking handshake held a pool thread per start, and FCQRS raised the pool's
+        // floor to cover them. The count stays within what SQLite writes before the
+        // command timeout on a slow CI machine; the floor is what this test checks.
+        let fanout = 300
         registerJournalTypes ()
+        let mutable baselineWorkers = 0
+        let mutable baselineIo = 0
+        Threading.ThreadPool.GetMinThreads(&baselineWorkers, &baselineIo)
 
         let db = Path.Combine(Path.GetTempPath(), sprintf "fcqrs_fanout_%s.db" (Guid.NewGuid().ToString("N")))
 
@@ -1484,18 +1490,14 @@ let private sagaStartFanoutTest =
 
         Expect.equal acks.Length fanout "every concurrent saga-starting command was acknowledged"
 
-        Expect.isTrue (sawResets.Task.Wait(TimeSpan.FromSeconds 60.0))
+        Expect.isTrue (sawResets.Task.Wait(TimeSpan.FromSeconds 120.0))
             "every saga completed its workflow and drove its Reset"
 
-        // The adaptive floor is the mechanism under test: the starter must have
-        // lifted the pool above the process baseline (= core count) to cover the
-        // blocked handshakes.
+        // Waiting for sagas is a message exchange, so nothing raises the pool's floor.
         let mutable minWorkers = 0
         let mutable minIo = 0
         Threading.ThreadPool.GetMinThreads(&minWorkers, &minIo)
-
-        Expect.isGreaterThan minWorkers Environment.ProcessorCount
-            "the SagaStarter raised the ThreadPool floor above the default to cover blocked handshakes"
+        Expect.equal minWorkers baselineWorkers "the saga starts left the ThreadPool floor unchanged"
 
         api.Stop().Wait(TimeSpan.FromSeconds 30.0) |> ignore
 

@@ -1,5 +1,29 @@
 # Changelog
 
+## 6.9.0 (FCQRS core)
+
+- **Starting a saga holds no thread.** An aggregate storing an event that starts a saga used to block
+  its thread until the saga was ready, and a per-node coordinator raised the thread pool's floor to
+  cover those threads. About 1,500 simultaneous saga starts still ran out of threads, and the
+  handshake timeout terminated the process. The aggregate now evaluates the start rules itself, sends
+  each saga its starting message, and waits for the sagas' readiness as messages. Commands that arrive
+  meanwhile are stashed and processed in order once the event is stored; commands an application
+  stashed with `Stash` stay stashed. Concurrent saga starts are now bounded by journal throughput.
+- **Events that start no saga are stored at once.** Every stored event used to make a round trip
+  through the per-node coordinator.
+- **A saga that restarts during the handshake is reached again.** The waiting aggregate repeats the
+  starting message to sagas that have not answered, instead of relying on a recovered saga's broadcast.
+- **A start rule that throws terminates the process with a named error**, instead of surfacing as a
+  handshake timeout 30 seconds later.
+
+### Breaking
+
+- `config:akka:fcqrs:max-worker-threads` and `akka.fcqrs.saga-batch-ttl` are ignored, and FCQRS no
+  longer changes `ThreadPool.SetMinThreads`.
+- A saga recovered during a handshake no longer broadcasts its readiness. An originator on FCQRS 6.8.0
+  or earlier waiting for such a saga on a 6.9.0 node therefore waits until its handshake timeout.
+  Upgrade every node together.
+
 ## 6.8.0 (FCQRS core)
 
 ### Breaking

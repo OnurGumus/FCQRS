@@ -154,47 +154,37 @@ evidence about how this saga instance began.
 The first event must create the saga and also reach it. Publishing before the new saga subscribes can
 lose the one event that moves it out of its initial state.
 
-FCQRS closes that race with a saga starter handshake:
+FCQRS closes that race with a handshake between the originator and the saga:
 
-1. `StartOn` identifies an originator event that needs a saga;
-2. the originator contacts the saga starter before publishing that event;
-3. the starter creates the saga instance and establishes its subscription;
-4. the saga stores its starting envelope;
-5. the originator is allowed to persist and publish the domain event;
+1. `StartOn` matches an event the originator is about to store;
+2. the originator sends the saga its starting message and waits before storing the event;
+3. the saga stores its starting envelope and subscribes to the event's correlation topic;
+4. the saga tells the originator it is ready;
+5. the originator stores and publishes the domain event;
 6. `handleEvent` receives it with no user-defined state yet and stores the first state.
 
-<img src="../img/saga-starter.svg" alt="An originator event is matched by StartOn, the saga starter creates and subscribes the saga, and only then can the event be published safely" width="940"/>
+<img src="../img/saga-starter.svg" alt="The originator matches TransferSent with StartOn, sends the transfer saga its starting message, and stores and publishes the event only after the saga reports it is ready" width="940"/>
 
 `Fcqrs.wireSagaStarters` in F#, or `AddSaga(..., startOn: ...)` in C#, installs these start rules. An
 empty F# application still calls `wireSagaStarters api []` so runtime startup follows one explicit
 path.
 
-## The handshake costs a thread per concurrent start
+## Waiting costs no thread
 
-Step 2 above is synchronous. The originator waits for the starter's acknowledgement before persisting,
-which is what closes the race, and while it waits it holds the thread its aggregate is running on.
-Akka.NET's default executor is the CLR thread pool, so N aggregates starting sagas at the same moment
-hold N pool threads.
+In step 2 the originator waits as an actor does: it handles the saga's readiness as a message and
+stashes the commands that arrive meanwhile, then processes them in order once the event is stored. It
+holds no thread while it waits, so many aggregates can start sagas at the same moment. An event that
+starts no saga is stored at once.
 
-That creates a cycle: the sagas expected to acknowledge the handshake need pool threads of their own,
-and the pool only injects one or two new threads per second once its floor is reached. Below that
-floor it creates threads on demand. Left alone, the handshakes time out and FCQRS fail-fasts the
-process.
+A saga that restarts before it answers loses the reference it would answer to. While the originator
+waits, it sends the starting message again from time to time, and a saga that already stored its start
+only answers. The originator waits at most `config:akka:fcqrs:saga-start-timeout`, 30 seconds by
+default. Past that, FCQRS [stops the process](process-termination.html#Starting-a-saga), because the
+saga may already have stored its start while the event it waits for was never stored.
 
-The saga starter is the one component that knows how many handshakes are outstanding, so it raises the
-pool's floor to cover them: a floor is not a reservation, and threads are still created only as work
-demands them. `config:akka:fcqrs:max-worker-threads` (default `1024`) bounds how far it will go.
-
-**This raises the limit; it does not remove it.** Concurrent saga starts remain bounded by that
-ceiling, and past it the handshake still times out and fail-fasts the process. Measured on a 12-core
-machine with the default ceiling, saga starts fanned out across distinct aggregate instances: 1000
-simultaneous starts complete, 1500 do not. The starter logs a warning the first time demand exceeds
-the ceiling, which is the signal to raise it.
-
-The limit is on **concurrent saga starts**, not on throughput. Commands to one aggregate serialize
-through one entity and hold one thread between them. Commands spread across many aggregate instances
-that each start a saga are the shape that consumes threads. If you expect that many simultaneous
-starts, measure your own ceiling and set it deliberately rather than discovering it under load.
+Concurrent saga starts are bounded by how fast the journal stores the sagas' first records, not by
+threads. Commands whose events start sagas wait for those writes, so their callers' command timeout
+applies to the whole handshake too.
 
 ## Resumption means re-drive, not rewind
 

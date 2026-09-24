@@ -89,14 +89,15 @@ FCQRS calls `Environment.FailFast`. The process ends immediately:
 
 ### Starting a saga
 
-Every event an aggregate stores first waits until each saga it starts is ready to receive it. The
-process stops when that wait exceeds `config:akka:fcqrs:saga-start-timeout`, 30 seconds by default.
-Two causes are common:
+An aggregate stores an event that starts a saga only after that saga reports it is ready, as
+[Sagas](sagas.html#Starting-is-itself-a-race) explains. The process stops when:
 
-- an F# application never called `Fcqrs.wireSagaStarters`. Call it after registering the aggregates
-  and sagas, with an empty list when there are no sagas. The C# host builder calls it for you;
-- more sagas start at the same time than `config:akka:fcqrs:max-worker-threads` allows. See
-  [Sagas](sagas.html#The-handshake-costs-a-thread-per-concurrent-start).
+- a start rule (`StartOn`) throws;
+- the wait exceeds `config:akka:fcqrs:saga-start-timeout`, 30 seconds by default. The common causes are
+  an F# application that never called `Fcqrs.wireSagaStarters`, and a saga that cannot store its start,
+  for example because its journal is unavailable. Call `wireSagaStarters` after registering the
+  aggregates and sagas, with an empty list when there are no sagas; the C# host builder calls it for
+  you.
 
 ### Stored history and messages
 

@@ -277,8 +277,8 @@ type internal Handshake<'TEvent when 'TEvent : not null> =
       Subscribed: bool
       /// The mediator acknowledged the CID subscription.
       SubscriptionAcked: bool
-      /// Transient reply destinations captured before the starting event is
-      /// persisted. The persisted event and snapshot contracts stay unchanged.
+      /// The aggregates that sent this incarnation its starting message, which wait for
+      /// its readiness. Transient: the persisted event and snapshot contracts stay unchanged.
       Coordinators: Akka.Actor.IActorRef list
       Incarnation: Incarnation }
 
@@ -332,7 +332,6 @@ let private runSaga<'TEvent, 'SagaData, 'State when 'TEvent : not null and 'Stat
 
             let signalReady handshake =
                 acknowledgeReady
-                    (untyped mediator)
                     (untyped mailbox.Self)
                     handshake.Coordinators
                     handshake.Subscribed
@@ -498,7 +497,7 @@ let private runSaga<'TEvent, 'SagaData, 'State when 'TEvent : not null and 'Stat
                     // lose the starting event's metadata.
                     return! snapState |> unbox<_> |> set { hs with Subscribed = true }
             | SubscriptionAcknowledged mailbox _ ->
-                // notify saga starter about the subscription completed
+                // Tell the aggregates that sent the starting message that this saga is ready.
                 let nextInner =
                     { hs with SubscriptionAcked = true }
 
@@ -682,8 +681,8 @@ let private runSaga<'TEvent, 'SagaData, 'State when 'TEvent : not null and 'Stat
             | msg when msg.GetType().Name.StartsWith("SagaStartingEvent") ->
                 // A starting event whose payload type is not this saga's 'TEvent:
                 // the two cases above did not match it. Dropping it silently left
-                // the SagaStarter's batch unsatisfied, so the originator's
-                // handshake ran to its timeout and fail-fasted the process with a
+                // the originator's handshake unsatisfied, so it ran to its
+                // timeout and fail-fasted the process with a
                 // message about the timeout rather than about the real cause — a
                 // saga registered against an event type it cannot receive. Name
                 // the mismatch, then release the originator: a saga that never
@@ -694,7 +693,7 @@ let private runSaga<'TEvent, 'SagaData, 'State when 'TEvent : not null and 'Stat
                     msg.GetType().Name,
                     typeof<'TEvent>.Name)
 
-                cont (untyped mediator) (untyped mailbox.Self) [ untyped (mailbox.Sender()) ]
+                cont (untyped mailbox.Self) [ untyped (mailbox.Sender()) ]
                 return! innerSet hs
 
             | _ ->
@@ -1093,11 +1092,10 @@ let private actorProp<'SagaData, 'State, 'TEvent when 'TEvent : not null and 'St
             None
         | Stay, true ->
             // A saga resurrected mid-handshake (persist failure + remember-entities,
-            // restart, rebalance) may never have sent Continue — and skipping it here
-            // left the originator blocked in the SagaStarter ask while this saga's
-            // ContinueOrAbort sat unprocessed in the originator's stalled mailbox:
-            // a process-local deadlock. Continue is idempotent at the starter
-            // (duplicates and untracked batches are tolerated), so always re-signal.
+            // restart, rebalance) may never have told its originator it is ready, and
+            // it has lost the originator's reference. An originator still waiting sends
+            // the starting message again, which records the reference; signal here so
+            // any recorded originator hears it. A repeated Continue is ignored.
             continueSaga ()
             None
         | StayExpecting exp, _ ->
