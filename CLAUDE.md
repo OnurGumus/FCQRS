@@ -125,7 +125,10 @@ Keep these distinctions intact in code comments and documentation.
   and persisted-compatibility checks. The C# interop page links `registration-csharp` as a .NET 10
   example.
 - `sample/` and `saga_sample/`: executable examples.
-- `test/Facade.Tests/`: facade and behaviour tests.
+- `test/Facade.Tests/`: facade and behaviour tests. Every test actor system runs Akka's
+  `serialize-messages` through `VerifySerialization.fs`, and the last test names each message type that
+  another node could not read. `BankInvariantTests.fs` compiles step 5's F# `Account.fs` and
+  `Transfer.fs`, kills processes during transfers, and checks that the total balance is unchanged.
 
 ## Development workflow
 
@@ -168,3 +171,6 @@ during rolling deployments. Test both old and new serialized event fixtures, mix
 projection rebuilds, aggregate recovery, and saga recovery.
 
 When changing a public API, update its XML comment and every F# and C# learning path that calls it.
+
+Give every message that can cross nodes a serializer another node can read. Mark a message that never
+leaves its node, such as one that carries a function, with `INoSerializationVerificationNeeded`.

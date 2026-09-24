@@ -322,3 +322,73 @@ type ConditionalCommandSerializer(system: ExtendedActorSystem) =
                   AggregateId = aggregateId }
             |> Unchecked.nonNull
         | _ -> invalidData "Unsupported conditional command protocol manifest."
+
+/// Carries a command to the node that hosts its aggregate or saga. Akkling wraps every message sent
+/// through an entity reference in a `ShardEnvelope`, which has no serializer of its own. The default
+/// JSON serializer cannot rebuild FCQRS's validated values, so the receiving node dropped the command.
+/// This serializer writes the envelope's IDs and serializes the message with the serializer bound to it.
+type ShardEnvelopeSerializer(system: ExtendedActorSystem) =
+    inherit SerializerWithStringManifest(system)
+
+    let envelopeManifest = "fcqrs:shard-envelope:1"
+    let utf8 = UTF8Encoding(false, true)
+
+    let invalidData message = raise (InvalidDataException message)
+
+    let writeBytes (writer: BinaryWriter) (bytes: byte array) =
+        writer.Write(bytes.Length)
+        writer.Write(bytes)
+
+    let writeText (writer: BinaryWriter) (value: string) =
+        if isNull (box value) then invalidData "A shard envelope field cannot be null."
+        writeBytes writer (utf8.GetBytes value)
+
+    let readBytes (reader: BinaryReader) =
+        let length = reader.ReadInt32()
+        if length < 0 || int64 length > reader.BaseStream.Length - reader.BaseStream.Position then
+            invalidData "A shard envelope contains an invalid field length."
+        reader.ReadBytes length
+
+    let readText (reader: BinaryReader) = utf8.GetString(readBytes reader)
+
+    override _.Identifier = 1715
+
+    override _.Manifest(value: obj) =
+        match value with
+        | :? Akkling.Cluster.Sharding.ShardEnvelope -> envelopeManifest
+        | _ -> invalidArg (nameof value) "The shard envelope serializer only accepts Akkling shard envelopes."
+
+    override _.ToBinary(value: obj) =
+        match value with
+        | :? Akkling.Cluster.Sharding.ShardEnvelope as envelope ->
+            if isNull envelope.Message then invalidData "A shard envelope must contain a message."
+            use stream = new MemoryStream()
+            use writer = new BinaryWriter(stream, utf8, true)
+            let serializer = system.Serialization.FindSerializerFor envelope.Message
+            writeText writer envelope.ShardId
+            writeText writer envelope.EntityId
+            writer.Write(serializer.Identifier)
+            writeText writer (Akka.Serialization.Serialization.ManifestFor(serializer, envelope.Message))
+            writeBytes writer (serializer.ToBinary envelope.Message)
+            writer.Flush()
+            stream.ToArray()
+        | _ -> invalidArg (nameof value) "The shard envelope serializer only accepts Akkling shard envelopes."
+
+    override _.FromBinary(bytes: byte array, manifest: string) : obj =
+        if isNull (box bytes) then nullArg (nameof bytes)
+        if manifest <> envelopeManifest then invalidData "Unsupported shard envelope manifest."
+        use stream = new MemoryStream(bytes, false)
+        use reader = new BinaryReader(stream, utf8, true)
+        let shardId = readText reader
+        let entityId = readText reader
+        let serializerId = reader.ReadInt32()
+        let messageManifest = readText reader
+        let messageBytes = readBytes reader
+        if stream.Position <> stream.Length then invalidData "A shard envelope contains trailing bytes."
+        match system.Serialization.Deserialize(messageBytes, serializerId, messageManifest) with
+        | null -> invalidData "A shard envelope must contain a message."
+        | message ->
+            box
+                ({ ShardId = shardId
+                   EntityId = entityId
+                   Message = message }: Akkling.Cluster.Sharding.ShardEnvelope)

@@ -153,6 +153,47 @@ let private legacyNodeRejects =
                 Expect.isFalse legacy.WhenTerminated.IsCompleted "rejecting an unknown protocol does not terminate the actor system"
             finally legacy.Terminate().WaitAsync(TimeSpan.FromSeconds 10.0).GetAwaiter().GetResult() |> ignore
 
+let private envelope (entityId: string) (message: obj) : Akkling.Cluster.Sharding.ShardEnvelope =
+    { ShardId = "shard-7"; EntityId = entityId; Message = message }
+
+let private roundTripEnvelope =
+    testCase "shard envelope wire: production bindings preserve the entity and the command inside"
+    <| fun _ ->
+        withSystem <| fun system ->
+            let command = command ()
+            let conditional = wire "ConditionalCommand" [| boxed 7L; boxed command; boxed system.DeadLetters |]
+            let decode (original: Akkling.Cluster.Sharding.ShardEnvelope) =
+                let serializer = boundSerializer system original
+                Expect.equal serializer.Identifier 1715 "the envelope has its own serializer ID"
+                let manifest = serializer.Manifest original
+                Expect.equal manifest "fcqrs:shard-envelope:1" "the envelope has a fixed versioned manifest"
+                let decoded = serializer.FromBinary(serializer.ToBinary original, manifest) :?> Akkling.Cluster.Sharding.ShardEnvelope
+                Expect.equal decoded.ShardId original.ShardId "the shard ID survives"
+                Expect.equal decoded.EntityId original.EntityId "the entity ID survives"
+                decoded.Message
+            Expect.equal (decode (envelope "user/with spaces" command)) (box command) "the command, ID, CID and metadata are unchanged"
+            let decoded = decode (envelope "user/with spaces" conditional)
+            Expect.equal (field<Command<string>> "Command" decoded) command "a nested conditional command keeps its command"
+            Expect.equal (field<IActorRef> "ReplyTo" decoded) system.DeadLetters "a nested conditional command keeps its reply actor"
+
+let private malformedEnvelopes =
+    testCase "shard envelope wire: malformed envelopes fail to decode"
+    <| fun _ ->
+        withSystem <| fun system ->
+            let original = envelope "user" (command ())
+            let serializer = boundSerializer system original
+            let manifest = serializer.Manifest original
+            let bytes = serializer.ToBinary original
+            let invalidLength = Array.copy bytes
+            // The shard ID's length comes first.
+            Array.Copy(BitConverter.GetBytes(Int32.MaxValue), 0, invalidLength, 0, 4)
+            for description, payload, wireManifest in
+                [ "unknown protocol version", bytes, "fcqrs:shard-envelope:2"
+                  "truncated header", bytes.[0..5], manifest
+                  "impossible field length", invalidLength, manifest
+                  "trailing bytes", Array.append bytes [| 0uy |], manifest ] do
+                Expect.throws (fun () -> serializer.FromBinary(payload, wireManifest) |> ignore) description
+
 type RemoteConditionalReplyCapture(eventReply: TaskCompletionSource<obj * IActorRef>, conflictReply: TaskCompletionSource<obj * IActorRef>) =
     inherit UntypedActor()
     override this.OnReceive(message: obj) =
@@ -164,6 +205,11 @@ type RemoteConditionalReplyCapture(eventReply: TaskCompletionSource<obj * IActor
 type RemoteConditionalReceiver() =
     inherit UntypedActor()
     override this.OnReceive(message: obj) =
+        // A command sent through an entity reference arrives in a shard envelope.
+        let message, entityId =
+            match message with
+            | :? Akkling.Cluster.Sharding.ShardEnvelope as envelope -> envelope.Message, envelope.EntityId
+            | message -> message, "remote-entity"
         let request = field<Command<string>> "Command" message
         let version = field<int64> "ExpectedVersion" message
         let replyTo = field<IActorRef> "ReplyTo" message
@@ -180,11 +226,11 @@ type RemoteConditionalReceiver() =
         replyTo.Tell(reply, this.Self)
         replyTo.Tell(
             wire "ConditionalCommandConflict"
-                [| boxed version; boxed (version + 1L); boxed request.Id; boxed request.CorrelationId; boxed "remote-entity" |],
+                [| boxed version; boxed (version + 1L); boxed request.Id; boxed request.CorrelationId; boxed entityId |],
             this.Self)
 
-let private remoteRoundTrip =
-    testCase "conditional wire: remote reply paths preserve event and conflict identities and senders"
+let private remoteRoundTrip (description: string) (entityId: string) (wrap: obj -> obj) =
+    testCase description
     <| fun _ ->
         let config =
             ConfigurationFactory.ParseString("""
@@ -206,7 +252,7 @@ let private remoteRoundTrip =
             let targetPath = target.Path.ToStringWithAddress((receiver :?> ExtendedActorSystem).Provider.DefaultAddress)
             let request = command ()
             let wrapper = wire "ConditionalCommand" [| boxed 3L; boxed request; boxed replyTo |]
-            caller.ActorSelection(targetPath).Tell(wrapper, replyTo)
+            caller.ActorSelection(targetPath).Tell(wrap wrapper, replyTo)
             let event, eventSender = eventReply.Task.WaitAsync(TimeSpan.FromSeconds 15.0).GetAwaiter().GetResult()
             let conflict, conflictSender = conflictReply.Task.WaitAsync(TimeSpan.FromSeconds 15.0).GetAwaiter().GetResult()
             let event = event :?> Event<string>
@@ -216,6 +262,7 @@ let private remoteRoundTrip =
             Expect.equal (field<MessageId> "CommandId" conflict) request.Id "the remote conflict retains the command ID"
             Expect.equal (field<CID> "CorrelationId" conflict) request.CorrelationId "the remote conflict retains the correlation ID"
             Expect.equal (field<int64> "ActualVersion" conflict) 4L "the remote conflict retains the actual version"
+            Expect.equal (field<string> "AggregateId" conflict) entityId "the remote receiver saw the target entity"
             Expect.equal (eventSender.Path.ToString()) targetPath "remote success replies preserve the publishing actor"
             Expect.equal (conflictSender.Path.ToString()) targetPath "remote conflicts preserve the rejecting actor"
         finally
@@ -224,4 +271,12 @@ let private remoteRoundTrip =
 
 let tests =
     testList "conditional serialization"
-        [ roundTripCommand; roundTripConflict; malformedMessages; legacyNodeRejects; remoteRoundTrip ]
+        [ roundTripCommand
+          roundTripConflict
+          malformedMessages
+          legacyNodeRejects
+          roundTripEnvelope
+          malformedEnvelopes
+          remoteRoundTrip "conditional wire: remote reply paths preserve event and conflict identities and senders" "remote-entity" id
+          remoteRoundTrip "shard envelope wire: a command in a shard envelope reaches another node" "user/with spaces"
+              (fun message -> box (envelope "user/with spaces" message)) ]

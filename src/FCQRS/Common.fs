@@ -1585,7 +1585,10 @@ module CommandHandler =
     /// Represents the message sent to the internal subscription mechanism.
     /// <typeparam name="'Command">The type of the command payload.</typeparam>
     /// <typeparam name="'Event">The type of the expected event payload.</typeparam>
-    type Command<'Command, 'Event> = Execute of CommandDetails<'Command, 'Event>
+    type Command<'Command, 'Event> =
+        | Execute of CommandDetails<'Command, 'Event>
+        // Sent only to a subscriber on the caller's node; its filter is a function.
+        interface Akka.Actor.INoSerializationVerificationNeeded
 
 
 

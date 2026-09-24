@@ -34,7 +34,7 @@ let private runnerOffTheAggregateThread =
     testCase "a runner's synchronous work does not block its aggregate" <| fun _ ->
         let db = Path.Combine(Path.GetTempPath(), $"fcqrs_runner_thread_{Guid.NewGuid():N}.db")
         let api =
-            Fcqrs.actor (ConfigurationBuilder().Build()) NullLoggerFactory.Instance
+            Fcqrs.actor (VerifySerialization.configuration().Build()) NullLoggerFactory.Instance
                 (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite $"Data Source={db};")) "RunnerThread"
         try
             use runnerStarted = new ManualResetEventSlim(false)
@@ -73,7 +73,7 @@ let private runnerOffTheAggregateThread =
 let private withAggregates timeoutSeconds run =
     let db = Path.Combine(Path.GetTempPath(), $"fcqrs_command_regression_{Guid.NewGuid():N}.db")
     let config =
-        ConfigurationBuilder()
+        VerifySerialization.configuration()
             .AddInMemoryCollection(
                 [ Collections.Generic.KeyValuePair<string, string | null>(
                       "config:akka:fcqrs:command-timeout", string timeoutSeconds) ])

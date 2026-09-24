@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased (FCQRS core)
+
+- **A command reaches an aggregate or saga on another node.** Akkling wraps each command sent through
+  an entity reference in a `ShardEnvelope`, and the default JSON serializer could not rebuild FCQRS's
+  validated IDs inside it. The receiving node dropped the command without logging it, and the caller
+  timed out. FCQRS now binds its own serializer to the envelope, which serializes the command with the
+  serializer bound to the command. A node on an earlier release still cannot read commands from other
+  nodes, so upgrade every node together. Joining a cluster through seed nodes and replies across nodes
+  still have open defects.
+- The command subscriber's request and an aggregate's saga-start signals never leave their node and
+  are now marked `INoSerializationVerificationNeeded`, so Akka's `serialize-messages` check skips them.
+
 ## 6.9.0 (FCQRS core)
 
 - **Starting a saga holds no thread.** An aggregate storing an event that starts a saga used to block

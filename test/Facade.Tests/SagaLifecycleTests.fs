@@ -18,7 +18,7 @@ type ApprovalSagaState = Recorded
 let private withSystem name (run: IActor -> string -> unit) =
     let db = Path.Combine(Path.GetTempPath(), $"fcqrs_saga_lifecycle_{Guid.NewGuid():N}.db")
     let api =
-        Fcqrs.actor (ConfigurationBuilder().Build()) NullLoggerFactory.Instance
+        Fcqrs.actor (VerifySerialization.configuration().Build()) NullLoggerFactory.Instance
             (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite $"Data Source={db};")) name
     try
         run api db
@@ -152,7 +152,7 @@ let private wrapperTagRecovers =
         // A durable remember-entities store lets the second system restart the saga by itself.
         let start (recovered: Threading.Tasks.TaskCompletionSource<LedgerSagaState>) =
             let configuration =
-                ConfigurationBuilder()
+                VerifySerialization.configuration()
                     .AddInMemoryCollection(
                         [ Collections.Generic.KeyValuePair<string, string | null>(
                               "config:akka:cluster:distributed-data:durable:lmdb", lmdb) ])
@@ -229,7 +229,7 @@ type DoorWatchState = Watching
 
 let private bootDoors (db: string) (lmdb: string) (recovered: ManualResetEventSlim) =
     let configuration =
-        ConfigurationBuilder()
+        VerifySerialization.configuration()
             .AddInMemoryCollection(
                 [ Collections.Generic.KeyValuePair<string, string | null>("config:akka:cluster:distributed-data:durable:lmdb", lmdb)
                   // An unanswered start fails the process quickly instead of after 30 seconds.
@@ -498,7 +498,7 @@ let private journalReadRetry =
     <| fun _ ->
         let db = Path.Combine(Path.GetTempPath(), $"fcqrs_saga_lifecycle_{Guid.NewGuid():N}.db")
         let configuration =
-            ConfigurationBuilder()
+            VerifySerialization.configuration()
                 .AddInMemoryCollection(
                     [ Collections.Generic.KeyValuePair<string, string | null>("config:akka:persistence:journal:plugin", "akka.persistence.journal.flaky")
                       Collections.Generic.KeyValuePair<string, string | null>(
@@ -540,7 +540,7 @@ let private starterWiredLate =
     <| fun _ ->
         let db = Path.Combine(Path.GetTempPath(), $"fcqrs_saga_lifecycle_{Guid.NewGuid():N}.db")
         let configuration =
-            ConfigurationBuilder()
+            VerifySerialization.configuration()
                 .AddInMemoryCollection(
                     // A regression fails the process after 10 seconds instead of 30.
                     [ Collections.Generic.KeyValuePair<string, string | null>("config:akka:fcqrs:saga-start-timeout", "10") ])
@@ -637,7 +637,7 @@ let private bootBells
     (recovered: ManualResetEventSlim)
     =
     let configuration =
-        ConfigurationBuilder()
+        VerifySerialization.configuration()
             .AddInMemoryCollection(
                 [ Collections.Generic.KeyValuePair<string, string | null>("config:akka:cluster:distributed-data:durable:lmdb", lmdb)
                   Collections.Generic.KeyValuePair<string, string | null>("config:akka:fcqrs:saga-start-timeout", "10") ])
@@ -746,7 +746,7 @@ let private bootGates
     (parked: ManualResetEventSlim option)
     =
     let configuration =
-        ConfigurationBuilder()
+        VerifySerialization.configuration()
             .AddInMemoryCollection(
                 [ Collections.Generic.KeyValuePair<string, string | null>("config:akka:cluster:distributed-data:durable:lmdb", lmdb) ])
             .Build()

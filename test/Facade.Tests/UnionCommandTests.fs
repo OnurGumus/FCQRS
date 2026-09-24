@@ -74,7 +74,7 @@ let private caseSentAsItsOwnType =
     <| fun _ ->
         let db = Path.Combine(Path.GetTempPath(), $"fcqrs_union_commands_{Guid.NewGuid():N}.db")
         let api =
-            Fcqrs.actor (ConfigurationBuilder().Build()) NullLoggerFactory.Instance
+            Fcqrs.actor (VerifySerialization.configuration().Build()) NullLoggerFactory.Instance
                 (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite $"Data Source={db};")) "UnionCommands"
         try
             let counters =
@@ -151,7 +151,7 @@ let private namedByActiveCase =
         let logs = Collections.Concurrent.ConcurrentQueue<string>()
         let db = Path.Combine(Path.GetTempPath(), $"fcqrs_union_names_{Guid.NewGuid():N}.db")
         let api =
-            Fcqrs.actor (ConfigurationBuilder().Build()) (new CapturingLoggerFactory(logs))
+            Fcqrs.actor (VerifySerialization.configuration().Build()) (new CapturingLoggerFactory(logs))
                 (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite $"Data Source={db};")) "UnionNames"
         try
             let levels =
@@ -221,7 +221,7 @@ let private genericCaseWithoutVersions =
         let db = Path.Combine(Path.GetTempPath(), $"fcqrs_union_generic_{Guid.NewGuid():N}.db")
         let start () =
             let api =
-                Fcqrs.actor (ConfigurationBuilder().Build()) NullLoggerFactory.Instance
+                Fcqrs.actor (VerifySerialization.configuration().Build()) NullLoggerFactory.Instance
                     (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite $"Data Source={db};")) "UnionGenericCase"
             let boxes =
                 Fcqrs.aggregate api

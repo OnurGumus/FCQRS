@@ -92,7 +92,7 @@ type private Database() =
         [| while reader.Read() do yield reader.GetFieldValue<byte[]>(0) |]
     member _.Start(?upcasters: bool, ?sameCluster: bool) =
         let configuration =
-            ConfigurationBuilder()
+            VerifySerialization.configuration()
                 .AddInMemoryCollection(
                     [ Collections.Generic.KeyValuePair<string, string | null>("config:akka:cluster:distributed-data:durable:lmdb", lmdb) ])
                 .Build()

@@ -290,7 +290,7 @@ let private bootWithRunner () =
     registerJournalTypes ()
     let db = Path.Combine(Path.GetTempPath(), sprintf "fcqrs_facade_run_%s.db" (Guid.NewGuid().ToString("N")))
     let api =
-        Fcqrs.actor (ConfigurationBuilder().Build()) NullLoggerFactory.Instance
+        Fcqrs.actor (VerifySerialization.configuration().Build()) NullLoggerFactory.Instance
             (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite (sprintf "Data Source=%s;" db))) "RunAsyncSmoke"
     let counter =
         Fcqrs.aggregateWithEffects api
@@ -303,7 +303,7 @@ let private boot () =
     registerJournalTypes ()
     let db = Path.Combine(Path.GetTempPath(), sprintf "fcqrs_facade_%s.db" (Guid.NewGuid().ToString("N")))
     let api =
-        Fcqrs.actor (ConfigurationBuilder().Build()) NullLoggerFactory.Instance
+        Fcqrs.actor (VerifySerialization.configuration().Build()) NullLoggerFactory.Instance
             (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite (sprintf "Data Source=%s;" db))) "FacadeSmoke"
     let counter =
         Fcqrs.aggregate api { Name = "Counter"; Initial = Counter.initial; Decide = Counter.decide; Fold = Counter.fold; Snapshots = Default; Passivation = PassivationPolicy.Default }
@@ -319,7 +319,7 @@ let private bootDual () =
     registerJournalTypes ()
     let db = Path.Combine(Path.GetTempPath(), sprintf "fcqrs_dual_%s.db" (Guid.NewGuid().ToString("N")))
     let api =
-        Fcqrs.actor (ConfigurationBuilder().Build()) NullLoggerFactory.Instance
+        Fcqrs.actor (VerifySerialization.configuration().Build()) NullLoggerFactory.Instance
             (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite (sprintf "Data Source=%s;" db))) "DualSmoke"
     let counterA =
         Fcqrs.aggregate api { Name = "Counter"; Initial = Counter.initial; Decide = Counter.decide; Fold = Counter.fold; Snapshots = Default; Passivation = PassivationPolicy.Default }
@@ -345,7 +345,7 @@ let private isWasReset (m: IMessageWithCID) =
 let private bootParked (db: string) (lmdb: string) =
     registerJournalTypes ()
     let cfg =
-        ConfigurationBuilder()
+        VerifySerialization.configuration()
             .AddInMemoryCollection(
                 [ Collections.Generic.KeyValuePair<string, string | null>(
                       "config:akka:cluster:distributed-data:durable:lmdb", lmdb) ])
@@ -367,7 +367,7 @@ let private bootParked (db: string) (lmdb: string) =
 let private bootAbort (db: string) (lmdb: string) =
     registerJournalTypes ()
     let cfg =
-        ConfigurationBuilder()
+        VerifySerialization.configuration()
             .AddInMemoryCollection(
                 [ Collections.Generic.KeyValuePair<string, string | null>(
                       "config:akka:cluster:distributed-data:durable:lmdb", lmdb) ])
@@ -578,7 +578,7 @@ let private manualSnapshotTest =
     <| fun _ ->
         let db = Path.Combine(Path.GetTempPath(), sprintf "fcqrs_manualsnap_%s.db" (Guid.NewGuid().ToString("N")))
         let api =
-            Fcqrs.actor (ConfigurationBuilder().Build()) NullLoggerFactory.Instance
+            Fcqrs.actor (VerifySerialization.configuration().Build()) NullLoggerFactory.Instance
                 (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite (sprintf "Data Source=%s;" db))) "ManualSnapSmoke"
         let counter =
             Fcqrs.aggregate api { Name = "Counter"; Initial = Counter.initial; Decide = Counter.decide; Fold = Counter.fold; Snapshots = Default; Passivation = PassivationPolicy.Default }
@@ -711,7 +711,7 @@ let private overflowTest =
 
         // Tiny notification buffer so a few dozen events overflow it.
         let cfg =
-            ConfigurationBuilder()
+            VerifySerialization.configuration()
                 .AddInMemoryCollection(
                     [ Collections.Generic.KeyValuePair<string, string | null>(
                           "config:akka:fcqrs:notification-buffer", "8") ])
@@ -1035,7 +1035,7 @@ let private bootCapped (db: string) =
     registerJournalTypes ()
 
     let api =
-        Fcqrs.actor (ConfigurationBuilder().Build()) NullLoggerFactory.Instance
+        Fcqrs.actor (VerifySerialization.configuration().Build()) NullLoggerFactory.Instance
             (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite (sprintf "Data Source=%s;" db))) "RecoverySmoke"
 
     let capped =
@@ -1087,7 +1087,7 @@ let private commandTimeoutTest =
         let db = Path.Combine(Path.GetTempPath(), sprintf "fcqrs_cmdtimeout_%s.db" (Guid.NewGuid().ToString("N")))
 
         let cfg =
-            ConfigurationBuilder()
+            VerifySerialization.configuration()
                 .AddInMemoryCollection(
                     [ Collections.Generic.KeyValuePair<string, string | null>(
                           // bare number = SECONDS (same rule as saga-start-timeout)
@@ -1142,7 +1142,7 @@ let private stopSagaDelayedTest =
         registerJournalTypes ()
 
         let api =
-            Fcqrs.actor (ConfigurationBuilder().Build()) NullLoggerFactory.Instance
+            Fcqrs.actor (VerifySerialization.configuration().Build()) NullLoggerFactory.Instance
                 (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite (sprintf "Data Source=%s;" db))) "FinalPingSmoke"
 
         let counter =
@@ -1169,7 +1169,7 @@ let private timeProviderTest =
         let db = Path.Combine(Path.GetTempPath(), sprintf "fcqrs_time_%s.db" (Guid.NewGuid().ToString("N")))
 
         let api =
-            Fcqrs.actor (ConfigurationBuilder().Build()) NullLoggerFactory.Instance
+            Fcqrs.actor (VerifySerialization.configuration().Build()) NullLoggerFactory.Instance
                 (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite (sprintf "Data Source=%s;" db))) "TimeSmoke"
 
         Fcqrs.wireSagaStarters api []
@@ -1248,7 +1248,7 @@ let private dynamicConfigTest =
         let kvp k v = Collections.Generic.KeyValuePair<string, string | null>(k, v)
 
         let cfg =
-            ConfigurationBuilder()
+            VerifySerialization.configuration()
                 .AddInMemoryCollection(
                     [ kvp "config:akka:remote:seed-nodes:0" "akka.tcp://a@127.0.0.1:4053"
                       kvp "config:akka:remote:seed-nodes:1" "akka.tcp://a@127.0.0.1:4054"
@@ -1387,7 +1387,7 @@ let private freshStartSingleDeliveryTest =
         registerJournalTypes ()
 
         let api =
-            Fcqrs.actor (ConfigurationBuilder().Build()) NullLoggerFactory.Instance
+            Fcqrs.actor (VerifySerialization.configuration().Build()) NullLoggerFactory.Instance
                 (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite (sprintf "Data Source=%s;" db))) "CountingSmoke"
 
         let counter =
@@ -1467,7 +1467,7 @@ let private sagaStartFanoutTest =
         let db = Path.Combine(Path.GetTempPath(), sprintf "fcqrs_fanout_%s.db" (Guid.NewGuid().ToString("N")))
 
         let api =
-            Fcqrs.actor (ConfigurationBuilder().Build()) NullLoggerFactory.Instance
+            Fcqrs.actor (VerifySerialization.configuration().Build()) NullLoggerFactory.Instance
                 (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite (sprintf "Data Source=%s;" db))) "FanoutSmoke"
 
         let counter =
@@ -1505,7 +1505,7 @@ let private bootOneShot (db: string) (lmdb: string) =
     registerJournalTypes ()
 
     let cfg =
-        ConfigurationBuilder()
+        VerifySerialization.configuration()
             .AddInMemoryCollection(
                 [ Collections.Generic.KeyValuePair<string, string | null>(
                       "config:akka:cluster:distributed-data:durable:lmdb", lmdb)
@@ -1541,7 +1541,7 @@ let private sagaTypeMismatchTest =
         let db = Path.Combine(Path.GetTempPath(), sprintf "fcqrs_mismatch_%s.db" (Guid.NewGuid().ToString("N")))
 
         let api =
-            Fcqrs.actor (ConfigurationBuilder().Build()) NullLoggerFactory.Instance
+            Fcqrs.actor (VerifySerialization.configuration().Build()) NullLoggerFactory.Instance
                 (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite (sprintf "Data Source=%s;" db))) "MismatchSmoke"
 
         let counter =
@@ -1653,7 +1653,7 @@ let private sendAwaitingTimeoutTest =
         registerJournalTypes ()
 
         let cfg =
-            ConfigurationBuilder()
+            VerifySerialization.configuration()
                 .AddInMemoryCollection(
                     [ Collections.Generic.KeyValuePair<string, string | null>(
                           "config:akka:fcqrs:command-timeout", "2") ])
@@ -1696,7 +1696,7 @@ let private slowSubscriberIsolationTest =
         // Tiny notification buffer so a pinned BroadcastHub head is reachable
         // with a handful of events instead of thousands.
         let cfg =
-            ConfigurationBuilder()
+            VerifySerialization.configuration()
                 .AddInMemoryCollection(
                     [ Collections.Generic.KeyValuePair<string, string | null>(
                           "config:akka:fcqrs:notification-buffer", "8") ])
@@ -1834,7 +1834,7 @@ let private bootChained (db: string) (lmdb: string) =
     registerJournalTypes ()
 
     let cfg =
-        ConfigurationBuilder()
+        VerifySerialization.configuration()
             .AddInMemoryCollection(
                 [ Collections.Generic.KeyValuePair<string, string | null>(
                       "config:akka:cluster:distributed-data:durable:lmdb", lmdb) ])
@@ -1941,7 +1941,7 @@ let private hoconConnectionStringTest =
             |> fun p -> p + "\\nested\"quoted.db"
 
         let api =
-            Fcqrs.actor (ConfigurationBuilder().Build()) NullLoggerFactory.Instance
+            Fcqrs.actor (VerifySerialization.configuration().Build()) NullLoggerFactory.Instance
                 (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite (sprintf "Data Source=%s;" db))) "HoconSmoke"
 
         api.Stop().Wait(TimeSpan.FromSeconds 30.0) |> ignore
@@ -1980,7 +1980,7 @@ let private crossTypeHandshakeTest =
 let private bootDeferSnap (db: string) =
     registerJournalTypes ()
     let api =
-        Fcqrs.actor (ConfigurationBuilder().Build()) NullLoggerFactory.Instance
+        Fcqrs.actor (VerifySerialization.configuration().Build()) NullLoggerFactory.Instance
             (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite (sprintf "Data Source=%s;" db))) "DeferSnapSmoke"
     let counter =
         Fcqrs.aggregate api { Name = "Counter"; Initial = Counter.initial; Decide = Counter.decide; Fold = Counter.fold; Snapshots = Every 2; Passivation = PassivationPolicy.Default }
@@ -2161,12 +2161,12 @@ let private bootExpecting (systemName: string) (sagaName: string) deadline retry
     let cfg =
         match lmdb with
         | Some l ->
-            ConfigurationBuilder()
+            VerifySerialization.configuration()
                 .AddInMemoryCollection(
                     [ Collections.Generic.KeyValuePair<string, string | null>(
                           "config:akka:cluster:distributed-data:durable:lmdb", l) ])
                 .Build()
-        | None -> ConfigurationBuilder().Build()
+        | None -> VerifySerialization.configuration().Build()
 
     let api =
         Fcqrs.actor cfg NullLoggerFactory.Instance
@@ -2278,7 +2278,7 @@ let private expectationUnhandledTest =
         registerJournalTypes ()
 
         let api =
-            Fcqrs.actor (ConfigurationBuilder().Build()) NullLoggerFactory.Instance
+            Fcqrs.actor (VerifySerialization.configuration().Build()) NullLoggerFactory.Instance
                 (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite (sprintf "Data Source=%s;" db))) "ExpectIgnSmoke"
 
         let counter =
@@ -2375,7 +2375,7 @@ let private perTypePassivationTest =
         let db = Path.Combine(Path.GetTempPath(), sprintf "fcqrs_passivate_%s.db" (Guid.NewGuid().ToString("N")))
 
         let cfg =
-            ConfigurationBuilder()
+            VerifySerialization.configuration()
                 .AddInMemoryCollection(
                     [ Collections.Generic.KeyValuePair<string, string | null>(
                           "config:akka:cluster:sharding:Counter:passivate-idle-entity-after", "1s") ])
@@ -2441,7 +2441,7 @@ let private definitionPassivationTest =
         let kv (k: string) (v: string) = Collections.Generic.KeyValuePair<string, string | null>(k, v)
 
         let cfg =
-            ConfigurationBuilder()
+            VerifySerialization.configuration()
                 .AddInMemoryCollection(
                     [ kv "config:akka:cluster:sharding:Counter:passivate-idle-entity-after" "10m"
                       kv "config:akka:cluster:sharding:CounterB:passivate-idle-entity-after" "1s" ])
@@ -2512,7 +2512,7 @@ let private cliffProbe =
         let kv (k: string) (v: string) = Collections.Generic.KeyValuePair<string, string | null>(k, v)
         let cap = Environment.GetEnvironmentVariable "FANOUT_CAP"
         let cfg =
-            ConfigurationBuilder()
+            VerifySerialization.configuration()
                 .AddInMemoryCollection(
                     [ kv "config:akka:loglevel" "WARNING"
                       kv "config:akka:stdout-loglevel" "WARNING"
@@ -2550,6 +2550,7 @@ let main argv =
     match argv with
     // A scenario that must terminate its process runs in a child started by its test.
     | [| flag; scenario; db |] when flag = JournalRejectionTests.ChildFlag -> JournalRejectionTests.runChild scenario db
+    | [| flag; seed; db |] when flag = BankInvariantTests.ChildFlag -> BankInvariantTests.runChild seed db
     | _ ->
         let allTests =
             testSequenced (testList "FCQRS" [
@@ -2565,5 +2566,8 @@ let main argv =
                 HostingAndRegistryTests.tests
                 UnionCommandTests.tests
                 JournalRejectionTests.tests
+                BankInvariantTests.tests
+                // Last: it checks the messages every earlier test sent.
+                VerifySerialization.tests
             ])
         runTestsWithCLIArgs [] argv allTests

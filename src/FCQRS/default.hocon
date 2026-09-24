@@ -45,12 +45,14 @@ config {
                     json = "Akka.Serialization.NewtonSoftJsonSerializer"
                     stj = "FCQRS.ActorSerialization+STJSerializer, FCQRS"
                     fcqrs-conditional = "FCQRS.ActorSerialization+ConditionalCommandSerializer, FCQRS"
+                    fcqrs-shard-envelope = "FCQRS.ActorSerialization+ShardEnvelopeSerializer, FCQRS"
                }
                serialization-bindings {
                     "System.Object" = json
                     "FCQRS.Common+ISerializable, FCQRS" = stj
                     "FCQRS.Common+ConditionalCommand, FCQRS" = fcqrs-conditional
                     "FCQRS.Common+ConditionalCommandConflict, FCQRS" = fcqrs-conditional
+                    "Akkling.Cluster.Sharding.ShardEnvelope, Akkling.Cluster.Sharding" = fcqrs-shard-envelope
                }
           }
           remote {

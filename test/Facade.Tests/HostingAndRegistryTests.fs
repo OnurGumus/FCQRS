@@ -119,7 +119,7 @@ let private repeatedStart =
         let ruleChecks = ref 0
         let services = ServiceCollection()
         services.AddSingleton<Microsoft.Extensions.Configuration.IConfiguration>(
-            Microsoft.Extensions.Configuration.ConfigurationBuilder().Build())
+            VerifySerialization.configuration().Build())
         |> ignore
         services.AddLogging() |> ignore
         services
@@ -174,7 +174,7 @@ module private LongConnection =
             // Provider settings such as TLS, pooling and timeouts make production strings this long.
             let connectionString = $"Data Source={database};" + String.replicate 15 "Default Timeout=30;"
             Expect.isGreaterThan connectionString.Length 255 "the connection string exceeds a ShortString"
-            let configuration = Microsoft.Extensions.Configuration.ConfigurationBuilder().Build()
+            let configuration = VerifySerialization.configuration().Build()
             let loggers = Microsoft.Extensions.Logging.Abstractions.NullLoggerFactory.Instance
             let api =
                 Fcqrs.actor configuration loggers
@@ -215,7 +215,7 @@ module private StorableEvents =
         testCase "registration: an abstract event type without polymorphism is rejected"
         <| fun _ ->
             let database = Path.Combine(Path.GetTempPath(), $"fcqrs-storable-events-{Guid.NewGuid():N}.db")
-            let configuration = Microsoft.Extensions.Configuration.ConfigurationBuilder().Build()
+            let configuration = VerifySerialization.configuration().Build()
             let loggers = Microsoft.Extensions.Logging.Abstractions.NullLoggerFactory.Instance
             let api =
                 Fcqrs.actor configuration loggers

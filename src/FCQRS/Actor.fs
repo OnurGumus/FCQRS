@@ -55,6 +55,8 @@ module internal Internal =
         /// Every saga is ready. Put at the front of the mailbox with the command's sender,
         /// so the events are stored while that sender is current.
         | StartComplete of Guid
+        // Sent only to the aggregate itself, so it never crosses nodes.
+        interface Akka.Actor.INoSerializationVerificationNeeded
 
     let private actorOfCell =
         typeof<Akka.Actor.ActorCell>.GetProperty("Actor", Reflection.BindingFlags.Instance ||| Reflection.BindingFlags.Public ||| Reflection.BindingFlags.NonPublic)

@@ -92,7 +92,7 @@ let private waitFor (condition: unit -> bool) what =
 let private boot name =
     let db = Path.Combine(Path.GetTempPath(), $"fcqrs_handshake_{Guid.NewGuid():N}.db")
     let configuration =
-        ConfigurationBuilder()
+        VerifySerialization.configuration()
             .AddInMemoryCollection(
                 [ Collections.Generic.KeyValuePair<string, string | null>("config:akka:fcqrs:saga-start-timeout", "10") ])
             .Build()

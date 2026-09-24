@@ -77,7 +77,7 @@ type private Fixture(postgres: string option, ?readJournalOverride: string) =
             execute admin None $"CREATE DATABASE {journalDatabase}" []
             execute admin None $"CREATE DATABASE {projectionDatabase}" []
     let api =
-        let configuration = ConfigurationBuilder()
+        let configuration = VerifySerialization.configuration()
         readJournalOverride |> Option.iter (fun value ->
             configuration.AddInMemoryCollection(
                 [ Collections.Generic.KeyValuePair<string, string | null>("config:akka:persistence:query:journal:sql:connection-string", value) ])
@@ -496,7 +496,7 @@ let private shardingBookkeeping =
         // bookkeeping under "/sharding/..." and deletes its early history after each snapshot.
         // Akka snapshots every 1000 updates by default; 10 trims the first rows after 30.
         let configuration =
-            ConfigurationBuilder()
+            VerifySerialization.configuration()
                 .AddInMemoryCollection(
                     [ Collections.Generic.KeyValuePair<string, string | null>("config:akka:cluster:sharding:snapshot-after", "10") ])
                 .Build()
@@ -556,7 +556,7 @@ let private causalNotification =
     <| fun _ ->
         let suffix, journalPath, projectionPath = sqlitePaths ()
         let api =
-            Fcqrs.actor (ConfigurationBuilder().Build()) NullLoggerFactory.Instance
+            Fcqrs.actor (VerifySerialization.configuration().Build()) NullLoggerFactory.Instance
                 (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite (sqliteString journalPath))) ("Causal" + suffix)
         try
             (use read = new SqliteConnection(sqliteString projectionPath)
@@ -651,7 +651,7 @@ let private heldWaiterOrder =
     <| fun _ ->
         let suffix, journalPath, projectionPath = sqlitePaths ()
         let api =
-            Fcqrs.actor (ConfigurationBuilder().Build()) NullLoggerFactory.Instance
+            Fcqrs.actor (VerifySerialization.configuration().Build()) NullLoggerFactory.Instance
                 (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite (sqliteString journalPath))) ("HeldOrder" + suffix)
         try
             let tallies = tallyAggregate api "HeldOrderTally"
@@ -693,7 +693,7 @@ let private observedTimeout =
     <| fun _ ->
         let suffix, journalPath, projectionPath = sqlitePaths ()
         let configuration =
-            ConfigurationBuilder()
+            VerifySerialization.configuration()
                 .AddInMemoryCollection(
                     [ Collections.Generic.KeyValuePair<string, string | null>("config:akka:fcqrs:command-timeout", "3") ])
                 .Build()

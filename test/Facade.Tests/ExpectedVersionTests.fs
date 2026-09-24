@@ -60,7 +60,7 @@ type private Fixture(?database: string, ?snapshots: SnapshotPolicy, ?commandTime
     let stashed = signal ()
     let mutable runnerCalls = 0
     let configuration =
-        ConfigurationBuilder()
+        VerifySerialization.configuration()
             .AddInMemoryCollection(
                 [ Collections.Generic.KeyValuePair<string, string | null>(
                       "config:akka:fcqrs:command-timeout", defaultArg commandTimeout "10s") ])

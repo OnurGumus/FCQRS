@@ -57,7 +57,7 @@ let ChildFlag = "--journal-rejection-child"
 let runChild (scenario: string) (db: string) : int =
     let kv (key: string) (value: string) = KeyValuePair<string, string | null>(key, value)
     let configuration =
-        ConfigurationBuilder()
+        VerifySerialization.configuration()
             .AddInMemoryCollection(
                 [ kv "config:akka:persistence:journal:plugin" "akka.persistence.journal.refusing"
                   kv "config:akka:persistence:journal:refusing:class" "JournalRejectionTests+RefusingJournal, Facade.Tests"
