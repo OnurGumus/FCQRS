@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased (FCQRS core)
+## 6.11.0 (FCQRS core)
 
 - **A saga start that would be lost is refused.** A saga is named after its originator's aggregate ID
   and the event's correlation ID, and keeps the event that started it. Another event that started the
