@@ -575,14 +575,12 @@ module internal Internal =
                         saga.Path.Name)
                 elif currentVersion = eventVersion then
                     // After a failed save, a different event can hold the same version. After
-                    // recovery from a snapshot with no later events the identity is unknown, so only
-                    // the version is compared.
-                    let sameEvent =
-                        match lastJournaledIdRef.Value with
-                        | Some id -> id = e.Id
-                        | None -> true
-
-                    answer sameEvent
+                    // recovery from a snapshot with no later events this aggregate does not know
+                    // which event holds its version, and its journal does. Answering from the
+                    // version alone let a saga run for an event that was never stored.
+                    match lastJournaledIdRef.Value with
+                    | Some id -> answer (id = e.Id)
+                    | None -> answerFromJournal mailbox.System logger mailbox.Pid e answer
                 elif currentVersion < eventVersion then
                     // This check runs after any write in progress, so the event was never stored.
                     answer false

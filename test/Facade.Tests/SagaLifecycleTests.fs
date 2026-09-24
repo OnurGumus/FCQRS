@@ -496,6 +496,69 @@ let private continueOrAbortIdentity =
             Thread.Sleep 500
             Expect.isEmpty published "answers go only to the saga that asked"
 
+// An aggregate recovered from a snapshot with no later events does not know which event holds its
+// version. Answering from the version alone let a saga continue for an event that was never stored:
+// the bank invariant test found a transfer credited without its debit.
+let private snapshotRecoveryIdentity =
+    testCase "saga lifecycle: after a snapshot recovery, recovery continues only on the event stored at that version"
+    <| fun _ ->
+        let db = Path.Combine(Path.GetTempPath(), $"fcqrs_saga_snapshot_identity_{Guid.NewGuid():N}.db")
+        let start () =
+            let api =
+                Fcqrs.actor (VerifySerialization.configuration().Build()) NullLoggerFactory.Instance
+                    (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite $"Data Source={db};")) "SnapshotIdentity"
+            let checks =
+                Fcqrs.aggregate api
+                    { Name = "Check"
+                      Initial = 0
+                      Decide = fun (_: Command<CheckCommand>) _ -> PersistEvent Checked
+                      Fold = fun (_: Event<CheckEvent>) state -> state + 1
+                      // A snapshot after every event: recovery replays no event after it.
+                      Snapshots = Every 1
+                      Passivation = PassivationPolicy.Default }
+            Fcqrs.wireSagaStarters api []
+            api, checks
+        let cid = Fcqrs.newCid ()
+        let first, checks = start ()
+        let journaled =
+            try
+                let journaled =
+                    Async.RunSynchronously(checks.Send cid (Fcqrs.aggregateId "check") Check (fun _ -> true), 20000)
+                // Snapshots are saved after the reply.
+                let deadline = DateTime.UtcNow.AddSeconds 10.0
+                let snapshots () =
+                    try
+                        use connection = new SqliteConnection($"Data Source={db};")
+                        connection.Open()
+                        use command = connection.CreateCommand()
+                        command.CommandText <- "SELECT COUNT(*) FROM snapshot WHERE persistence_id LIKE 'Check/%'"
+                        Convert.ToInt64(command.ExecuteScalar())
+                    with :? SqliteException -> 0L
+                while snapshots () = 0L && DateTime.UtcNow < deadline do
+                    Thread.Sleep 50
+                Expect.equal (snapshots ()) 1L "the aggregate saved a snapshot at version 1"
+                journaled
+            finally
+                first.Stop().Wait(TimeSpan.FromSeconds 30.0) |> ignore
+
+        let second, checks = start ()
+        try
+            let saga, reply = fakeSaga second.System "check" cid
+            let entity = checks.Factory "check"
+            let newId () : MessageId = Guid.CreateVersion7().ToString() |> ValueLens.CreateAsResult |> Result.value
+            // The saga's starting event was never stored; another event holds its version.
+            entity.Tell(recoveryCheck cid { journaled with Id = newId () }, saga)
+            Expect.isTrue (isAbort (reply ())) "a different event at the snapshot's version aborts the saga"
+            entity.Tell(recoveryCheck cid journaled, saga)
+            match reply () with
+            | Some(:? Event<CheckEvent> as event) -> Expect.equal event.Id journaled.Id "the stored event lets the saga continue"
+            | other -> failtest $"the stored event lets the saga continue, but the answer was {other}"
+        finally
+            second.Stop().Wait(TimeSpan.FromSeconds 30.0) |> ignore
+            SqliteConnection.ClearAllPools()
+            for path in [ db; db + "-wal"; db + "-shm" ] do
+                if File.Exists path then File.Delete path
+
 /// An in-memory journal whose next single-event reads fail, as a journal's reads do while its
 /// database is unavailable. Recovery reads are not affected.
 type FlakyReadJournal() =
@@ -879,6 +942,7 @@ let tests =
               recoveredReadiness
               stopDuringSave
               continueOrAbortIdentity
+              snapshotRecoveryIdentity
               journalReadRetry
               starterWiredLate
               customSagaNames

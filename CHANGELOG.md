@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased (FCQRS core)
+
+- **A saga no longer runs for a starting event that was never stored.** A saga recovered before its
+  first state asks its originator whether its starting event was stored. An originator recovered from
+  a snapshot with no later events did not know which event held its current version, and answered yes
+  when the versions matched. If the process had stopped before the event was stored and another event
+  later took that version, the saga ran anyway: the bank invariant test found a transfer credited to
+  its target without the debit. The originator now reads the event at that version from its journal
+  and compares it.
+
 ## 6.11.0 (FCQRS core)
 
 - **A saga start that would be lost is refused.** A saga is named after its originator's aggregate ID
