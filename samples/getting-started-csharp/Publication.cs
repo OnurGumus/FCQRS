@@ -1,5 +1,4 @@
 using System.Text.Json.Serialization;
-using Microsoft.FSharp.Core;
 using static FCQRS.Common;
 using static FCQRS.CSharp;
 
@@ -47,20 +46,23 @@ public sealed record PublicationData;
 
 public sealed class PublicationSaga(AggregateFactory documents, AggregateFactory slugs,
     bool pauseAfterReservation, TaskCompletionSource paused)
-    : Saga<DocumentEvent, PublicationData, PublicationState>
+    : Saga<PublicationData, PublicationState, DocumentEvent>
 {
     public override PublicationData InitialData => new();
     public override string SagaName => "GettingStartedCSharpPublication";
     public override AggregateFactory Originator => documents;
-    public static bool StartsOn(object message) => message is Event<DocumentEvent> { EventDetails: PublicationRequested };
+    public override bool StartsOn(Event<DocumentEvent> stored) => stored.EventDetails is PublicationRequested;
 
     // docs:react
+    public override EventAction<PublicationState> Start(object message, PublicationData data) =>
+        message is Event<DocumentEvent> { EventDetails: PublicationRequested requested }
+            ? StateChanged(new ReservingSlug(requested.Id, requested.Slug))
+            : Unhandled();
+
     public override EventAction<PublicationState> HandleEvent(object message,
-        SagaState<PublicationData, FSharpOption<PublicationState>> saga) =>
-        (message, saga.State?.Value) switch
+        SagaState<PublicationData, PublicationState> saga) =>
+        (message, saga.State) switch
         {
-            (Event<DocumentEvent> { EventDetails: PublicationRequested requested }, null) =>
-                StateChanged(new ReservingSlug(requested.Id, requested.Slug)),
             (Event<SlugEvent> reply, ReservingSlug state) => ReservationReply(reply, state.Id, state.Slug),
             (Event<SlugEvent> reply, ReservationUncertain state) => ReservationReply(reply, state.Id, state.Slug),
             (Event<DocumentEvent> reply, ReportingResult state) => CompletionReply(reply, state.Id, state.Slug, state.Result),

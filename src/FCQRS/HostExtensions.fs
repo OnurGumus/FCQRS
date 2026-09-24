@@ -10,14 +10,11 @@ namespace FCQRS
 //         .AddFcqrs(connectionString, "MyCluster")
 //         .AddAggregate<DocumentShard>()
 //         .AddAggregate<SlugShard>()
-//         .AddSaga(
-//             create:  sp => new PublicationSaga(sp.AggregateFactory<DocumentShard>(),
-//                                                sp.AggregateFactory<SlugShard>()),
-//             startOn: e => e is Event<DocumentEvent> { EventDetails: DocumentEvent.PublicationRequested })
+//         .AddSaga(sp => new PublicationSaga(sp.AggregateFactory<DocumentShard>(),
+//                                            sp.AggregateFactory<SlugShard>()))
 //
-// (TState/TCommand/TEvent come off the class's Aggregate<,,>/Saga<,,> base — see
-// FcqrsBuilderExtensions at the bottom; the explicit four-type-argument overloads
-// on FcqrsBuilder below remain available.)
+// (An aggregate's TState/TCommand/TEvent come off its Aggregate<,,> base; see
+// FcqrsBuilderExtensions at the bottom. A saga's come off the class `create` returns.)
 //         .AddProjection((offset, evt) => Projection.HandleEventWrapper(lf, conn, offset, evt));
 //
 // The actual wiring runs once at host startup (an IHostedService), in the order
@@ -274,19 +271,18 @@ type FcqrsBuilder internal (services: IServiceCollection, connectionString: stri
 
         this
 
-    /// Register a saga and the event that starts it. `create` builds the saga
-    /// (use sp.AggregateFactory&lt;T&gt;() to reference the aggregates it coordinates);
-    /// `startOn` decides which originator events spawn an instance.
-    member this.AddSaga<'TSaga, 'TEvent, 'TSagaData, 'TState
-            when 'TSaga :> Saga<'TEvent, 'TSagaData, 'TState>
-            and 'TEvent: not null
-            and 'TState: not null>(
-            create: Func<IServiceProvider, 'TSaga>,
-            startOn: Func<obj, bool>) : FcqrsBuilder =
+    /// Register a saga. `create` builds it; use sp.AggregateFactory&lt;T&gt;() to reference the
+    /// aggregates it sends commands to. The saga's StartsOn decides which originator events
+    /// start an instance. C# infers TData, TState and TEvent from the saga class `create`
+    /// returns, so a call names no type arguments:
+    ///
+    ///     .AddSaga(sp => new Transfer(sp.AggregateFactory&lt;Account&gt;()))
+    member this.AddSaga<'TData, 'TState, 'TEvent when 'TState: not null and 'TEvent: not null>(
+            create: Func<IServiceProvider, Saga<'TData, 'TState, 'TEvent>>) : FcqrsBuilder =
         sagaSteps.Add(fun sp actor _runtime ->
             let saga = create.Invoke sp
             let sagaFactory = saga.Factory(actor, this.EffectiveSnapshotPolicy saga.SnapshotPolicy)
-            fun evt -> if startOn.Invoke evt then Some sagaFactory else None)
+            fun evt -> if saga.StartRule evt then Some sagaFactory else None)
         this
 
     // Sets the projection step exactly once: a second AddProjection call would
@@ -498,23 +494,21 @@ type FcqrsServiceCollectionExtensions =
 [<AutoOpen>]
 module private BaseTypeArgs =
     /// Walk the inheritance chain to the closed generic base built from
-    /// `definition` (Aggregate<,,> / Saga<,,>) and return its type arguments.
+    /// `definition` (Aggregate<,,>) and return its type arguments.
     let rec baseArgs (definition: Type) (t: Type | null) : Type[] option =
         match t with
         | null -> None
         | t when t.IsGenericType && t.GetGenericTypeDefinition() = definition -> Some(t.GetGenericArguments())
         | t -> baseArgs definition t.BaseType
 
-/// Single-type-argument forms of AddAggregate / AddSaga. The concrete class
-/// already names its state/command/event types on its Aggregate<,,> / Saga<,,>
-/// base, so registration repeats none of them:
+/// The single-type-argument form of AddAggregate. The concrete class already names its
+/// state, command and event types on its Aggregate<,,> base, so registration repeats none of them:
 ///
-///     .AddAggregate<DocumentShard>()
-///     .AddSaga(create: sp => new PublicationSaga(...), startOn: e => ...)   // TSaga inferred
+///     .AddAggregate<Account>()
 ///
-/// Reflection runs once per registration, while the host is being composed —
-/// nothing on the message path. The four-type-argument instance overloads remain
-/// for classes that acquire the base generically.
+/// Reflection runs once per registration, while the host is being composed, and never on the
+/// message path. The four-type-argument instance overload remains for classes that acquire the
+/// base generically.
 [<Extension>]
 type FcqrsBuilderExtensions =
 
@@ -532,22 +526,3 @@ type FcqrsBuilderExtensions =
         | None ->
             invalidOp
                 $"{typeof<'TShard>.Name} does not derive from Aggregate<TState, TCommand, TEvent> — inherit the base class, or use the four-type-argument AddAggregate."
-
-    /// Register a saga naming only its class (usually inferred from `create`);
-    /// TEvent/TSagaData/TState are read off its Saga&lt;TEvent, TSagaData, TState&gt; base.
-    [<Extension>]
-    static member AddSaga<'TSaga when 'TSaga: not struct>
-        (builder: FcqrsBuilder, create: Func<IServiceProvider, 'TSaga>, startOn: Func<obj, bool>)
-        : FcqrsBuilder =
-        match baseArgs typedefof<Saga<obj, obj, obj>> typeof<'TSaga> with
-        | Some args ->
-            let m = typeof<FcqrsBuilder>.GetMethod "AddSaga" |> Unchecked.nonNull
-
-            m
-                .MakeGenericMethod([| typeof<'TSaga>; args[0]; args[1]; args[2] |])
-                .Invoke(builder, [| box create; box startOn |])
-            |> Unchecked.nonNull
-            :?> FcqrsBuilder
-        | None ->
-            invalidOp
-                $"{typeof<'TSaga>.Name} does not derive from Saga<TEvent, TSagaData, TState> — inherit the base class, or use the four-type-argument AddSaga."

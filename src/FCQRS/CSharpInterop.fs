@@ -763,194 +763,6 @@ type SagaCommands =
           Command = command
           DelayInMs = Some (delayMs, taskName) }
 
-/// Low-level C# saga API (mirrors ActorApi/QueryApi). For most sagas, prefer the
-/// Saga&lt;_,_,_&gt; base class, which wraps this.
-type SagaApi =
-    /// Initialize a saga with C# delegates
-    /// 'TEvent - The triggering event type (from the originator aggregate)
-    /// 'TSagaData - Cross-cutting saga data
-    /// 'TSagaState - User-defined saga states
-    static member Init<'TEvent, 'TSagaData, 'TSagaState when 'TSagaState : not null and 'TEvent : not null>(
-        actorApi: IActor,
-        sagaData: 'TSagaData,
-        handleEvent: Func<obj, SagaState<'TSagaData, 'TSagaState option>, EventAction<'TSagaState>>,
-        applySideEffects: Func<SagaState<'TSagaData, 'TSagaState>, bool, SagaSideEffectResult<'TSagaState>>,
-        apply: Func<SagaState<'TSagaData, SagaStateWrapper<'TSagaState, 'TEvent>>, SagaState<'TSagaData, SagaStateWrapper<'TSagaState, 'TEvent>>>,
-        originatorFactory: AggregateFactory,
-        sagaName: string) : EntityFac<obj> =
-
-        // Convert C# handleEvent to F#
-        let fsharpHandleEvent (evt: obj) (state: SagaState<'TSagaData, 'TSagaState option>) : EventAction<'TSagaState> =
-            handleEvent.Invoke(evt, state)
-
-        // Convert C# applySideEffects to F#
-        let fsharpApplySideEffects (state: SagaState<'TSagaData, 'TSagaState>) (recovering: bool) : SagaTransition<'TSagaState> * ExecuteCommand list =
-            let result = applySideEffects.Invoke(state, recovering)
-            (result.EffectiveTransition, result.CommandsList)
-
-        // Convert C# apply to F#
-        let fsharpApply (state: SagaState<'TSagaData, SagaStateWrapper<'TSagaState, 'TEvent>>) =
-            apply.Invoke(state)
-
-        // Convert C# factory to F#
-        let fsharpFactory = fun (s: string) -> originatorFactory.Invoke(s)
-
-        SagaBuilder.init
-            actorApi
-            sagaData
-            fsharpHandleEvent
-            fsharpApplySideEffects
-            fsharpApply
-            fsharpFactory
-            sagaName
-            SnapshotPolicy.Default
-
-    /// Initialize a saga with an explicit per-saga snapshot policy.
-    static member Init<'TEvent, 'TSagaData, 'TSagaState when 'TSagaState : not null and 'TEvent : not null>(
-        actorApi: IActor,
-        sagaData: 'TSagaData,
-        handleEvent: Func<obj, SagaState<'TSagaData, 'TSagaState option>, EventAction<'TSagaState>>,
-        applySideEffects: Func<SagaState<'TSagaData, 'TSagaState>, bool, SagaSideEffectResult<'TSagaState>>,
-        apply: Func<SagaState<'TSagaData, SagaStateWrapper<'TSagaState, 'TEvent>>, SagaState<'TSagaData, SagaStateWrapper<'TSagaState, 'TEvent>>>,
-        originatorFactory: AggregateFactory,
-        sagaName: string,
-        snapshotPolicy: SnapshotPolicy) : EntityFac<obj> =
-
-        let fsharpHandleEvent (evt: obj) (state: SagaState<'TSagaData, 'TSagaState option>) : EventAction<'TSagaState> =
-            handleEvent.Invoke(evt, state)
-
-        let fsharpApplySideEffects (state: SagaState<'TSagaData, 'TSagaState>) (recovering: bool) : SagaTransition<'TSagaState> * ExecuteCommand list =
-            let result = applySideEffects.Invoke(state, recovering)
-            (result.EffectiveTransition, result.CommandsList)
-
-        let fsharpApply (state: SagaState<'TSagaData, SagaStateWrapper<'TSagaState, 'TEvent>>) =
-            apply.Invoke(state)
-
-        let fsharpFactory = fun (s: string) -> originatorFactory.Invoke(s)
-
-        SagaBuilder.init
-            actorApi
-            sagaData
-            fsharpHandleEvent
-            fsharpApplySideEffects
-            fsharpApply
-            fsharpFactory
-            sagaName
-            snapshotPolicy
-
-    /// Initialize a saga with simplified apply - just takes data and unwrapped state, returns new data
-    static member Init<'TEvent, 'TSagaData, 'TSagaState when 'TSagaState : not null and 'TEvent : not null>(
-        actorApi: IActor,
-        sagaData: 'TSagaData,
-        handleEvent: Func<obj, SagaState<'TSagaData, 'TSagaState option>, EventAction<'TSagaState>>,
-        applySideEffects: Func<SagaState<'TSagaData, 'TSagaState>, bool, SagaSideEffectResult<'TSagaState>>,
-        apply: Func<'TSagaData, 'TSagaState, 'TSagaData>,
-        originatorFactory: AggregateFactory,
-        sagaName: string) : EntityFac<obj> =
-
-        // Wrap the simplified apply into the full signature
-        let fullApply (sagaState: SagaState<'TSagaData, SagaStateWrapper<'TSagaState, 'TEvent>>) =
-            match sagaState.State with
-            | SagaStateWrapper.UserDefined userState ->
-                let newData = apply.Invoke(sagaState.Data, userState)
-                { sagaState with Data = newData }
-            | _ -> sagaState
-
-        SagaApi.Init<'TEvent, 'TSagaData, 'TSagaState>(
-            actorApi, sagaData, handleEvent, applySideEffects,
-            Func<_, _>(fullApply), originatorFactory, sagaName)
-
-    /// Initialize a saga without apply (no data updates based on state)
-    static member Init<'TEvent, 'TSagaData, 'TSagaState when 'TSagaState : not null and 'TEvent : not null>(
-        actorApi: IActor,
-        sagaData: 'TSagaData,
-        handleEvent: Func<obj, SagaState<'TSagaData, 'TSagaState option>, EventAction<'TSagaState>>,
-        applySideEffects: Func<SagaState<'TSagaData, 'TSagaState>, bool, SagaSideEffectResult<'TSagaState>>,
-        originatorFactory: AggregateFactory,
-        sagaName: string) : EntityFac<obj> =
-
-        SagaApi.Init<'TEvent, 'TSagaData, 'TSagaState>(
-            actorApi, sagaData, handleEvent, applySideEffects,
-            Func<_, _, _>(fun data _ -> data), originatorFactory, sagaName)
-
-    /// Initialize a saga with simplified signatures - no FSharpOption, typed events
-    /// handleEvent: (event, data, currentState) -> EventAction
-    /// applySideEffects: (data, state, recovering) -> SagaSideEffectResult
-    /// LIMITATION: the typed handler only receives the originator's Event&lt;'TEvent&gt;.
-    /// ToSelf/ToSelfAfter payloads and other aggregates' reply events cannot reach it
-    /// (they are logged and ignored) — sagas needing timeouts or multi-aggregate
-    /// orchestration must use the obj-based Init overloads.
-    /// Before the saga's first state, handleEvent receives default(TSagaState): null for a
-    /// class, and the zero value for an enum or struct. The handler cannot tell that value
-    /// apart from a state equal to it, so the zero value of an enum or struct state must mean
-    /// "not started". Saga&lt;TEvent, TData, TState&gt; and the obj-based Init overloads pass an
-    /// option instead.
-    static member InitSimple<'TEvent, 'TSagaData, 'TSagaState when 'TSagaState : not null and 'TEvent : not null>(
-        actorApi: IActor,
-        sagaData: 'TSagaData,
-        handleEvent: Func<Event<'TEvent>, 'TSagaData, 'TSagaState, EventAction<'TSagaState>>,
-        applySideEffects: Func<'TSagaData, 'TSagaState, bool, SagaSideEffectResult<'TSagaState>>,
-        apply: Func<'TSagaData, 'TSagaState, 'TSagaData>,
-        originatorFactory: AggregateFactory,
-        sagaName: string) : EntityFac<obj> =
-
-        let logger = actorApi.LoggerFactory.CreateLogger sagaName
-
-        // Wrap simplified handleEvent - unwrap FSharpOption and cast event
-        let wrappedHandleEvent (evt: obj) (sagaState: SagaState<'TSagaData, 'TSagaState option>) =
-            match evt with
-            | :? Event<'TEvent> as typedEvent ->
-                let currentState = sagaState.State |> Option.defaultValue Unchecked.defaultof<'TSagaState>
-                handleEvent.Invoke(typedEvent, sagaState.Data, currentState)
-            | other ->
-                // Loud, not silent: a ToSelfAfter timeout payload or another
-                // aggregate's reply landing here means the workflow depends on a
-                // message this typed adapter structurally cannot deliver.
-                logger.LogWarning(
-                    "Saga {Saga} (InitSimple) ignored a {MessageType}: the typed handler only accepts Event<{EventType}>. Use the obj-based Init overload for ToSelf timeouts or multi-aggregate sagas.",
-                    sagaName,
-                    (match box other with
-                     | null -> "null"
-                     | o -> o.GetType().Name),
-                    typeof<'TEvent>.Name)
-
-                EventAction.UnhandledEvent
-
-        // Wrap simplified applySideEffects
-        let wrappedApplySideEffects (sagaState: SagaState<'TSagaData, 'TSagaState>) (recovering: bool) =
-            applySideEffects.Invoke(sagaState.Data, sagaState.State, recovering)
-
-        SagaApi.Init<'TEvent, 'TSagaData, 'TSagaState>(
-            actorApi, sagaData,
-            Func<_, _, _>(wrappedHandleEvent),
-            Func<_, _, _>(wrappedApplySideEffects),
-            apply, originatorFactory, sagaName)
-
-    /// Initialize a saga with simplified signatures and no apply.
-    /// Same limitations as the other InitSimple overload: only the originator's
-    /// Event&lt;'TEvent&gt; reaches the typed handler; ToSelf timeouts and other
-    /// aggregates' replies require the obj-based Init overloads. Before the first
-    /// state, the handler receives default(TSagaState), so the zero value of an enum
-    /// or struct state must mean "not started".
-    static member InitSimple<'TEvent, 'TSagaData, 'TSagaState when 'TSagaState : not null and 'TEvent : not null>(
-        actorApi: IActor,
-        sagaData: 'TSagaData,
-        handleEvent: Func<Event<'TEvent>, 'TSagaData, 'TSagaState, EventAction<'TSagaState>>,
-        applySideEffects: Func<'TSagaData, 'TSagaState, bool, SagaSideEffectResult<'TSagaState>>,
-        originatorFactory: AggregateFactory,
-        sagaName: string) : EntityFac<obj> =
-
-        SagaApi.InitSimple<'TEvent, 'TSagaData, 'TSagaState>(
-            actorApi, sagaData, handleEvent, applySideEffects,
-            Func<_, _, _>(fun data _ -> data), originatorFactory, sagaName)
-
-    /// Get the factory for a saga
-    static member Factory(
-        actorApi: IActor,
-        sagaEntityFac: EntityFac<obj>,
-        entityId: string) : IEntityRef<obj> =
-        sagaEntityFac.RefFor DEFAULT_SHARD entityId
-
 /// C#-friendly abstract base for an event-sourced aggregate. A concrete
 /// aggregate supplies only InitialState, EntityName, HandleCommand (the
 /// decision) and ApplyEvent (the fold); the base provides the wiring (Init).
@@ -993,17 +805,30 @@ type Aggregate<'TState, 'TCommand, 'TEvent when 'TEvent: not null>() =
     member this.Init(actorApi: IActor) : AggregateRefs<'TCommand, 'TEvent> =
         this.Init(actorApi, this.SnapshotPolicy, this.PassivationPolicy)
 
-/// C#-friendly abstract base for a saga. A concrete saga supplies InitialData,
-/// SagaName, Originator (the aggregate it starts from), HandleEvent and
-/// ApplySideEffects; the base provides the wiring (Init/Factory) and the small
-/// transition DSL. Designed to be subclassed from C#.
+/// C#-friendly abstract base for a saga, the counterpart of the F# Saga definition. A concrete
+/// saga supplies SagaName, InitialData, Originator, StartsOn, Start, HandleEvent and
+/// ApplySideEffects; the base provides the wiring (Init/Factory) and the small transition DSL.
+/// TData is data the saga carries in every state, TState its states, and TEvent the event type
+/// of the originator, the aggregate whose stored event starts the saga.
+/// Designed to be subclassed from C#.
 [<AbstractClass>]
-type Saga<'TEvent, 'TSagaData, 'TState when 'TEvent: not null and 'TState: not null>() =
-    abstract member InitialData: 'TSagaData
+type Saga<'TData, 'TState, 'TEvent when 'TState: not null and 'TEvent: not null>() =
+    abstract member InitialData: 'TData
+    /// The saga's stored name, like an aggregate's EntityName. Changing it orphans stored sagas.
     abstract member SagaName: string
+    /// The aggregate whose stored event starts the saga, and the target of ToOriginator.
     abstract member Originator: AggregateFactory
-    abstract member HandleEvent: obj * SagaState<'TSagaData, 'TState option> -> EventAction<'TState>
-    abstract member ApplySideEffects: SagaState<'TSagaData, 'TState> * bool -> SagaSideEffectResult<'TState>
+    /// Whether a stored originator event starts an instance of this saga.
+    abstract member StartsOn: Event<'TEvent> -> bool
+    /// Handles a message that arrives before the saga has a state: normally the event that
+    /// started it. Return StateChanged with the first state, or Unhandled.
+    abstract member Start: obj * 'TData -> EventAction<'TState>
+    /// Handles a message once the saga has a state: events from the aggregates it sends commands
+    /// to, ExpectationExhausted, and the saga's own ToSelf messages.
+    abstract member HandleEvent: obj * SagaState<'TData, 'TState> -> EventAction<'TState>
+    /// Returns the transition and commands for a stored state. It runs again after recovery;
+    /// the bool says whether the saga is recovering.
+    abstract member ApplySideEffects: SagaState<'TData, 'TState> * bool -> SagaSideEffectResult<'TState>
 
     /// Transition and event DSL over TState.
     static member StateChanged(next: 'TState) : EventAction<'TState> = SagaEventActions.StateChanged<'TState>(next)
@@ -1019,15 +844,26 @@ type Saga<'TEvent, 'TSagaData, 'TState when 'TEvent: not null and 'TState: not n
 
     /// Register the saga with an explicit (already-resolved) snapshot policy.
     member this.Init(actorApi: IActor, snapshotPolicy: SnapshotPolicy) : EntityFac<obj> =
-        SagaApi.Init<'TEvent, 'TSagaData, 'TState>(
-            actorApi,
-            this.InitialData,
-            Func<obj, SagaState<'TSagaData, 'TState option>, EventAction<'TState>>(fun e s -> this.HandleEvent(e, s)),
-            Func<SagaState<'TSagaData, 'TState>, bool, SagaSideEffectResult<'TState>>(fun s r -> this.ApplySideEffects(s, r)),
-            Func<SagaState<'TSagaData, SagaStateWrapper<'TState, 'TEvent>>, SagaState<'TSagaData, SagaStateWrapper<'TState, 'TEvent>>>(id),
-            this.Originator,
-            this.SagaName,
-            snapshotPolicy)
+        // The F# definition passes the state as an option; C# receives the two cases as two members.
+        let handleEvent (message: obj) (saga: SagaState<'TData, 'TState option>) =
+            match saga.State with
+            | None -> this.Start(message, saga.Data)
+            | Some state -> this.HandleEvent(message, { Data = saga.Data; State = state })
+
+        let applySideEffects (saga: SagaState<'TData, 'TState>) (recovering: bool) =
+            let result = this.ApplySideEffects(saga, recovering)
+            result.EffectiveTransition, result.CommandsList
+
+        let originator = this.Originator
+        SagaBuilder.initSimple<'TData, 'TState, 'TEvent>
+            actorApi
+            this.InitialData
+            handleEvent
+            applySideEffects
+            id
+            originator.Invoke
+            this.SagaName
+            snapshotPolicy
 
     /// Register the saga; calling this IS the registration.
     member this.Init(actorApi: IActor) : EntityFac<obj> =
@@ -1041,3 +877,9 @@ type Saga<'TEvent, 'TSagaData, 'TState when 'TEvent: not null and 'TState: not n
     /// The factory the saga-starter spawns instances from.
     member this.Factory(actorApi: IActor) : AggregateFactory =
         this.Factory(actorApi, this.SnapshotPolicy)
+
+    /// The start rule the saga-starter evaluates for each stored event.
+    member internal this.StartRule(message: obj) : bool =
+        match message with
+        | :? Event<'TEvent> as event -> this.StartsOn event
+        | _ -> false

@@ -46,9 +46,7 @@ LegacyCreationReader.Configure(builder.Configuration);
 builder.Services.AddFcqrs($"Data Source={database};", "getting-started-csharp")
     .AddAggregate<DocumentAggregate>()
     .AddAggregate<SlugAggregate>()
-    .AddSaga<PublicationSaga, DocumentEvent, PublicationData, PublicationState>(
-        sp => new PublicationSaga(sp.AggregateFactory<DocumentAggregate>(), sp.AggregateFactory<SlugAggregate>(), pause, paused),
-        PublicationSaga.StartsOn)
+    .AddSaga(sp => new PublicationSaga(sp.AggregateFactory<DocumentAggregate>(), sp.AggregateFactory<SlugAggregate>(), pause, paused))
     .AddProjection(HandleProjection, lastOffset: 0);
 // docs:end
 using var host = builder.Build();

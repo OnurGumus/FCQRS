@@ -1,5 +1,4 @@
 using System.Text.Json;
-using Microsoft.FSharp.Core;
 using static FCQRS.Common;
 using static FCQRS.CSharp;
 using static FCQRS.Serialization.Serialization;
@@ -64,7 +63,9 @@ public static class DocumentChecks
     {
         AggregateFactory factory = _ => throw new Exception("Pure tests never resolve actors");
         var saga = new PublicationSaga(factory, factory, false, new());
-        SagaState<PublicationData, FSharpOption<PublicationState>> State(PublicationState value) => new(new(), FSharpOption<PublicationState>.Some(value));
+        SagaState<PublicationData, PublicationState> State(PublicationState value) => new(new(), value);
+        Equal(SagaEventActions.StateChanged<PublicationState>(new ReservingSlug("notes", "guides/fcqrs")),
+            saga.Start(Event(new PublicationRequested("notes", "guides/fcqrs"), 3), new()), "A publication request must start the reservation");
         var expiry = new ExpectationExhausted("ReservingSlug", DateTime.UnixEpoch, 3);
         var reserving = new ReservingSlug("notes", "guides/fcqrs");
         var uncertain = new ReservationUncertain("notes", "guides/fcqrs");

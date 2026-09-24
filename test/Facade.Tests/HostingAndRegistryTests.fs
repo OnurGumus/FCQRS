@@ -100,17 +100,21 @@ type RenewalAggregate() =
     override _.HandleCommand(command, state) = PersistEvent(state + command.CommandDetails)
     override _.ApplyEvent(event, _) = event.EventDetails
 
-type RenewalSaga(originator: AggregateFactory) =
-    inherit Saga<int, int, string>()
+type RenewalSaga(originator: AggregateFactory, ruleChecks: int ref) =
+    inherit Saga<int, string, int>()
     override _.InitialData = 0
     override _.SagaName = "HostedRenewalSaga"
     override _.Originator = originator
-    override _.HandleEvent(event, state) =
-        match event, state.State with
-        | :? Event<int>, None -> Saga<int, int, string>.StateChanged "renewed"
-        | _ -> Saga<int, int, string>.Unhandled()
+    override _.StartsOn _ =
+        Interlocked.Increment(&ruleChecks.contents) |> ignore
+        true
+    override _.Start(event, _) =
+        match event with
+        | :? Event<int> -> Saga<int, string, int>.StateChanged "renewed"
+        | _ -> Saga<int, string, int>.Unhandled()
+    override _.HandleEvent(_, _) = Saga<int, string, int>.Unhandled()
     override _.ApplySideEffects(_, _) =
-        SagaSideEffectResult<string>(Transition = Saga<int, int, string>.StopSaga())
+        SagaSideEffectResult<string>(Transition = Saga<int, string, int>.StopSaga())
 
 let private repeatedStart =
     testCase "hosting: each start of a shared builder uses only its own saga rules"
@@ -125,11 +129,7 @@ let private repeatedStart =
         services
             .AddFcqrs($"Data Source={database};", "RepeatedStart")
             .AddAggregate<RenewalAggregate, int, int, int>()
-            .AddSaga<RenewalSaga, int, int, string>(
-                Func<IServiceProvider, RenewalSaga>(fun sp -> RenewalSaga(sp.AggregateFactory<RenewalAggregate>())),
-                Func<obj, bool>(fun event ->
-                    Interlocked.Increment(&ruleChecks.contents) |> ignore
-                    event :? Event<int>))
+            .AddSaga(fun sp -> RenewalSaga(sp.AggregateFactory<RenewalAggregate>(), ruleChecks) :> Saga<_, _, _>)
         |> ignore
 
         // Two providers built from one service collection share the FcqrsBuilder.

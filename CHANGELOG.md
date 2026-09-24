@@ -1,7 +1,13 @@
 # Changelog
 
-## Unreleased (FCQRS core)
+## 6.10.0 (FCQRS core)
 
+- **C# sagas no longer see F# options, and their registration names no types.** A C# saga used to
+  receive its state as `FSharpOption<TState>`, which is `null` before the first state, and was
+  registered with four type arguments and a separate start predicate. The saga class now handles the
+  message before its first state in `Start`, the later ones in `HandleEvent` with the stored state, and
+  declares its start rule as `StartsOn`. `AddSaga` infers the saga's types from the class its factory
+  returns.
 - **A command reaches an aggregate or saga on another node.** Akkling wraps each command sent through
   an entity reference in a `ShardEnvelope`, and the default JSON serializer could not rebuild FCQRS's
   validated IDs inside it. The receiving node dropped the command without logging it, and the caller
@@ -11,6 +17,20 @@
   still have open defects.
 - The command subscriber's request and an aggregate's saga-start signals never leave their node and
   are now marked `INoSerializationVerificationNeeded`, so Akka's `serialize-messages` check skips them.
+
+### Breaking (C#)
+
+- `Saga<TEvent, TSagaData, TState>` is now `Saga<TData, TState, TEvent>`: the order of the F# `Saga`
+  definition, with the originator's event last as in `Aggregate<TState, TCommand, TEvent>`.
+- `HandleEvent(object, SagaState<TData, FSharpOption<TState>>)` is split in two.
+  `Start(object, TData)` receives messages before the saga has a state, normally its starting event,
+  and `HandleEvent(object, SagaState<TData, TState>)` receives the later ones.
+- The start rule is the saga's `StartsOn(Event<TEvent>)` member. `AddSaga` takes only the factory,
+  as in `.AddSaga(services => new Transfer(services.AggregateFactory<Account>()))`; the
+  four-type-argument overload and the `startOn` argument are removed.
+- `SagaApi` (`Init`, `InitSimple`, and `Factory`) is removed. Derive from `Saga<TData, TState, TEvent>`.
+- Stored sagas stay readable: what a saga stores depends on its `SagaName` and its data, state, and
+  event types, not on the C# base class.
 
 ## 6.9.0 (FCQRS core)
 
