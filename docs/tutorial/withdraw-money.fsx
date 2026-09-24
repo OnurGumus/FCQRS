@@ -192,6 +192,10 @@ FCQRS applies a deferred event with `fold` too, so `fold` returns the state unch
 A change made there would last only until the account is loaded again, because loading folds stored
 events only.
 
+Turn a command away with a rejection, not an exception. An exception in `decide` or `fold` does not
+reach the caller: FCQRS stops the whole program, for reasons
+[When FCQRS stops the process](../concepts/process-termination.html) explains.
+
 ## Send the commands
 
 <!-- sample: accounts/2-withdraw-money/fsharp Program.fs send -->

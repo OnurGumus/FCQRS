@@ -208,7 +208,9 @@ choices remain correct after the actor leaves memory and later recovers.
 
 `fold` runs both after persistence and during recovery. It must not read the clock, generate ids, call
 services, or write to another store. Capture changing values before persistence and put them in the
-event.
+event. An exception in `decide` or `fold` stops the process, as
+[When FCQRS stops the process](../concepts/process-termination.html) explains, so report a broken rule
+with a rejection instead.
 
 `decide` should also remain a deterministic domain function. It may read values already carried by the
 command envelope, including `CreationDate`, but should not perform I/O. Use a

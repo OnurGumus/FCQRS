@@ -58,6 +58,7 @@ read-model rows are not three names for the same data.
 | How do independent owners coordinate after failures? | [Sagas](sagas.html) |
 | What do defer, snapshot, and passivation each do? | [Deferring, snapshots, and passivation](aggregate-lifecycle.html) |
 | What is durable at each point in the complete flow? | [Consistency and recovery](consistency-and-recovery.html) |
+| Why did my process stop, and what should I do about it? | [When FCQRS stops the process](process-termination.html) |
 | How should C# messages cross the persistence boundary? | [C# interop and serialization](csharp-interop.html) |
 
 ## How to use a concept page

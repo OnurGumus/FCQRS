@@ -118,6 +118,10 @@ FCQRS provides useful local guarantees, but the application must decide what hap
 Timeouts, idempotency keys, dead-letter and failure monitoring, compatibility tests, backups, and
 rehearsed rebuilds are application responsibilities around the framework.
 
+Some failures leave no caller to report to, such as an exception in `fold` or a stored event that no
+longer reads. FCQRS stops the process for those, so recovery starts again from the journal.
+[When FCQRS stops the process](process-termination.html) lists every case.
+
 ## Reason from the last durable boundary
 
 For every step, ask: what is the last fact known to be durable, and what could have happened after it?

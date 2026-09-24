@@ -66,7 +66,7 @@ The .NET configuration path uses colons. The equivalent HOCON path uses nested o
 | .NET configuration key | Default | Purpose |
 |---|---:|---|
 | `config:akka:persistence:snapshot-version-count` | `30` | Snapshot interval used by `SnapshotPolicy.Default` |
-| `config:akka:fcqrs:saga-start-timeout` | `30` | Maximum seconds allowed for the saga-start handshake before fail-fast |
+| `config:akka:fcqrs:saga-start-timeout` | `30` | Maximum seconds allowed for the saga-start handshake before [fail-fast](concepts/process-termination.html) |
 | `config:akka:fcqrs:command-timeout` | `30s` | Deadline from command subscription setup to its matching aggregate reply; nonmatching events do not extend it |
 | `config:akka:fcqrs:notification-buffer` | `1024` | Maximum queued notifications per subscriber; a full subscriber queue drops its oldest notification |
 | `config:akka:fcqrs:max-worker-threads` | `1024` | Ceiling on the thread-pool floor the saga starter raises to cover concurrent saga-start handshakes |

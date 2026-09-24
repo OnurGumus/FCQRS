@@ -202,6 +202,7 @@ Do not catch a storage exception and advance the offset. Let the handler fail. F
 registration on this page, FCQRS terminates the process when a handler fails so the stream cannot stop
 silently while the host appears healthy. The process supervisor can restart it from the last committed
 offset after the storage problem or handler bug is corrected.
+[When FCQRS stops the process](../concepts/process-termination.html) explains the policy.
 
 A failure to read the journal itself is handled differently: FCQRS logs the error and retries the read
 with a backoff that starts at 1 second and grows to 30 seconds, plus up to 20 percent random delay.

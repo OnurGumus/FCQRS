@@ -169,7 +169,8 @@ Assert.Equal(
   FCQRS does not reissue it.
 - **The runner must be total.** An escaping exception terminates the process because FCQRS cannot turn an
   unknown runner failure into a valid domain command. Model timeout, rejection, and retry exhaustion as
-  explicit result commands.
+  explicit result commands. [When FCQRS stops the process](../concepts/process-termination.html) lists
+  the other cases.
 - **The result may be stale.** Validate the result command against current aggregate state before
   persisting it.
 
