@@ -46,9 +46,7 @@ builder.Logging.ClearProviders();
 // Register the accounts, the transfer saga, and the new statement.
 builder.Services.AddFcqrs(connectionString, "accounts")
     .AddAggregate<Account>()
-    .AddSaga<Transfer, AccountEvent, TransferData, TransferState>(
-        services => new Transfer(services.AggregateFactory<Account>()),
-        Transfer.StartsOn)
+    .AddSaga(services => new Transfer(services.AggregateFactory<Account>()))
     .AddTransactionalProjection(options, Statement.Handle);
 using var host = builder.Build();
 await host.StartAsync();

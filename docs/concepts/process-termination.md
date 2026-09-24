@@ -78,7 +78,7 @@ FCQRS calls `Environment.FailFast`. The process ends immediately:
 
 ### Sagas
 
-- `handleEvent` (`HandleEvent` in C#) throws. One message is exempt: a handler that throws on
+- `handleEvent` (`Start` or `HandleEvent` in C#) throws. One message is exempt: a handler that throws on
   `ExpectationExhausted` is logged and receives it again one deadline later.
 - `applySideEffects` (`ApplySideEffects` in C#) throws.
 - A stored saga state cannot be applied during recovery.

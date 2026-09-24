@@ -1,5 +1,4 @@
 using FCQRS;
-using Microsoft.FSharp.Core;
 using static FCQRS.Common;
 using static FCQRS.CSharp;
 
@@ -21,7 +20,7 @@ public sealed record TransferData;
 // docs:end
 
 public sealed class Transfer(AggregateFactory accounts)
-    : Saga<AccountEvent, TransferData, TransferState>
+    : Saga<TransferData, TransferState, AccountEvent>
 {
     public override string SagaName => "Transfer";
     public override TransferData InitialData => new();
@@ -29,10 +28,21 @@ public sealed class Transfer(AggregateFactory accounts)
     public override AggregateFactory Originator => accounts;
 
     // docs:react
-    // Turns an event into the next state to store.
+    // Turns the event that started the transfer into its first state.
+    public override EventAction<TransferState> Start(
+        object message, TransferData data) =>
+        message is Event<AccountEvent>
+        {
+            EventDetails: TransferSent sent, Sender: { } sender
+        }
+            ? StateChanged(new Delivering(
+                new(sent.TransferId, sender.Value.ToString(), sent.Target,
+                    sent.Amount)))
+            : Unhandled();
+
+    // Turns a later event into the next state to store.
     public override EventAction<TransferState> HandleEvent(
-        object message,
-        SagaState<TransferData, FSharpOption<TransferState>> saga) =>
+        object message, SagaState<TransferData, TransferState> saga) =>
         (message, saga.State) switch
         {
             // Sender is the ID of the account that stored the event.
@@ -40,24 +50,22 @@ public sealed class Transfer(AggregateFactory accounts)
                 React(stored.EventDetails, sender.Value.ToString(), state),
             // No answer in time. The outcome is unknown, so enter the same
             // state again, which sends the command again.
-            (ExpectationExhausted, { Value: Delivering or Refunding } waiting) =>
-                StateChanged(waiting.Value),
+            (ExpectationExhausted, Delivering or Refunding) =>
+                StateChanged(saga.State),
             _ => Unhandled()
         };
 
     static EventAction<TransferState> React(
-        AccountEvent @event, string sender, FSharpOption<TransferState>? state) =>
+        AccountEvent @event, string sender, TransferState state) =>
         (@event, state) switch
         {
-            (TransferSent sent, null) => StateChanged(new Delivering(
-                new(sent.TransferId, sender, sent.Target, sent.Amount))),
-            (TransferReceived received, { Value: Delivering delivering })
+            (TransferReceived received, Delivering delivering)
                 when received.TransferId == delivering.Transfer.Id =>
                 StateChanged(new Completed()),
-            (Rejected, { Value: Delivering delivering })
+            (Rejected, Delivering delivering)
                 when sender == delivering.Transfer.Target =>
                 StateChanged(new Refunding(delivering.Transfer)),
-            (TransferRefunded refunded, { Value: Refunding refunding })
+            (TransferRefunded refunded, Refunding refunding)
                 when refunded.TransferId == refunding.Transfer.Id =>
                 StateChanged(new Completed()),
             _ => Unhandled()
@@ -100,7 +108,7 @@ public sealed class Transfer(AggregateFactory accounts)
 
     // docs:definition
     // A transfer starts when an account stores TransferSent.
-    public static bool StartsOn(object message) =>
-        message is Event<AccountEvent> { EventDetails: TransferSent };
+    public override bool StartsOn(Event<AccountEvent> stored) =>
+        stored.EventDetails is TransferSent;
     // docs:end
 }

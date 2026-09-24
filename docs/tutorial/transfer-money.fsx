@@ -7,7 +7,7 @@ index: 5
 ---
 *)
 (*** hide ***)
-#r "nuget: FCQRS, 6.9.0"
+#r "nuget: FCQRS, 6.10.0"
 #load "../../samples/accounts/5-transfer-money/fsharp/Account.fs"
 #load "../../samples/accounts/5-transfer-money/fsharp/Transfer.fs"
 
@@ -383,10 +383,21 @@ let handleEvent (message: obj) (saga: SagaState<unit, TransferState option>) =
 
 <!-- sample: accounts/5-transfer-money/csharp Transfer.cs react -->
 ```csharp
-// Turns an event into the next state to store.
+// Turns the event that started the transfer into its first state.
+public override EventAction<TransferState> Start(
+    object message, TransferData data) =>
+    message is Event<AccountEvent>
+    {
+        EventDetails: TransferSent sent, Sender: { } sender
+    }
+        ? StateChanged(new Delivering(
+            new(sent.TransferId, sender.Value.ToString(), sent.Target,
+                sent.Amount)))
+        : Unhandled();
+
+// Turns a later event into the next state to store.
 public override EventAction<TransferState> HandleEvent(
-    object message,
-    SagaState<TransferData, FSharpOption<TransferState>> saga) =>
+    object message, SagaState<TransferData, TransferState> saga) =>
     (message, saga.State) switch
     {
         // Sender is the ID of the account that stored the event.
@@ -394,34 +405,35 @@ public override EventAction<TransferState> HandleEvent(
             React(stored.EventDetails, sender.Value.ToString(), state),
         // No answer in time. The outcome is unknown, so enter the same
         // state again, which sends the command again.
-        (ExpectationExhausted, { Value: Delivering or Refunding } waiting) =>
-            StateChanged(waiting.Value),
+        (ExpectationExhausted, Delivering or Refunding) =>
+            StateChanged(saga.State),
         _ => Unhandled()
     };
 
 static EventAction<TransferState> React(
-    AccountEvent @event, string sender, FSharpOption<TransferState>? state) =>
+    AccountEvent @event, string sender, TransferState state) =>
     (@event, state) switch
     {
-        (TransferSent sent, null) => StateChanged(new Delivering(
-            new(sent.TransferId, sender, sent.Target, sent.Amount))),
-        (TransferReceived received, { Value: Delivering delivering })
+        (TransferReceived received, Delivering delivering)
             when received.TransferId == delivering.Transfer.Id =>
             StateChanged(new Completed()),
-        (Rejected, { Value: Delivering delivering })
+        (Rejected, Delivering delivering)
             when sender == delivering.Transfer.Target =>
             StateChanged(new Refunding(delivering.Transfer)),
-        (TransferRefunded refunded, { Value: Refunding refunding })
+        (TransferRefunded refunded, Refunding refunding)
             when refunded.TransferId == refunding.Transfer.Id =>
             StateChanged(new Completed()),
         _ => Unhandled()
     };
 ```
 
-`handleEvent` (`HandleEvent` in C#) receives events from every account that takes part in the
-transfer, as `obj`, together with the stored state. It returns the next state to store, or
-`UnhandledEvent` for an event that does not belong in the current state. It sends no commands: FCQRS
-stores the state first.
+`handleEvent` receives events from every account that takes part in the transfer, as `obj`,
+together with the stored state. Before the first state is stored, that state is `None`. It returns the
+next state to store, or `UnhandledEvent` for an event that does not belong in the current state. It
+sends no commands: FCQRS stores the state first.
+
+C# splits the two cases. `Start` receives the event that started the transfer, before the saga has a
+state, and returns the first state. `HandleEvent` receives the later events with the stored state.
 
 The events reach this saga through the transfer's **correlation ID** ([step 4](show-a-statement.html)).
 The saga's commands carry the correlation ID of the `SendTransfer` request, and so do the replies the
@@ -534,8 +546,8 @@ let definition accounts =
 <!-- sample: accounts/5-transfer-money/csharp Transfer.cs definition -->
 ```csharp
 // A transfer starts when an account stores TransferSent.
-public static bool StartsOn(object message) =>
-    message is Event<AccountEvent> { EventDetails: TransferSent };
+public override bool StartsOn(Event<AccountEvent> stored) =>
+    stored.EventDetails is TransferSent;
 ```
 
 <!-- sample: accounts/5-transfer-money/fsharp Program.fs register -->
@@ -554,9 +566,7 @@ Fcqrs.wireSagaStarters api [ transfers ]
 // its start rule: from now on, each stored TransferSent starts one transfer.
 builder.Services.AddFcqrs(connectionString, "accounts")
     .AddAggregate<Account>()
-    .AddSaga<Transfer, AccountEvent, TransferData, TransferState>(
-        services => new Transfer(services.AggregateFactory<Account>()),
-        Transfer.StartsOn)
+    .AddSaga(services => new Transfer(services.AggregateFactory<Account>()))
     .AddTransactionalProjection(options, Statement.Handle);
 ```
 

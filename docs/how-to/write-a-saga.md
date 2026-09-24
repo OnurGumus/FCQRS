@@ -111,10 +111,21 @@ let handleEvent (message: obj) (saga: SagaState<unit, TransferState option>) =
 
 <!-- sample: accounts/5-transfer-money/csharp Transfer.cs react -->
 ```csharp
-// Turns an event into the next state to store.
+// Turns the event that started the transfer into its first state.
+public override EventAction<TransferState> Start(
+    object message, TransferData data) =>
+    message is Event<AccountEvent>
+    {
+        EventDetails: TransferSent sent, Sender: { } sender
+    }
+        ? StateChanged(new Delivering(
+            new(sent.TransferId, sender.Value.ToString(), sent.Target,
+                sent.Amount)))
+        : Unhandled();
+
+// Turns a later event into the next state to store.
 public override EventAction<TransferState> HandleEvent(
-    object message,
-    SagaState<TransferData, FSharpOption<TransferState>> saga) =>
+    object message, SagaState<TransferData, TransferState> saga) =>
     (message, saga.State) switch
     {
         // Sender is the ID of the account that stored the event.
@@ -122,24 +133,22 @@ public override EventAction<TransferState> HandleEvent(
             React(stored.EventDetails, sender.Value.ToString(), state),
         // No answer in time. The outcome is unknown, so enter the same
         // state again, which sends the command again.
-        (ExpectationExhausted, { Value: Delivering or Refunding } waiting) =>
-            StateChanged(waiting.Value),
+        (ExpectationExhausted, Delivering or Refunding) =>
+            StateChanged(saga.State),
         _ => Unhandled()
     };
 
 static EventAction<TransferState> React(
-    AccountEvent @event, string sender, FSharpOption<TransferState>? state) =>
+    AccountEvent @event, string sender, TransferState state) =>
     (@event, state) switch
     {
-        (TransferSent sent, null) => StateChanged(new Delivering(
-            new(sent.TransferId, sender, sent.Target, sent.Amount))),
-        (TransferReceived received, { Value: Delivering delivering })
+        (TransferReceived received, Delivering delivering)
             when received.TransferId == delivering.Transfer.Id =>
             StateChanged(new Completed()),
-        (Rejected, { Value: Delivering delivering })
+        (Rejected, Delivering delivering)
             when sender == delivering.Transfer.Target =>
             StateChanged(new Refunding(delivering.Transfer)),
-        (TransferRefunded refunded, { Value: Refunding refunding })
+        (TransferRefunded refunded, Refunding refunding)
             when refunded.TransferId == refunding.Transfer.Id =>
             StateChanged(new Completed()),
         _ => Unhandled()
@@ -151,10 +160,10 @@ belong in the current state. Do not issue commands from this function; state per
 first. The `ExpectationExhausted` case answers a missed deadline, described
 [below](#Give-every-wait-a-deadline).
 
-In C#, `HandleEvent` takes `object` deliberately: a saga also receives other aggregates' reply events
-and `ToSelf` timeout payloads. It receives the saga state as an `FSharpOption`, which is `null` before
-the first user state exists. The typed `SagaApi.InitSimple` shortcut delivers only the originator's
-events, so it cannot express timeouts or coordination across aggregates.
+In C#, the two cases of the state option are two methods. `Start` receives a message before the saga
+has a state, normally the event that started it, and returns the first state. `HandleEvent` receives
+the later messages with the stored state. Both take `object` deliberately: a saga also receives other
+aggregates' reply events and `ToSelf` timeout payloads.
 
 ## Map persisted states to commands
 
@@ -325,14 +334,14 @@ let definition accounts =
 <!-- sample: accounts/5-transfer-money/csharp Transfer.cs definition -->
 ```csharp
 // A transfer starts when an account stores TransferSent.
-public static bool StartsOn(object message) =>
-    message is Event<AccountEvent> { EventDetails: TransferSent };
+public override bool StartsOn(Event<AccountEvent> stored) =>
+    stored.EventDetails is TransferSent;
 ```
 
 `Originator` supplies the aggregate factory used by the starting handshake and by `toOriginator`.
 `InitialData` supplies fixed data available to the saga functions. Current workflow progress belongs in
 the state-machine cases; use `unit` when no additional fixed data is needed. In C#, the saga class
-declares `SagaName`, `InitialData`, and `Originator`, and the start predicate goes to `AddSaga`.
+declares `SagaName`, `InitialData`, `Originator`, and `StartsOn`, and `AddSaga` registers the class.
 
 Do not construct `SagaStartingEvent` yourself. FCQRS creates and stores that runtime envelope from the
 event accepted by `StartOn`.
@@ -361,9 +370,7 @@ Fcqrs.wireSagaStarters api [ transfers ]
 // its start rule: from now on, each stored TransferSent starts one transfer.
 builder.Services.AddFcqrs(connectionString, "accounts")
     .AddAggregate<Account>()
-    .AddSaga<Transfer, AccountEvent, TransferData, TransferState>(
-        services => new Transfer(services.AggregateFactory<Account>()),
-        Transfer.StartsOn)
+    .AddSaga(services => new Transfer(services.AggregateFactory<Account>()))
     .AddTransactionalProjection(options, Statement.Handle);
 ```
 

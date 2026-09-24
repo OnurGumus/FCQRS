@@ -161,13 +161,14 @@ FCQRS closes that race with a handshake between the originator and the saga:
 3. the saga stores its starting envelope and subscribes to the event's correlation topic;
 4. the saga tells the originator it is ready;
 5. the originator stores and publishes the domain event;
-6. `handleEvent` receives it with no user-defined state yet and stores the first state.
+6. `handleEvent` (`Start` in C#) receives it with no user-defined state yet and stores the first
+   state.
 
 <img src="../img/saga-starter.svg" alt="The originator matches TransferSent with StartOn, sends the transfer saga its starting message, and stores and publishes the event only after the saga reports it is ready" width="940"/>
 
-`Fcqrs.wireSagaStarters` in F#, or `AddSaga(..., startOn: ...)` in C#, installs these start rules. An
-empty F# application still calls `wireSagaStarters api []` so runtime startup follows one explicit
-path.
+`Fcqrs.wireSagaStarters` in F#, or `AddSaga` in C# with each saga's `StartsOn`, installs these start
+rules. An empty F# application still calls `wireSagaStarters api []` so runtime startup follows one
+explicit path.
 
 ## Waiting costs no thread
 
