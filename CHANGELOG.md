@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased (FCQRS.Model)
+
+- **A CID cannot contain `~` however it is created.** `Fcqrs.cid` and `Values.CreateCID` rejected
+  `~`, but `ValueLens.Create` and `ValueLens.CreateAsResult` built such a CID, and its `IsValid` was
+  true. FCQRS names sagas and pub-sub topics by joining a CID to an aggregate ID with `~`, so that
+  saga never received its originator's events. `CID`'s constructor now throws `ArgumentException`
+  for `~`, and `IsValid` is false for a CID containing one.
+- The constructor throws instead of returning an error so that its signature does not change: FCQRS
+  core releases built against FCQRS.Model 6.0.0 keep working with this release. Reading a CID from
+  JSON does not run the constructor, so stored events with such a CID still load.
+
 ## 6.13.0 (FCQRS core)
 
 - **Projection queries read only recent writes.** Each pass used to read the latest sequence number

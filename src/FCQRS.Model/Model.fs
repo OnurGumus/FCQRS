@@ -59,12 +59,14 @@ type ValueLens =
         =
         snd 'Wrapped.Value_ innerValue Unchecked.defaultof<'Wrapped>
 
-    /// Creates non validated parent type directly.
+    /// Creates a parent type whose lens returns no Result. Its constructor can still throw, as
+    /// CID's does for '~'.
 
     static member inline Create<'Wrapped, 'Inner when ValueLensType<'Wrapped, 'Inner>>(innerValue: 'Inner) =
         snd 'Wrapped.Value_ innerValue Unchecked.defaultof<'Wrapped>
 
-    /// Skips first level of validation.
+    /// Validates the inner value, returning its errors, then creates the parent with Create.
+    /// A parent constructor that throws, such as CID's for '~', still throws.
 
     static member inline CreateAsResult v =
         v |> ValueLens.TryCreate |> Result.map ValueLens.Create
@@ -151,13 +153,34 @@ type LongString =
     member this.IsValid = ValueLens.IsValidValue this
     override this.ToString() = (ValueLens.Value this).ToString()
 
-/// CorrelationID for commands and Sagas
+/// CorrelationID for commands and Sagas.
+/// A CID cannot contain '~'. FCQRS joins a CID to an aggregate ID with '~' to name sagas and
+/// pub-sub topics, and reads the CID back from the text after the last '~', so a CID containing
+/// one never reaches its saga. Creating such a CID throws ArgumentException; the constructor
+/// throws instead of returning an error so that FCQRS releases built against the previous
+/// signature keep working. Deserialization does not run this check, so IsValid reports it for
+/// a CID read from a message.
 type CID =
     private
     | CID of ShortString
 
-    static member Value_ = (fun (CID v) -> v), (fun v _ -> CID v)
-    member this.IsValid = (ValueLens.Value this).IsValid
+    /// The separator FCQRS core defines as CID_Separator in Common.fs. This package ships
+    /// separately from the core, so change both together.
+    static member private ContainsSeparator(ShortString s) =
+        not (isNull (box s)) && s.Contains "~"
+
+    static member Value_ =
+        (fun (CID v) -> v),
+        (fun (v: ShortString) _ ->
+            if not (isNull (box v)) && CID.ContainsSeparator v then
+                invalidArg "value" "A CID must not contain '~' (the FCQRS correlation separator)."
+
+            CID v)
+
+    member this.IsValid =
+        let inner = ValueLens.Value this
+        inner.IsValid && not (CID.ContainsSeparator inner)
+
     override this.ToString() = (ValueLens.Value this).ToString()
 
 // Actor Id

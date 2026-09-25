@@ -1596,6 +1596,32 @@ let private cidGuardTest =
         let generated = Fcqrs.newCid () |> ValueLens.Value |> ValueLens.Value
         Expect.isFalse (generated.Contains "~") "a generated CID never contains the separator"
 
+/// The '~' rule is in CID's own constructor, so ValueLens cannot build a CID that `Fcqrs.cid`
+/// and `Values.CreateCID` reject. Reading JSON does not run the constructor: a stored CID still
+/// loads, and IsValid reports the separator.
+let private cidConstructorTest =
+    testCase "model: CID's constructor rejects the correlation separator"
+    <| fun _ ->
+        Expect.throwsT<ArgumentException>
+            (fun () -> (ValueLens.CreateAsResult "order~42": Result<CID, ModelError list>) |> ignore)
+            "ValueLens.CreateAsResult cannot build a CID containing '~'"
+
+        let inner: ShortString = ValueLens.TryCreate "order~42" |> Result.value
+        Expect.throwsT<ArgumentException>
+            (fun () -> (ValueLens.Create inner: CID) |> ignore)
+            "ValueLens.Create cannot build one either"
+
+        let ok: CID = ValueLens.CreateAsResult "order-42" |> Result.value
+        Expect.isTrue ok.IsValid "an ordinary CID is valid"
+
+        let read =
+            """{"Case":"CID","Item":{"Case":"ShortString","Item":"order~42"}}"""
+            |> Text.Encoding.UTF8.GetBytes
+            |> FCQRS.Serialization.Serialization.decodeFromBytes<CID>
+
+        Expect.equal (read |> ValueLens.Value |> ValueLens.Value) "order~42" "reading a CID does not run the constructor"
+        Expect.isFalse read.IsValid "IsValid reports the separator"
+
 let private snapshotResurrectionTest =
     testCase "facade: a same-CID re-trigger of a snapshot-covered completed saga is refused without waiting"
     <| fun _ ->
@@ -2547,7 +2573,7 @@ let private cliffProbe =
 
 let tests =
     testSequenced (
-        testList "facade" [ manifestTest; roundTripTest; persistAllTest; manualSnapshotTest; telemetryTest; payloadSwitchTest; overflowTest; snapshotRecoveryTest; restartDetectionTest; filteredProjectionTest; persistIfTest; bridgeTest; pendingBridgeTest; focusShapeTest; journaledStampTest; runAsyncTest; aggregateRecoveryTest; commandTimeoutTest; concurrencyTest; stopSagaDelayedTest; timeProviderTest; dynamicConfigTest; freshStartSingleDeliveryTest; concurrentSagaStartTest; sagaStartFanoutTest; sagaTypeMismatchTest; cidGuardTest; snapshotResurrectionTest; sendAwaitingTimeoutTest; slowSubscriberIsolationTest; specialCharEntityIdTest; sagaStartNameShapesTest; chainedSnapshotTest; filterThrowTest; hoconConnectionStringTest; crossTypeHandshakeTest; deferSnapshotTest; cidSeparatorTest; expectationSatisfiedTest; expectationExhaustionTest; expectationUnhandledTest; expectationRestartTest; perTypePassivationTest; definitionPassivationTest ]
+        testList "facade" [ manifestTest; roundTripTest; persistAllTest; manualSnapshotTest; telemetryTest; payloadSwitchTest; overflowTest; snapshotRecoveryTest; restartDetectionTest; filteredProjectionTest; persistIfTest; bridgeTest; pendingBridgeTest; focusShapeTest; journaledStampTest; runAsyncTest; aggregateRecoveryTest; commandTimeoutTest; concurrencyTest; stopSagaDelayedTest; timeProviderTest; dynamicConfigTest; freshStartSingleDeliveryTest; concurrentSagaStartTest; sagaStartFanoutTest; sagaTypeMismatchTest; cidGuardTest; cidConstructorTest; snapshotResurrectionTest; sendAwaitingTimeoutTest; slowSubscriberIsolationTest; specialCharEntityIdTest; sagaStartNameShapesTest; chainedSnapshotTest; filterThrowTest; hoconConnectionStringTest; crossTypeHandshakeTest; deferSnapshotTest; cidSeparatorTest; expectationSatisfiedTest; expectationExhaustionTest; expectationUnhandledTest; expectationRestartTest; perTypePassivationTest; definitionPassivationTest ]
     )
 
 [<EntryPoint>]
