@@ -7,7 +7,7 @@ index: 1
 ---
 *)
 (*** hide ***)
-#r "nuget: FCQRS, 6.13.0"
+#r "nuget: FCQRS, 6.13.1"
 #load "../../samples/accounts/1-open-an-account/fsharp/Account.fs"
 
 (**
