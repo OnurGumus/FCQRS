@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased (FCQRS.Model)
+## 6.1.0 (FCQRS.Model)
 
 - **A CID cannot contain `~` however it is created.** `Fcqrs.cid` and `Values.CreateCID` rejected
   `~`, but `ValueLens.Create` and `ValueLens.CreateAsResult` built such a CID, and its `IsValid` was
