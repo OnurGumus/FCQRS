@@ -111,6 +111,11 @@ Keep these distinctions intact in code comments and documentation.
 - `ExpectationExhausted` means the outcome is unknown, not failed. The domain must answer it with a
   transition, and the escalated state must expect that the original reply may still arrive.
 
+### Deployment
+
+- FCQRS runs on one node. Nodes do not form one cluster (each joins itself), and a command's reply
+  can be lost between nodes. Do not document multi-node deployment as supported.
+
 ### Best-effort async effects
 
 - `RunAsync` work is ephemeral. A stop, restart, or shard move can lose it.

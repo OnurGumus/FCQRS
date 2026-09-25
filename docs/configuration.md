@@ -233,12 +233,18 @@ in your `IConfiguration`.
 
 ## Scaling to a cluster
 
-The default node listens on localhost and joins itself. A multi-node deployment must override the
-remote hostname and port and configure seed-node discovery or another Akka.NET bootstrap mechanism.
-Every node must reach the shared journal and use compatible serializers and event contracts.
+FCQRS runs on one node. It places aggregates and sagas with Akka.NET cluster sharding, so domain
+definitions do not depend on the number of nodes, but several FCQRS nodes on one journal do not work
+yet:
 
-Cluster sharding routes an aggregate or saga id to its current node, so domain definitions do not
-change. Before deploying several nodes, verify rolling-version compatibility, shared storage, node
-discovery, coordinated shutdown, and monitoring for cluster membership and unreachable nodes.
+- every node joins itself, so nodes configured with the same seed nodes stay separate one-node
+  clusters;
+- a command's reply travels over a publish-subscribe topic that other nodes learn about about a second
+  later, so a caller on one node can miss the reply of an aggregate on another and time out although
+  the command succeeded.
+
+Run one node under a supervisor that restarts it, as
+[When FCQRS stops the process](concepts/process-termination.html) describes. A restarted node recovers
+every aggregate and saga from the journal.
 
 [Observe your system](how-to/observability.html) covers runtime diagnostics.

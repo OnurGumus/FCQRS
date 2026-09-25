@@ -61,8 +61,8 @@ let connection =
         "Host=localhost;Database=app;Username=app;Password=…"
 ```
 
-Use SQLite for local development and deployments where one process owns the file. A multi-node cluster
-needs a database reachable by every node.
+Use SQLite for local development and deployments where one process owns the file. FCQRS runs on one
+node; [Scaling to a cluster](../configuration.html#Scaling-to-a-cluster) explains why.
 
 Do not commit production credentials in HOCON or source code. Supply them through the application's
 secret provider or environment-specific configuration.
