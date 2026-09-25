@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased (FCQRS core)
+
+- **Projection queries read only recent writes.** Each pass used to read the latest sequence number
+  of every aggregate and saga from the whole journal, and the projection's progress for all of them.
+  On a local PostgreSQL 17 with 5 million events across 1 million histories, a caught-up pass took
+  3.6 seconds and a new event reached the handler after about 3 seconds. A pass now reads only journal
+  rows numbered after what the projection handled `LateWriteWindow` earlier, and the progress of the
+  histories it found: the same pass takes about 1 ms, and a new event arrives in about 9 ms. A full
+  scan still runs when the projection starts, once more a window later, and every
+  `FullScanInterval`; at that size it takes about 5 seconds.
+- A write that commits more than `LateWriteWindow` after taking its journal number, 30 seconds by
+  default, is handled by the next full scan, within `FullScanInterval`, 5 minutes by default.
+  `CatchUpAsync` can return before such a write; no event is skipped.
+- `TransactionalProjectionOptions` has `LateWriteWindow` and `FullScanInterval`. `SqlProjectionStore`
+  takes `journalOrderingColumn` for a journal whose ordering column is not named `ordering`.
+
 ## 6.12.0 (FCQRS core)
 
 - **A saga no longer runs for a starting event that was never stored.** A saga recovered before its

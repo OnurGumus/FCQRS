@@ -35,7 +35,8 @@ type SqlProjectionStore
      ?progressTable: string,
      ?progressSchema: string,
      ?journalPersistenceIdColumn: string,
-     ?journalSequenceNumberColumn: string) =
+     ?journalSequenceNumberColumn: string,
+     ?journalOrderingColumn: string) =
 
     let validateIdentifier argument (value: string) =
         if String.IsNullOrWhiteSpace value || value.Contains '\000' then
@@ -61,6 +62,7 @@ type SqlProjectionStore
     let lockSql = qualified "progressTableLock" progressSchema lockName
     let persistenceIdSql = quote "journalPersistenceIdColumn" (defaultArg journalPersistenceIdColumn "persistence_id")
     let sequenceNumberSql = quote "journalSequenceNumberColumn" (defaultArg journalSequenceNumberColumn "sequence_number")
+    let orderingSql = quote "journalOrderingColumn" (defaultArg journalOrderingColumn "ordering")
 
     let normalizedSchema schema =
         match schema with
@@ -201,7 +203,8 @@ type SqlProjectionStore
         SqlProjectionStore(dialect, journalConnectionFactory, projectionConnectionFactory,
                            ?journalTable = None, ?journalSchema = None,
                            ?progressTable = None, ?progressSchema = None,
-                           ?journalPersistenceIdColumn = None, ?journalSequenceNumberColumn = None)
+                           ?journalPersistenceIdColumn = None, ?journalSequenceNumberColumn = None,
+                           ?journalOrderingColumn = None)
 
     /// The SQL dialect used by this store.
     member _.Dialect = dialect
@@ -209,12 +212,14 @@ type SqlProjectionStore
     /// Ensures snapshot capture and Akka's per-entity reader address the same journal.
     /// Connection-string comparison deliberately rejects aliases it cannot prove equivalent.
     member internal _.ValidateJournal(expectedConnectionString: string, expectedTable: string, expectedSchema: string option,
-                                      expectedPersistenceIdColumn: string, expectedSequenceColumn: string) =
+                                      expectedPersistenceIdColumn: string, expectedSequenceColumn: string,
+                                      expectedOrderingColumn: string) =
         if connectionIdentity expectedConnectionString <> journalIdentity.Value
            || expectedTable <> journalName
            || schemaIdentity expectedSchema <> schemaIdentity journalSchema
            || expectedPersistenceIdColumn <> defaultArg journalPersistenceIdColumn "persistence_id"
-           || expectedSequenceColumn <> defaultArg journalSequenceNumberColumn "sequence_number" then
+           || expectedSequenceColumn <> defaultArg journalSequenceNumberColumn "sequence_number"
+           || expectedOrderingColumn <> defaultArg journalOrderingColumn "ordering" then
             invalidArg "store" "The projection store must use the same connection string, schema, table and columns as Akka's SQL journal reader."
 
     /// Creates a fresh read-model connection. The caller owns and disposes it.
@@ -242,31 +247,76 @@ type SqlProjectionStore
             do! transaction.CommitAsync(ct)
         }
 
-    /// Captures a fixed committed snapshot using one SELECT on a fresh authoritative connection.
+    /// Captures every persistence ID's last sequence number in a committed snapshot, and the highest
+    /// global journal number read before it. Reads the whole journal.
     /// Per-persistence-ID targets do not assume global journal ordering follows commit ordering.
     /// Akka cluster sharding stores its own bookkeeping, such as remembered saga entities, under
     /// persistence IDs that start with "/sharding/", and deletes their early history after each of
     /// its snapshots. Those records are not application events, so the snapshot excludes them.
-    member internal _.CaptureAsync(ct: CancellationToken) : Task<Map<string, int64>> =
+    member internal _.CaptureAllAsync(ct: CancellationToken) : Task<Map<string, int64> * int64> =
         task {
             use! connection = openConnection journalConnectionFactory validateJournalConnection ct
+            use highest = connection.CreateCommand()
+            highest.CommandText <- $"SELECT COALESCE(MAX({orderingSql}), 0) FROM {journalSql}"
+            let! top = highest.ExecuteScalarAsync(ct)
             use command = connection.CreateCommand()
             command.CommandText <- $"SELECT {persistenceIdSql}, MAX({sequenceNumberSql}) FROM {journalSql} GROUP BY {persistenceIdSql}"
             let! positions = readPositions command ct
-            return positions |> Map.filter (fun persistenceId _ -> not (persistenceId.StartsWith("/sharding/", StringComparison.Ordinal)))
+            return
+                positions |> Map.filter (fun persistenceId _ -> not (persistenceId.StartsWith("/sharding/", StringComparison.Ordinal))),
+                Convert.ToInt64 top
         }
 
-    /// Reads committed progress for a batch. Recheck an individual position under the lock before applying an event.
-    member internal this.ReadPositionsAsync(projectionName: string, ct: CancellationToken) : Task<Map<string, int64>> =
+    /// Captures the last sequence number of each persistence ID with events numbered above `after`
+    /// in the global journal order, and the highest such number (`after` when there are none).
+    /// Reads only those events. A write numbered at or below `after` that commits later is missed:
+    /// the caller must choose `after` to allow for writes that take time to commit.
+    member internal _.CaptureSinceAsync(after: int64, ct: CancellationToken) : Task<Map<string, int64> * int64> =
+        task {
+            use! connection = openConnection journalConnectionFactory validateJournalConnection ct
+            use command = connection.CreateCommand()
+            command.CommandText <-
+                $"SELECT {persistenceIdSql}, MAX({sequenceNumberSql}), MAX({orderingSql}) FROM {journalSql} WHERE {orderingSql} > @after GROUP BY {persistenceIdSql}"
+            parameter command "@after" DbType.Int64 after
+            use! reader = command.ExecuteReaderAsync(ct)
+            let mutable positions = Map.empty
+            let mutable top = after
+            let mutable reading = true
+            while reading do
+                let! available = reader.ReadAsync(ct)
+                if available then
+                    let persistenceId = reader.GetString 0
+                    let sequenceNumber = reader.GetInt64 1
+                    let ordering = reader.GetInt64 2
+                    if String.IsNullOrWhiteSpace persistenceId || sequenceNumber < 0L then
+                        invalidOp "The journal contains an invalid persistence ID or sequence number."
+                    top <- max top ordering
+                    if not (persistenceId.StartsWith("/sharding/", StringComparison.Ordinal)) then
+                        positions <- positions.Add(persistenceId, sequenceNumber)
+                else
+                    reading <- false
+            return positions, top
+        }
+
+    /// Reads committed progress for a batch: for every persistence ID, or for the ones given.
+    /// Recheck an individual position under the lock before applying an event.
+    member internal this.ReadPositionsAsync(projectionName: string, persistenceIds: string list option, ct: CancellationToken) : Task<Map<string, int64>> =
         task {
             validateName (nameof projectionName) projectionName
             use! connection = openConnection projectionConnectionFactory validateProjectionConnection ct
             use! transaction = connection.BeginTransactionAsync(ct)
             // Bind before trusting existing progress, even if there are no new events to apply.
             do! this.LockProjectionAsync(connection, transaction, projectionName, ct)
+            let selected =
+                match persistenceIds, dialect with
+                | None, _ -> ""
+                // One JSON array parameter, however many persistence IDs a batch names.
+                | Some _, ProjectionSqlDialect.PostgreSql -> " AND persistence_id IN (SELECT jsonb_array_elements_text(CAST(@ids AS jsonb)))"
+                | Some _, _ -> " AND persistence_id IN (SELECT value FROM json_each(@ids))"
             use command =
-                transactionCommand connection transaction ($"SELECT persistence_id, sequence_number FROM {progressSql} WHERE projection_name = @projection")
+                transactionCommand connection transaction ($"SELECT persistence_id, sequence_number FROM {progressSql} WHERE projection_name = @projection{selected}")
             parameter command "@projection" DbType.String projectionName
+            persistenceIds |> Option.iter (fun ids -> parameter command "@ids" DbType.String (Text.Json.JsonSerializer.Serialize ids))
             let! positions = readPositions command ct
             do! transaction.CommitAsync(ct)
             return positions

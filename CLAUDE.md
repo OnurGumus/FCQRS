@@ -85,6 +85,9 @@ Keep these distinctions intact in code comments and documentation.
   one aggregate, not across aggregates.
 - Commit a read-model update and its progress in the same transaction when they share a store. A
   projection that stores progress after its handler returns can hand an event to it again.
+- Most projection queries read only recent writes. A write that commits more than
+  `LateWriteWindow` after taking its journal number is handled at the next full scan, so
+  `CatchUpAsync` can return before it.
 - Read-your-writes means one selected projection has published the matching notification.
 - It does not mean every projection or external system is current.
 - Subscribe before sending. Subscribing afterward can miss the notification.

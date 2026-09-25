@@ -25,7 +25,9 @@ type IProjection =
     inherit FCQRS.Query.ISubscribe
     inherit IDisposable
     /// Captures a fixed journal snapshot and waits for this projection to commit
-    /// every event through it. Uses the configured CatchUpTimeout.
+    /// every event through it. Uses the configured CatchUpTimeout. A write that committed more
+    /// than LateWriteWindow after taking its journal number can be handled after this returns,
+    /// by the next full scan.
     abstract CatchUpAsync: unit -> Task
     /// Captures a fixed journal snapshot and waits for this projection to commit
     /// every event through it. Cancellation/timeout stops the caller's wait, not a
@@ -55,6 +57,13 @@ type TransactionalProjectionOptions(name: string, store: SqlProjectionStore) =
     member val BatchSize = 500 with get, set
     /// Bound for the entire catch-up call, including snapshot capture. Default: 30 seconds.
     member val CatchUpTimeout = TimeSpan.FromSeconds 30.0 with get, set
+    /// How long after taking its journal number a write may commit and still be found by the next
+    /// query, which reads only recent writes. A write that commits later is found by the next full
+    /// scan. Default: 30 seconds.
+    member val LateWriteWindow = TimeSpan.FromSeconds 30.0 with get, set
+    /// How often a query reads every persistence ID's position instead of only recent writes. The
+    /// full scan also finds a write that committed after LateWriteWindow. Default: five minutes.
+    member val FullScanInterval = TimeSpan.FromMinutes 5.0 with get, set
 
 /// Journal history a projection needs is missing or out of order, for example after journal rows
 /// were deleted. Reading again cannot repair it: restore the history or rebuild the read model.
@@ -70,6 +79,7 @@ type private JournalSettings =
       Schema: string option
       PersistenceIdColumn: string
       SequenceNumberColumn: string
+      OrderingColumn: string
       WriteConfig: Akka.Configuration.Config
       WriteMapping: string }
 
@@ -100,6 +110,7 @@ let private journalSettings (actor: IActor) (allowAdapters: bool) =
       Schema = readConfig.GetString(mapping + ".schema-name", null) |> Option.ofObj
       PersistenceIdColumn = readConfig.GetString(mapping + ".journal.columns.persistence-id", "persistence_id")
       SequenceNumberColumn = readConfig.GetString(mapping + ".journal.columns.sequence-number", "sequence_number")
+      OrderingColumn = readConfig.GetString(mapping + ".journal.columns.ordering", "ordering")
       WriteConfig = writeConfig
       WriteMapping = writeConfig.GetString("table-mapping", "default") }
 
@@ -111,18 +122,31 @@ type private Tracking =
       /// terminates the process on missing journal history. Otherwise any error stops the projection.
       Resilient: bool
       Initialize: CancellationToken -> Task
-      /// Each persistence ID's last sequence number in one committed journal snapshot.
-      Capture: CancellationToken -> Task<Map<string, int64>>
-      ReadPositions: CancellationToken -> Task<Map<string, int64>>
+      /// Each persistence ID's last sequence number in one committed journal snapshot, and the
+      /// highest global journal number read.
+      CaptureAll: CancellationToken -> Task<Map<string, int64> * int64>
+      /// The same for persistence IDs with events numbered above the given global number.
+      CaptureSince: int64 -> CancellationToken -> Task<Map<string, int64> * int64>
+      /// Positions of every persistence ID, or of the ones given.
+      ReadPositions: string list option -> CancellationToken -> Task<Map<string, int64>>
       /// Applies an event that is next for its persistence ID, publishes its notifications
       /// through the function given, and returns the persistence ID's position afterwards.
       Apply: (IMessageWithCID -> unit) -> EventEnvelope -> CancellationToken -> Task<int64> }
 
+// One query of the journal: the persistence IDs it found with their last sequence numbers, whether
+// it read every persistence ID, the highest global journal number it read, and when it ran.
+type private Pass =
+    { Targets: Map<string, int64>
+      Full: bool
+      Highest: int64
+      Read: DateTime }
+
 // Reads the journal per persistence ID, from each one's position to the captured snapshot, so a
 // write that commits after later-numbered writes is read on the next pass instead of skipped.
 let private run (actor: IActor) (logger: ILogger) (settings: JournalSettings)
-                (interval: TimeSpan) (batchSize: int64) (timeout: TimeSpan) (tracking: Tracking) : IProjection =
+                (options: TransactionalProjectionOptions) (tracking: Tracking) : IProjection =
     let name = tracking.Name
+    let interval, batchSize, timeout = options.PollInterval, int64 options.BatchSize, options.CatchUpTimeout
     let notificationTimeout = CommandHandler.Internal.resolveCommandTimeout settings.Config
     let journal = FCQRS.Query.Internal.readJournal actor.System
     let gate = new SemaphoreSlim(1, 1)
@@ -172,6 +196,53 @@ let private run (actor: IActor) (logger: ILogger) (settings: JournalSettings)
         let seconds = min 30.0 (Math.Pow(2.0, float (failures - 1)))
         TimeSpan.FromSeconds(seconds * (1.0 + Random.Shared.NextDouble() * 0.2))
 
+    // Most queries read only writes numbered above the highest number handled LateWriteWindow
+    // ago. Numbers are taken in time order, so a write that commits within the window is numbered
+    // above it. A full scan runs until one succeeds, once more a window later for writes already
+    // under way at start, and every FullScanInterval, which finds any write that committed later
+    // than the window. A query's number counts only once its pass has handled every event it found.
+    let captureGate = obj ()
+    let mutable lastFullScan: DateTime option = None
+    let mutable startFollowUp = true
+    // (time of a query whose pass completed, highest number it read), oldest first.
+    let handled = Collections.Generic.List<DateTime * int64>()
+
+    let capture (token: CancellationToken) = task {
+        let now = DateTime.UtcNow
+        let after =
+            lock captureGate (fun () ->
+                match lastFullScan with
+                | None -> None
+                | Some full when now - full >= options.FullScanInterval -> None
+                | Some full when startFollowUp && now - full >= options.LateWriteWindow -> None
+                | Some _ ->
+                    let cutoff = now - options.LateWriteWindow
+                    match handled |> Seq.filter (fun (time, _) -> time <= cutoff) |> Seq.tryLast with
+                    | Some(_, highest) -> Some highest
+                    // Within a window of the first full scan: read everything above it.
+                    | None -> Some(snd handled[0]))
+        let! targets, highest =
+            match after with
+            | None -> tracking.CaptureAll token
+            | Some after -> tracking.CaptureSince after token
+        return { Targets = targets; Full = after.IsNone; Highest = highest; Read = DateTime.UtcNow }
+    }
+
+    let completed (pass: Pass) =
+        lock captureGate (fun () ->
+            if pass.Full then
+                if lastFullScan.IsSome then startFollowUp <- false
+                lastFullScan <- Some(max pass.Read (defaultArg lastFullScan pass.Read))
+            let index = handled.FindLastIndex(fun (time, _) -> time <= pass.Read) + 1
+            let before = if index > 0 then snd handled[index - 1] else 0L
+            handled.Insert(index, (pass.Read, max pass.Highest before))
+            for later in index + 1 .. handled.Count - 1 do
+                let time, highest = handled[later]
+                handled[later] <- (time, max highest pass.Highest)
+            // Keep the newest entry at least a window old, and everything after it.
+            let older = handled.FindLastIndex(fun (time, _) -> time <= DateTime.UtcNow - options.LateWriteWindow)
+            if older > 0 then handled.RemoveRange(0, older))
+
     let readBatch persistenceId first last = task {
         let source = journal.CurrentEventsByPersistenceId(persistenceId, first, last)
         let running =
@@ -184,8 +255,11 @@ let private run (actor: IActor) (logger: ILogger) (settings: JournalSettings)
         return! result
     }
 
-    let processTargets (targets: Map<string, int64>) = task {
-        let! positions = tracking.ReadPositions lifetime.Token
+    let processTargets (targets: Map<string, int64>) (full: bool) = task {
+        let! positions =
+            if full then tracking.ReadPositions None lifetime.Token
+            elif targets.IsEmpty then Task.FromResult Map.empty
+            else tracking.ReadPositions (Some [ for KeyValue(persistenceId, _) in targets -> persistenceId ]) lifetime.Token
         // Persistence IDs are processed in key order, not causal order, so a saga's follow-up
         // event can commit before the originator event that caused it. Both share a correlation
         // ID, and a snapshot holding the follow-up also holds its cause. Correlation-ID waiters
@@ -239,11 +313,12 @@ let private run (actor: IActor) (logger: ILogger) (settings: JournalSettings)
                 do! Task.Delay(delay, lifetime.Token)
     }))
 
-    let processSerialized targets (waitToken: CancellationToken) = task {
+    let processSerialized (pass: Pass) (waitToken: CancellationToken) = task {
         do! gate.WaitAsync(waitToken)
         try
             checkRunning ()
-            do! processTargets targets
+            do! processTargets pass.Targets pass.Full
+            completed pass
         finally
             gate.Release() |> ignore
     }
@@ -256,7 +331,7 @@ let private run (actor: IActor) (logger: ILogger) (settings: JournalSettings)
             while not lifetime.IsCancellationRequested do
                 let! failed = task {
                     try
-                        let! targets = tracking.Capture lifetime.Token
+                        let! targets = capture lifetime.Token
                         do! processSerialized targets lifetime.Token
                         return None
                     with error when transient error ->
@@ -308,8 +383,8 @@ let private run (actor: IActor) (logger: ILogger) (settings: JournalSettings)
                 do! initialize.WaitAsync(waitToken)
                 // Microsoft.Data.Sqlite executes its async ADO.NET calls synchronously.
                 // Keep snapshot acquisition off the calling thread and bound the wait.
-                let capture = Task.Run<Map<string, int64>>(Func<Task<Map<string, int64>> | null>(fun () -> tracking.Capture waitToken), waitToken)
-                let! targets = capture.WaitAsync(waitToken)
+                let captured = Task.Run<Pass>(Func<Task<Pass> | null>(fun () -> capture waitToken), waitToken)
+                let! targets = captured.WaitAsync(waitToken)
                 let work = task {
                     try
                         do! processSerialized targets waitToken
@@ -385,6 +460,8 @@ let start
             invalidArg name "The duration must be positive and less than 49.7 days."
     validateDuration "PollInterval" options.PollInterval
     validateDuration "CatchUpTimeout" options.CatchUpTimeout
+    validateDuration "LateWriteWindow" options.LateWriteWindow
+    validateDuration "FullScanInterval" options.FullScanInterval
     if options.BatchSize < 1 then invalidArg "BatchSize" "BatchSize must be positive."
     FCQRS.EventUpcasting.Internal.freeze actor.System
 
@@ -396,14 +473,15 @@ let start
         invalidArg "options" "The projection store dialect must match the actor's SQL journal provider."
     store.ValidateJournal(
         settings.ConnectionString, settings.Table, settings.Schema,
-        settings.PersistenceIdColumn, settings.SequenceNumberColumn)
+        settings.PersistenceIdColumn, settings.SequenceNumberColumn, settings.OrderingColumn)
     let writeConfig, writeMapping = settings.WriteConfig, settings.WriteMapping
     store.ValidateJournal(
         writeConfig.GetString("connection-string", ""),
         writeConfig.GetString(writeMapping + ".journal.table-name", "journal"),
         writeConfig.GetString(writeMapping + ".schema-name", null) |> Option.ofObj,
         writeConfig.GetString(writeMapping + ".journal.columns.persistence-id", "persistence_id"),
-        writeConfig.GetString(writeMapping + ".journal.columns.sequence-number", "sequence_number"))
+        writeConfig.GetString(writeMapping + ".journal.columns.sequence-number", "sequence_number"),
+        writeConfig.GetString(writeMapping + ".journal.columns.ordering", "ordering"))
 
     let apply (publish: IMessageWithCID -> unit) (envelope: EventEnvelope) (token: CancellationToken) = task {
         use! connection = store.OpenProjectionAsync(token)
@@ -424,12 +502,13 @@ let start
             return position
     }
 
-    run actor logger settings options.PollInterval (int64 options.BatchSize) options.CatchUpTimeout
+    run actor logger settings options
         { Name = name
           Resilient = false
           Initialize = store.InitializeAsync
-          Capture = store.CaptureAsync
-          ReadPositions = fun token -> store.ReadPositionsAsync(name, token)
+          CaptureAll = store.CaptureAllAsync
+          CaptureSince = fun after token -> store.CaptureSinceAsync(after, token)
+          ReadPositions = fun ids token -> store.ReadPositionsAsync(name, ids, token)
           Apply = apply }
 
 /// Where a tracked projection keeps how far it has read.
@@ -472,7 +551,8 @@ let internal startTracked (actor: IActor) (progress: TrackedProgress) (handler: 
             ?journalSchema = settings.Schema,
             ?progressSchema = settings.Schema,
             journalPersistenceIdColumn = settings.PersistenceIdColumn,
-            journalSequenceNumberColumn = settings.SequenceNumberColumn)
+            journalSequenceNumberColumn = settings.SequenceNumberColumn,
+            journalOrderingColumn = settings.OrderingColumn)
 
     let handle (envelope: EventEnvelope) =
         let envelope = upcastEnvelope actor envelope
@@ -492,8 +572,17 @@ let internal startTracked (actor: IActor) (progress: TrackedProgress) (handler: 
             { Name = "in-memory"
               Resilient = true
               Initialize = fun _ -> Task.CompletedTask
-              Capture = store.CaptureAsync
-              ReadPositions = fun _ -> Task.FromResult(positions |> Seq.map (fun pair -> pair.Key, pair.Value) |> Map.ofSeq)
+              CaptureAll = store.CaptureAllAsync
+              CaptureSince = fun after token -> store.CaptureSinceAsync(after, token)
+              ReadPositions =
+                fun ids _ ->
+                    match ids with
+                    | None -> positions |> Seq.map (fun pair -> pair.Key, pair.Value) |> Map.ofSeq
+                    | Some ids ->
+                        ids
+                        |> List.choose (fun id -> match positions.TryGetValue id with | true, position -> Some(id, position) | _ -> None)
+                        |> Map.ofList
+                    |> Task.FromResult
               Apply =
                 fun publish envelope _ ->
                     let position =
@@ -511,8 +600,9 @@ let internal startTracked (actor: IActor) (progress: TrackedProgress) (handler: 
             { Name = name
               Resilient = true
               Initialize = store.InitializeAsync
-              Capture = store.CaptureAsync
-              ReadPositions = fun token -> store.ReadPositionsAsync(name, token)
+              CaptureAll = store.CaptureAllAsync
+              CaptureSince = fun after token -> store.CaptureSinceAsync(after, token)
+              ReadPositions = fun ids token -> store.ReadPositionsAsync(name, ids, token)
               Apply =
                 fun publish envelope token -> task {
                     use! connection = store.OpenProjectionAsync(token)
@@ -530,5 +620,4 @@ let internal startTracked (actor: IActor) (progress: TrackedProgress) (handler: 
                         return position
                 } }
 
-    let defaults = TransactionalProjectionOptions(tracking.Name, store)
-    run actor logger settings defaults.PollInterval (int64 defaults.BatchSize) defaults.CatchUpTimeout tracking
+    run actor logger settings (TransactionalProjectionOptions(tracking.Name, store)) tracking

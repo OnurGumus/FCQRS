@@ -954,6 +954,39 @@ let private transientJournalFailure =
             wait (api.Stop())
             deleteDatabases [ journalPath; projectionPath ]
 
+
+// Most queries read only writes numbered above what was handled a LateWriteWindow ago. A write that
+// takes longer than the window to commit is found by the next full scan instead of being skipped.
+let private postgresVeryLateCommit connectionString =
+    use fixture = new Fixture(Some connectionString)
+    fixture.Send("template", 1)
+    let options = fixture.Options "very-late"
+    options.LateWriteWindow <- TimeSpan.FromSeconds 1.0
+    options.FullScanInterval <- TimeSpan.FromSeconds 6.0
+    use projection = Fcqrs.transactionalProjection fixture.Api options fixture.Apply
+    wait (projection.CatchUpAsync())
+    use delayed = fixture.OpenJournal()
+    use transaction = delayed.BeginTransaction()
+    use columnsCommand = delayed.CreateCommand()
+    columnsCommand.Transaction <- transaction
+    columnsCommand.CommandText <- "SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'journal' AND column_name <> 'ordering' ORDER BY ordinal_position"
+    let columns = ResizeArray<string>()
+    do
+        use reader = columnsCommand.ExecuteReader()
+        while reader.Read() do columns.Add(reader.GetString 0)
+    let quoted = columns |> Seq.map (fun name -> "\"" + name + "\"") |> String.concat ", "
+    let values = columns |> Seq.map (function "sequence_number" -> "2" | name -> "\"" + name + "\"") |> String.concat ", "
+    // Takes a journal number now and commits after the window, behind later-numbered writes.
+    execute delayed (Some transaction) $"INSERT INTO journal ({quoted}) SELECT {values} FROM journal LIMIT 1" []
+    fixture.Send("commits-first", 2)
+    wait (projection.CatchUpAsync())
+    Thread.Sleep 3000
+    transaction.Commit()
+    let deadline = DateTime.UtcNow.AddSeconds 20.0
+    while fixture.Scalar "SELECT COUNT(*) FROM applied_events" < 3L && DateTime.UtcNow < deadline do
+        Thread.Sleep 200
+    Expect.equal (fixture.Scalar "SELECT COUNT(*) FROM applied_events") 3L "the next full scan handles the write that committed after the window"
+
 let tests =
     let postgres =
         match Environment.GetEnvironmentVariable "FCQRS_TEST_POSTGRES" with
@@ -984,6 +1017,7 @@ let tests =
                   testCase "PostgreSQL: competing projection instances do not double-apply" (fun _ -> concurrentInstances postgres)
                   testCase "PostgreSQL: a late commit below the previous global offset is processed" (fun _ -> postgresCommitInversion connection)
                   testCase "PostgreSQL: a projection receives an event that commits after later-numbered ones" (fun _ -> postgresLateCommitProjection connection)
+                  testCase "PostgreSQL: a write that commits after the late-write window is handled by the next full scan" (fun _ -> postgresVeryLateCommit connection)
                   testCase "PostgreSQL: an older ambient snapshot cannot weaken catch-up" (fun _ -> postgresAmbientSnapshot connection)
               | None ->
                   ptestCase "PostgreSQL integration: set FCQRS_TEST_POSTGRES to run" ignore ])

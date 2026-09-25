@@ -39,6 +39,12 @@ that event when the reply was journaled. It also includes every other event comm
 snapshot, across all application persistence identities in this journal. Writes arriving after the
 snapshot do not extend this call's target.
 
+To stay cheap on a large journal, most snapshots read only writes numbered after what the projection
+handled `LateWriteWindow` earlier, 30 seconds by default. A write can take its number some time
+before it commits. One that took longer than the window is handled by the next full scan, within
+`FullScanInterval`, and a `CatchUpAsync` call in between can return before it. No event is skipped;
+only that call's promise narrows for such a write.
+
 The checkpoint is durable, so this wait does not require a correlation subscription before sending.
 It also works after a deferred reply, although a deferred reply itself adds no journal event. Check
 the command outcome separately: projection completion does not turn a rejected command into a
@@ -270,13 +276,16 @@ but have not yet been persisted, and it does not stop future writes.
 | `PollInterval` | 1 second | Background delay before discovering new journal heads after the previous batch finishes |
 | `BatchSize` | 500 | Maximum events fetched for one persistence identity per query |
 | `CatchUpTimeout` | 30 seconds | Time allowed for the entire catch-up call, including snapshot capture |
+| `LateWriteWindow` | 30 seconds | How long after taking its journal number a write may commit and still be found by a query of recent writes |
+| `FullScanInterval` | 5 minutes | How often a query reads every history's head, which also finds a write that committed after the window |
 
 Background discovery follows new events as the application runs. Each `CatchUpAsync` call captures
 its own fixed target once; it does not repeatedly replace the target with a newer journal tail.
-Discovery queries the journal with `GROUP BY persistence_id` to find each history's head. This query
-can be costly for a large journal. Increase `PollInterval` to reduce background query frequency when
-the application's latency requirements allow it. Each explicit catch-up call also captures these
-heads once.
+Most discovery queries read only the journal rows numbered after what the projection handled a
+`LateWriteWindow` earlier, so their cost follows recent writes. A full scan, which groups the whole
+journal by `persistence_id`, runs when the projection starts, once more a window later, and every
+`FullScanInterval`. It costs more as the journal grows. An aggregate on this node that stores an
+event starts the next query at once.
 
 The catch-up timeout belongs to `TransactionalProjectionOptions`, separately from
 `akka.fcqrs.command-timeout` used by [Read your writes](read-your-writes.html).
