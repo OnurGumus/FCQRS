@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased (FCQRS core)
+## 6.13.0 (FCQRS core)
 
 - **Projection queries read only recent writes.** Each pass used to read the latest sequence number
   of every aggregate and saga from the whole journal, and the projection's progress for all of them.
