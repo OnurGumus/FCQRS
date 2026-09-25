@@ -1,5 +1,12 @@
 # Changelog
 
+## 6.13.1 (FCQRS core)
+
+- Requires FCQRS.Model 6.1.0, so every application that updates FCQRS gets the CID check below.
+  `Fcqrs.cid` and `Values.CreateCID` no longer check `~` themselves; `CID`'s constructor throws the
+  same `ArgumentException`. A string longer than 255 characters that contains `~` now fails the
+  length check first, with that check's exception.
+
 ## 6.1.0 (FCQRS.Model)
 
 - **A CID cannot contain `~` however it is created.** `Fcqrs.cid` and `Values.CreateCID` rejected
