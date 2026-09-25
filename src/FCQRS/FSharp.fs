@@ -265,13 +265,10 @@ module Fcqrs =
         System.Guid.CreateVersion7().ToString() |> ValueLens.CreateAsResult |> Result.value
 
     /// A correlation id from a string you already have (a request id, a trace id).
-    /// Rejects '~': the separator FCQRS builds saga entity names and pub-sub
-    /// topics from, so a CID containing one is parsed back wrong and leaves the
-    /// saga permanently deaf. `newCid` needs no such check — a UUID has none.
+    /// Throws ArgumentException for '~': the separator FCQRS builds saga entity names
+    /// and pub-sub topics from, so a CID containing one is parsed back wrong and
+    /// leaves the saga permanently deaf. CID's constructor enforces this.
     let cid (s: string) : CID =
-        if not (isNull (box s)) && s.Contains "~" then
-            invalidArg (nameof s) "A CID must not contain '~' (the FCQRS correlation separator)."
-
         s |> ValueLens.CreateAsResult |> Result.value
 
     /// An aggregate id from a string (e.g. a document/user key).

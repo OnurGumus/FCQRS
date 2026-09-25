@@ -1586,7 +1586,7 @@ let private sagaTypeMismatchTest =
 let private cidGuardTest =
     testCase "facade: Fcqrs.cid rejects the correlation separator"
     <| fun _ ->
-        Expect.throws (fun () -> Fcqrs.cid "order~42" |> ignore)
+        Expect.throwsT<ArgumentException> (fun () -> Fcqrs.cid "order~42" |> ignore)
             "a CID containing '~' is rejected"
 
         let ok = Fcqrs.cid "order-42"
