@@ -15,7 +15,7 @@ let run () = async {
     // docs:projection
     let users = ConcurrentDictionary<string, string>()
     let ready = TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
-    let project (_offset: int64) (message: obj) =
+    let project (message: obj) =
         match message with
         | :? Event<UserRegistered> as event when event.Sender = Some id ->
             let (UserRegistered name) = event.EventDetails
@@ -33,8 +33,8 @@ let run () = async {
                              Decide = decide; Fold = fold; Snapshots = Default
                              Passivation = PassivationPolicy.Default }
         Fcqrs.wireSagaStarters api []
-        // Register the observer before sending. Offset 0 also reads earlier registrations.
-        Fcqrs.projection api (Projection.single 0 project) |> ignore
+        // Register the observer before sending. FromStart also reads earlier registrations.
+        Fcqrs.projection api (Projection.single FromStart project) |> ignore
         // docs:end
         // docs:send
         let! reply = accounts.Send (Fcqrs.newCid ()) id (RegisterUser "Alice") (fun _ -> true)

@@ -12,7 +12,7 @@ var database = Path.Combine(AppContext.BaseDirectory, "registration.db");
 // docs:projection
 var users = new ConcurrentDictionary<string, string>();
 var ready = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-void Project(long offset, object message)
+void Project(object message)
 {
     if (message is Event<UserRegistered> stored
         && stored.Sender?.Value.Equals(id) == true)
@@ -25,10 +25,10 @@ void Project(long offset, object message)
 // docs:startup
 var builder = Host.CreateApplicationBuilder();
 builder.Logging.ClearProviders();
-// Register the observer before sending. Offset 0 also reads earlier registrations.
+// Register the observer before sending. It reads earlier registrations too.
 builder.Services.AddFcqrs($"Data Source={database};", "registration-csharp")
     .AddAggregate<Account>()
-    .AddProjection(Project, lastOffset: 0);
+    .AddProjection(Project);
 using var host = builder.Build();
 await host.StartAsync();
 // docs:end
