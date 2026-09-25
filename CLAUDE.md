@@ -135,7 +135,8 @@ Keep these distinctions intact in code comments and documentation.
 - `test/Facade.Tests/`: facade and behaviour tests. Every test actor system runs Akka's
   `serialize-messages` through `VerifySerialization.fs`, and the last test names each message type that
   another node could not read. `BankInvariantTests.fs` compiles step 5's F# `Account.fs` and
-  `Transfer.fs`, kills processes during transfers, and checks that the total balance is unchanged.
+  `Transfer.fs`, kills processes during transfers, and checks that the total balance is unchanged, on
+  SQLite and, when `FCQRS_TEST_POSTGRES` is set as in CI, on PostgreSQL.
 
 ## Development workflow
 
