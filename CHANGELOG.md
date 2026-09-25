@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased (FCQRS core)
+## 6.12.0 (FCQRS core)
 
 - **A saga no longer runs for a starting event that was never stored.** A saga recovered before its
   first state asks its originator whether its starting event was stored. An originator recovered from
