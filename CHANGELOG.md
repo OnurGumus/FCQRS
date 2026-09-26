@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased (FCQRS core)
+## 6.14.0 (FCQRS core)
 
 - **A projection applies each pass in journal order.** Since FCQRS 6.12, a pass applied its events
   one persistence ID at a time, in alphabetical order of the ID. A handler that reads rows written by
