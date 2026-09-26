@@ -914,6 +914,48 @@ let private namedProgress =
             deleteDatabases [ journalPath; projectionPath ]
 
 
+/// A handler can read rows that other aggregates' events wrote, so a projection applies a pass in
+/// the order the journal numbered the events. Grouped by persistence ID, "alpha" would come first.
+let private journalOrder =
+    testCase "projection: a pass applies events across aggregates in journal order"
+    <| fun _ ->
+        let suffix, journalPath, projectionPath = sqlitePaths ()
+        let api =
+            Fcqrs.actor (VerifySerialization.configuration().Build()) NullLoggerFactory.Instance
+                (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite (sqliteString journalPath))) ("JournalOrder" + suffix)
+        try
+            let tallies = tallyAggregate api "JournalOrderTally"
+            Fcqrs.wireSagaStarters api []
+            // Stored before the projections start, so each one's first pass holds all four.
+            for id, amount in [ "zeta", 1; "alpha", 2; "zeta", 3; "alpha", 4 ] do
+                tallies.Send (Fcqrs.newCid ()) (Fcqrs.aggregateId id) (Tally amount) (fun _ -> true)
+                |> fun work -> Async.RunSynchronously(work, 20000)
+                |> ignore
+            let amount (message: obj) =
+                match message with
+                | :? Event<TallyEvent> as event -> let (Tallied amount) = event.EventDetails in Some amount
+                | _ -> None
+            let record (seen: Collections.Concurrent.ConcurrentQueue<int>) message = amount message |> Option.iter seen.Enqueue
+            let fromStart, named, transactional =
+                Collections.Concurrent.ConcurrentQueue<int>(),
+                Collections.Concurrent.ConcurrentQueue<int>(),
+                Collections.Concurrent.ConcurrentQueue<int>()
+            use inMemory = Fcqrs.projection api (Projection.single FromStart (record fromStart))
+            use stored = Fcqrs.projection api (Projection.single (Named "journal-order") (record named))
+            use committed =
+                Fcqrs.transactionalProjection api
+                    (TransactionalProjectionOptions("JournalOrder", sqliteStore journalPath projectionPath))
+                    (fun _ _ envelope -> record transactional envelope.Event; Task.CompletedTask)
+            for projection in [ inMemory; stored; committed ] do
+                wait (projection.CatchUpAsync())
+            Expect.equal (List.ofSeq fromStart) [ 1; 2; 3; 4 ] "a FromStart projection applies the journal order"
+            Expect.equal (List.ofSeq named) [ 1; 2; 3; 4 ] "a named projection applies the journal order"
+            Expect.equal (List.ofSeq transactional) [ 1; 2; 3; 4 ] "a transactional projection applies the journal order"
+        finally
+            wait (api.Stop())
+            deleteDatabases [ journalPath; projectionPath ]
+
+
 let private transientJournalFailure =
     testCase "projection: a journal that cannot be read for a while delays the projection without stopping it"
     <| fun _ ->
@@ -1009,6 +1051,7 @@ let tests =
               observedTimeout
               nullCorrelationId
               namedProgress
+              journalOrder
               transientJournalFailure
               testCase "SQLite: competing projection instances do not double-apply" (fun _ -> concurrentInstances None)
               match postgres with

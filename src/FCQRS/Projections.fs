@@ -129,6 +129,8 @@ type private Tracking =
       CaptureSince: int64 -> CancellationToken -> Task<Map<string, int64> * int64>
       /// Positions of every persistence ID, or of the ones given.
       ReadPositions: string list option -> CancellationToken -> Task<Map<string, int64>>
+      /// The lowest global journal number among the given (persistence ID, sequence number) events.
+      Earliest: (string * int64) list -> CancellationToken -> Task<int64 option>
       /// Applies an event that is next for its persistence ID, publishes its notifications
       /// through the function given, and returns the persistence ID's position afterwards.
       Apply: (IMessageWithCID -> unit) -> EventEnvelope -> CancellationToken -> Task<int64> }
@@ -141,8 +143,9 @@ type private Pass =
       Highest: int64
       Read: DateTime }
 
-// Reads the journal per persistence ID, from each one's position to the captured snapshot, so a
-// write that commits after later-numbered writes is read on the next pass instead of skipped.
+// Captures each persistence ID's last sequence number and applies the events from each one's
+// position to that target, so a write that commits after later-numbered writes is applied on the
+// next pass instead of skipped. Within a pass, events are applied in global journal order.
 let private run (actor: IActor) (logger: ILogger) (settings: JournalSettings)
                 (options: TransactionalProjectionOptions) (tracking: Tracking) : IProjection =
     let name = tracking.Name
@@ -243,8 +246,9 @@ let private run (actor: IActor) (logger: ILogger) (settings: JournalSettings)
             let older = handled.FindLastIndex(fun (time, _) -> time <= DateTime.UtcNow - options.LateWriteWindow)
             if older > 0 then handled.RemoveRange(0, older))
 
-    let readBatch persistenceId first last = task {
-        let source = journal.CurrentEventsByPersistenceId(persistenceId, first, last)
+    // Up to `count` events numbered above `after`, in global journal order.
+    let readFrom (after: int64) (count: int64) = task {
+        let source = journal.CurrentAllEvents(Offset.Sequence after).Take(count)
         let running =
             source
                 .ViaMaterialized(KillSwitches.Single<EventEnvelope>(), Func<_, _, _>(fun _ kill -> kill))
@@ -255,34 +259,65 @@ let private run (actor: IActor) (logger: ILogger) (settings: JournalSettings)
         return! result
     }
 
+    let missing persistenceId position =
+        JournalHistoryException $"Projection '{name}' could not read journal sequence {position + 1L} for '{persistenceId}'. Retain or restore its journal history, and make every event adapter return exactly one event."
+
     let processTargets (targets: Map<string, int64>) (full: bool) = task {
         let! positions =
             if full then tracking.ReadPositions None lifetime.Token
             elif targets.IsEmpty then Task.FromResult Map.empty
             else tracking.ReadPositions (Some [ for KeyValue(persistenceId, _) in targets -> persistenceId ]) lifetime.Token
-        // Persistence IDs are processed in key order, not causal order, so a saga's follow-up
-        // event can commit before the originator event that caused it. Both share a correlation
-        // ID, and a snapshot holding the follow-up also holds its cause. Correlation-ID waiters
-        // therefore receive their notifications only after the whole snapshot commits, so
-        // whichever one wakes them, the events that caused it are already readable. Subscribers
-        // without a correlation ID still receive every notification as its event commits.
+        // An event whose write commits late is applied in a later pass, so a saga's follow-up event
+        // can commit before the originator event that caused it. Both share a correlation ID, and a
+        // snapshot holding the follow-up also holds its cause.
+        // Correlation-ID waiters therefore receive their notifications only after the whole
+        // snapshot commits, so whichever one wakes them, the events that caused it are already
+        // readable. Subscribers without a correlation ID still receive every notification as its
+        // event commits.
         let held = ResizeArray<unit -> unit>()
         let publish message = notifications.PublishExceptWaiters message |> Option.iter held.Add
+        // The persistence IDs with events to apply in this pass, and their positions.
+        let pending = Collections.Generic.Dictionary<string, int64>()
         for KeyValue(persistenceId, target) in targets do
-            let mutable position = positions |> Map.tryFind persistenceId |> Option.defaultValue 0L
-            while position < target do
+            let position = positions |> Map.tryFind persistenceId |> Option.defaultValue 0L
+            if position < target then pending[persistenceId] <- position
+        if pending.Count > 0 then
+            // A handler can read rows that other aggregates' events wrote, so the pass applies
+            // events in the order the journal numbered them, from the earliest one still to apply.
+            // On SQLite, which writes one transaction at a time, that is the order they were
+            // written. Positions still decide what is applied, so an event that commits after
+            // later-numbered ones is applied in a later pass instead of skipped.
+            let! earliest =
+                tracking.Earliest [ for KeyValue(persistenceId, position) in pending -> persistenceId, position + 1L ] lifetime.Token
+            let mutable after =
+                match earliest with
+                | Some ordering -> ordering - 1L
+                | None ->
+                    let first = pending |> Seq.head
+                    raise (missing first.Key first.Value)
+            while pending.Count > 0 do
                 lifetime.Token.ThrowIfCancellationRequested()
-                let last = position + min batchSize (target - position)
-                let! events = readBatch persistenceId (position + 1L) last
-                let mutable lastRead = position
+                let! events = readFrom after batchSize
+                let start = after
                 for envelope in events do
-                    if envelope.PersistenceId <> persistenceId || lastRead = Int64.MaxValue || envelope.SequenceNr <> lastRead + 1L then
-                        raise (JournalHistoryException $"Projection '{name}' found a noncontiguous journal event after sequence {lastRead} for '{persistenceId}'. Missing history and expanding event adapters cannot be checkpointed.")
-                    let! committed = tracking.Apply publish envelope lifetime.Token
-                    position <- max position committed
-                    lastRead <- envelope.SequenceNr
-                if lastRead < last then
-                    raise (JournalHistoryException $"Projection '{name}' could not read journal sequence {lastRead + 1L} for '{persistenceId}'. Retain or restore its journal history, and make every event adapter return exactly one event.")
+                    match envelope.Offset with
+                    | :? Sequence as sequence -> after <- max after sequence.Value
+                    | offset -> invalidOp $"Projection '{name}' read a journal event without a sequence offset ({offset})."
+                    match pending.TryGetValue envelope.PersistenceId with
+                    | true, position when envelope.SequenceNr > position ->
+                        if position = Int64.MaxValue || envelope.SequenceNr <> position + 1L then
+                            raise (JournalHistoryException $"Projection '{name}' found a noncontiguous journal event after sequence {position} for '{envelope.PersistenceId}'. Missing history and expanding event adapters cannot be checkpointed.")
+                        let! committed = tracking.Apply publish envelope lifetime.Token
+                        let position = max position committed
+                        if position >= targets[envelope.PersistenceId] then
+                            pending.Remove envelope.PersistenceId |> ignore
+                        else
+                            pending[envelope.PersistenceId] <- position
+                    | _ -> ()
+                // The journal ended before every target was reached: an event is missing.
+                if pending.Count > 0 && after = start then
+                    let first = pending |> Seq.head
+                    raise (missing first.Key first.Value)
         for deliver in held do
             deliver ()
     }
@@ -508,6 +543,7 @@ let start
           Initialize = store.InitializeAsync
           CaptureAll = store.CaptureAllAsync
           CaptureSince = fun after token -> store.CaptureSinceAsync(after, token)
+          Earliest = fun events token -> store.EarliestAsync(events, token)
           ReadPositions = fun ids token -> store.ReadPositionsAsync(name, ids, token)
           Apply = apply }
 
@@ -574,6 +610,7 @@ let internal startTracked (actor: IActor) (progress: TrackedProgress) (handler: 
               Initialize = fun _ -> Task.CompletedTask
               CaptureAll = store.CaptureAllAsync
               CaptureSince = fun after token -> store.CaptureSinceAsync(after, token)
+              Earliest = fun events token -> store.EarliestAsync(events, token)
               ReadPositions =
                 fun ids _ ->
                     match ids with
@@ -602,6 +639,7 @@ let internal startTracked (actor: IActor) (progress: TrackedProgress) (handler: 
               Initialize = store.InitializeAsync
               CaptureAll = store.CaptureAllAsync
               CaptureSince = fun after token -> store.CaptureSinceAsync(after, token)
+              Earliest = fun events token -> store.EarliestAsync(events, token)
               ReadPositions = fun ids token -> store.ReadPositionsAsync(name, ids, token)
               Apply =
                 fun publish envelope token -> task {

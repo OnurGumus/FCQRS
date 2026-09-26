@@ -81,8 +81,9 @@ Keep these distinctions intact in code comments and documentation.
 
 - A projection updates query data asynchronously from the journal.
 - A projection follows each aggregate's and saga's own sequence numbers, never a global journal
-  number, so it cannot skip an event that commits after later-numbered ones. It orders events within
-  one aggregate, not across aggregates.
+  number, so it cannot skip an event that commits after later-numbered ones. Each pass applies the
+  events it found in journal order across aggregates: on SQLite, the order they were written. On
+  PostgreSQL, an event that commits after later-numbered ones is applied in a later pass, after them.
 - Commit a read-model update and its progress in the same transaction when they share a store. A
   projection that stores progress after its handler returns can hand an event to it again.
 - Most projection queries read only recent writes. A write that commits more than

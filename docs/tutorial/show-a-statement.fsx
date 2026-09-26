@@ -168,8 +168,9 @@ is the stored event, `Sender` is the ID of the account that stored it, and `enve
 its version. `Rejected` never arrives, because the journal never holds it.
 
 Each row's balance continues from the account's previous row. That is correct because a projection
-receives one account's events in version order. It does not order events across accounts: a handler
-that combines several accounts must not depend on which account's event arrives first.
+receives one account's events in version order. Across accounts it follows the journal's numbers,
+which on PostgreSQL can differ from the order writes commit, so a handler that combines several
+accounts must not depend on which account's event arrives first.
 
 ## Register the projection
 

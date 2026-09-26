@@ -182,8 +182,9 @@ The C# registration adds `IProjection` to dependency injection. Inject it into t
 for catch-up. The F# facade returns the same interface. It also implements `ISubscribe`, so existing
 correlation subscriptions remain available, with aggregate notifications published after commit.
 
-The runner commits persistence identities in key order, not in causal order, so a saga's follow-up
-event can commit before the event that caused it. Both carry the same correlation ID. A subscription
+The runner applies each read of the journal in journal order, but an event whose write commits late
+is applied in a later read, so a saga's follow-up event can commit before the event that caused it.
+Both carry the same correlation ID. A subscription
 for that correlation ID, such as `Subscribe(cid, ...)` or `sendAwaiting`, therefore receives its
 notifications after the whole snapshot commits. A waiter woken by the follow-up can read the event
 that caused it. It can also wait longer than the commit of its own event, and it is cancelled if the

@@ -396,8 +396,10 @@ module Fcqrs =
 
     /// Register the read-model projection and return the subscription stream.
     /// Starts a projection. It follows each aggregate's and saga's own sequence numbers, so it never
-    /// skips a stored event, and it hands each event to the handler in sequence order per aggregate,
-    /// with no order between aggregates. With `Named` progress, a handler can see an event again
+    /// skips a stored event. Each pass hands the events it found to the handler in journal order,
+    /// so each aggregate's events arrive in sequence order; on SQLite, events of different
+    /// aggregates arrive in the order they were written, and on PostgreSQL an event that commits
+    /// late arrives in a later pass. With `Named` progress, a handler can see an event again
     /// after a crash. A handler that throws terminates the process. Requires a SQLite or
     /// PostgreSQL journal; an Akka event adapter must turn each journal row into one event.
     let projection (api: IActor) (p: Projection) : FCQRS.Projections.IProjection =
@@ -410,8 +412,9 @@ module Fcqrs =
     /// Starts a transactional projection with journal-wide CatchUpAsync support.
     /// Write the read model through the supplied connection and transaction; FCQRS
     /// commits those updates and contiguous per-persistence-ID progress together.
-    /// Retain unprocessed journal history. Events have per-persistence-ID ordering,
-    /// with no ordering between different persistence IDs. See TransactionalProjectionOptions.
+    /// Retain unprocessed journal history. Each pass applies events in journal order: per
+    /// persistence ID in sequence order, and across persistence IDs in write order on SQLite; on
+    /// PostgreSQL an event that commits late is applied in a later pass. See TransactionalProjectionOptions.
     let transactionalProjection
         (api: IActor)
         (options: FCQRS.Projections.TransactionalProjectionOptions)

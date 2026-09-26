@@ -298,6 +298,34 @@ type SqlProjectionStore
             return positions, top
         }
 
+    /// The lowest global journal number among the given events, each named by its persistence ID
+    /// and sequence number, or None when the journal holds none of them.
+    member internal _.EarliestAsync(events: (string * int64) list, ct: CancellationToken) : Task<int64 option> =
+        task {
+            use! connection = openConnection journalConnectionFactory validateJournalConnection ct
+            // One JSON array parameter of [persistence ID, sequence number] pairs per query.
+            let pairs =
+                match dialect with
+                | ProjectionSqlDialect.PostgreSql ->
+                    $"jsonb_array_elements(CAST(@events AS jsonb)) AS pending ON {persistenceIdSql} = pending.value->>0 AND {sequenceNumberSql} = CAST(pending.value->>1 AS BIGINT)"
+                | _ ->
+                    $"json_each(@events) AS pending ON {persistenceIdSql} = json_extract(pending.value, '$[0]') AND {sequenceNumberSql} = json_extract(pending.value, '$[1]')"
+            let mutable earliest = None
+            for chunk in List.chunkBySize 10000 events do
+                use command = connection.CreateCommand()
+                command.CommandText <- $"SELECT MIN({orderingSql}) FROM {journalSql} JOIN {pairs}"
+                let json = chunk |> List.map (fun (persistenceId, sequenceNumber) -> [| box persistenceId; box sequenceNumber |])
+                parameter command "@events" DbType.String (Text.Json.JsonSerializer.Serialize json)
+                let! value = command.ExecuteScalarAsync(ct)
+                match value with
+                | null -> ()
+                | :? DBNull -> ()
+                | value ->
+                    let ordering = Convert.ToInt64 value
+                    earliest <- Some(earliest |> Option.fold (fun _ current -> min current ordering) ordering)
+            return earliest
+        }
+
     /// Reads committed progress for a batch: for every persistence ID, or for the ones given.
     /// Recheck an individual position under the lock before applying an event.
     member internal this.ReadPositionsAsync(projectionName: string, persistenceIds: string list option, ct: CancellationToken) : Task<Map<string, int64>> =

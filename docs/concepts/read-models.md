@@ -62,8 +62,12 @@ journal is the source; the handled versions are the projection's bookmarks.
 > actor stores them one after another, so a projection that follows each aggregate's versions cannot
 > skip an event.
 
-The price is order across aggregates. A projection handles each aggregate's events in version order,
-but events of different aggregates reach it in no particular order relative to each other.
+Order across aggregates comes from the journal's numbers. Each time a projection reads the journal, it
+applies the events it found in the order the journal numbered them, so a handler can read rows that
+earlier events of other aggregates wrote. On SQLite, which runs one write at a time, that is the order
+the events were written. On PostgreSQL, a slow write that commits after higher-numbered ones is
+applied in a later read, after them, so a handler there must not depend on which aggregate's event
+arrives first.
 
 A projection keeps its progress in one of three places:
 

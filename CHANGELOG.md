@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased (FCQRS core)
+
+- **A projection applies each pass in journal order.** Since FCQRS 6.12, a pass applied its events
+  one persistence ID at a time, in alphabetical order of the ID. A handler that reads rows written by
+  other aggregates' events saw them out of order: replaying one application's 50,449 events, a
+  learner's answer arrived after the course edit that later removed its question, and 328 events
+  failed that FCQRS 6.6 had handled. A pass now applies the events it found in the order the journal
+  numbered them. Each aggregate's position still decides what is applied, so no event is skipped.
+  On SQLite, which runs one write at a time, that is the order the events were written. On
+  PostgreSQL, an event that commits after higher-numbered ones is still applied in a later pass.
+- A pass with events to apply reads the journal in its global order from the earliest of them,
+  `BatchSize` events at a time, instead of reading each aggregate's history separately.
+
 ## 6.13.1 (FCQRS core)
 
 - Requires FCQRS.Model 6.1.0, so every application that updates FCQRS gets the CID check below.

@@ -85,8 +85,9 @@ builder.Services.AddFcqrs(connectionString, "accounts")
     .AddProjection(Handle);
 ```
 
-The handler runs for one event at a time. It receives one account's events in version order, and
-events of different accounts in no particular order relative to each other. With its progress in
+The handler runs for one event at a time. It receives events in the order the journal numbered them,
+so one account's events arrive in version order. On PostgreSQL, an event whose write commits late can
+arrive after higher-numbered events of other accounts. With its progress in
 memory, the projection reads the whole journal each time it starts, so start-up takes longer as the
 journal grows. Keep the read model somewhere durable when that time matters.
 
