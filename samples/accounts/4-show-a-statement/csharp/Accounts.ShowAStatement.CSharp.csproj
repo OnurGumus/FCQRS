@@ -7,7 +7,7 @@
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
   </PropertyGroup>
   <ItemGroup>
-    <PackageReference Include="FCQRS" Version="6.13.1" />
+    <PackageReference Include="FCQRS" Version="6.14.0" />
     <PackageReference Include="Dapper" Version="2.1.66" />
     <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="3.0.2" />
     <PackageReference Include="SourceGear.sqlite3" Version="3.50.4.5" />

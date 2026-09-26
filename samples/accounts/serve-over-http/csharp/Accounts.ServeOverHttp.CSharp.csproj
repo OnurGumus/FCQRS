@@ -9,7 +9,7 @@
     <!-- The account and statement from step 4, unchanged. -->
     <Compile Include="../../4-show-a-statement/csharp/Account.cs" Link="Account.cs" />
     <Compile Include="../../4-show-a-statement/csharp/Statement.cs" Link="Statement.cs" />
-    <PackageReference Include="FCQRS" Version="6.13.1" />
+    <PackageReference Include="FCQRS" Version="6.14.0" />
     <PackageReference Include="Dapper" Version="2.1.66" />
     <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="3.0.2" />
     <PackageReference Include="SourceGear.sqlite3" Version="3.50.4.5" />

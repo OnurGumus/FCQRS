@@ -7,7 +7,7 @@ index: 6
 ---
 *)
 (*** hide ***)
-#r "nuget: FCQRS, 6.13.1"
+#r "nuget: FCQRS, 6.14.0"
 #load "../../samples/accounts/6-add-a-memo/fsharp/Account.fs"
 
 (**
