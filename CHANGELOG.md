@@ -1,5 +1,15 @@
 # Changelog
 
+## 6.15.0 (FCQRS core)
+
+- **`ShiftedScheduler` moves the time a test runs at, without a virtual clock.** It is Akka.NET's
+  default scheduler, telling real time moved by its `Shift`. FCQRS stamps commands and events with that
+  time and `IActor.TimeProvider` tells it, so a test that lets days pass sets `Shift` and every
+  aggregate, and every reader of `TimeProvider`, sees the later time. Its timers run on real time, so
+  command timeouts, saga handshakes and cluster sharding behave as in production, which
+  `ObservingScheduler`'s virtual clock does not allow. See the configuration reference, "Time in
+  tests".
+
 ## 6.14.0 (FCQRS core)
 
 - **A projection applies each pass in journal order.** Since FCQRS 6.12, a pass applied its events

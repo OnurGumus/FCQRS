@@ -107,8 +107,29 @@ Snapshot policy resolves in this order:
 See [Deferring, snapshots, and passivation](concepts/aggregate-lifecycle.html) before tuning the cadence.
 A snapshot changes replay cost, not the events that define recoverable state.
 
-Set `config:akka:scheduler` to FCQRS's `ObservingScheduler` only in tests that control delayed saga
-commands with a virtual clock.
+## Time in tests
+
+FCQRS stamps each command and event with the time Akka.NET's scheduler tells, and
+`IActor.TimeProvider` reads the same time. A test changes that time by choosing the scheduler:
+
+- `ShiftedScheduler` tells real time moved by its `Shift`, and runs its timers on real time. A test
+  that lets two days pass sets `Shift` to two days: aggregates decide, and code that reads
+  `TimeProvider` runs, two days later, without the test waiting. Command timeouts, saga handshakes
+  and cluster sharding keep their real-time timers.
+- `ObservingScheduler` runs a virtual clock that moves only when the test advances it, timers
+  included. Use it only in tests that control delayed saga commands with that clock.
+
+```hocon
+config.akka.scheduler.implementation = "FCQRS.Scheduler+ShiftedScheduler, FCQRS"
+```
+
+```fsharp
+let scheduler = api.System.Scheduler :?> FCQRS.Scheduler.ShiftedScheduler
+scheduler.Shift <- TimeSpan.FromDays 2.0
+```
+
+A shift back makes later commands carry earlier dates than earlier ones. A test that shifts back,
+for example to start its next case on real time, must not compare dates across that change.
 
 ## Passivation timing
 

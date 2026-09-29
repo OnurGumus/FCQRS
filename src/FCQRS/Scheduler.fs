@@ -295,3 +295,94 @@ type ObservingScheduler(config: Config, log: ILoggingAdapter) =
 
     // IAdvancedScheduler implementation
     interface IAdvancedScheduler
+
+/// Akka.NET's default scheduler on real time, telling a time moved by `Shift`.
+///
+/// FCQRS stamps commands and events with the scheduler's `Now`, and `IActor.TimeProvider` tells the
+/// same time. A test that lets time pass sets `Shift`, and every aggregate decision and every reader
+/// of `TimeProvider` sees the later time without the test waiting for it. Timers keep running on real
+/// time, so command timeouts, saga handshakes and cluster sharding behave as they do in production.
+/// `ObservingScheduler` is the choice when a test must control when timers fire instead.
+///
+/// Set it with `akka.scheduler.implementation = "FCQRS.Scheduler+ShiftedScheduler, FCQRS"` and reach
+/// it as `api.System.Scheduler :?> ShiftedScheduler`. A shift back makes later commands carry earlier
+/// dates than earlier ones; a test that does so must not compare dates across it.
+type ShiftedScheduler(config: Config, log: ILoggingAdapter) =
+    let inner = new HashedWheelTimerScheduler(config, log)
+    let tell = inner :> ITellScheduler
+    let actions = inner :> IActionScheduler
+    let runnables = inner :> IRunnableScheduler
+    // Ticks, read and written whole: a test thread sets it while actors read it.
+    let mutable shift = 0L
+
+    /// How far the time told is from real time.
+    member _.Shift
+        with get () = TimeSpan(Volatile.Read(&shift))
+        and set (value: TimeSpan) = Volatile.Write(&shift, value.Ticks)
+
+    /// Real time moved by `Shift`.
+    member this.Now = DateTimeOffset.UtcNow + this.Shift
+
+    interface ITimeProvider with
+        member this.Now = this.Now
+        member _.MonotonicClock = inner.MonotonicClock
+        member _.HighResMonotonicClock = inner.HighResMonotonicClock
+
+    interface ITellScheduler with
+        member _.ScheduleTellOnce(delay: TimeSpan, receiver: ICanTell, message: obj, sender: IActorRef) =
+            tell.ScheduleTellOnce(delay, receiver, message, sender)
+
+        member _.ScheduleTellOnce
+            (delay: TimeSpan, receiver: ICanTell, message: obj, sender: IActorRef, cancelable: ICancelable)
+            =
+            tell.ScheduleTellOnce(delay, receiver, message, sender, cancelable)
+
+        member _.ScheduleTellRepeatedly
+            (initialDelay: TimeSpan, interval: TimeSpan, receiver: ICanTell, message: obj, sender: IActorRef)
+            =
+            tell.ScheduleTellRepeatedly(initialDelay, interval, receiver, message, sender)
+
+        member _.ScheduleTellRepeatedly
+            (
+                initialDelay: TimeSpan,
+                interval: TimeSpan,
+                receiver: ICanTell,
+                message: obj,
+                sender: IActorRef,
+                cancelable: ICancelable
+            ) =
+            tell.ScheduleTellRepeatedly(initialDelay, interval, receiver, message, sender, cancelable)
+
+    interface IRunnableScheduler with
+        member _.ScheduleOnce(delay: TimeSpan, action: Akka.Dispatch.IRunnable) = runnables.ScheduleOnce(delay, action)
+
+        member _.ScheduleOnce(delay: TimeSpan, action: Akka.Dispatch.IRunnable, cancelable: ICancelable) =
+            runnables.ScheduleOnce(delay, action, cancelable)
+
+        member _.ScheduleRepeatedly(initialDelay: TimeSpan, interval: TimeSpan, action: Akka.Dispatch.IRunnable) =
+            runnables.ScheduleRepeatedly(initialDelay, interval, action)
+
+        member _.ScheduleRepeatedly
+            (initialDelay: TimeSpan, interval: TimeSpan, action: Akka.Dispatch.IRunnable, cancelable: ICancelable)
+            =
+            runnables.ScheduleRepeatedly(initialDelay, interval, action, cancelable)
+
+    interface IActionScheduler with
+        member _.ScheduleOnce(delay: TimeSpan, action: Action) = actions.ScheduleOnce(delay, action)
+
+        member _.ScheduleOnce(delay: TimeSpan, action: Action, cancelable: ICancelable) =
+            actions.ScheduleOnce(delay, action, cancelable)
+
+        member _.ScheduleRepeatedly(initialDelay: TimeSpan, interval: TimeSpan, action: Action) =
+            actions.ScheduleRepeatedly(initialDelay, interval, action)
+
+        member _.ScheduleRepeatedly(initialDelay: TimeSpan, interval: TimeSpan, action: Action, cancelable: ICancelable) =
+            actions.ScheduleRepeatedly(initialDelay, interval, action, cancelable)
+
+    interface IAdvancedScheduler
+
+    interface IScheduler with
+        member this.Advanced = this :> IAdvancedScheduler
+
+    interface IDisposable with
+        member _.Dispose() = inner.Dispose()

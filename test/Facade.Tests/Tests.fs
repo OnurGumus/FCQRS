@@ -1163,6 +1163,55 @@ let private stopSagaDelayedTest =
 
         api.Stop().Wait(TimeSpan.FromSeconds 30.0) |> ignore
 
+/// A ShiftedScheduler moves the time FCQRS tells and stamps, not the time its timers run on.
+let private shiftedSchedulerTest =
+    testCase "facade: a ShiftedScheduler moves the time commands and events carry, and timers still run on real time"
+    <| fun _ ->
+        registerJournalTypes ()
+        let db = Path.Combine(Path.GetTempPath(), sprintf "fcqrs_shift_%s.db" (Guid.NewGuid().ToString("N")))
+
+        let cfg =
+            VerifySerialization.configuration()
+                .AddInMemoryCollection(
+                    [ Collections.Generic.KeyValuePair<string, string | null>(
+                          "config:akka:scheduler:implementation", "FCQRS.Scheduler+ShiftedScheduler, FCQRS") ])
+                .Build()
+
+        let api =
+            Fcqrs.actor cfg NullLoggerFactory.Instance
+                (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite (sprintf "Data Source=%s;" db))) "ShiftSmoke"
+
+        let counter =
+            Fcqrs.aggregate api { Name = "Counter"; Initial = Counter.initial; Decide = Counter.decide; Fold = Counter.fold; Snapshots = Default; Passivation = PassivationPolicy.Default }
+
+        Fcqrs.wireSagaStarters api []
+
+        let scheduler = api.System.Scheduler :?> FCQRS.Scheduler.ShiftedScheduler
+        scheduler.Shift <- TimeSpan.FromDays 3.0
+        let later = DateTime.UtcNow.AddDays 3.0
+        let near (at: DateTime) = abs (at - later).TotalMinutes < 1.0
+
+        let event =
+            counter.Send (Fcqrs.newCid ()) (Fcqrs.aggregateId "shifted") (Counter.Increment 1)
+                (function Counter.Incremented _ -> true | _ -> false)
+            |> Async.RunSynchronously
+
+        Expect.isTrue (near event.CreationDate) $"the event carries the shifted time, not {event.CreationDate:o}"
+        Expect.isTrue (near (api.TimeProvider.GetUtcNow().UtcDateTime)) "TimeProvider tells the shifted time"
+
+        // Three days on, a timer due in 100 ms still fires in about 100 ms.
+        use fired = new Threading.ManualResetEventSlim()
+
+        use _timer =
+            api.TimeProvider.CreateTimer(
+                Threading.TimerCallback(fun _ -> fired.Set()), box (), TimeSpan.FromMilliseconds 100.0, Threading.Timeout.InfiniteTimeSpan)
+
+        Expect.isTrue (fired.Wait(TimeSpan.FromSeconds 5.0)) "a timer fires on real time"
+
+        scheduler.Shift <- TimeSpan.Zero
+        Expect.isTrue (abs (api.TimeProvider.GetUtcNow().UtcDateTime - DateTime.UtcNow).TotalMinutes < 1.0) "no shift tells real time"
+        api.Stop().Wait(TimeSpan.FromSeconds 30.0) |> ignore
+
 let private timeProviderTest =
     testCase "facade: TimeProvider timestamps are unit-consistent and an infinite due time never fires"
     <| fun _ ->
@@ -2573,7 +2622,7 @@ let private cliffProbe =
 
 let tests =
     testSequenced (
-        testList "facade" [ manifestTest; roundTripTest; persistAllTest; manualSnapshotTest; telemetryTest; payloadSwitchTest; overflowTest; snapshotRecoveryTest; restartDetectionTest; filteredProjectionTest; persistIfTest; bridgeTest; pendingBridgeTest; focusShapeTest; journaledStampTest; runAsyncTest; aggregateRecoveryTest; commandTimeoutTest; concurrencyTest; stopSagaDelayedTest; timeProviderTest; dynamicConfigTest; freshStartSingleDeliveryTest; concurrentSagaStartTest; sagaStartFanoutTest; sagaTypeMismatchTest; cidGuardTest; cidConstructorTest; snapshotResurrectionTest; sendAwaitingTimeoutTest; slowSubscriberIsolationTest; specialCharEntityIdTest; sagaStartNameShapesTest; chainedSnapshotTest; filterThrowTest; hoconConnectionStringTest; crossTypeHandshakeTest; deferSnapshotTest; cidSeparatorTest; expectationSatisfiedTest; expectationExhaustionTest; expectationUnhandledTest; expectationRestartTest; perTypePassivationTest; definitionPassivationTest ]
+        testList "facade" [ manifestTest; roundTripTest; persistAllTest; manualSnapshotTest; telemetryTest; payloadSwitchTest; overflowTest; snapshotRecoveryTest; restartDetectionTest; filteredProjectionTest; persistIfTest; bridgeTest; pendingBridgeTest; focusShapeTest; journaledStampTest; runAsyncTest; aggregateRecoveryTest; commandTimeoutTest; concurrencyTest; stopSagaDelayedTest; timeProviderTest; shiftedSchedulerTest; dynamicConfigTest; freshStartSingleDeliveryTest; concurrentSagaStartTest; sagaStartFanoutTest; sagaTypeMismatchTest; cidGuardTest; cidConstructorTest; snapshotResurrectionTest; sendAwaitingTimeoutTest; slowSubscriberIsolationTest; specialCharEntityIdTest; sagaStartNameShapesTest; chainedSnapshotTest; filterThrowTest; hoconConnectionStringTest; crossTypeHandshakeTest; deferSnapshotTest; cidSeparatorTest; expectationSatisfiedTest; expectationExhaustionTest; expectationUnhandledTest; expectationRestartTest; perTypePassivationTest; definitionPassivationTest ]
     )
 
 [<EntryPoint>]
