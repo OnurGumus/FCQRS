@@ -16,3 +16,8 @@ Feature: ExpectoTickSpec bridge
       Given a counter starting at 1
       When 41 is added
       Then the counter shows 999
+
+    @pending
+    Scenario: A pending scenario's steps need not exist
+      Given a step nobody has written yet
+      Then something not yet buildable happens

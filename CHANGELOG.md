@@ -1,5 +1,21 @@
 # Changelog
 
+## 6.1.0 (FCQRS.ExpectoTickSpec)
+
+- **A pending scenario's steps no longer need to exist.** Until now only a feature whose scenarios
+  were all `@pending` skipped step binding. A scenario tagged `@pending` in an otherwise running
+  feature still had to bind every step, so a spec written ahead of its steps failed the whole suite
+  when it was built. The bridge now blanks pending scenarios out of the feature text before TickSpec
+  binds it, along with their tags and any rule left without scenarios. The lines are blanked, not
+  removed, so TickSpec's line numbers still point into the real file.
+- **`FeatureTest.discover` builds every feature under a resource prefix.** It returns one test list
+  per `{prefix}.*.feature` resource, named after the file, with tests named by scenario title
+  without the `Scenario:` keyword. `createTest` keeps its names.
+- **`Pending` lists waiting scenarios in code, with a reason.** A tag cannot carry a sentence, so
+  `@pending` says only that a scenario waits. A `Pending.feature` or `Pending.scenario` entry passed
+  to `discover` skips the scenario the same way, without binding it, and reports the reason with the
+  skipped test. A first test fails if an entry names a feature or scenario that does not exist.
+
 ## 6.15.0 (FCQRS core)
 
 - **`ShiftedScheduler` moves the time a test runs at, without a virtual clock.** It is Akka.NET's

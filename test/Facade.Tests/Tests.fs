@@ -880,6 +880,63 @@ let private focusShapeTest =
         Expect.contains ss Focused "the @focus scenario is Focused"
         Expect.contains ss Normal "the untagged scenario stays Normal"
 
+/// discover: scenarios pending by tag or by a Pending entry are cut before
+/// binding, so discover.feature's unwritten steps never bind. An entry's
+/// reason is reported, and an entry naming no scenario fails the stale check.
+/// The tree is only INSPECTED and its cases run here, never registered.
+let private discoverTest =
+    testCase "bridge: discover skips pending scenarios without binding them"
+    <| fun _ ->
+        let pending =
+            [ FCQRS.ExpectoTickSpec.Pending.scenario "mixed" "Waits in code" "needs an abacus"
+              FCQRS.ExpectoTickSpec.Pending.scenario "mixed" "No such scenario" "a stale entry" ]
+
+        let tests =
+            FCQRS.ExpectoTickSpec.FeatureTest.discover (Reflection.Assembly.GetExecutingAssembly()) "Discover" pending
+
+        let rec cases path t =
+            match t with
+            | TestCase(code, state) -> [ String.concat "/" (List.rev path), code, state ]
+            | TestList(ts, _) -> ts |> List.collect (cases path)
+            | TestLabel(label, inner, _) -> cases (label :: path) inner
+            | Test.Sequenced(_, inner) -> cases path inner
+
+        let found = tests |> List.collect (cases [])
+
+        let outcome name =
+            match found |> List.tryFind (fun (n, _, _) -> n = name) with
+            | Some(_, Sync run, Normal) ->
+                try
+                    run ()
+                    "passed"
+                with
+                | :? IgnoreException as e -> $"skipped: {e.Message}"
+                | :? AssertException as e -> $"failed: {e.Message}"
+            | Some(_, _, state) -> string state
+            | None -> failwithf "no test named %s in %A" name (found |> List.map (fun (n, _, _) -> n))
+
+        Expect.equal
+            (found |> List.map (fun (n, _, _) -> n))
+            [ "The pending list names only real scenarios"
+              "mixed/Some scenarios run/Runs"
+              "mixed/Some scenarios run/Tagged with unwritten steps"
+              "mixed/Some scenarios run/Waits in code"
+              "mixed/Some scenarios run/Adds <add> (1)"
+              "mixed/Some scenarios run/Adds <add> (2)"
+              "mixed/Every scenario waits/Only one here" ]
+            "one case per scenario and outline row, titled without the keyword"
+
+        Expect.equal (outcome "mixed/Some scenarios run/Runs") "passed" "a bound scenario runs"
+        Expect.equal (outcome "mixed/Some scenarios run/Adds <add> (2)") "passed" "outline rows run"
+        Expect.equal (outcome "mixed/Some scenarios run/Tagged with unwritten steps") "Pending" "@pending is Pending"
+        Expect.equal (outcome "mixed/Every scenario waits/Only one here") "Pending" "an all-pending rule drops whole"
+        Expect.equal (outcome "mixed/Some scenarios run/Waits in code") "skipped: needs an abacus" "an entry's reason is reported"
+
+        Expect.equal
+            (outcome "The pending list names only real scenarios")
+            "failed: \"mixed\" has no scenario \"No such scenario\""
+            "a stale entry fails the check"
+
 /// Delivery stamp + sendAwaiting: a persisted ack is marked journaled and
 /// sendAwaiting returns only after the projection processed it; a deferred
 /// ack is marked not-journaled and sendAwaiting must NOT wait for a
@@ -2622,7 +2679,7 @@ let private cliffProbe =
 
 let tests =
     testSequenced (
-        testList "facade" [ manifestTest; roundTripTest; persistAllTest; manualSnapshotTest; telemetryTest; payloadSwitchTest; overflowTest; snapshotRecoveryTest; restartDetectionTest; filteredProjectionTest; persistIfTest; bridgeTest; pendingBridgeTest; focusShapeTest; journaledStampTest; runAsyncTest; aggregateRecoveryTest; commandTimeoutTest; concurrencyTest; stopSagaDelayedTest; timeProviderTest; shiftedSchedulerTest; dynamicConfigTest; freshStartSingleDeliveryTest; concurrentSagaStartTest; sagaStartFanoutTest; sagaTypeMismatchTest; cidGuardTest; cidConstructorTest; snapshotResurrectionTest; sendAwaitingTimeoutTest; slowSubscriberIsolationTest; specialCharEntityIdTest; sagaStartNameShapesTest; chainedSnapshotTest; filterThrowTest; hoconConnectionStringTest; crossTypeHandshakeTest; deferSnapshotTest; cidSeparatorTest; expectationSatisfiedTest; expectationExhaustionTest; expectationUnhandledTest; expectationRestartTest; perTypePassivationTest; definitionPassivationTest ]
+        testList "facade" [ manifestTest; roundTripTest; persistAllTest; manualSnapshotTest; telemetryTest; payloadSwitchTest; overflowTest; snapshotRecoveryTest; restartDetectionTest; filteredProjectionTest; persistIfTest; bridgeTest; pendingBridgeTest; focusShapeTest; discoverTest; journaledStampTest; runAsyncTest; aggregateRecoveryTest; commandTimeoutTest; concurrencyTest; stopSagaDelayedTest; timeProviderTest; shiftedSchedulerTest; dynamicConfigTest; freshStartSingleDeliveryTest; concurrentSagaStartTest; sagaStartFanoutTest; sagaTypeMismatchTest; cidGuardTest; cidConstructorTest; snapshotResurrectionTest; sendAwaitingTimeoutTest; slowSubscriberIsolationTest; specialCharEntityIdTest; sagaStartNameShapesTest; chainedSnapshotTest; filterThrowTest; hoconConnectionStringTest; crossTypeHandshakeTest; deferSnapshotTest; cidSeparatorTest; expectationSatisfiedTest; expectationExhaustionTest; expectationUnhandledTest; expectationRestartTest; perTypePassivationTest; definitionPassivationTest ]
     )
 
 [<EntryPoint>]
