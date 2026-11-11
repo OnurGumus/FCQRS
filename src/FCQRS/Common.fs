@@ -383,11 +383,14 @@ type Telemetry =
     static member SagaActivitySourceName: string = "FCQRS.Saga"
     /// Read-side projection of journal events.
     static member QueryActivitySourceName: string = "FCQRS.Query"
+    /// Workflow starts, steps, and activity attempts (FCQRS.Workflows).
+    static member WorkflowActivitySourceName: string = "FCQRS.Workflow"
     /// Every FCQRS source, for one-call registration.
     static member AllActivitySources: string[] =
         [| Telemetry.ActivitySourceName
            Telemetry.SagaActivitySourceName
-           Telemetry.QueryActivitySourceName |]
+           Telemetry.QueryActivitySourceName
+           Telemetry.WorkflowActivitySourceName |]
     /// Metadata key carrying the W3C traceparent. Stamped automatically on
     /// commands created while an Activity is current; flows command -> events ->
     /// saga -> the saga's commands through the existing Metadata plumbing, so

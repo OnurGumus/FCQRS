@@ -33,6 +33,7 @@
     <Compile Include="FSharp.fs" />
     <Compile Include="CSharpInterop.fs" />
     <Compile Include="Extensions.fs" />
+    <Compile Include="AssemblyInfo.fs" />
     <Compile Include="HostExtensions.fs" />
     <Content Include="paket.references" />
   </ItemGroup>

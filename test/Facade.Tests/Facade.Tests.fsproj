@@ -29,6 +29,7 @@
     <Compile Include="..\..\samples\accounts\5-transfer-money\fsharp\Transfer.fs" Link="Bank\Transfer.fs" />
     <Compile Include="BankInvariantTests.fs" />
     <Compile Include="SagaStartOnceTests.fs" />
+    <Compile Include="WorkflowMachineTests.fs" />
     <Compile Include="Tests.fs" />
   </ItemGroup>
 
@@ -43,6 +44,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\FCQRS\FCQRS.fsproj" />
     <ProjectReference Include="..\..\src\FCQRS.Model\FCQRS.Model.fsproj" />
+    <ProjectReference Include="..\..\src\FCQRS.Workflows\FCQRS.Workflows.fsproj" />
     <ProjectReference Include="..\..\src\FCQRS.ExpectoTickSpec\FCQRS.ExpectoTickSpec.fsproj" />
     <PackageReference Include="Expecto" Version="10.*" />
     <PackageReference Include="TickSpec" Version="2.*" />
