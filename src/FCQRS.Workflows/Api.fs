@@ -25,7 +25,11 @@ type WorkflowHandle<'Input, 'Result> =
       /// Waits up to the given time for the instance to end. The wait is in memory: the workflow
       /// continues when the caller stops waiting. Raises `TimeoutException` when the time passes,
       /// and `InvalidOperationException` when no workflow with this ID was started.
-      Result: string -> TimeSpan -> Async<WorkflowOutcome<'Result>> }
+      Result: string -> TimeSpan -> Async<WorkflowOutcome<'Result>>
+      /// Stores a signal for the instance: ID, signal name, payload. Returns once it is stored.
+      /// Raises `InvalidOperationException` when the workflow was not started or has ended.
+      /// `Workflows.signal` takes a typed payload.
+      Signal: string -> string -> Payload -> Async<unit> }
 
 /// Defines workflows.
 module Workflow =
@@ -53,7 +57,7 @@ module Workflows =
 
         let erased: WorkflowActor.Definition =
             { Name = definition.Name
-              ResultType = typeof<'Result>
+              EncodeResult = Payload.encode typeof<'Result>
               Body =
                 fun input ->
                     WorkflowCore.bind (definition.Body(Payload.toValue<'Input> input)) (fun result -> Return(box result)) }
@@ -65,7 +69,7 @@ module Workflows =
                 api.System
                 shardResolver
                 definition.Name
-                (propsPersist (WorkflowActor.behavior erased api.LoggerFactory))
+                (propsPersist (WorkflowActor.behavior erased api))
                 PassivationPolicy.Default
                 true
 
@@ -122,4 +126,26 @@ module Workflows =
                         | ResultCancelled -> return WorkflowOutcome.Cancelled
                         | ResultNotStarted -> return invalidOp $"No workflow {definition.Name} with ID '{id}' was started."
                     | other -> return invalidOp $"Unexpected reply to a workflow result request: {other}"
+                }
+          Signal =
+            fun id name payload ->
+                async {
+                    let signal =
+                        { SignalName = name
+                          SignalPayload = payload
+                          SignalTraceparent = currentTraceparent () }
+
+                    let! reply = ask id signal requestTimeout
+
+                    match reply with
+                    | :? SignalReply as reply ->
+                        match reply with
+                        | SignalAccepted -> return ()
+                        | SignalRefused status ->
+                            return invalidOp $"Workflow {definition.Name} '{id}' is {status} and takes no signal."
+                    | other -> return invalidOp $"Unexpected reply to a workflow signal: {other}"
                 } }
+
+    /// Stores the signal `name` with a typed payload for the instance `id`.
+    let signal (handle: WorkflowHandle<'Input, 'Result>) (id: string) (name: string) (payload: 'Signal) : Async<unit> =
+        handle.Signal id name (Payload.ofValue payload)

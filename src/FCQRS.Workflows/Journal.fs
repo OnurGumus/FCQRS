@@ -76,6 +76,11 @@ module Payload =
     [<Literal>]
     let private UnitName = "unit"
 
+    /// The stored result of a signal wait whose timeout passed before a signal arrived.
+    let internal timedOut: Payload =
+        { Type = "fcqrs.workflow.timed-out"
+          Json = "null" }
+
     let private nameOf (t: Type) =
         match JournalTypes.TryGetName t with
         | Some name -> name

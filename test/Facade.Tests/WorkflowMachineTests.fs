@@ -66,33 +66,61 @@ let private boxed (body: Workflow<'T>) : Workflow<objnull> = workflow {
 type private Run =
     { Journal: ResizeArray<WorkflowRecord>
       Begun: ResizeArray<string>
+      Abandoned: ResizeArray<string>
+      /// The most steps that were begun and unfinished at one time.
+      mutable Widest: int
       Machine: Machine }
 
-let private drive<'T> (prefix: WorkflowRecord list) (complete: string -> Result<Payload, StepError> option) (body: Workflow<'T>) =
-    let history = Dictionary<string, StepState>()
+/// `complete` gives a begun step's outcome, or None to leave it waiting. `choose` picks which
+/// waiting step finishes next, so a test decides the order in which parallel steps complete.
+let private driveWith<'T>
+    (choose: PendingStep list -> PendingStep)
+    (prefix: WorkflowRecord list)
+    (complete: PendingStep -> Result<Payload, StepError> option)
+    (body: Workflow<'T>)
+    =
+    let history = History()
     for record in prefix do
-        History.apply history record
-    let machine = Machine(history, typeof<'T>, fun () -> at)
-    let journal = ResizeArray prefix
-    let begun = ResizeArray<string>()
+        history.Apply record
+    let machine = Machine(history, Payload.encode typeof<'T>, fun () -> at)
+    let run = { Journal = ResizeArray prefix; Begun = ResizeArray(); Abandoned = ResizeArray(); Widest = 0; Machine = machine }
     let work = Queue<Emit>(machine.Run(boxed body))
-    while work.Count > 0 do
-        match work.Dequeue() with
-        | Store record ->
-            journal.Add record
-            for emit in machine.Apply record do
-                work.Enqueue emit
-        | Begin step ->
-            begun.Add step.Path
-            let outcome =
-                match step.Leaf.Kind with
-                | StepKind.Timer -> Some(Ok(Payload.ofValue ()))
-                | _ -> complete step.Leaf.Name
-            match outcome with
+    let waiting = ResizeArray<PendingStep>()
+    let mutable busy = true
+    while busy do
+        while work.Count > 0 do
+            match work.Dequeue() with
+            | Store record ->
+                run.Journal.Add record
+                for emit in machine.Apply record do
+                    work.Enqueue emit
+            | Begin step ->
+                run.Begun.Add step.Path
+                waiting.Add step
+                run.Widest <- max run.Widest waiting.Count
+            | Abandon path ->
+                run.Abandoned.Add path
+                waiting.RemoveAll(fun step -> step.Path = path) |> ignore
+        let ready = waiting |> Seq.filter (fun step -> (complete step).IsSome) |> List.ofSeq
+        if ready.IsEmpty then
+            busy <- false
+        else
+            let step = choose ready
+            waiting.Remove step |> ignore
+            match complete step with
             | Some(Ok result) -> work.Enqueue(Store(WorkflowRecord.StepCompleted(step.Path, step.Leaf.Name, step.Leaf.Kind, result, at)))
             | Some(Error error) -> work.Enqueue(Store(WorkflowRecord.StepFailed(step.Path, step.Leaf.Name, step.Leaf.Kind, error, at)))
             | None -> ()
-    { Journal = journal; Begun = begun; Machine = machine }
+    run
+
+let private byName (complete: string -> Result<Payload, StepError> option) (step: PendingStep) =
+    match step.Leaf.Kind with
+    | StepKind.Timer -> Some(Ok(Payload.ofValue ()))
+    | StepKind.Signal -> None
+    | _ -> complete step.Leaf.Name
+
+let private drive<'T> (prefix: WorkflowRecord list) (complete: string -> Result<Payload, StepError> option) (body: Workflow<'T>) =
+    driveWith List.head prefix (byName complete) body
 
 let private never (_: AttemptContext) : Task<'T> = failwith "the machine does not run activities"
 
@@ -227,6 +255,236 @@ let private storedValueTest =
         let id, roll = (finished second).Value |> Payload.toValue<Guid * float>
         Expect.equal [ Payload.ofValue(id).Json; Payload.ofValue(roll).Json ] (stored first) "the body saw the stored values"
 
+// ---------------------------------------------------------------------------
+// Parallel branches, races and signals.
+// ---------------------------------------------------------------------------
+
+let private storedPaths (records: WorkflowRecord list) =
+    set [ for record in records do
+            match record with
+            | WorkflowRecord.StepCompleted(path, _, _, _, _)
+            | WorkflowRecord.StepFailed(path, _, _, _, _) -> path
+            | _ -> () ]
+
+/// Every prefix of `journal` replays to `expected` and begins no step the prefix had stored.
+let private replaysFromEveryPrefix<'T when 'T: equality> (journal: WorkflowRecord list) (complete: string -> Result<Payload, StepError> option) (body: Workflow<'T>) (expected: 'T) =
+    for length in 0 .. journal.Length do
+        let prefix = List.truncate length journal
+        let run = drive prefix complete body
+        Expect.equal (finished run |> Option.map Payload.toValue<'T>) (Some expected) $"a restart after {length} records reaches the same result"
+        Expect.isEmpty (run.Begun |> Seq.filter (storedPaths prefix).Contains) $"a restart after {length} records begins no stored step"
+
+let rec private permutations (items: 'A list) : 'A list list =
+    match items with
+    | [] -> [ [] ]
+    | _ -> [ for item in items do
+                 for rest in permutations (List.except [ item ] items) -> item :: rest ]
+
+let private fetch (name: string) : Workflow<int> = workflow {
+    let! (first: int) = activity name (Retry.times 3) never
+    let! (second: int) = activity (name + "-again") (Retry.times 3) never
+    return first + second
+}
+
+let private three = workflow {
+    let! values = all [ fetch "a"; fetch "b"; fetch "c" ]
+    let! (last: int) = activity "sum" (Retry.times 3) never
+    return values, last
+}
+
+let private threeValues (name: string) =
+    match name with
+    | "a" -> Some(Ok(Payload.ofValue 1))
+    | "b" -> Some(Ok(Payload.ofValue 10))
+    | "c" -> Some(Ok(Payload.ofValue 100))
+    | "a-again" | "b-again" | "c-again" -> Some(Ok(Payload.ofValue 0))
+    | "sum" -> Some(Ok(Payload.ofValue 111))
+    | _ -> None
+
+let private allTest =
+    testCase "workflow machine: all gives results in branch order whatever order the branches finish in, and replays from any prefix" <| fun _ ->
+        for order in permutations [ "0/0/"; "0/1/"; "0/2/" ] do
+            // Finish the waiting step of the branch that comes first in `order`.
+            let choose (ready: PendingStep list) =
+                order |> List.pick (fun branch -> ready |> List.tryFind (fun step -> step.Path.StartsWith branch) |> Option.orElse (if branch = List.last order then Some(List.head ready) else None))
+            let live = driveWith choose [] (byName threeValues) three
+            Expect.equal (finished live |> Option.map Payload.toValue<int list * int>) (Some([ 1; 10; 100 ], 111)) $"order {order}"
+            Expect.equal (set live.Begun) (set [ "0/0/0"; "0/0/1"; "0/1/0"; "0/1/1"; "0/2/0"; "0/2/1"; "1" ]) "branch steps have paths under the block and branch"
+            replaysFromEveryPrefix (List.ofSeq live.Journal) threeValues three ([ 1; 10; 100 ], 111)
+
+let private allFailureTest =
+    testCase "workflow machine: a failing branch fails all once and abandons the other branches" <| fun _ ->
+        let body = workflow {
+            try
+                let! (_: int list) = all [ fetch "a"; fetch "b"; fetch "c" ]
+                return "no failure"
+            with :? WorkflowStepFailedException as failed ->
+                let! (after: int) = activity "after" Retry.none never
+                return $"{failed.StepName} {after}"
+        }
+        let complete name =
+            match name with
+            | "b" -> Some(Error { Kind = ErrorKind.Exhausted; ExceptionType = "System.Exception"; Message = "down" })
+            | "after" -> Some(Ok(Payload.ofValue 5))
+            | _ -> None
+        let live = drive [] complete body
+        Expect.equal (finished live |> Option.map Payload.toValue<string>) (Some "b 5") "the body handles the branch failure and continues"
+        Expect.equal (set live.Abandoned) (set [ "0/0/0"; "0/2/0" ]) "the other branches' steps are abandoned"
+        let journal = List.ofSeq live.Journal
+        for length in 0 .. journal.Length do
+            let run = drive (List.truncate length journal) complete body
+            Expect.equal (finished run |> Option.map Payload.toValue<string>) (Some "b 5") $"a restart after {length} records reaches the same result"
+        // Once the failure is stored, a restart begins nothing in the abandoned branches.
+        let afterFailure = journal |> List.findIndex (function WorkflowRecord.StepFailed _ -> true | _ -> false)
+        let replayed = drive (List.truncate (afterFailure + 1) journal) complete body
+        Expect.isEmpty (replayed.Begun |> Seq.filter (fun path -> path.StartsWith "0/")) "abandoned branches are not begun again"
+
+let private raceBody = workflow {
+    let! winner = race [ fetch "slow"; fetch "fast" ]
+    let! (last: int) = activity "after" Retry.none never
+    return winner + last
+}
+
+let private raceTest =
+    testCase "workflow machine: a race stores its winner, abandons the rest, and replay runs only the winner" <| fun _ ->
+        let complete name =
+            match name with
+            | "fast" -> Some(Ok(Payload.ofValue 7))
+            | "fast-again" -> Some(Ok(Payload.ofValue 1))
+            | "after" -> Some(Ok(Payload.ofValue 100))
+            | _ -> None
+        let live = drive [] complete raceBody
+        Expect.equal (finished live |> Option.map Payload.toValue<int>) (Some 108) "the fast branch decided the result"
+        let winner =
+            live.Journal |> Seq.pick (function WorkflowRecord.StepCompleted("0", "race", StepKind.Race, result, _) -> Some(Payload.toValue<int> result) | _ -> None)
+        Expect.equal winner 1 "the winner's index is stored at the race's path"
+        Expect.contains live.Abandoned "0/0/0" "the slow branch's step is abandoned"
+        let journal = List.ofSeq live.Journal
+        // After the winner is stored, even a slow branch that could now finish does not run.
+        let everything name = match complete name with Some outcome -> Some outcome | None -> Some(Ok(Payload.ofValue 1000))
+        let decidedAt = journal |> List.findIndex (function WorkflowRecord.StepCompleted(_, "race", _, _, _) -> true | _ -> false)
+        for length in decidedAt + 1 .. journal.Length do
+            let run = drive (List.truncate length journal) everything raceBody
+            Expect.equal (finished run |> Option.map Payload.toValue<int>) (Some 108) $"a restart after {length} records keeps the stored winner"
+            Expect.isEmpty (run.Begun |> Seq.filter (fun path -> path.StartsWith "0/0/")) "the losing branch is not begun"
+        // Before the winner is stored, a restart decides again.
+        for length in 0 .. decidedAt do
+            let run = drive (List.truncate length journal) complete raceBody
+            Expect.equal (finished run |> Option.map Payload.toValue<int>) (Some 108) $"a restart after {length} records decides the race again"
+
+let private limitTest =
+    testCase "workflow machine: allAtMost keeps to its limit and replays from any prefix" <| fun _ ->
+        let body = workflow {
+            let! doubled = allAtMost 2 [ 1; 2; 3; 4; 5 ] (fun item -> workflow {
+                let! (value: int) = activity $"double-{item}" (Retry.times 3) never
+                return value })
+            return doubled
+        }
+        let complete (name: string) = Some(Ok(Payload.ofValue (2 * int (name.Substring 7))))
+        // The newest begun step finishes first, so branches finish out of order.
+        let live = driveWith List.last [] (byName complete) body
+        Expect.equal (finished live |> Option.map Payload.toValue<int list>) (Some [ 2; 4; 6; 8; 10 ]) "results are in item order"
+        Expect.equal live.Widest 2 "no more than two branches were running"
+        replaysFromEveryPrefix (List.ofSeq live.Journal) complete body [ 2; 4; 6; 8; 10 ]
+        for length in 0 .. live.Journal.Count do
+            let run = driveWith List.last (List.truncate length (List.ofSeq live.Journal)) (byName complete) body
+            Expect.isLessThanOrEqual run.Widest 2 $"a restart after {length} records keeps to the limit"
+
+let private andTest =
+    testCase "workflow machine: and! runs two workflows together" <| fun _ ->
+        let body = workflow {
+            let! (left: int) = activity "left" Retry.none never
+            and! (right: string) = activity "right" Retry.none never
+            return $"{left}{right}"
+        }
+        let complete name =
+            match name with
+            | "left" -> Some(Ok(Payload.ofValue 4))
+            | "right" -> Some(Ok(Payload.ofValue "2"))
+            | _ -> None
+        let live = drive [] complete body
+        Expect.equal (finished live |> Option.map Payload.toValue<string>) (Some "42") "both results arrive"
+        Expect.equal (List.ofSeq live.Begun) [ "0/0/0"; "0/1/0" ] "both began before either finished"
+
+let private signal (name: string) (value: 'T) = WorkflowRecord.SignalReceived(name, Payload.ofValue value, at, None)
+
+let private signalTest =
+    testCase "workflow machine: stored signals are consumed oldest first, and a timed-out wait consumes none" <| fun _ ->
+        let body = workflow {
+            let! (first: string) = waitSignal "answer"
+            let! (second: string option) = waitSignalFor "answer" (TimeSpan.FromHours 1.0)
+            let! (third: string option) = waitSignalFor "answer" (TimeSpan.FromHours 1.0)
+            return first, second, third
+        }
+        // Two signals arrive before the body starts.
+        let early = drive [ signal "answer" "one"; signal "other" 5; signal "answer" "two" ] (fun _ -> None) body
+        let waits =
+            [ for record in early.Journal do
+                match record with
+                | WorkflowRecord.StepCompleted(path, "answer", StepKind.Signal, result, _) -> path, Payload.toValue<string> result
+                | _ -> () ]
+        Expect.equal waits [ "0", "one"; "1", "two" ] "the waits consume the signals in arrival order"
+        Expect.isNone (finished early) "the third wait has no signal"
+        let journal = List.ofSeq early.Journal
+        // The third wait times out; then a late signal arrives and stays stored.
+        let timedOut = journal @ [ WorkflowRecord.StepCompleted("2", "answer", StepKind.Signal, Payload.timedOut, at) ]
+        let done' = drive timedOut (fun _ -> None) body
+        Expect.equal (finished done' |> Option.map Payload.toValue<string * string option * string option>) (Some("one", Some "two", None)) "the timed-out wait gives None"
+        // Replay from every prefix assigns the same signals to the same waits.
+        for length in 0 .. timedOut.Length do
+            let run = drive (List.truncate length timedOut) (fun _ -> None) body
+            let again =
+                [ for record in run.Journal do
+                    match record with
+                    | WorkflowRecord.StepCompleted(path, "answer", StepKind.Signal, result, _) when result <> Payload.timedOut -> path, Payload.toValue<string> result
+                    | _ -> () ]
+            Expect.isTrue (List.forall (fun pair -> List.contains pair waits) again) $"a restart after {length} records keeps each wait's signal: {again}"
+
+let private liveSignalTest =
+    testCase "workflow machine: a signal that arrives during a wait completes it" <| fun _ ->
+        let body = workflow {
+            let! (answer: int) = waitSignal "answer"
+            return answer * 2
+        }
+        let waitingRun = drive [] (fun _ -> None) body
+        Expect.isNone (finished waitingRun) "the body waits"
+        let arrived = drive (List.ofSeq waitingRun.Journal @ [ signal "answer" 21 ]) (fun _ -> None) body
+        Expect.equal (finished arrived |> Option.map Payload.toValue<int>) (Some 42) "the stored signal completes the wait"
+
+let private unreadableTest =
+    testCase "workflow machine: a stored result the step's type cannot read diverges, and an unstorable result faults" <| fun _ ->
+        let journal =
+            [ WorkflowRecord.StepCompleted("0", "now", StepKind.Value, Payload.ofValue at, at)
+              WorkflowRecord.StepScheduled("1", "price", StepKind.Activity, at, None)
+              WorkflowRecord.StepCompleted("1", "price", StepKind.Activity, Payload.ofValue "twelve", at) ]
+        let typed = workflow {
+            let! (_: DateTime) = now
+            let! (price: decimal) = activity "price" (Retry.times 3) never
+            return price
+        }
+        Expect.throwsT<WorkflowDivergedException> (fun () -> drive journal orderValues typed |> ignore) "'price' is read as a decimal"
+        let unstorable = workflow {
+            let! (_: DateTime) = now
+            // The serializer refuses a System.Type.
+            return typeof<int>
+        }
+        match Seq.last (drive [] (fun _ -> None) unstorable).Journal with
+        | WorkflowRecord.Faulted(error, _) -> Expect.equal error.Kind ErrorKind.BodyFailed "a result that cannot be stored faults the workflow"
+        | other -> failtest $"expected a fault, found {other}"
+
+let private farTimerTest =
+    testCase "workflow machine: a timer further away than time can represent is due at the end of time" <| fun _ ->
+        let body = workflow {
+            do! sleep TimeSpan.MaxValue
+            return 1
+        }
+        let journal = (driveWith List.head [] (fun _ -> None) body).Journal
+        match Seq.head journal with
+        | WorkflowRecord.StepScheduled(_, "sleep", StepKind.Timer, _, Some due) ->
+            Expect.equal (DateTime.Parse(due, null, Globalization.DateTimeStyles.RoundtripKind)) DateTime.MaxValue "the due time is capped"
+        | other -> failtest $"expected a scheduled timer, found {other}"
+
 let tests =
     testList "workflow machine"
-        [ payloadTest; recordTest; liveTest; prefixTest; failureTest; unhandledTest; divergedTest; longTest; storedValueTest ]
+        [ payloadTest; recordTest; liveTest; prefixTest; failureTest; unhandledTest; divergedTest; longTest; storedValueTest
+          allTest; allFailureTest; raceTest; limitTest; andTest; signalTest; liveSignalTest; unreadableTest; farTimerTest ]

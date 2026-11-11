@@ -19,13 +19,14 @@ module internal WorkflowActor =
     /// A workflow with its types erased, as the actor runs it.
     type Definition =
         { Name: string
-          ResultType: Type
+          EncodeResult: objnull -> Payload
           Body: Payload -> Workflow<objnull> }
 
     /// An activity step that is running in this process.
     type private RunningStep =
         { Cancellation: CancellationTokenSource
           Attempt: int
+          Policy: RetryPolicy
           Span: Activity | null }
 
     let private source = new ActivitySource(Telemetry.WorkflowActivitySourceName)
@@ -39,25 +40,38 @@ module internal WorkflowActor =
         | Backoff(initial, factor, max) ->
             let grown = initial.TotalMilliseconds * Math.Pow(factor, float (attempt - 1))
             let capped = Math.Min(grown, max.TotalMilliseconds)
+            // A zero interval grown without bound is not a number; fall back to the cap.
+            let capped = if Double.IsNaN capped then max.TotalMilliseconds else capped
             // Stretch only, as saga expectations do, so steps released together do not retry together.
             TimeSpan.FromMilliseconds(Math.Ceiling(capped * (1.0 + Random.Shared.NextDouble() * 0.25)))
 
-    let behavior (definition: Definition) (loggerFactory: ILoggerFactory) (mailbox: Eventsourced<obj>) =
-        let log = loggerFactory.CreateLogger "FCQRS.Workflows"
+    /// `at + span`, or the latest representable time when that overflows.
+    let private later (at: DateTime) (span: TimeSpan) : DateTime =
+        if span >= DateTime.MaxValue - at then DateTime.MaxValue else at + span
+
+    let behavior (definition: Definition) (api: IActor) (mailbox: Eventsourced<obj>) =
+        let log = api.LoggerFactory.CreateLogger "FCQRS.Workflows"
         let id = Uri.UnescapeDataString mailbox.Self.Path.Name
         let self = mailbox.UntypedContext.Self
         let scheduler = mailbox.System.Scheduler
         let clock () = scheduler.Now.UtcDateTime
 
-        let history = Dictionary<string, StepState>()
+        // A supervisor restart keeps the mailbox. Messages this incarnation did not send to itself
+        // are ignored, so an attempt outcome or timer of the previous incarnation changes nothing.
+        let epoch = Random.Shared.NextInt64()
+        let mutable passivationRequested = false
+
+        let history = History()
         let running = Dictionary<string, RunningStep>()
-        let timers = ResizeArray<ICancelable>()
+        let timers = Dictionary<string, ResizeArray<ICancelable>>()
         let waiters = ResizeArray<IActorRef>()
         let mutable started: (Payload * string option) option = None
         let mutable final: WorkflowRecord option = None
         let mutable parked: string option = None
         let mutable machine: Machine option = None
         let mutable startSender: IActorRef option = None
+        /// The senders of signals being stored, in the order their records will be applied.
+        let signalSenders = Queue<IActorRef>()
 
         let traceParent () : ActivityContext voption =
             match started with
@@ -118,11 +132,34 @@ module internal WorkflowActor =
             | None, None -> Some ResultNotStarted
             | None, Some _ -> None
 
-        let schedule (delay: TimeSpan) (message: obj) =
+        let schedule (path: string) (delay: TimeSpan) (message: obj) =
             let delay = if delay < TimeSpan.Zero then TimeSpan.Zero else delay
-            timers.Add(scheduler.ScheduleTellOnceCancelable(delay, self, message, self))
+
+            let ofStep =
+                match timers.TryGetValue path with
+                | true, ofStep -> ofStep
+                | _ ->
+                    let ofStep = ResizeArray<ICancelable>()
+                    timers[path] <- ofStep
+                    ofStep
+
+            ofStep.Add(scheduler.ScheduleTellOnceCancelable(delay, self, message, self))
+
+        /// Cancels the timers of a step that is over.
+        let forget (path: string) =
+            match timers.TryGetValue path with
+            | true, ofStep ->
+                timers.Remove path |> ignore
+
+                for timer in ofStep do
+                    timer.Cancel()
+            | _ -> ()
 
         let release (path: string) (error: string option) =
+            forget path
+            // Ending a span makes its parent current; the actor keeps no ambient span.
+            let previous = Activity.Current
+
             match running.TryGetValue path with
             | true, step ->
                 running.Remove path |> ignore
@@ -136,20 +173,21 @@ module internal WorkflowActor =
                     span.Dispose()
             | _ -> ()
 
+            Activity.Current <- previous
+
         let cleanup () =
             for path in List.ofSeq running.Keys do
                 release path None
 
-            for timer in timers do
-                timer.Cancel()
-
-            timers.Clear()
+            for path in List.ofSeq timers.Keys do
+                forget path
 
         /// Idle instances leave memory: one that was never started, and one that has ended.
         let passivate () =
+            passivationRequested <- true
             mailbox.UntypedContext.Parent.Tell(Passivate(StopEntity), self)
 
-        let startAttempt (step: PendingStep) (policy: RetryPolicy) (run: AttemptContext -> Task<objnull>) (attempt: int) =
+        let startAttempt (step: PendingStep) (policy: RetryPolicy) (run: AttemptEnv -> Task<objnull>) (attempt: int) =
             let path = step.Path
             let previous = Activity.Current
 
@@ -166,6 +204,7 @@ module internal WorkflowActor =
                     running[path] <-
                         { Cancellation = cancellation
                           Attempt = attempt
+                          Policy = policy
                           Span = span }
 
                     cancellation, span
@@ -197,7 +236,7 @@ module internal WorkflowActor =
                             | span -> span.SetTag("fcqrs.workflow.attempt", attempt) |> ignore
 
                             try
-                                let call = run context
+                                let call = run { Api = api; Context = context }
 
                                 match policy.AttemptTimeout with
                                 | Some timeout ->
@@ -225,6 +264,7 @@ module internal WorkflowActor =
                     self.Tell(
                         { AttemptPath = path
                           Attempt = attempt
+                          AttemptEpoch = epoch
                           Outcome = outcome },
                         ActorRefs.NoSender
                     )
@@ -233,7 +273,20 @@ module internal WorkflowActor =
             Task.Run(work) |> ignore
 
         let stepFailed (step: PendingStep) (kind: ErrorKind) (error: exn) : WorkflowRecord =
+            // A command that got no reply may still have been applied.
+            let kind =
+                match step.Leaf.Kind, kind with
+                | StepKind.Command, (ErrorKind.Exhausted | ErrorKind.DeadlineExceeded) -> ErrorKind.OutcomeUnknown
+                | _ -> kind
+
             WorkflowRecord.StepFailed(step.Path, step.Leaf.Name, step.Leaf.Kind, Payload.errorOf kind error, clock ())
+
+        let dueOf (step: PendingStep) : DateTime option =
+            step.Detail |> Option.map (fun detail -> DateTime.Parse(detail, null, Globalization.DateTimeStyles.RoundtripKind))
+
+        let armTimer (step: PendingStep) (due: DateTime) =
+            let remaining = due - clock ()
+            schedule step.Path (if remaining > longestTimer then longestTimer else remaining) { TimerPath = step.Path; TimerEpoch = epoch }
 
         /// Starts a step, or resumes one that was in progress when the process stopped. Returns the
         /// records to store when the step is already over.
@@ -243,22 +296,23 @@ module internal WorkflowActor =
             match step.Leaf.Op with
             | ActivityOp(policy, run) ->
                 match policy.Deadline with
-                | Some deadline when scheduledAt + deadline <= clock () ->
+                | Some deadline when later scheduledAt deadline <= clock () ->
                     [ stepFailed step ErrorKind.DeadlineExceeded (TimeoutException $"The step's deadline of {deadline} passed.") ]
                 | deadline ->
                     deadline
-                    |> Option.iter (fun deadline -> schedule (scheduledAt + deadline - clock ()) { DeadlinePath = step.Path })
+                    |> Option.iter (fun deadline ->
+                        let remaining = later scheduledAt deadline - clock ()
+                        // A deadline further away than the longest timer is checked again when that fires.
+                        schedule step.Path (if remaining > longestTimer then longestTimer else remaining) { DeadlinePath = step.Path; DeadlineEpoch = epoch })
 
                     startAttempt step policy run 1
                     []
             | TimerOp _ ->
-                let due =
-                    match step.Detail with
-                    | Some detail -> DateTime.Parse(detail, null, Globalization.DateTimeStyles.RoundtripKind)
-                    | None -> scheduledAt
-
-                let remaining = due - clock ()
-                schedule (if remaining > longestTimer then longestTimer else remaining) { TimerPath = step.Path }
+                armTimer step (dueOf step |> Option.defaultValue scheduledAt)
+                []
+            | SignalOp _ ->
+                // Only a wait with a timeout has a due time.
+                dueOf step |> Option.iter (armTimer step)
                 []
             | ValueOp _ -> []
 
@@ -266,20 +320,25 @@ module internal WorkflowActor =
             [ for emit in emits do
                   match emit with
                   | Store record -> record
-                  | Begin step -> yield! beginStep step ]
+                  | Begin step -> yield! beginStep step
+                  | Abandon path -> release path None ]
 
         /// Runs a machine call. A journal that no longer matches the body parks the instance.
         let guarded (call: unit -> Emit list) : WorkflowRecord list =
             try
                 perform (call ())
-            with :? WorkflowDivergedException as diverged ->
-                parked <- Some diverged.Message
+            with error ->
+                // A step at the wrong path, or a stored value the code can no longer read. An
+                // exception here would otherwise restart the actor into the same failure forever.
+                parked <- Some error.Message
+                // The body ran against a journal it does not match: nothing of it may continue.
+                machine <- None
                 cleanup ()
-                log.LogError(diverged, "Workflow {Workflow} {Id} is parked: its journal does not match its code.", definition.Name, id)
+                log.LogError(error, "Workflow {Workflow} {Id} is parked: its journal does not match its code.", definition.Name, id)
                 []
 
         let runBody (input: Payload) : WorkflowRecord list =
-            let created = Machine(history, definition.ResultType, clock)
+            let created = Machine(history, definition.EncodeResult, clock)
             machine <- Some created
             guarded (fun () -> created.Run(WorkflowCore.protect (fun () -> definition.Body input)))
 
@@ -306,13 +365,14 @@ module internal WorkflowActor =
                     | _ -> None
 
                 let waited =
-                    match history.TryGetValue path with
+                    match history.Steps.TryGetValue path with
                     | true, Scheduled(_, _, scheduledAt, _) -> Some(at - scheduledAt)
                     | _ -> None
 
-                if kind = StepKind.Activity then
+                if kind = StepKind.Activity || kind = StepKind.Command then
                     release path error
                 else
+                    forget path
                     mark $"Step:{name}" (Some path) (Some name) waited error
 
                 match machine with
@@ -340,11 +400,20 @@ module internal WorkflowActor =
                 waiters.Clear()
                 passivate ()
                 []
-            | WorkflowRecord.SignalReceived _
+            | WorkflowRecord.SignalReceived _ ->
+                if signalSenders.Count > 0 then
+                    signalSenders.Dequeue().Tell(SignalAccepted, self)
+
+                match machine with
+                | Some machine -> guarded (fun () -> machine.Apply record)
+                // A parked instance keeps the signal for the code that will match its journal.
+                | None ->
+                    history.Apply record
+                    []
             | WorkflowRecord.CancelRequested _ -> []
 
         let applyRecovered (record: WorkflowRecord) =
-            History.apply history record
+            history.Apply record
 
             match record with
             | WorkflowRecord.Started(input, _, traceparent, _) -> started <- Some(input, traceparent)
@@ -355,13 +424,13 @@ module internal WorkflowActor =
 
         let attemptDone (message: AttemptDone) : WorkflowRecord list =
             match machine, running.TryGetValue message.AttemptPath with
-            | Some machine, (true, current) when current.Attempt = message.Attempt ->
-                match machine.Pending.TryGetValue message.AttemptPath with
-                | true, ({ Leaf = { Op = ActivityOp(policy, _) } } as step) ->
+            | Some machine, (true, current) when current.Attempt = message.Attempt && message.AttemptEpoch = epoch ->
+                match machine.Pending.TryGetValue message.AttemptPath, current.Policy with
+                | (true, step), policy ->
                     match message.Outcome with
                     | Ok value ->
                         try
-                            let result = Payload.encode step.Leaf.ResultType value
+                            let result = step.Leaf.Encode value
                             [ WorkflowRecord.StepCompleted(step.Path, step.Leaf.Name, step.Leaf.Kind, result, clock ()) ]
                         with error ->
                             // A result that cannot be stored cannot be replayed either.
@@ -375,7 +444,7 @@ module internal WorkflowActor =
 
                         let deadlinePassed =
                             match policy.Deadline, step.ScheduledAt with
-                            | Some deadline, Some scheduledAt -> scheduledAt + deadline <= clock ()
+                            | Some deadline, Some scheduledAt -> later scheduledAt deadline <= clock ()
                             | _ -> false
 
                         if not retryable then
@@ -395,12 +464,14 @@ module internal WorkflowActor =
                             )
 
                             schedule
+                                step.Path
                                 (retryDelay policy.Schedule message.Attempt)
                                 { RetryPath = step.Path
-                                  NextAttempt = message.Attempt + 1 }
+                                  NextAttempt = message.Attempt + 1
+                                  RetryEpoch = epoch }
 
                             []
-                | _ -> []
+                | (false, _), _ -> []
             // The step ended before this outcome arrived, or a newer attempt replaced it.
             | _ -> []
 
@@ -417,13 +488,15 @@ module internal WorkflowActor =
                 | Recovering mailbox (:? WorkflowRecord as record) ->
                     applyRecovered record
                     return! loop ()
-                | Persisted mailbox (:? WorkflowRecord as record) ->
-                    History.apply history record |> ignore
-                    return! store (applyLive record) (loop ())
+                | Persisted mailbox (:? WorkflowRecord as record) -> return! store (applyLive record) (loop ())
                 | :? Akka.Persistence.RecoveryCompleted ->
                     match started, final with
                     | Some(input, _), None -> return! store (runBody input) (loop ())
-                    | _ -> return! loop ()
+                    | Some _, Some _ ->
+                        // Remembered because the process stopped before its passivation finished.
+                        passivate ()
+                        return! loop ()
+                    | None, _ -> return! loop ()
                 | :? StartWorkflow as start ->
                     match started with
                     | Some _ ->
@@ -453,24 +526,46 @@ module internal WorkflowActor =
                     | None -> waiters.Add mailbox.UntypedContext.Sender
 
                     return! loop ()
+                | :? SendSignal as signal ->
+                    match started, final with
+                    | Some _, None ->
+                        signalSenders.Enqueue mailbox.UntypedContext.Sender
+
+                        return!
+                            store
+                                [ WorkflowRecord.SignalReceived(signal.SignalName, signal.SignalPayload, clock (), signal.SignalTraceparent) ]
+                                (loop ())
+                    | _ ->
+                        mailbox.UntypedContext.Sender.Tell(SignalRefused(status ()), self)
+                        passivate ()
+                        return! loop ()
                 | :? AttemptDone as outcome -> return! store (attemptDone outcome) (loop ())
                 | :? RetryDue as retry ->
                     match machine, running.TryGetValue retry.RetryPath with
-                    | Some machine, (true, current) when current.Attempt = retry.NextAttempt - 1 ->
+                    | Some machine, (true, current) when current.Attempt = retry.NextAttempt - 1 && retry.RetryEpoch = epoch ->
                         match machine.Pending.TryGetValue retry.RetryPath with
-                        | true, ({ Leaf = { Op = ActivityOp(policy, run) } } as step) ->
-                            startAttempt step policy run retry.NextAttempt
+                        | true, step ->
+                            match step.Leaf.Op with
+                            | ActivityOp(policy, run) -> startAttempt step policy run retry.NextAttempt
+                            | _ -> ()
                         | _ -> ()
                     | _ -> ()
 
                     return! loop ()
-                | :? DeadlinePassed as deadline ->
+                | :? DeadlinePassed as deadline when deadline.DeadlineEpoch = epoch ->
                     match machine |> Option.bind (fun machine -> Option.ofObj (machine.Pending.GetValueOrDefault deadline.DeadlinePath |> box)) with
                     | Some(:? PendingStep as step) ->
-                        let message = "The step's deadline passed."
-                        return! store [ stepFailed step ErrorKind.DeadlineExceeded (TimeoutException message) ] (loop ())
+                        match step.Leaf.Op, step.ScheduledAt with
+                        | ActivityOp({ Deadline = Some limit }, _), Some scheduledAt when later scheduledAt limit > clock () ->
+                            // The timer was capped; arm it for the time that remains.
+                            let remaining = later scheduledAt limit - clock ()
+                            schedule step.Path (if remaining > longestTimer then longestTimer else remaining) { DeadlinePath = step.Path; DeadlineEpoch = epoch }
+                            return! loop ()
+                        | _ ->
+                            let message = "The step's deadline passed."
+                            return! store [ stepFailed step ErrorKind.DeadlineExceeded (TimeoutException message) ] (loop ())
                     | _ -> return! loop ()
-                | :? TimerFired as timer ->
+                | :? TimerFired as timer when timer.TimerEpoch = epoch ->
                     match machine |> Option.bind (fun machine -> Option.ofObj (machine.Pending.GetValueOrDefault timer.TimerPath |> box)) with
                     | Some(:? PendingStep as step) ->
                         match beginTimerOrComplete step with
@@ -492,7 +587,24 @@ module internal WorkflowActor =
                 | PersistentLifecycleEvent(ReplayFailed(error, _)) ->
                     log.LogError(error, "Workflow {Workflow} {Id} could not recover from the journal; the instance stops.", definition.Name, id)
                     return! loop ()
-                | :? StopEntity -> return! Stop
+                | :? StopEntity ->
+                    if passivationRequested && started.IsSome && final.IsNone then
+                        // This instance asked to leave memory while it was idle, and was started
+                        // before the stop arrived. A stop forgets a remembered instance, so ask the
+                        // region for it again: it recovers and carries on.
+                        try
+                            let region = ClusterSharding.Get(mailbox.System).ShardRegion definition.Name
+
+                            let wake: Akkling.Cluster.Sharding.ShardEnvelope =
+                                { ShardId = DEFAULT_SHARD
+                                  EntityId = id
+                                  Message = Wake }
+
+                            region.Tell(wake, ActorRefs.NoSender)
+                        with error ->
+                            log.LogWarning(error, "Workflow {Workflow} {Id} could not ask to be recovered after its stop.", definition.Name, id)
+
+                    return! Stop
                 | _ -> return! loop ()
             }
 
@@ -506,9 +618,10 @@ module internal WorkflowActor =
             let remaining = due - clock ()
 
             if remaining > TimeSpan.FromMilliseconds 1.0 then
-                schedule (if remaining > longestTimer then longestTimer else remaining) { TimerPath = step.Path }
+                schedule step.Path (if remaining > longestTimer then longestTimer else remaining) { TimerPath = step.Path; TimerEpoch = epoch }
                 None
             else
-                Some(WorkflowRecord.StepCompleted(step.Path, step.Leaf.Name, step.Leaf.Kind, Payload.ofValue (), clock ()))
+                let result = if step.Leaf.Kind = StepKind.Signal then Payload.timedOut else Payload.ofValue ()
+                Some(WorkflowRecord.StepCompleted(step.Path, step.Leaf.Name, step.Leaf.Kind, result, clock ()))
 
         loop ()

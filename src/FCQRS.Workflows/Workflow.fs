@@ -58,16 +58,25 @@ module internal Steps =
         | After of TimeSpan
         | At of DateTime
 
+    /// What one attempt of an activity or a command receives.
+    type AttemptEnv =
+        { Api: IActor
+          Context: AttemptContext }
+
     type LeafOp =
-        | ActivityOp of policy: RetryPolicy * run: (AttemptContext -> Task<objnull>)
+        /// An external call or an aggregate command, attempted under a retry policy.
+        | ActivityOp of policy: RetryPolicy * run: (AttemptEnv -> Task<objnull>)
         | TimerOp of TimerDue
         /// Produces a value from the current time. Stored when produced.
         | ValueOp of (DateTime -> objnull)
+        /// Waits for the named signal, at most for the given time.
+        | SignalOp of timeout: TimeSpan option
 
     type Leaf =
         { Name: string
           Kind: StepKind
-          ResultType: Type
+          Encode: objnull -> Payload
+          Decode: Payload -> objnull
           Op: LeafOp }
 
 /// A workflow that produces a `'T`. It is a description: a workflow instance interprets it,
@@ -78,7 +87,15 @@ type Workflow<'T> =
     | Return of 'T
     | Fail of exn
     | Lazy of (unit -> Workflow<'T>)
-    | Step of Leaf * (Result<objnull, exn> -> Workflow<'T>)
+    | Step of Node * (Result<objnull, exn> -> Workflow<'T>)
+
+/// What a step waits on.
+and [<NoEquality; NoComparison>] internal Node =
+    | Leaf of Leaf
+    /// Every branch finishes; at most `limit` run at once. The result is an `objnull list`.
+    | AllOf of branches: Workflow<objnull> list * limit: int option
+    /// The first branch to finish decides the result.
+    | RaceOf of branches: Workflow<objnull> list
 
 module internal WorkflowCore =
 
@@ -137,15 +154,30 @@ module internal WorkflowCore =
 
             result.Value)
 
+    let unboxed<'T> (result: Result<objnull, exn>) : Workflow<'T> =
+        match result with
+        | Ok value -> Return(unbox<'T> value)
+        | Error error -> Fail error
+
     let step<'T> (name: string) (kind: StepKind) (op: LeafOp) : Workflow<'T> =
         Step(
-            { Name = name
-              Kind = kind
-              ResultType = typeof<'T>
-              Op = op },
+            Leaf
+                { Name = name
+                  Kind = kind
+                  Encode = Payload.encode typeof<'T>
+                  Decode = Payload.decode typeof<'T>
+                  Op = op },
+            unboxed<'T>
+        )
+
+    let boxed (workflow: Workflow<'T>) : Workflow<objnull> = bind workflow (fun value -> Return(box value))
+
+    let allOf (limit: int option) (branches: Workflow<'T> list) : Workflow<'T list> =
+        Step(
+            AllOf(branches |> List.map boxed, limit),
             fun result ->
                 match result with
-                | Ok value -> Return(unbox<'T> value)
+                | Ok values -> Return(unbox<objnull list> values |> List.map unbox<'T>)
                 | Error error -> Fail error
         )
 
@@ -167,6 +199,13 @@ type WorkflowBuilder() =
         WorkflowCore.tryFinally body compensation
 
     member _.While(guard: unit -> bool, body: Workflow<unit>) : Workflow<unit> = WorkflowCore.whileLoop guard body
+
+    /// `let! a = first and! b = second` runs both together.
+    member _.MergeSources(first: Workflow<'A>, second: Workflow<'B>) : Workflow<'A * 'B> =
+        WorkflowCore.bind (WorkflowCore.allOf None [ WorkflowCore.boxed first; WorkflowCore.boxed second ]) (fun values ->
+            match values with
+            | [ a; b ] -> Return(unbox<'A> a, unbox<'B> b)
+            | _ -> Fail(InvalidOperationException "Two branches give two results."))
 
     member _.Using(resource: 'R :> IDisposable, body: 'R -> Workflow<'T>) : Workflow<'T> =
         WorkflowCore.tryFinally (WorkflowCore.protect (fun () -> body resource)) (fun () ->
@@ -196,9 +235,9 @@ module WorkflowSteps =
         if policy.MaxAttempts.IsNone && policy.Deadline.IsNone then
             invalidArg (nameof policy) $"Activity '{name}' has no attempt limit, so it needs a deadline."
 
-        let boxed (context: AttemptContext) : Task<objnull> =
+        let boxed (attempt: AttemptEnv) : Task<objnull> =
             task {
-                let! value = run context
+                let! value = run attempt.Context
                 return box value
             }
 
@@ -228,3 +267,94 @@ module WorkflowSteps =
     /// A random number in [0, 1), stored so that replay returns the same value.
     let random: Workflow<float> =
         WorkflowCore.step<float> "random" StepKind.Value (ValueOp(fun _ -> box (Random.Shared.NextDouble())))
+
+    /// Runs the branches together and gives every result, in branch order. If a branch fails,
+    /// the others are abandoned and the failure is raised here.
+    /// Every branch result is stored in this workflow's journal, so use a child workflow per
+    /// item for a fan-out over thousands of items.
+    let all (branches: Workflow<'T> list) : Workflow<'T list> = WorkflowCore.allOf None branches
+
+    /// Runs `body` for every item, at most `limit` at a time, and gives the results in item order.
+    let allAtMost (limit: int) (items: 'A list) (body: 'A -> Workflow<'T>) : Workflow<'T list> =
+        if limit < 1 then
+            invalidArg (nameof limit) "At least one branch must be allowed to run."
+
+        WorkflowCore.allOf (Some limit) (items |> List.map (fun item -> Lazy(fun () -> body item)))
+
+    /// Runs the branches together. The first to finish decides the result, with its value or
+    /// its exception, and the others are abandoned. The winner is stored, so replay selects
+    /// the same branch.
+    let race (branches: Workflow<'T> list) : Workflow<'T> =
+        if List.isEmpty branches then
+            invalidArg (nameof branches) "A race needs at least one branch."
+
+        Step(RaceOf(branches |> List.map WorkflowCore.boxed), WorkflowCore.unboxed<'T>)
+
+    /// Waits for a signal named `name` and gives its payload. A signal that arrived before the
+    /// workflow reached this step was stored and is consumed here; signals with one name are
+    /// consumed oldest first.
+    let waitSignal<'T> (name: string) : Workflow<'T> =
+        WorkflowCore.step<'T> name StepKind.Signal (SignalOp None)
+
+    /// Waits for a signal named `name` for at most `timeout`, measured from the stored start of
+    /// the step. Gives `None` when the time passes first; a signal that arrives later stays
+    /// stored for the next wait.
+    let waitSignalFor<'T> (name: string) (timeout: TimeSpan) : Workflow<'T option> =
+        Step(
+            Leaf
+                { Name = name
+                  Kind = StepKind.Signal
+                  Encode = Payload.encode typeof<'T>
+                  Decode =
+                    fun payload ->
+                        if payload = Payload.timedOut then
+                            box (None: 'T option)
+                        else
+                            box (Some(Payload.toValue<'T> payload))
+                  Op = SignalOp(Some timeout) },
+            WorkflowCore.unboxed<'T option>
+        )
+
+    let private commandPolicy: RetryPolicy =
+        { Schedule = Backoff(TimeSpan.FromSeconds 1.0, 2.0, TimeSpan.FromMinutes 1.0)
+          MaxAttempts = None
+          Deadline = Some(TimeSpan.FromMinutes 5.0)
+          AttemptTimeout = None
+          ShouldRetry = fun error -> error :? TimeoutException }
+
+    let private correlationOf (key: string) : string =
+        let hash = Security.Cryptography.SHA256.HashData(Text.Encoding.UTF8.GetBytes key)
+        Guid(ReadOnlySpan(hash, 0, 16)).ToString()
+
+    /// Sends a command to an aggregate under `policy` and gives the reply's event.
+    /// The workflow subscribes to the aggregate's replies before it sends. Every resend uses the
+    /// same correlation ID, and after a restart the command is sent again unless its reply was
+    /// stored, so the aggregate must answer a repeated command with the same verdict.
+    /// When the policy runs out, the step fails as `OutcomeUnknown`: the command may have been
+    /// applied.
+    let sendWith
+        (policy: RetryPolicy)
+        (aggregate: FCQRS.FSharp.AggregateHandle<'Command, 'Event>)
+        (aggregateId: string)
+        (command: 'Command)
+        : Workflow<'Event> =
+        let run (attempt: AttemptEnv) : Task<objnull> =
+            let reply =
+                attempt.Api.CreateCommandSubscription
+                    aggregate.Factory
+                    (FCQRS.FSharp.Fcqrs.cid (correlationOf attempt.Context.IdempotencyKey))
+                    (FCQRS.FSharp.Fcqrs.aggregateId aggregateId)
+                    command
+                    (fun (_: 'Event) -> true)
+                    None
+
+            task {
+                let! event = Async.StartAsTask(reply, cancellationToken = attempt.Context.Cancellation)
+                return box event.EventDetails
+            }
+
+        WorkflowCore.step<'Event> "send" StepKind.Command (ActivityOp(policy, run))
+
+    /// `sendWith` with a policy that resends on a timeout, with backoff, for five minutes.
+    let send (aggregate: FCQRS.FSharp.AggregateHandle<'Command, 'Event>) (aggregateId: string) (command: 'Command) : Workflow<'Event> =
+        sendWith commandPolicy aggregate aggregateId command

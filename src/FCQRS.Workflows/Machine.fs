@@ -9,10 +9,62 @@ type internal StepState =
     | Completed of name: string * kind: StepKind * result: Payload
     | Failed of name: string * kind: StepKind * error: StepError
 
+/// The journal as the machine replays it: the state of every step, and the signals that were
+/// stored and not yet consumed by a wait.
+type internal History() =
+    /// The state of each step, by path.
+    member val Steps = Dictionary<string, StepState>()
+    /// Stored signals no wait has consumed, oldest first.
+    member val Signals = ResizeArray<struct (string * Payload)>()
+
+    /// Removes and returns the oldest stored signal with this name.
+    member this.TakeSignal(name: string) : Payload voption =
+        match this.Signals.FindIndex(fun (struct (stored, _)) -> stored = name) with
+        | -1 -> ValueNone
+        | index ->
+            let struct (_, payload) = this.Signals[index]
+            this.Signals.RemoveAt index
+            ValueSome payload
+
+    /// Applies a record read from the journal, in journal order.
+    member this.Apply(record: WorkflowRecord) =
+        match record with
+        | WorkflowRecord.StepScheduled(path, name, kind, at, detail) -> this.Steps[path] <- Scheduled(name, kind, at, detail)
+        | WorkflowRecord.StepCompleted(path, name, kind, result, _) ->
+            this.Steps[path] <- Completed(name, kind, result)
+
+            // A wait consumed the oldest signal with its name, unless its timeout passed first.
+            if kind = StepKind.Signal && result <> Payload.timedOut then
+                this.TakeSignal name |> ignore
+        | WorkflowRecord.StepFailed(path, name, kind, error, _) -> this.Steps[path] <- Failed(name, kind, error)
+        | WorkflowRecord.SignalReceived(name, payload, _, _) -> this.Signals.Add(struct (name, payload))
+        | _ -> ()
+
+/// One line of execution: the body itself, or a branch of a parallel block. A branch's steps
+/// have paths under the block's path and the branch's index.
+type internal Fiber(prefix: string, parent: Fiber option) =
+    let mutable next = 0
+    let mutable cancelled = false
+
+    member _.NextPath() =
+        let path = prefix + string next
+        next <- next + 1
+        path
+
+    member _.Cancel() = cancelled <- true
+
+    /// A branch is cancelled with the block it belongs to.
+    member _.IsCancelled: bool =
+        cancelled
+        || (match parent with
+            | Some parent -> parent.IsCancelled
+            | None -> false)
+
 /// A step the body is waiting on.
 type internal PendingStep =
     { Path: string
       Leaf: Leaf
+      Fiber: Fiber
       /// The stored start of the step. `None` until its `StepScheduled` record is stored.
       ScheduledAt: DateTime option
       Detail: string option
@@ -24,6 +76,8 @@ type internal Emit =
     | Store of WorkflowRecord
     /// Start, or after a restart resume, this step.
     | Begin of PendingStep
+    /// Stop working on this step: its branch was abandoned.
+    | Abandon of path: string
 
 /// Raised when the journal holds a different step at a path than the body asks for.
 type WorkflowDivergedException(path: string, expected: string, found: string) =
@@ -32,81 +86,203 @@ type WorkflowDivergedException(path: string, expected: string, found: string) =
     member _.Path = path
 
 /// Interprets a workflow body against the journal. It holds no actor and performs no I/O: it
-/// returns the records to store and the steps to start.
-type internal Machine(history: IDictionary<string, StepState>, resultType: Type, clock: unit -> DateTime) =
+/// returns the records to store and the steps to start or abandon.
+type internal Machine(history: History, encodeResult: objnull -> Payload, clock: unit -> DateTime) =
     let pending = Dictionary<string, PendingStep>()
+    /// Signal waits whose step is stored as scheduled, in the order they began waiting.
+    let signalWaits = ResizeArray<string>()
+    /// Races whose winner is decided and being stored.
+    let decidedRaces = Dictionary<string, unit -> unit>()
     let queue = Queue<unit -> unit>()
     let emits = ResizeArray<Emit>()
+    let root = Fiber("", None)
     let mutable outcome: Result<objnull, exn> option = None
-    let mutable counter = 0
 
-    let nextPath () =
-        let path = string counter
-        counter <- counter + 1
-        path
+    let check (path: string) (expected: string) (expectedKind: StepKind) (name: string) (kind: StepKind) =
+        if name <> expected || kind <> expectedKind then
+            raise (WorkflowDivergedException(path, $"{expectedKind} '{expected}'", $"{kind} '{name}'"))
 
-    let check (path: string) (leaf: Leaf) (name: string) (kind: StepKind) =
-        if name <> leaf.Name || kind <> leaf.Kind then
-            raise (WorkflowDivergedException(path, $"{leaf.Kind} '{leaf.Name}'", $"{kind} '{name}'"))
+    /// `at + span`, or the latest representable time when that overflows.
+    let later (at: DateTime) (span: TimeSpan) : DateTime =
+        if span >= DateTime.MaxValue - at then DateTime.MaxValue else at + span
 
-    let rec run (workflow: Workflow<objnull>) (onDone: Result<objnull, exn> -> unit) : unit =
+    /// A stored result the step's type can no longer read does not match the code.
+    let decode (path: string) (leaf: Leaf) (result: Payload) : objnull =
+        try
+            leaf.Decode result
+        with error ->
+            raise (WorkflowDivergedException(path, $"a result '{leaf.Name}' can read", $"a {result.Type} it cannot read ({error.Message})"))
+
+    /// Drops the steps of cancelled branches.
+    let sweep () =
+        for path in [ for KeyValue(path, step) in pending do if step.Fiber.IsCancelled then path ] do
+            pending.Remove path |> ignore
+            signalWaits.Remove path |> ignore
+            emits.Add(Abandon path)
+
+    /// Gives each waiting signal step the oldest stored signal with its name.
+    let matchSignals () =
+        for path in List.ofSeq signalWaits do
+            match pending.TryGetValue path with
+            | true, step ->
+                match history.TakeSignal step.Leaf.Name with
+                | ValueSome payload ->
+                    signalWaits.Remove path |> ignore
+                    emits.Add(Store(WorkflowRecord.StepCompleted(path, step.Leaf.Name, step.Leaf.Kind, payload, clock ())))
+                | ValueNone -> ()
+            | _ -> signalWaits.Remove path |> ignore
+
+    let rec run (fiber: Fiber) (workflow: Workflow<objnull>) (onDone: Result<objnull, exn> -> unit) : unit =
         match WorkflowCore.force workflow with
         | Return value -> onDone (Ok value)
         | Fail error -> onDone (Error error)
         | Lazy _ -> invalidOp "force leaves no Lazy"
-        | Step(leaf, k) ->
-            let path = nextPath ()
+        | Step(node, k) ->
+            let path = fiber.NextPath()
 
             let resume (result: Result<objnull, exn>) =
-                queue.Enqueue(fun () -> run (WorkflowCore.protect (fun () -> k result)) onDone)
+                queue.Enqueue(fun () ->
+                    if not fiber.IsCancelled then
+                        run fiber (WorkflowCore.protect (fun () -> k result)) onDone)
 
-            let wait (scheduledAt: DateTime option) (detail: string option) =
-                let step =
-                    { Path = path
-                      Leaf = leaf
-                      ScheduledAt = scheduledAt
-                      Detail = detail
-                      Resume = resume }
+            match node with
+            | Leaf leaf -> runLeaf fiber path leaf resume
+            | AllOf(branches, limit) -> runAll fiber path (Array.ofList branches) limit resume
+            | RaceOf branches -> runRace fiber path (Array.ofList branches) resume
 
-                pending[path] <- step
-                step
+    and runLeaf (fiber: Fiber) (path: string) (leaf: Leaf) (resume: Result<objnull, exn> -> unit) =
+        let wait (scheduledAt: DateTime option) (detail: string option) =
+            let step =
+                { Path = path
+                  Leaf = leaf
+                  Fiber = fiber
+                  ScheduledAt = scheduledAt
+                  Detail = detail
+                  Resume = resume }
 
-            match history.TryGetValue path with
-            | true, Completed(name, kind, result) ->
-                check path leaf name kind
-                resume (Ok(Payload.decode leaf.ResultType result))
-            | true, Failed(name, kind, error) ->
-                check path leaf name kind
-                resume (Error(WorkflowStepFailedException(path, name, error)))
-            | true, Scheduled(name, kind, at, detail) ->
-                check path leaf name kind
-                emits.Add(Begin(wait (Some at) detail))
-            | false, _ ->
-                let time = clock ()
+            pending[path] <- step
+            step
 
-                match leaf.Op with
-                | ValueOp produce ->
-                    wait None None |> ignore
-                    let result = Payload.encode leaf.ResultType (produce time)
-                    emits.Add(Store(WorkflowRecord.StepCompleted(path, leaf.Name, leaf.Kind, result, time)))
-                | TimerOp due ->
-                    let dueAt =
-                        match due with
-                        | After duration -> time + duration
-                        | At instant -> instant
+        match history.Steps.TryGetValue path with
+        | true, Completed(name, kind, result) ->
+            check path leaf.Name leaf.Kind name kind
+            resume (Ok(decode path leaf result))
+        | true, Failed(name, kind, error) ->
+            check path leaf.Name leaf.Kind name kind
+            resume (Error(WorkflowStepFailedException(path, name, error)))
+        | true, Scheduled(name, kind, at, detail) ->
+            check path leaf.Name leaf.Kind name kind
+            emits.Add(Begin(wait (Some at) detail))
 
-                    wait None None |> ignore
-                    emits.Add(Store(WorkflowRecord.StepScheduled(path, leaf.Name, leaf.Kind, time, Some(dueAt.ToString "O"))))
-                | ActivityOp _ ->
-                    wait None None |> ignore
-                    emits.Add(Store(WorkflowRecord.StepScheduled(path, leaf.Name, leaf.Kind, time, None)))
+            if leaf.Kind = StepKind.Signal then
+                signalWaits.Add path
+        | false, _ ->
+            let time = clock ()
+            wait None None |> ignore
+
+            match leaf.Op with
+            | ValueOp produce ->
+                emits.Add(Store(WorkflowRecord.StepCompleted(path, leaf.Name, leaf.Kind, leaf.Encode(produce time), time)))
+            | TimerOp due ->
+                let dueAt =
+                    match due with
+                    | After duration -> later time duration
+                    | At instant -> instant
+
+                emits.Add(Store(WorkflowRecord.StepScheduled(path, leaf.Name, leaf.Kind, time, Some(dueAt.ToString "O"))))
+            | SignalOp timeout ->
+                let detail = timeout |> Option.map (fun timeout -> (later time timeout).ToString "O")
+                emits.Add(Store(WorkflowRecord.StepScheduled(path, leaf.Name, leaf.Kind, time, detail)))
+            | ActivityOp _ -> emits.Add(Store(WorkflowRecord.StepScheduled(path, leaf.Name, leaf.Kind, time, None)))
+
+    and runAll (fiber: Fiber) (path: string) (branches: Workflow<objnull>[]) (limit: int option) (resume: Result<objnull, exn> -> unit) =
+        let count = branches.Length
+        let fibers = Array.init count (fun index -> Fiber($"{path}/{index}/", Some fiber))
+        let results: objnull[] = Array.zeroCreate count
+        let mutable finished = 0
+        let mutable started = 0
+        let mutable failed = false
+
+        let rec startNext () =
+            if started < count && not failed then
+                let index = started
+                started <- started + 1
+
+                queue.Enqueue(fun () ->
+                    if not fibers[index].IsCancelled then
+                        run fibers[index] branches[index] (branchDone index))
+
+        and branchDone (index: int) (result: Result<objnull, exn>) =
+            match result with
+            | Ok value ->
+                results[index] <- value
+                finished <- finished + 1
+
+                if finished = count then
+                    resume (Ok(box (List.ofArray results)))
+                else
+                    startNext ()
+            | Error error ->
+                if not failed then
+                    failed <- true
+
+                    for branch in fibers do
+                        branch.Cancel()
+
+                    sweep ()
+                    resume (Error error)
+
+        if count = 0 then
+            resume (Ok(box ([]: objnull list)))
+        else
+            for _ in 1 .. min count (defaultArg limit count) do
+                startNext ()
+
+    and runRace (fiber: Fiber) (path: string) (branches: Workflow<objnull>[]) (resume: Result<objnull, exn> -> unit) =
+        let fibers = Array.init branches.Length (fun index -> Fiber($"{path}/{index}/", Some fiber))
+
+        match history.Steps.TryGetValue path with
+        | true, Completed(name, kind, result) ->
+            check path "race" StepKind.Race name kind
+            // The winner is stored: only that branch runs, from its stored steps.
+            let winner = Payload.toValue<int> result
+            queue.Enqueue(fun () -> run fibers[winner] branches[winner] resume)
+        | true, other -> raise (WorkflowDivergedException(path, "Race 'race'", string other))
+        | false, _ ->
+            let mutable decided = false
+
+            let branchDone (index: int) (result: Result<objnull, exn>) =
+                if not decided then
+                    decided <- true
+
+                    for other in 0 .. fibers.Length - 1 do
+                        if other <> index then
+                            fibers[other].Cancel()
+
+                    sweep ()
+                    // The body continues once the winner is stored.
+                    decidedRaces[path] <- fun () -> resume result
+                    emits.Add(Store(WorkflowRecord.StepCompleted(path, "race", StepKind.Race, Payload.ofValue index, clock ())))
+
+            for index in 0 .. branches.Length - 1 do
+                queue.Enqueue(fun () ->
+                    if not fibers[index].IsCancelled && not decided then
+                        run fibers[index] branches[index] (branchDone index))
 
     let finish (result: Result<objnull, exn>) =
         outcome <- Some result
         let time = clock ()
 
         match result with
-        | Ok value -> emits.Add(Store(WorkflowRecord.Finished(Payload.encode resultType value, time)))
+        | Ok value ->
+            let stored =
+                try
+                    WorkflowRecord.Finished(encodeResult value, time)
+                with error ->
+                    // A result that cannot be stored cannot be given to anyone who asks later.
+                    WorkflowRecord.Faulted(Payload.errorOf ErrorKind.BodyFailed error, time)
+
+            emits.Add(Store stored)
         | Error(:? WorkflowStepFailedException as failed) -> emits.Add(Store(WorkflowRecord.Faulted(failed.Error, time)))
         | Error error -> emits.Add(Store(WorkflowRecord.Faulted(Payload.errorOf ErrorKind.BodyFailed error, time)))
 
@@ -114,21 +290,28 @@ type internal Machine(history: IDictionary<string, StepState>, resultType: Type,
         while queue.Count > 0 do
             queue.Dequeue () ()
 
-        let result = List.ofSeq emits
+        matchSignals ()
+
+        // A branch abandoned in this pass has nothing to begin.
+        let result = [ for emit in emits do
+                           match emit with
+                           | Begin step when step.Fiber.IsCancelled -> ()
+                           | other -> other ]
+
         emits.Clear()
         result
 
     /// Runs the body from the top. Steps with a stored outcome are fed that outcome, and the body
     /// stops at the steps that have none.
     member _.Run(body: Workflow<objnull>) : Emit list =
-        run body finish
+        run root body finish
         drain ()
 
     /// Applies a record that was just stored, and continues the body where that allows.
     member _.Apply(record: WorkflowRecord) : Emit list =
         match record with
         | WorkflowRecord.StepScheduled(path, name, kind, at, detail) ->
-            history[path] <- Scheduled(name, kind, at, detail)
+            history.Steps[path] <- Scheduled(name, kind, at, detail)
 
             match pending.TryGetValue path with
             | true, step ->
@@ -139,23 +322,34 @@ type internal Machine(history: IDictionary<string, StepState>, resultType: Type,
 
                 pending[path] <- scheduled
                 emits.Add(Begin scheduled)
+
+                if kind = StepKind.Signal then
+                    signalWaits.Add path
             | _ -> ()
         | WorkflowRecord.StepCompleted(path, name, kind, result, _) ->
-            history[path] <- Completed(name, kind, result)
+            history.Steps[path] <- Completed(name, kind, result)
 
             match pending.TryGetValue path with
             | true, step ->
                 pending.Remove path |> ignore
-                step.Resume(Ok(Payload.decode step.Leaf.ResultType result))
-            | _ -> ()
+                signalWaits.Remove path |> ignore
+                step.Resume(Ok(decode path step.Leaf result))
+            | _ ->
+                match decidedRaces.TryGetValue path with
+                | true, continueBody ->
+                    decidedRaces.Remove path |> ignore
+                    continueBody ()
+                | _ -> ()
         | WorkflowRecord.StepFailed(path, name, kind, error, _) ->
-            history[path] <- Failed(name, kind, error)
+            history.Steps[path] <- Failed(name, kind, error)
 
             match pending.TryGetValue path with
             | true, step ->
                 pending.Remove path |> ignore
+                signalWaits.Remove path |> ignore
                 step.Resume(Error(WorkflowStepFailedException(path, name, error)))
             | _ -> ()
+        | WorkflowRecord.SignalReceived(name, payload, _, _) -> history.Signals.Add(struct (name, payload))
         | _ -> ()
 
         drain ()
@@ -165,13 +359,3 @@ type internal Machine(history: IDictionary<string, StepState>, resultType: Type,
 
     /// The body's result, once it has returned or thrown.
     member _.Outcome = outcome
-
-/// Reads journal records into the table the machine replays from.
-module internal History =
-
-    let apply (history: IDictionary<string, StepState>) (record: WorkflowRecord) =
-        match record with
-        | WorkflowRecord.StepScheduled(path, name, kind, at, detail) -> history[path] <- Scheduled(name, kind, at, detail)
-        | WorkflowRecord.StepCompleted(path, name, kind, result, _) -> history[path] <- Completed(name, kind, result)
-        | WorkflowRecord.StepFailed(path, name, kind, error, _) -> history[path] <- Failed(name, kind, error)
-        | _ -> ()

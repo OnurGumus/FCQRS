@@ -295,6 +295,8 @@ let private tracingTest =
             let attempt = spans |> Seq.find (fun span -> span.OperationName = "Attempt:first")
             let step = spans |> Seq.find (fun span -> span.OperationName = "Step:first")
             Expect.equal attempt.ParentSpanId step.SpanId "an attempt is a child of its step"
+            let slept = spans |> Seq.find (fun span -> span.OperationName = "Step:sleep")
+            Expect.isSome (slept.TagObjects |> Seq.tryFind (fun tag -> tag.Key = "fcqrs.workflow.waited_ms")) "a wait's span says how long it waited"
             let after = spans |> Seq.map (fun span -> span.OperationName) |> Seq.filter (fun name -> name = "Step:first" || name = "Attempt:first") |> Seq.length
             Expect.equal after before "the restart emitted no span for a step stored before it"
             Expect.isTrue
@@ -303,5 +305,252 @@ let private tracingTest =
         finally
             deleteDb db
 
+let private startRaceTest =
+    testCase "workflow: a status request that races a start does not put the started workflow to sleep" <| fun _ ->
+        withSystem "WorkflowStartRace" <| fun api ->
+            let ran = ConcurrentDictionary<string, bool>()
+            let flow =
+                Workflows.register api (Workflow.define "raced" (fun (key: string) -> workflow {
+                    do! sleep (TimeSpan.FromMilliseconds 300.0)
+                    let! (_: int) = activity "mark" Retry.none (fun _ -> task {
+                        ran[key] <- true
+                        return 1 })
+                    return key
+                }))
+            let ids = [ for index in 1 .. 40 -> $"id{index}" ]
+            // An unknown instance leaves memory after it answers a status request. The start can
+            // arrive before that happens.
+            for id in ids do
+                [ async { let! _ = flow.Status id in return () }
+                  async { let! _ = flow.Start id id in return () } ]
+                |> Async.Parallel
+                |> sync
+                |> ignore
+            // No further message is sent: each workflow must finish by itself.
+            eventually "every started workflow ran its activity" (fun () -> ran.Count = ids.Length)
+
+let private concurrentStartTest =
+    testCase "workflow: of two starts sent together, one starts the workflow" <| fun _ ->
+        withSystem "WorkflowConcurrentStart" <| fun api ->
+            let flow = Workflows.register api (Workflow.define "once" (fun (text: string) -> workflow {
+                do! sleep (TimeSpan.FromMilliseconds 100.0)
+                return text }))
+            for index in 1 .. 10 do
+                let results =
+                    [ flow.Start $"c{index}" "first"; flow.Start $"c{index}" "second" ] |> Async.Parallel |> sync
+                Expect.equal (results |> Array.filter ((=) StartResult.Started) |> Array.length) 1 "exactly one start was accepted"
+                match sync (flow.Result $"c{index}" wait) with
+                | WorkflowOutcome.Finished text -> Expect.contains [ "first"; "second" ] text "the accepted start's input ran"
+                | other -> failtest $"expected a result, found {other}"
+
+// ---------------------------------------------------------------------------
+// Signals, aggregate commands and parallel branches on a real actor system.
+// ---------------------------------------------------------------------------
+
+let private signalTest =
+    testCase "workflow: signals are stored, consumed oldest first, and refused when no workflow is running" <| fun _ ->
+        withSystem "WorkflowSignal" <| fun api ->
+            let gate = new ManualResetEventSlim(false)
+            let flow =
+                Workflows.register api (Workflow.define "approval" (fun (_: unit) -> workflow {
+                    // Holds the body back, so the first signals arrive before their waits.
+                    let! (_: int) = activity "hold" Retry.none (fun _ -> task {
+                        do! Task.Run(fun () -> gate.Wait())
+                        return 1 })
+                    let! (first: string) = waitSignal "answer"
+                    let! (second: string) = waitSignal "answer"
+                    let! (missing: string option) = waitSignalFor "answer" (TimeSpan.FromMilliseconds 200.0)
+                    let! (late: string) = waitSignal "answer"
+                    return first, second, missing, late
+                }))
+            Expect.throwsT<InvalidOperationException> (fun () -> sync (Workflows.signal flow "a1" "answer" "early") |> ignore) "an unknown workflow takes no signal"
+            sync (flow.Start "a1" ()) |> ignore
+            sync (Workflows.signal flow "a1" "answer" "one")
+            sync (Workflows.signal flow "a1" "answer" "two")
+            gate.Set()
+            eventually "the third wait timed out" (fun () -> sync (flow.Status "a1") = WorkflowStatus.Running [ "4 answer" ])
+            sync (Workflows.signal flow "a1" "answer" "three")
+            Expect.equal (sync (flow.Result "a1" wait)) (WorkflowOutcome.Finished("one", "two", None, "three")) "each wait got the oldest stored signal, and the timed-out wait got none"
+            Expect.throwsT<InvalidOperationException> (fun () -> sync (Workflows.signal flow "a1" "answer" "too late") |> ignore) "a finished workflow takes no signal"
+
+let private signalRestartTest =
+    testCase "workflow: a stored signal is still there after the actor system stops" <| fun _ ->
+        let db = newDb ()
+        let outside = Outside()
+        let definition =
+            Workflow.define "patient" (fun (_: unit) -> workflow {
+                let! (_: int) = activity "hold" (Retry.forever (TimeSpan.FromMinutes 5.0)) (fun context -> task {
+                    do! Task.Run(fun () -> outside.Gate.Wait context.Cancellation)
+                    return 1 })
+                let! (answer: int) = waitSignal "answer"
+                return answer
+            })
+        try
+            let first = boot db "WorkflowSignalRestart" []
+            let flow = Workflows.register first definition
+            sync (flow.Start "p1" ()) |> ignore
+            sync (Workflows.signal flow "p1" "answer" 42)
+            stop first
+            let second = boot db "WorkflowSignalRestart" []
+            try
+                let flow = Workflows.register second definition
+                outside.Gate.Set()
+                Expect.equal (sync (flow.Result "p1" wait)) (WorkflowOutcome.Finished 42) "the signal stored before the restart completes the wait after it"
+            finally
+                stop second
+        finally
+            deleteDb db
+
+open Account
+
+let private accountsOf (api: IActor) =
+    let accounts =
+        Fcqrs.aggregate api
+            { Name = "Account"
+              Initial = initial
+              Decide = decide
+              Fold = fold
+              Snapshots = Default
+              Passivation = PassivationPolicy.Default }
+    Fcqrs.wireSagaStarters api []
+    accounts
+
+let private balance (accounts: AggregateHandle<AccountCommand, AccountEvent>) (account: string) =
+    // A withdrawal larger than any balance is rejected with the balance.
+    match (sync (accounts.Send (Fcqrs.newCid ()) (Fcqrs.aggregateId account) (Withdraw 1_000_000_000m) (fun _ -> true))).EventDetails with
+    | Rejected reason -> reason
+    | other -> string other
+
+/// A transfer as a workflow: take the money, deliver it, and give it back if delivery is refused.
+let private transfer (accounts: AggregateHandle<AccountCommand, AccountEvent>) =
+    Workflow.define "transfer" (fun (transferId: string, source: string, target: string, amount: decimal) -> workflow {
+        let! taken = send accounts source (SendTransfer(transferId, target, amount))
+        match taken with
+        | TransferSent _ ->
+            let! delivered = send accounts target (ReceiveTransfer(transferId, source, amount))
+            match delivered with
+            | TransferReceived _ -> return "moved"
+            | _ ->
+                let! (_: AccountEvent) = send accounts source (RefundTransfer(transferId, target, amount))
+                return "refunded"
+        | Rejected reason -> return reason
+        | other -> return string other
+    })
+
+let private commandTest =
+    testCase "workflow: a workflow sends commands to aggregates and decides on their replies" <| fun _ ->
+        withSystem "WorkflowCommand" <| fun api ->
+            let accounts = accountsOf api
+            let transfers = Workflows.register api (transfer accounts)
+            let command account details =
+                sync (accounts.Send (Fcqrs.newCid ()) (Fcqrs.aggregateId account) details (fun _ -> true)) |> ignore
+            command "alice" (Open "Alice")
+            command "alice" (Deposit 100m)
+            command "bob" (Open "Bob")
+            sync (transfers.Start "t1" ("t1", "alice", "bob", 30m)) |> ignore
+            Expect.equal (sync (transfers.Result "t1" wait)) (WorkflowOutcome.Finished "moved") "the money moved"
+            // Carol has no account, so delivery is refused and the money goes back.
+            sync (transfers.Start "t2" ("t2", "alice", "carol", 50m)) |> ignore
+            Expect.equal (sync (transfers.Result "t2" wait)) (WorkflowOutcome.Finished "refunded") "the refused delivery was refunded"
+            sync (transfers.Start "t3" ("t3", "alice", "bob", 500m)) |> ignore
+            Expect.equal (sync (transfers.Result "t3" wait)) (WorkflowOutcome.Finished "Insufficient funds: 70 available") "a rejection is a reply the body reads"
+            Expect.equal (balance accounts "alice") "Insufficient funds: 70 available" "Alice paid once for t1 and was refunded t2"
+            Expect.equal (balance accounts "bob") "Insufficient funds: 30 available" "Bob received t1 once"
+
+let private parallelCommandTest =
+    testCase "workflow: parallel commands to one aggregate each get their own reply" <| fun _ ->
+        withSystem "WorkflowParallelCommand" <| fun api ->
+            let accounts = accountsOf api
+            let flow =
+                Workflows.register api (Workflow.define "deposits" (fun (account: string) -> workflow {
+                    let! (_: AccountEvent) = send accounts account (Open "Dana")
+                    let! replies = all [ for amount in [ 1m; 2m; 4m; 8m ] -> send accounts account (Deposit amount) ]
+                    let! first = race [ workflow { do! sleep (TimeSpan.FromSeconds 30.0)
+                                                   return "timer" }
+                                        workflow { let! (_: AccountEvent) = send accounts account (Deposit 16m)
+                                                   return "deposit" } ]
+                    return replies, first
+                }))
+            sync (flow.Start "d1" "dana") |> ignore
+            Expect.equal
+                (sync (flow.Result "d1" wait))
+                (WorkflowOutcome.Finished([ Deposited 1m; Deposited 2m; Deposited 4m; Deposited 8m ], "deposit"))
+                "each branch received the reply to its own command, and the race took the first branch to finish"
+            Expect.equal (balance accounts "dana") "Insufficient funds: 31 available" "every deposit was applied once"
+
+let private commandRestartTest =
+    testCase "workflow: a command whose reply is stored is not sent again after a restart" <| fun _ ->
+        let db = newDb ()
+        let outside = Outside()
+        let definition accounts =
+            Workflow.define "saver" (fun (account: string) -> workflow {
+                let! (_: AccountEvent) = send accounts account (Open "Eve")
+                let! (_: AccountEvent) = send accounts account (Deposit 10m)
+                let! (_: int) = activity "hold" (Retry.forever (TimeSpan.FromMinutes 5.0)) (fun context -> task {
+                    outside.Count "hold" |> ignore
+                    do! Task.Run(fun () -> outside.Gate.Wait context.Cancellation)
+                    return 1 })
+                let! (_: AccountEvent) = send accounts account (Deposit 5m)
+                return "saved"
+            })
+        try
+            let first = boot db "WorkflowCommandRestart" []
+            let flow = Workflows.register first (definition (accountsOf first))
+            sync (flow.Start "s1" "eve") |> ignore
+            eventually "the workflow is holding" (fun () -> outside.Calls.ContainsKey "hold")
+            stop first
+            let second = boot db "WorkflowCommandRestart" []
+            try
+                let accounts = accountsOf second
+                let flow = Workflows.register second (definition accounts)
+                outside.Gate.Set()
+                Expect.equal (sync (flow.Result "s1" wait)) (WorkflowOutcome.Finished "saved") "the workflow finished after the restart"
+                Expect.equal (balance accounts "eve") "Insufficient funds: 15 available" "the first deposit was not sent again"
+            finally
+                stop second
+        finally
+            deleteDb db
+
+type SilentCommand = Ask
+type SilentEvent = Answered
+
+let private unknownOutcomeTest =
+    testCase "workflow: a command that gets no reply ends as outcome unknown, not as a rejection" <| fun _ ->
+        let db = newDb ()
+        // Each attempt waits one second for a reply.
+        let api = boot db "WorkflowUnknown" [ "config:akka:fcqrs:command-timeout", "1s" ]
+        try
+            let silent =
+                Fcqrs.aggregate api
+                    { Name = "Silent"
+                      Initial = 0
+                      Decide = fun (_: Command<SilentCommand>) _ -> (IgnoreEvent: EventAction<SilentEvent>)
+                      Fold = fun _ state -> state
+                      Snapshots = NoSnapshots
+                      Passivation = PassivationPolicy.Default }
+            Fcqrs.wireSagaStarters api []
+            let policy =
+                { Retry.none with
+                    Schedule = FixedInterval(TimeSpan.FromMilliseconds 50.0)
+                    MaxAttempts = Some 2
+                    ShouldRetry = fun error -> error :? TimeoutException }
+            let flow =
+                Workflows.register api (Workflow.define "asker" (fun (_: unit) -> workflow {
+                    try
+                        let! (_: SilentEvent) = sendWith policy silent "quiet" Ask
+                        return "answered"
+                    with :? WorkflowStepFailedException as failed ->
+                        return string failed.Error.Kind
+                }))
+            sync (flow.Start "u1" ()) |> ignore
+            Expect.equal (sync (flow.Result "u1" wait)) (WorkflowOutcome.Finished "OutcomeUnknown") "no reply means the outcome is unknown"
+        finally
+            stop api
+            deleteDb db
+
 let tests =
-    testSequenced (testList "workflow" [ startTest; faultTest; retryTest; shortTimerTest; restartTest; timerTest; tracingTest ])
+    testSequenced (
+        testList "workflow"
+            [ startTest; faultTest; retryTest; shortTimerTest; restartTest; timerTest; tracingTest; startRaceTest; concurrentStartTest
+              signalTest; signalRestartTest; commandTest; parallelCommandTest; commandRestartTest; unknownOutcomeTest ]
+    )

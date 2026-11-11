@@ -74,25 +74,48 @@ module internal Protocol =
 
         interface ISerializable
 
+    type SendSignal =
+        { SignalName: string
+          SignalPayload: Payload
+          SignalTraceparent: string option }
+
+        interface ISerializable
+
+    type SignalReply =
+        | SignalAccepted
+        | SignalRefused of WorkflowStatus
+
+        interface ISerializable
+
+    /// Makes the shard recover an instance. The instance ignores it.
+    type Wake =
+        | Wake
+
+        interface ISerializable
+
     type TimerFired =
-        { TimerPath: string }
+        { TimerPath: string
+          TimerEpoch: int64 }
 
         interface ISerializable
 
     type RetryDue =
         { RetryPath: string
-          NextAttempt: int }
+          NextAttempt: int
+          RetryEpoch: int64 }
 
         interface ISerializable
 
     type DeadlinePassed =
-        { DeadlinePath: string }
+        { DeadlinePath: string
+          DeadlineEpoch: int64 }
 
         interface ISerializable
 
     type AttemptDone =
         { AttemptPath: string
           Attempt: int
+          AttemptEpoch: int64
           Outcome: Result<objnull, exn> }
 
         interface Akka.Actor.INoSerializationVerificationNeeded
