@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased: FCQRS.Workflows 0.1.0 and FCQRS core 6.16.0
+## 7.0.0 (FCQRS core and FCQRS.Workflows)
 
 - **`FCQRS.Workflows` is a new package for durable workflows.** A workflow is straight-line code
   that starts from input data, with no aggregate required to trigger it. FCQRS stores the result of
