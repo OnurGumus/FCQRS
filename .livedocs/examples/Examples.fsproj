@@ -6,6 +6,7 @@
   <ItemGroup>
     <Compile Include="Assembly.fs" />
     <ProjectReference Include="../../src/FCQRS/FCQRS.fsproj" />
+    <ProjectReference Include="../../src/FCQRS.Workflows/FCQRS.Workflows.fsproj" />
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
     <PackageReference Include="Dapper" Version="2.1.66" />
     <PackageReference Include="Expecto" Version="10.2.3" />

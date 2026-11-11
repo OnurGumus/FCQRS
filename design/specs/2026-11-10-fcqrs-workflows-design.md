@@ -422,3 +422,31 @@ One spec, five implementation plans, in this order:
 - The exact derivation of a step's correlation ID, checked against the `CID` validation in
   `FCQRS.Model` and against `sameTrace`.
 - Whether `FCQRS.Workflows` versions with core or independently.
+
+## As built (2026-11-11)
+
+The implementation differs from the design above in these points. The code and the Workflows
+concept page are authoritative.
+
+- **Journal records** are one non-generic `WorkflowRecord` union whose payloads carry a type name and
+  JSON. Core's manifest tag list is unchanged; core exposes its internals to `FCQRS.Workflows`.
+- **Inline workflows** share their caller's step sequence. Only parallel branches have nested paths.
+- **`ActivityContext` is `AttemptContext`**, to avoid `System.Diagnostics.ActivityContext`.
+- **A signal wait stores the signal's payload**, not its sequence number. Replay assigns signals to
+  waits by the rule "oldest stored signal with that name", in journal order.
+- **A command resend** carries the same correlation ID and a new command ID. `send` takes an
+  aggregate handle and gives the reply's event details.
+- **`awaitChild` asks the child for its result** and asks again after a timeout or a restart. The
+  child does not notify its parent. Every child joins its parent's trace.
+- **A child started but not yet awaited** keeps running when its parent is cancelled.
+- **Cancellation** is one write: the request and a `Cancelled` failure for every pending step. F#
+  cleanup uses `try ... with`, because `let!` is not allowed in `finally`. C# cleanup can `await` in
+  `finally`.
+- **`version`** is stored beside the step sequence under `<next path>@<change id>`.
+- **C#** uses `async` methods with a custom method builder instead of an explicit context-only API.
+  Awaiting an unfinished non-step throws. An already finished task is not detected.
+- **The C# registration class** is `WorkflowHost`.
+- **Samples** are under `samples/workflows/` on .NET 10 with project references, because the package
+  is not published.
+- **Not built:** a check that a body which drops trailing steps diverges; a test that F# and C#
+  write byte-equal journals.

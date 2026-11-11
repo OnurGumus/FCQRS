@@ -1,5 +1,31 @@
 # Changelog
 
+## Unreleased: FCQRS.Workflows 0.1.0 and FCQRS core 6.16.0
+
+- **`FCQRS.Workflows` is a new package for durable workflows.** A workflow is straight-line code
+  that starts from input data, with no aggregate required to trigger it. FCQRS stores the result of
+  each step, and after a crash an instance replays its journal and continues at the step it had
+  reached. A stored step result is never computed again; a step that was running when the process
+  stopped runs again, so external calls take an idempotency key.
+- **Steps.** `activity` with a retry policy (schedule, attempt limit, deadline from the stored start
+  of the step, attempt timeout, retry filter), `sleep` and `until`, `now`, `newGuid` and `random`,
+  `waitSignal` and `waitSignalFor`, `send` to an aggregate, `startChild`, `awaitChild` and `child`,
+  `all`, `race`, `allAtMost` and `and!`, and `version` for changing a workflow while instances run.
+- **From outside.** A handle starts an instance by ID, reports its status, waits for its result,
+  stores a signal, and cancels it. `WorkflowFlow.start` and `WorkflowFlow.run` start workflows from an
+  Akka.Streams stream.
+- **C#.** A workflow derives from `Workflow<TInput, TResult>` and writes `Run` as an `async` method
+  that returns `WorkflowTask<T>`. Awaiting an unfinished task that is not a workflow step throws.
+  `AddWorkflow` registers a workflow with the host.
+- **Telemetry.** An `FCQRS.Workflow` activity source, added to `Telemetry.AllActivitySources`, and a
+  meter with the same name. A resumed workflow continues the trace of the caller that started it.
+- **An instance whose journal does not match its code is parked**, not a reason to stop the process:
+  it runs nothing and resumes when matching code is deployed.
+- **Core** lets `FCQRS.Workflows` see its internals and names the new activity source. The package
+  needs this core version.
+- Workflows run on one node, like the rest of FCQRS. See the Workflows concept page for what the
+  application must still do.
+
 ## 6.1.0 (FCQRS.ExpectoTickSpec)
 
 - **A pending scenario's steps no longer need to exist.** Until now only a feature whose scenarios

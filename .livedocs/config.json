@@ -31,6 +31,7 @@
     "src/FCQRS.Serialization/FCQRS.Serialization.fsproj",
     "src/FCQRS.SQLProvider/FCQRS.SQLProvider.fsproj",
     "src/FCQRS.ExpectoTickSpec/FCQRS.ExpectoTickSpec.fsproj",
+    "src/FCQRS.Workflows/FCQRS.Workflows.fsproj",
     ".livedocs/examples/Examples.fsproj"
   ],
   "docsSets": [
@@ -45,6 +46,7 @@
         "src/FCQRS.Serialization/FCQRS.Serialization.fsproj",
         "src/FCQRS.SQLProvider/FCQRS.SQLProvider.fsproj",
         "src/FCQRS.ExpectoTickSpec/FCQRS.ExpectoTickSpec.fsproj",
+        "src/FCQRS.Workflows/FCQRS.Workflows.fsproj",
         ".livedocs/examples/Examples.fsproj"
       ]
     }

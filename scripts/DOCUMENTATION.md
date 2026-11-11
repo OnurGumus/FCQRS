@@ -15,7 +15,7 @@ Serve the result with `python3 -m http.server 8000 --directory output`.
 
 ## Authoring
 
-Edit the files under `docs/`. `.livedocs/config.json` selects the five library API projects,
+Edit the files under `docs/`. `.livedocs/config.json` selects the six library API projects,
 branding, navigation, and the generated documentation source directory. The additional
 `.livedocs/examples/Examples.fsproj` supplies application dependencies for snippet compilation
 (ASP.NET Core, Dapper, Expecto, Npgsql, and OpenTelemetry). It has no public API.

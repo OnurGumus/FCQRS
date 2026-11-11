@@ -86,6 +86,46 @@ builder.Services.AddTracing(tracing =>
 
 Payload detail may still appear in tags and logs as described below.
 
+## Workflows
+
+`FCQRS.Workflows` adds a fourth activity source, `FCQRS.Workflow`, which is already in
+`Telemetry.AllActivitySources`, and a meter with the same name:
+
+```csharp
+metrics.AddMeter(FCQRS.Workflows.WorkflowTelemetry.MeterName);
+```
+
+A workflow stores the trace context of the caller that started it. Spans emitted after a restart
+use that context as their parent, so a resumed workflow continues the same trace.
+
+| Span | Emitted when |
+|---|---|
+| `Workflow.Start:<workflow>` | the start is stored |
+| `Step:<step>` | a step ends; for an activity, a command, or a child, it covers the step |
+| `Attempt:<step>` | one attempt of an activity, a command, or a child request runs; a child of its step |
+| `Workflow.End:<workflow>` | the workflow ends; its status is `Error` when the workflow faulted |
+
+- A step that is replayed from the journal emits no span.
+- A timer or a signal wait emits one short span when it ends, with the time it waited in
+  `fcqrs.workflow.waited_ms`. No span stays open across a wait.
+- An attempt span is `Activity.Current` inside the activity, so `HttpClient` and database
+  instrumentation attach to it. A command sent by a workflow carries it in `traceparent`.
+- Spans carry `fcqrs.workflow.name`, `fcqrs.workflow.id`, `fcqrs.workflow.step.path`,
+  `fcqrs.workflow.step.name`, and `fcqrs.workflow.attempt`. Inputs, results, and signal payloads are
+  never written to a span.
+
+| Instrument | Use |
+|---|---|
+| `fcqrs.workflow.started`, `.finished`, `.faulted`, `.cancelled` | throughput and failure rate, by workflow name |
+| `fcqrs.workflow.running` | instances in memory that have not ended |
+| `fcqrs.workflow.parked` | instances whose journal does not match their code; alert when above zero |
+| `fcqrs.workflow.step.duration` | milliseconds from a step's stored start to its end, by step kind |
+| `fcqrs.workflow.activity.retries` | attempts that failed and were retried |
+| `fcqrs.workflow.recovery.duration`, `.recovery.records` | workflows whose journal has grown long |
+
+A faulted workflow is final, and a parked one runs nothing until matching code is deployed. Alert on
+both.
+
 ## Keep payloads out of diagnostics
 
 Rendered payloads appear in span tags and message-flow logs by default. Disable them before processing

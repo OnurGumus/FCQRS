@@ -112,6 +112,28 @@ Keep these distinctions intact in code comments and documentation.
 - `ExpectationExhausted` means the outcome is unknown, not failed. The domain must answer it with a
   transition, and the escalated state must expect that the original reply may still arrive.
 
+### Workflow
+
+- A workflow instance stores each step's result and replays its journal on recovery. A stored step
+  result is never computed again.
+- A step that was running when the process stopped runs again. An activity runs at least once, and
+  the external system must honour its idempotency key.
+- The body must be deterministic. It reads time, GUIDs, and random numbers through steps and does
+  I/O only in activities. FCQRS cannot detect a body that breaks this.
+- A workflow starts by ID, with no aggregate event. A second start with the same ID stores nothing.
+- A retry policy's deadline is measured from the stored start of the step. Attempt counts restart
+  with the process.
+- A command step subscribes before it sends and resends with the same correlation ID after a
+  restart. The aggregate must answer a repeat with its first verdict, checked before anything the
+  first command changed. No reply by the deadline is `OutcomeUnknown`, not a rejection.
+- A signal is stored before it is acknowledged. A race stores its winner.
+- A workflow has no snapshot. Recovery replays the whole journal.
+- An instance whose journal does not match its code is parked, and the process keeps running. This is
+  a deliberate exception to the fail-fast rule: running instances restart with the process, so a
+  crash would repeat at every start.
+- A faulted workflow is final. Nothing restarts it.
+- Step names, step kinds, the workflow name, and stored payload types are persistent contracts.
+
 ### Deployment
 
 - FCQRS runs on one node. Nodes do not form one cluster (each joins itself), and a command's reply
@@ -134,6 +156,11 @@ Keep these distinctions intact in code comments and documentation.
 - `src/FCQRS/CSharpInterop.fs`: C# types and lower-level interop.
 - `src/FCQRS/HostExtensions.fs`: C# host-builder and dependency-injection registration.
 - `src/FCQRS/default.hocon`: embedded Akka.NET defaults.
+- `src/FCQRS.Workflows/`: durable workflows. `Workflow.fs` holds the builder and the steps,
+  `Machine.fs` the pure replay interpreter, `WorkflowActor.fs` the persistent actor, `CSharp.fs` the
+  C# API with its async method builder, and `Streams.fs` the Akka.Streams flows.
+- `samples/workflows/`: the quote workflow in F# and C# on .NET 10, with project references. The
+  workflow task guide quotes it.
 - `samples/accounts/`: the tutorial's steps as equivalent F# and C# programs on .NET 11. The C#
   programs use C# 15 unions, and `samples/accounts/global.json` selects the .NET 11 SDK. The task
   guides quote these programs too; `serve-over-http/` puts step 4 behind ASP.NET Core endpoints.
@@ -141,9 +168,13 @@ Keep these distinctions intact in code comments and documentation.
   and persisted-compatibility checks. The C# interop page links `registration-csharp` as a .NET 10
   example.
 - `sample/` and `saga_sample/`: executable examples.
-- `test/Facade.Tests/`: facade and behaviour tests. Every test actor system runs Akka's
-  `serialize-messages` through `VerifySerialization.fs`, and the last test names each message type that
-  another node could not read. `BankInvariantTests.fs` compiles step 5's F# `Account.fs` and
+- `test/Workflows.CSharp.Tests/`: a C# program that checks the C# workflow API as the C# compiler
+  builds it. Run it with `dotnet run --project test/Workflows.CSharp.Tests -c Release`.
+- `test/Facade.Tests/`: facade and behaviour tests. `WorkflowMachineTests.fs` tests replay without an
+  actor system, and `WorkflowBankInvariantTests.fs` kills processes while transfers written as
+  workflows run. Every test actor system runs Akka's `serialize-messages` through
+  `VerifySerialization.fs`, and the last test names each message type that another node could not
+  read. `BankInvariantTests.fs` compiles step 5's F# `Account.fs` and
   `Transfer.fs`, kills processes during transfers, and checks that the total balance is unchanged, on
   SQLite and, when `FCQRS_TEST_POSTGRES` is set as in CI, on PostgreSQL.
 
@@ -155,10 +186,12 @@ Restore and build:
 dotnet build FCQRS.sln
 ```
 
-Run the Expecto facade and behaviour tests:
+Run the Expecto facade and behaviour tests in Release, as CI does. A Debug build fails with
+`InvalidProgramException` in core's command subscription:
 
 ```bash
-dotnet run --project test/Facade.Tests/Facade.Tests.fsproj
+dotnet run -c Release --project test/Facade.Tests/Facade.Tests.fsproj
+dotnet run -c Release --project test/Workflows.CSharp.Tests
 ```
 
 Build and check the documentation:
