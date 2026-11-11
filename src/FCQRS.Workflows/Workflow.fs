@@ -175,6 +175,14 @@ module internal WorkflowCore =
         | Ok value -> Return(unbox<'T> value)
         | Error error -> Fail error
 
+    /// Turns a failure into a value, so a caller can continue after it.
+    let rec attempt (workflow: Workflow<'T>) : Workflow<Result<'T, exn>> =
+        match workflow with
+        | Return value -> Return(Ok value)
+        | Fail error -> Return(Error error)
+        | Lazy f -> Lazy(fun () -> attempt (protect f))
+        | Step(node, k) -> Step(node, fun result -> attempt (protect (fun () -> k result)))
+
     let step<'T> (name: string) (kind: StepKind) (op: LeafOp) : Workflow<'T> =
         Step(
             Leaf
@@ -344,22 +352,20 @@ module WorkflowSteps =
         let hash = Security.Cryptography.SHA256.HashData(Text.Encoding.UTF8.GetBytes key)
         Guid(ReadOnlySpan(hash, 0, 16)).ToString()
 
-    /// Sends a command to an aggregate under `policy` and gives the reply's event.
-    /// The workflow subscribes to the aggregate's replies before it sends. Every resend uses the
-    /// same correlation ID, and after a restart the command is sent again unless its reply was
-    /// stored, so the aggregate must answer a repeated command with the same verdict.
-    /// When the policy runs out, the step fails as `OutcomeUnknown`: the command may have been
-    /// applied.
-    let sendWith
+    /// The policy `send` uses: resend on a timeout, with backoff, for five minutes.
+    let internal defaultCommandPolicy = commandPolicy
+
+    /// `sendWith` for an aggregate given by its entity-ref factory.
+    let internal sendTo
         (policy: RetryPolicy)
-        (aggregate: FCQRS.FSharp.AggregateHandle<'Command, 'Event>)
+        (factory: string -> Akkling.Cluster.Sharding.IEntityRef<obj>)
         (aggregateId: string)
         (command: 'Command)
         : Workflow<'Event> =
         let run (attempt: AttemptEnv) : Task<objnull> =
             let reply =
                 attempt.Api.CreateCommandSubscription
-                    aggregate.Factory
+                    factory
                     (FCQRS.FSharp.Fcqrs.cid (correlationOf attempt.Context.IdempotencyKey))
                     (FCQRS.FSharp.Fcqrs.aggregateId aggregateId)
                     command
@@ -372,6 +378,21 @@ module WorkflowSteps =
             }
 
         WorkflowCore.step<'Event> "send" StepKind.Command (ActivityOp(policy, run))
+
+
+    /// Sends a command to an aggregate under `policy` and gives the reply's event.
+    /// The workflow subscribes to the aggregate's replies before it sends. Every resend uses the
+    /// same correlation ID, and after a restart the command is sent again unless its reply was
+    /// stored, so the aggregate must answer a repeated command with the same verdict.
+    /// When the policy runs out, the step fails as `OutcomeUnknown`: the command may have been
+    /// applied.
+    let sendWith
+        (policy: RetryPolicy)
+        (aggregate: FCQRS.FSharp.AggregateHandle<'Command, 'Event>)
+        (aggregateId: string)
+        (command: 'Command)
+        : Workflow<'Event> =
+        sendTo policy aggregate.Factory aggregateId command
 
     /// `sendWith` with a policy that resends on a timeout, with backoff, for five minutes.
     let send (aggregate: FCQRS.FSharp.AggregateHandle<'Command, 'Event>) (aggregateId: string) (command: 'Command) : Workflow<'Event> =
