@@ -18,7 +18,12 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="Journal.fs" />
+    <Compile Include="Workflow.fs" />
+    <Compile Include="Machine.fs" />
     <Content Include="paket.references" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="Facade.Tests" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\FCQRS\FCQRS.fsproj" />
