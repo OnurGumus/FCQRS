@@ -42,7 +42,7 @@ module Retry =
             Deadline = Some deadline }
 
 /// What an activity receives for one attempt.
-type ActivityContext =
+type AttemptContext =
     { /// The same for every attempt of this step, across restarts: workflow name, workflow ID,
       /// and step path. Pass it to the external system so a repeated call is recognised.
       IdempotencyKey: string
@@ -59,7 +59,7 @@ module internal Steps =
         | At of DateTime
 
     type LeafOp =
-        | ActivityOp of policy: RetryPolicy * run: (ActivityContext -> Task<objnull>)
+        | ActivityOp of policy: RetryPolicy * run: (AttemptContext -> Task<objnull>)
         | TimerOp of TimerDue
         /// Produces a value from the current time. Stored when produced.
         | ValueOp of (DateTime -> objnull)
@@ -192,11 +192,11 @@ module WorkflowSteps =
     /// Calls an external system. The call runs at least once: a crash after the call and before
     /// its result is stored repeats it, so pass `IdempotencyKey` to the external system.
     /// `name` is stored and must not change while instances are running.
-    let activity (name: string) (policy: RetryPolicy) (run: ActivityContext -> Task<'T>) : Workflow<'T> =
+    let activity (name: string) (policy: RetryPolicy) (run: AttemptContext -> Task<'T>) : Workflow<'T> =
         if policy.MaxAttempts.IsNone && policy.Deadline.IsNone then
             invalidArg (nameof policy) $"Activity '{name}' has no attempt limit, so it needs a deadline."
 
-        let boxed (context: ActivityContext) : Task<objnull> =
+        let boxed (context: AttemptContext) : Task<objnull> =
             task {
                 let! value = run context
                 return box value
@@ -205,7 +205,7 @@ module WorkflowSteps =
         WorkflowCore.step<'T> name StepKind.Activity (ActivityOp(policy, boxed))
 
     /// `activity` for a function that returns an `Async`.
-    let activityAsync (name: string) (policy: RetryPolicy) (run: ActivityContext -> Async<'T>) : Workflow<'T> =
+    let activityAsync (name: string) (policy: RetryPolicy) (run: AttemptContext -> Async<'T>) : Workflow<'T> =
         activity name policy (fun context -> Async.StartAsTask(run context, cancellationToken = context.Cancellation))
 
     /// Waits for `duration`. The due time is stored when the step is first reached, so a restart

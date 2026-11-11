@@ -1,0 +1,307 @@
+module WorkflowTests
+
+// Workflows on a real actor system: start, status, result, activities with retry, timers,
+// recovery after the actor system stops, and tracing.
+
+open System
+open System.Collections.Concurrent
+open System.Collections.Generic
+open System.Diagnostics
+open System.IO
+open System.Threading
+open System.Threading.Tasks
+open Expecto
+open Microsoft.Data.Sqlite
+open Microsoft.Extensions.Configuration
+open Microsoft.Extensions.Logging.Abstractions
+open FCQRS.Common
+open FCQRS.FSharp
+open FCQRS.Workflows
+
+let private newDb () = Path.Combine(Path.GetTempPath(), $"fcqrs_workflow_{Guid.NewGuid():N}.db")
+
+let private deleteDb (db: string) =
+    SqliteConnection.ClearAllPools()
+    for path in [ db; db + "-wal"; db + "-shm" ] do
+        if File.Exists path then File.Delete path
+
+let private boot (db: string) (name: string) (settings: (string * string) list) : IActor =
+    let configuration =
+        VerifySerialization.configuration()
+            .AddInMemoryCollection([ for key, value in settings -> KeyValuePair<string, string | null>(key, value) ])
+            .Build()
+    Fcqrs.actor configuration NullLoggerFactory.Instance (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite $"Data Source={db};")) name
+
+let private stop (api: IActor) = api.Stop().Wait(TimeSpan.FromSeconds 30.0) |> ignore
+
+let private withSystem name (run: IActor -> unit) =
+    let db = newDb ()
+    let api = boot db name []
+    try
+        run api
+    finally
+        stop api
+        deleteDb db
+
+let private sync (work: Async<'T>) = Async.RunSynchronously(work, 30000)
+let private wait = TimeSpan.FromSeconds 20.0
+
+let private eventually what (condition: unit -> bool) =
+    let deadline = DateTime.UtcNow.AddSeconds 20.0
+    while not (condition ()) && DateTime.UtcNow < deadline do
+        Thread.Sleep 50
+    Expect.isTrue (condition ()) what
+
+let private fast: RetryPolicy =
+    { Retry.none with
+        Schedule = FixedInterval(TimeSpan.FromMilliseconds 20.0) }
+
+let private startTest =
+    testCase "workflow: a started workflow runs to its result, and a second start stores nothing" <| fun _ ->
+        withSystem "WorkflowStart" <| fun api ->
+            let greet =
+                Workflows.register api (Workflow.define "greet" (fun (name: string) -> workflow {
+                    let! at = now
+                    let! id = newGuid
+                    return $"hello {name}", at.Kind, id <> Guid.Empty
+                }))
+            Expect.equal (sync (greet.Status "g1")) WorkflowStatus.NotStarted "an unknown ID was not started"
+            Expect.equal (sync (greet.Start "g1" "Ada")) StartResult.Started "the first start is accepted"
+            Expect.equal (sync (greet.Result "g1" wait)) (WorkflowOutcome.Finished("hello Ada", DateTimeKind.Utc, true)) "the body's value is the result"
+            Expect.equal (sync (greet.Start "g1" "Bob")) (StartResult.AlreadyStarted WorkflowStatus.Completed) "the second start reports the instance"
+            Expect.equal (sync (greet.Result "g1" wait)) (WorkflowOutcome.Finished("hello Ada", DateTimeKind.Utc, true)) "the result is unchanged"
+            Expect.throwsT<ArgumentException> (fun () -> sync (greet.Start "a~b" "x") |> ignore) "an ID with '~' is refused"
+            Expect.throwsT<InvalidOperationException> (fun () -> sync (greet.Result "nobody" wait) |> ignore) "a result needs a started workflow"
+
+let private faultTest =
+    testCase "workflow: a body that throws ends as faulted" <| fun _ ->
+        withSystem "WorkflowFault" <| fun api ->
+            let broken =
+                Workflows.register api (Workflow.define "broken" (fun (reason: string) -> workflow {
+                    let! (_: DateTime) = now
+                    failwith reason
+                    return 1
+                }))
+            sync (broken.Start "b1" "no stock") |> ignore
+            match sync (broken.Result "b1" wait) with
+            | WorkflowOutcome.Faulted error ->
+                Expect.equal error.Kind ErrorKind.BodyFailed "the fault names the body"
+                Expect.equal error.Message "no stock" "the fault keeps the message"
+            | other -> failtest $"expected a fault, found {other}"
+            match sync (broken.Status "b1") with
+            | WorkflowStatus.Failed _ -> ()
+            | other -> failtest $"expected Failed, found {other}"
+
+let private retryTest =
+    testCase "workflow: an activity is retried by its policy, and its failure is the body's to handle" <| fun _ ->
+        withSystem "WorkflowRetry" <| fun api ->
+            let calls = ConcurrentDictionary<string, int>()
+            let keys = ConcurrentBag<string>()
+            let count name = calls.AddOrUpdate(name, 1, fun _ seen -> seen + 1)
+            let flow =
+                Workflows.register api (Workflow.define "retry" (fun (_: unit) -> workflow {
+                    let! third =
+                        activity "flaky" { fast with MaxAttempts = Some 5 } (fun context -> task {
+                            keys.Add context.IdempotencyKey
+                            if count "flaky" < 3 then failwith "not yet"
+                            return context.Attempt
+                        })
+                    let! exhausted = workflow {
+                        try
+                            let! (_: int) = activity "down" { fast with MaxAttempts = Some 2 } (fun _ -> task {
+                                count "down" |> ignore
+                                return failwith "down"
+                            })
+                            return "no failure"
+                        with :? WorkflowStepFailedException as failed ->
+                            return string failed.Error.Kind
+                    }
+                    let! refused = workflow {
+                        try
+                            let! (_: int) =
+                                activity "invalid" { fast with MaxAttempts = Some 5; ShouldRetry = fun error -> not (error :? ArgumentException) } (fun _ -> task {
+                                    count "invalid" |> ignore
+                                    return raise (ArgumentException "bad input")
+                                })
+                            return "no failure"
+                        with :? WorkflowStepFailedException as failed ->
+                            return string failed.Error.Kind
+                    }
+                    let! stuck = workflow {
+                        try
+                            // Ignores its token and never returns.
+                            let! (_: int) =
+                                activity "stuck" { fast with MaxAttempts = None; Deadline = Some(TimeSpan.FromMilliseconds 300.0); AttemptTimeout = Some(TimeSpan.FromMilliseconds 50.0) } (fun _ ->
+                                    count "stuck" |> ignore
+                                    TaskCompletionSource<int>().Task)
+                            return "no failure"
+                        with :? WorkflowStepFailedException as failed ->
+                            return string failed.Error.Kind
+                    }
+                    return third, exhausted, refused, stuck
+                }))
+            sync (flow.Start "r1" ()) |> ignore
+            Expect.equal (sync (flow.Result "r1" wait)) (WorkflowOutcome.Finished(3, "Exhausted", "NotRetryable", "DeadlineExceeded")) "each policy ended its step as declared"
+            Expect.equal calls["flaky"] 3 "the flaky activity ran until it succeeded"
+            Expect.equal calls["down"] 2 "two attempts were allowed"
+            Expect.equal calls["invalid"] 1 "the filter refused a retry"
+            Expect.isGreaterThan calls["stuck"] 1 "the attempt timeout moved a stuck attempt on"
+            Expect.equal (keys |> Seq.distinct |> List.ofSeq) [ "retry/r1/0" ] "every attempt of a step carries the same idempotency key"
+
+/// State that outlives an actor system, as an external system would.
+type private Outside() =
+    member val Calls = ConcurrentDictionary<string, int>()
+    member val Gate = new ManualResetEventSlim(false)
+    member this.Count(name: string) = this.Calls.AddOrUpdate(name, 1, fun _ seen -> seen + 1)
+
+let private transferDefinition (outside: Outside) =
+    Workflow.define "resume" (fun (amount: int) -> workflow {
+        let! reserved = activity "reserve" (Retry.times 3) (fun _ -> task {
+            outside.Count "reserve" |> ignore
+            return amount * 2 })
+        let! shipped = activity "ship" (Retry.forever (TimeSpan.FromMinutes 5.0)) (fun context -> task {
+            outside.Count "ship" |> ignore
+            // Blocks until the test opens the gate, as a slow external system would.
+            do! Task.Run(fun () -> outside.Gate.Wait context.Cancellation)
+            return reserved + 1 })
+        return shipped
+    })
+
+let private restartTest =
+    testCase "workflow: after the actor system stops, a running workflow resumes by itself and repeats no stored step" <| fun _ ->
+        let db = newDb ()
+        let outside = Outside()
+        try
+            let first = boot db "WorkflowRestart" []
+            let flow = Workflows.register first (transferDefinition outside)
+            sync (flow.Start "t1" 20) |> ignore
+            eventually "the second activity is running" (fun () -> outside.Calls.ContainsKey "ship")
+            stop first
+
+            // Nothing is sent to the workflow: registering it is enough for it to resume.
+            let second = boot db "WorkflowRestart" []
+            try
+                let flow = Workflows.register second (transferDefinition outside)
+                eventually "the second activity ran again" (fun () -> outside.Calls["ship"] = 2)
+                outside.Gate.Set()
+                Expect.equal (sync (flow.Result "t1" wait)) (WorkflowOutcome.Finished 41) "the workflow finished with the stored first result"
+                Expect.equal outside.Calls["reserve"] 1 "the stored step did not run again"
+            finally
+                stop second
+
+            // A finished workflow answers from its journal.
+            let third = boot db "WorkflowRestart" []
+            try
+                let flow = Workflows.register third (transferDefinition outside)
+                Expect.equal (sync (flow.Result "t1" wait)) (WorkflowOutcome.Finished 41) "the result is read from the journal"
+                Expect.equal outside.Calls["ship"] 2 "a finished workflow runs nothing"
+            finally
+                stop third
+        finally
+            deleteDb db
+
+let private timerTest =
+    testCase "workflow: a timer's due time is stored, so a restart does not postpone it" <| fun _ ->
+        let db = newDb ()
+        let shifted = [ "config:akka:scheduler:implementation", "FCQRS.Scheduler+ShiftedScheduler, FCQRS" ]
+        let definition =
+            Workflow.define "reminder" (fun (text: string) -> workflow {
+                let! before = now
+                do! sleep (TimeSpan.FromDays 1.0)
+                let! after = now
+                return text, (after - before).TotalHours >= 24.0
+            })
+        try
+            let first = boot db "WorkflowTimer" shifted
+            let flow = Workflows.register first definition
+            sync (flow.Start "s1" "wake") |> ignore
+            eventually "the workflow is asleep" (fun () -> sync (flow.Status "s1") = WorkflowStatus.Running [ "1 sleep" ])
+            stop first
+
+            let second = boot db "WorkflowTimer" shifted
+            try
+                (second.System.Scheduler :?> FCQRS.Scheduler.ShiftedScheduler).Shift <- TimeSpan.FromDays 1.0
+                let flow = Workflows.register second definition
+                Expect.equal (sync (flow.Result "s1" wait)) (WorkflowOutcome.Finished("wake", true)) "the timer fired once its stored due time had passed"
+            finally
+                stop second
+        finally
+            deleteDb db
+
+let private shortTimerTest =
+    testCase "workflow: a short timer fires without a restart" <| fun _ ->
+        withSystem "WorkflowShortTimer" <| fun api ->
+            let flow =
+                Workflows.register api (Workflow.define "nap" (fun (_: unit) -> workflow {
+                    do! sleep (TimeSpan.FromMilliseconds 200.0)
+                    let! instant = now
+                    do! until (instant.AddMilliseconds 100.0)
+                    return "awake"
+                }))
+            sync (flow.Start "n1" ()) |> ignore
+            Expect.equal (sync (flow.Result "n1" wait)) (WorkflowOutcome.Finished "awake") "both timers fired"
+
+let private tracingTest =
+    testCase "workflow: every span of a run joins the trace of the caller that started it" <| fun _ ->
+        let spans = ConcurrentBag<Activity>()
+        use listener = new ActivityListener()
+        listener.ShouldListenTo <- fun source -> source.Name = Telemetry.WorkflowActivitySourceName || source.Name = "workflow-test"
+        listener.Sample <- SampleActivity<ActivityContext>(fun _ -> ActivitySamplingResult.AllDataAndRecorded)
+        listener.ActivityStopped <- fun span -> if span.Source.Name = Telemetry.WorkflowActivitySourceName then spans.Add span
+        ActivitySource.AddActivityListener listener
+        use caller = new ActivitySource("workflow-test")
+        let db = newDb ()
+        let outside = Outside()
+        let inside = ConcurrentBag<string>()
+        let definition =
+            Workflow.define "traced" (fun (_: unit) -> workflow {
+                let! first = activity "first" (Retry.times 2) (fun _ -> task {
+                    match Activity.Current with
+                    | null -> ()
+                    | span -> inside.Add span.OperationName
+                    return 1 })
+                do! sleep (TimeSpan.FromMilliseconds 50.0)
+                let! second = activity "second" (Retry.forever (TimeSpan.FromMinutes 5.0)) (fun context -> task {
+                    do! Task.Run(fun () -> outside.Gate.Wait context.Cancellation)
+                    return first + 1 })
+                return second
+            })
+        try
+            let first = boot db "WorkflowTracing" []
+            let flow = Workflows.register first definition
+            let traceId =
+                use request = caller.StartActivity "request"
+                sync (flow.Start "tr1" ()) |> ignore
+                (Unchecked.nonNull request).TraceId
+            eventually "the second activity is running" (fun () -> spans |> Seq.exists (fun span -> span.OperationName = "Step:sleep"))
+            stop first
+            let before = spans |> Seq.map (fun span -> span.OperationName) |> Seq.filter (fun name -> name = "Step:first" || name = "Attempt:first") |> Seq.length
+
+            let second = boot db "WorkflowTracing" []
+            try
+                let flow = Workflows.register second definition
+                outside.Gate.Set()
+                Expect.equal (sync (flow.Result "tr1" wait)) (WorkflowOutcome.Finished 2) "the workflow finished"
+                eventually "the end span was emitted" (fun () -> spans |> Seq.exists (fun span -> span.OperationName = "Workflow.End:traced"))
+            finally
+                stop second
+
+            let names = spans |> Seq.map (fun span -> span.OperationName) |> Seq.distinct |> Set.ofSeq
+            Expect.isTrue
+                (Set.isSubset (set [ "Workflow.Start:traced"; "Step:first"; "Attempt:first"; "Step:sleep"; "Step:second"; "Attempt:second"; "Workflow.End:traced" ]) names)
+                $"the run emitted its spans: {names}"
+            Expect.isTrue (spans |> Seq.forall (fun span -> span.TraceId = traceId)) "every span, before and after the restart, is in the caller's trace"
+            Expect.equal (List.ofSeq inside) [ "Attempt:first" ] "the attempt span is current inside the activity"
+            let attempt = spans |> Seq.find (fun span -> span.OperationName = "Attempt:first")
+            let step = spans |> Seq.find (fun span -> span.OperationName = "Step:first")
+            Expect.equal attempt.ParentSpanId step.SpanId "an attempt is a child of its step"
+            let after = spans |> Seq.map (fun span -> span.OperationName) |> Seq.filter (fun name -> name = "Step:first" || name = "Attempt:first") |> Seq.length
+            Expect.equal after before "the restart emitted no span for a step stored before it"
+            Expect.isTrue
+                (spans |> Seq.forall (fun span -> span.TagObjects |> Seq.forall (fun tag -> tag.Key.StartsWith "fcqrs.workflow.")))
+                "spans carry only workflow tags, never inputs or results"
+        finally
+            deleteDb db
+
+let tests =
+    testSequenced (testList "workflow" [ startTest; faultTest; retryTest; shortTimerTest; restartTest; timerTest; tracingTest ])

@@ -94,7 +94,7 @@ let private drive<'T> (prefix: WorkflowRecord list) (complete: string -> Result<
             | None -> ()
     { Journal = journal; Begun = begun; Machine = machine }
 
-let private never (_: ActivityContext) : Task<'T> = failwith "the machine does not run activities"
+let private never (_: AttemptContext) : Task<'T> = failwith "the machine does not run activities"
 
 let private order = workflow {
     let! started = now

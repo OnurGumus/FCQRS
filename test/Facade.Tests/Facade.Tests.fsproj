@@ -30,6 +30,7 @@
     <Compile Include="BankInvariantTests.fs" />
     <Compile Include="SagaStartOnceTests.fs" />
     <Compile Include="WorkflowMachineTests.fs" />
+    <Compile Include="WorkflowTests.fs" />
     <Compile Include="Tests.fs" />
   </ItemGroup>
 

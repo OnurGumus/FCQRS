@@ -20,6 +20,9 @@
     <Compile Include="Journal.fs" />
     <Compile Include="Workflow.fs" />
     <Compile Include="Machine.fs" />
+    <Compile Include="Messages.fs" />
+    <Compile Include="WorkflowActor.fs" />
+    <Compile Include="Api.fs" />
     <Content Include="paket.references" />
   </ItemGroup>
   <ItemGroup>
