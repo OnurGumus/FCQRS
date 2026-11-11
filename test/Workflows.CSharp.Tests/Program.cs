@@ -127,6 +127,21 @@ async Task Eventually(Func<bool> condition, string what)
         {
             Check(WaitingWorkflow.Cleaned, "a cancelled C# workflow ran the awaits in its finally block");
         }
+
+        // The same cleanup written as a catch with a filter, an await, and a rethrow.
+        var catching = WorkflowHost.Register(actor, new CatchingWorkflow());
+        await catching.StartAsync("k1", 1);
+        await Eventually(() => CatchingWorkflow.Started, "the catching workflow is in its activity");
+        await catching.CancelAsync("k1");
+        try
+        {
+            await catching.ResultAsync("k1", wait);
+            Check(false, "a C# workflow that rethrows its cancellation reports cancellation");
+        }
+        catch (WorkflowCancelledException)
+        {
+            Check(CatchingWorkflow.Cleaned, "a cancelled C# workflow ran the await in its catch block");
+        }
     }
     finally
     {
@@ -280,6 +295,34 @@ public sealed class CarelessWorkflow() : Workflow<int, int>("careless")
         // Not a workflow step: the workflow could not store or replay it.
         await Task.Delay(200);
         return input;
+    }
+}
+
+public sealed class CatchingWorkflow() : Workflow<int, int>("catching")
+{
+    public static volatile bool Started;
+    public static volatile bool Cleaned;
+
+    public override async WorkflowTask<int> Run(WorkflowContext ctx, int input)
+    {
+        try
+        {
+            return await ctx.Activity("wait", Retry.forever(TimeSpan.FromMinutes(5)), async attempt =>
+            {
+                Started = true;
+                await Task.Delay(Timeout.Infinite, attempt.Cancellation);
+                return input;
+            });
+        }
+        catch (WorkflowStepFailedException failed) when (failed.Error.Kind.IsCancelled)
+        {
+            await ctx.Activity("clean", Retry.none, _ =>
+            {
+                Cleaned = true;
+                return Task.FromResult(1);
+            });
+            throw;
+        }
     }
 }
 

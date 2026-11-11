@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify (or --update) tutorial and task-guide excerpts against named regions in runnable samples."""
+"""Verify (or --update) tutorial, task-guide and concept-page excerpts against named regions in runnable samples."""
 import re
 import sys
 import textwrap
@@ -23,7 +23,10 @@ def region(sample, filename, name):
 errors = []
 too_wide = []
 count = 0
-for path in [*sorted((ROOT / 'docs/how-to').glob('*')), *sorted((ROOT / 'docs/tutorial').glob('*'))]:
+# Concept pages are checked only where they quote a sample.
+PAGES = [*sorted((ROOT / 'docs/how-to').glob('*')), *sorted((ROOT / 'docs/tutorial').glob('*')),
+         *(page for page in sorted((ROOT / 'docs/concepts').glob('*.md')) if '<!-- sample:' in page.read_text())]
+for path in PAGES:
     if path.suffix not in {'.fsx', '.md'}:
         continue
     def replace(match):
@@ -39,6 +42,9 @@ for path in [*sorted((ROOT / 'docs/how-to').glob('*')), *sorted((ROOT / 'docs/tu
         path.write_text(updated)
     # Task guides quote logs and shell commands that cannot wrap, so only their code is checked.
     for fence in FENCE.finditer(updated):
+        # A concept page's F# examples are not sample excerpts and keep their own width.
+        if path.parent.name == 'concepts' and fence[1] != 'csharp':
+            continue
         if path.parent.name == 'tutorial' or fence[1] in WIDTH:
             limit = WIDTH.get(fence[1], PLAIN_WIDTH)
             for line in fence[2].splitlines():

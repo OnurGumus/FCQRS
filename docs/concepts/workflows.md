@@ -30,9 +30,35 @@ let enrich =
     })
 ```
 
-Each `let!` and `do!` is a **step**. `Workflows.register api enrich` returns a handle, and
-`handle.Start "order-17" "ABC"` starts the instance with the ID `order-17`. No aggregate has to
-store an event first.
+<div class="cs-alt"></div>
+
+<!-- sample: workflows/csharp Concepts.cs enrich -->
+```csharp
+public sealed record Enriched(int Points, DateTime At);
+
+public sealed class Enrich() : Workflow<string, Enriched>("enrich")
+{
+    public override async WorkflowTask<Enriched> Run(
+        WorkflowContext ctx, string order)
+    {
+        var points = await ctx.Activity("score", Retry.times(3), attempt =>
+            Score(attempt.IdempotencyKey, order));
+        await ctx.Sleep(TimeSpan.FromMinutes(5));
+        var at = await ctx.Now();
+        return new Enriched(points, at);
+    }
+}
+```
+
+Each `let!` and `do!` in F#, and each `await` in C#, is a **step**. Registering the workflow
+returns the object that starts instances: in F#, `Workflows.register api enrich` returns a handle
+and `handle.Start "order-17" "ABC"` starts the instance with the ID `order-17`. In C#,
+`WorkflowHost.Register(actor, new Enrich())` returns a client with
+`client.StartAsync("order-17", "ABC")`. No aggregate has to store an event first.
+
+Most of the later examples are parts of a workflow. In F# each is a `workflow { }` value, and in C# a method
+that returns `WorkflowTask<T>`. The prose names the F# steps; the
+[table at the end](#C-equivalents) gives each one's C# name.
 
 ## The body is a description
 
@@ -110,6 +136,18 @@ let approve =
     }
 ```
 
+<div class="cs-alt"></div>
+
+<!-- sample: workflows/csharp Concepts.cs approve -->
+```csharp
+static async WorkflowTask<bool> Approve(WorkflowContext ctx)
+{
+    var answer = await ctx.WaitSignal<bool>(
+        "approval", TimeSpan.FromDays(2));
+    return answer.Received && answer.Value;
+}
+```
+
 `Workflows.signal handle id "approval" true` stores the signal and then returns. A signal that
 arrives before the body reaches its wait is kept, and waits consume signals with one name oldest
 first. `waitSignalFor` gives `None` when its time passes; a signal that arrives later stays stored
@@ -137,6 +175,34 @@ let both =
     }
 ```
 
+<div class="cs-alt"></div>
+
+<!-- sample: workflows/csharp Concepts.cs both -->
+```csharp
+static async WorkflowTask<(IReadOnlyList<int>, string?)> Both(
+    WorkflowContext ctx)
+{
+    var orders = new[] { "A", "B", "C" };
+    var points = await ctx.All(orders.Select(order =>
+        ctx.Activity("score", Retry.times(3), attempt =>
+            Score(attempt.IdempotencyKey, order))).ToArray());
+    var first = await ctx.Race(
+        ctx.Run(() => Charged(ctx)),
+        ctx.Run(() => TimedOut(ctx)));
+    return (points, first);
+}
+
+static async WorkflowTask<string?> Charged(WorkflowContext ctx) =>
+    await ctx.Activity("charge", Retry.none, attempt =>
+        Charge(attempt.IdempotencyKey, 30m));
+
+static async WorkflowTask<string?> TimedOut(WorkflowContext ctx)
+{
+    await ctx.Sleep(TimeSpan.FromMinutes(1));
+    return null;
+}
+```
+
 - `all` finishes when every branch has finished and gives the results in branch order. If a branch
   fails, the other branches are abandoned.
 - `race` takes the first branch to finish and abandons the rest. The winner is stored, so replay
@@ -160,6 +226,23 @@ let parent =
     })
 ```
 
+<div class="cs-alt"></div>
+
+<!-- sample: workflows/csharp Concepts.cs parent -->
+```csharp
+public sealed class Parent() : Workflow<string, Summary>("parent")
+{
+    public override async WorkflowTask<Summary> Run(
+        WorkflowContext ctx, string order)
+    {
+        var detached = await ctx.StartChild<string, Enriched>("enrich", order);
+        var again = await ctx.Child<string, Enriched>(
+            "enrich", order + "-again");
+        return new Summary(detached.Id, again.Points, again.At);
+    }
+}
+```
+
 - `child` starts another workflow and waits for its result. A child that faults fails the step with
   `ChildFaulted`.
 - `startChild` gives a handle as soon as the child's start is stored. A child that is never awaited
@@ -181,6 +264,21 @@ let pay (accounts: AggregateHandle<AccountCommand, AccountEvent>) =
         | Withdrawn amount -> return $"took {amount}"
         | other -> return $"refused: {other}"
     }
+```
+
+<div class="cs-alt"></div>
+
+<!-- sample: workflows/csharp Concepts.cs pay -->
+```csharp
+static async WorkflowTask<string> Pay(
+    WorkflowContext ctx, AggregateFactory accounts)
+{
+    var reply = await ctx.Send<AccountCommand, AccountEvent>(
+        accounts, "alice", new Withdraw(30m));
+    return reply is Withdrawn taken
+        ? $"took {taken.Amount}"
+        : $"refused: {reply}";
+}
 ```
 
 `send` subscribes to the aggregate's replies and then sends, so the reply cannot be missed. It gives
@@ -217,6 +315,28 @@ let booking =
     }
 ```
 
+<div class="cs-alt"></div>
+
+<!-- sample: workflows/csharp Concepts.cs booking -->
+```csharp
+static async WorkflowTask<string> Booking(WorkflowContext ctx)
+{
+    try
+    {
+        return await ctx.Activity("charge",
+            Retry.forever(TimeSpan.FromHours(1)), attempt =>
+                Charge(attempt.IdempotencyKey, 30m));
+    }
+    catch (WorkflowStepFailedException failed)
+        when (failed.Error.Kind.IsCancelled)
+    {
+        await ctx.Activity("refund", Retry.none, attempt =>
+            Charge(attempt.IdempotencyKey, -30m));
+        throw;
+    }
+}
+```
+
 A body that lets the cancellation pass ends as cancelled. A body that catches it and returns a value
 ends as finished. A child the body was waiting for is cancelled with it.
 
@@ -250,6 +370,22 @@ let evolving =
     }
 ```
 
+<div class="cs-alt"></div>
+
+<!-- sample: workflows/csharp Concepts.cs evolving -->
+```csharp
+static async WorkflowTask<int> Evolving(WorkflowContext ctx)
+{
+    var points = await ctx.Activity("score", Retry.times(3), attempt =>
+        Score(attempt.IdempotencyKey, "A"));
+    var change = await ctx.Version("add-charge", 2);
+    if (change >= 2)
+        await ctx.Activity("charge", Retry.none, attempt =>
+            Charge(attempt.IdempotencyKey, 5m));
+    return points;
+}
+```
+
 A new instance stores 2 and takes the new branch. An instance that had already passed this point
 gets 1 and keeps its old steps.
 
@@ -275,9 +411,29 @@ let outcomes (handle: WorkflowHandle<string, int * DateTime>) =
     WorkflowFlow.run handle (fun order -> $"enrich-{order}") 8 (TimeSpan.FromMinutes 5.0)
 ```
 
+<div class="cs-alt"></div>
+
+<!-- sample: workflows/csharp Concepts.cs stream -->
+```csharp
+static Flow<string, (string Id, Enriched Result), NotUsed> Outcomes(
+    IWorkflowClient<string, Enriched> client) =>
+    Flow.Create<string>().SelectAsync(8, async order =>
+    {
+        var id = $"enrich-{order}";
+        await client.StartAsync(id, order);
+        var result = await client.ResultAsync(
+            id, TimeSpan.FromMinutes(5));
+        return (id, result);
+    });
+```
+
 `WorkflowFlow.run` is an Akka.Streams flow that starts one workflow per element and emits each
 outcome in input order, with at most eight workflows between start and outcome. `WorkflowFlow.start`
 emits as soon as each start is stored.
+
+`WorkflowFlow` takes an F# handle. A C# program builds the same flow from its client, as shown.
+`ResultAsync` throws for a faulted or cancelled workflow, so that element fails the C# stream, where
+the F# flow emits the outcome.
 
 The stream is not durable. If the process stops, the workflows resume and the stream does not. The
 source must replay from an offset of its own, and the workflow ID must be computed from the element,

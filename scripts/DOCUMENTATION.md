@@ -52,6 +52,7 @@ literate `.fsx` scripts are still executed separately, including their hidden as
 
 The `<!-- sample: ... -->` markers keep F# and C# excerpts synchronized with runnable samples.
 Run `python3 scripts/check-learning-snippets.py --update` after changing sample regions. The check
+reads the tutorial, the task guides, and each concept page that has a marker. The check
 also fails when a code block has a line wider than it shows at desktop size: 80 columns for F# and C#
 in the tutorial and task guides, and 72 for the tutorial's other blocks, which sit in the text column.
 Task guides may quote wider logs and shell commands. `content/site.css` gives paired C#
