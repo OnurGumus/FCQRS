@@ -29,7 +29,12 @@ type WorkflowHandle<'Input, 'Result> =
       /// Stores a signal for the instance: ID, signal name, payload. Returns once it is stored.
       /// Raises `InvalidOperationException` when the workflow was not started or has ended.
       /// `Workflows.signal` takes a typed payload.
-      Signal: string -> string -> Payload -> Async<unit> }
+      Signal: string -> string -> Payload -> Async<unit>
+      /// Cancels the instance. Every pending step fails with a `Cancelled` error, which the body
+      /// can catch to run cleanup steps; a body that lets it pass ends as cancelled. Returns once
+      /// the request is stored. An instance that has already ended is left as it is. Raises
+      /// `InvalidOperationException` when no workflow with this ID was started.
+      Cancel: string -> Async<unit> }
 
 /// Defines workflows.
 module Workflow =
@@ -144,6 +149,18 @@ module Workflows =
                         | SignalRefused status ->
                             return invalidOp $"Workflow {definition.Name} '{id}' is {status} and takes no signal."
                     | other -> return invalidOp $"Unexpected reply to a workflow signal: {other}"
+                }
+          Cancel =
+            fun id ->
+                async {
+                    let! reply = ask id CancelWorkflow requestTimeout
+
+                    match reply with
+                    | :? CancelReply as reply ->
+                        match reply with
+                        | CancelAccepted -> return ()
+                        | CancelRefused _ -> return invalidOp $"No workflow {definition.Name} with ID '{id}' was started."
+                    | other -> return invalidOp $"Unexpected reply to a workflow cancel request: {other}"
                 } }
 
     /// Stores the signal `name` with a typed payload for the instance `id`.

@@ -548,9 +548,197 @@ let private unknownOutcomeTest =
             stop api
             deleteDb db
 
+// ---------------------------------------------------------------------------
+// Cancellation, child workflows, and parking.
+// ---------------------------------------------------------------------------
+
+let private cancelTest =
+    testCase "workflow: a cancelled workflow fails its pending steps, runs its cleanup, and stays cancelled" <| fun _ ->
+        let db = newDb ()
+        let seen = ConcurrentBag<string>()
+        let definition =
+            Workflow.define "booking" (fun (clean: bool) -> workflow {
+                try
+                    let! (_: int list) =
+                        all [ for name in [ "hotel"; "flight" ] ->
+                                activity name (Retry.forever (TimeSpan.FromMinutes 5.0)) (fun context -> task {
+                                    seen.Add $"{name} started"
+                                    try
+                                        do! Task.Delay(Timeout.Infinite, context.Cancellation)
+                                    with :? OperationCanceledException ->
+                                        seen.Add $"{name} token cancelled"
+                                        raise (OperationCanceledException())
+                                    return 1 }) ]
+                    return "booked"
+                with :? WorkflowStepFailedException as failed when failed.Error.Kind = ErrorKind.Cancelled ->
+                    if clean then
+                        let! (_: int) = activity "release" Retry.none (fun _ -> task {
+                            seen.Add "released"
+                            return 1 })
+                        ()
+                    return raise failed
+            })
+        try
+            let first = boot db "WorkflowCancel" []
+            let flow = Workflows.register first definition
+            Expect.throwsT<InvalidOperationException> (fun () -> sync (flow.Cancel "nobody")) "an unknown workflow cannot be cancelled"
+            sync (flow.Start "b1" true) |> ignore
+            eventually "both branches are running" (fun () -> seen |> Seq.filter (fun text -> text.EndsWith "started") |> Seq.length = 2)
+            sync (flow.Cancel "b1")
+            Expect.equal (sync (flow.Result "b1" wait)) WorkflowOutcome.Cancelled "the workflow ended as cancelled"
+            eventually "both activities saw their token cancelled" (fun () -> seen |> Seq.filter (fun text -> text.EndsWith "token cancelled") |> Seq.length = 2)
+            Expect.contains seen "released" "the cleanup step ran"
+            sync (flow.Cancel "b1")
+            Expect.equal (sync (flow.Status "b1")) WorkflowStatus.Cancelled "cancelling again changes nothing"
+            stop first
+            let second = boot db "WorkflowCancel" []
+            try
+                let flow = Workflows.register second definition
+                Expect.equal (sync (flow.Result "b1" wait)) WorkflowOutcome.Cancelled "the workflow is still cancelled after a restart"
+                Expect.equal (seen |> Seq.filter ((=) "released") |> Seq.length) 1 "the cleanup step did not run again"
+            finally
+                stop second
+        finally
+            deleteDb db
+
+let private childTest =
+    testCase "workflow: a parent starts children, waits for some, and sees a child's fault" <| fun _ ->
+        withSystem "WorkflowChild" <| fun api ->
+            let detachedDone = new ManualResetEventSlim(false)
+            let doubleIt = Workflow.define "double" (fun (value: int) -> workflow {
+                do! sleep (TimeSpan.FromMilliseconds 50.0)
+                return value * 2 })
+            let failing = Workflow.define "failing" (fun (reason: string) -> workflow {
+                let! (_: DateTime) = now
+                failwith reason
+                return 0 })
+            let slow = Workflow.define "slow" (fun (_: unit) -> workflow {
+                do! sleep (TimeSpan.FromMilliseconds 400.0)
+                let! (_: int) = activity "tell" Retry.none (fun _ -> task {
+                    detachedDone.Set()
+                    return 1 })
+                return "done" })
+            let unregistered = Workflow.define "unregistered" (fun (_: unit) -> workflow { return 1 })
+            let children = Workflows.register api doubleIt
+            Workflows.register api failing |> ignore
+            let slowHandle = Workflows.register api slow
+            let parent =
+                Workflows.register api (Workflow.define "parent" (fun (value: int) -> workflow {
+                    let! detached = startChild slow ()
+                    let! doubled = child doubleIt value
+                    let! both = all [ child doubleIt 10; child doubleIt 20 ]
+                    let! fault = workflow {
+                        try
+                            let! (_: int) = child failing "no stock"
+                            return "no fault"
+                        with :? WorkflowStepFailedException as failed ->
+                            return $"{failed.Error.Kind}"
+                    }
+                    let! missing = workflow {
+                        try
+                            let! (_: int) = child unregistered ()
+                            return "no failure"
+                        with :? WorkflowStepFailedException as failed ->
+                            let named = failed.Error.Message.Contains "not registered"
+                            return $"{failed.Error.Kind} {named}"
+                    }
+                    return detached.Id, doubled, both, fault, missing
+                }))
+            sync (parent.Start "p1" 21) |> ignore
+            Expect.equal
+                (sync (parent.Result "p1" wait))
+                (WorkflowOutcome.Finished("p1:0", 42, [ 20; 40 ], "ChildFaulted", "NotRetryable True"))
+                "the parent got each child's outcome"
+            Expect.equal (sync (children.Result "p1:1" wait)) (WorkflowOutcome.Finished 42) "a child is an ordinary instance with a derived ID"
+            Expect.isTrue (detachedDone.Wait(TimeSpan.FromSeconds 20.0)) "the detached child finished after its parent"
+            Expect.equal (sync (slowHandle.Result "p1:0" wait)) (WorkflowOutcome.Finished "done") "and has its own result"
+
+let private childRestartTest =
+    testCase "workflow: a parent restarted while its child runs gets the child's result, and cancelling a parent cancels the child it waits for" <| fun _ ->
+        let db = newDb ()
+        let outside = Outside()
+        let worker = Workflow.define "worker" (fun (value: int) -> workflow {
+            let! result = activity "work" (Retry.forever (TimeSpan.FromMinutes 5.0)) (fun context -> task {
+                outside.Count $"work {value}" |> ignore
+                do! Task.Run(fun () -> outside.Gate.Wait context.Cancellation)
+                return value + 1 })
+            return result })
+        let boss = Workflow.define "boss" (fun (value: int) -> workflow {
+            let! result = child worker value
+            return result * 10 })
+        try
+            let first = boot db "WorkflowChildRestart" []
+            Workflows.register first worker |> ignore
+            let flow = Workflows.register first boss
+            sync (flow.Start "x1" 1) |> ignore
+            sync (flow.Start "x2" 2) |> ignore
+            eventually "both children are working" (fun () -> outside.Calls.ContainsKey "work 1" && outside.Calls.ContainsKey "work 2")
+            stop first
+            let second = boot db "WorkflowChildRestart" []
+            try
+                let workers = Workflows.register second worker
+                let flow = Workflows.register second boss
+                eventually "both children resumed" (fun () -> outside.Calls["work 1"] = 2 && outside.Calls["work 2"] = 2)
+                sync (flow.Cancel "x2")
+                Expect.equal (sync (flow.Result "x2" wait)) WorkflowOutcome.Cancelled "the cancelled parent ended"
+                Expect.equal (sync (workers.Result "x2:0" wait)) WorkflowOutcome.Cancelled "the child it waited for was cancelled with it"
+                outside.Gate.Set()
+                Expect.equal (sync (flow.Result "x1" wait)) (WorkflowOutcome.Finished 20) "the other parent got its child's result after the restart"
+                match sync (workers.Status "x1:0") with
+                | WorkflowStatus.Completed -> ()
+                | other -> failtest $"the child finished once, found {other}"
+            finally
+                stop second
+        finally
+            deleteDb db
+
+let private parkingTest =
+    testCase "workflow: an instance whose journal does not match its code is parked, and resumes with code that matches" <| fun _ ->
+        let db = newDb ()
+        let outside = Outside()
+        let definition (second: string) =
+            Workflow.define "evolving" (fun (value: int) -> workflow {
+                let! first = activity "first" Retry.none (fun _ -> task { return value + 1 })
+                let! last = activity second (Retry.forever (TimeSpan.FromMinutes 5.0)) (fun context -> task {
+                    outside.Count second |> ignore
+                    do! Task.Run(fun () -> outside.Gate.Wait context.Cancellation)
+                    return first + 1 })
+                return last })
+        let parked status = match status with WorkflowStatus.Parked _ -> true | _ -> false
+        try
+            let first = boot db "WorkflowParking" []
+            let flow = Workflows.register first (definition "second")
+            sync (flow.Start "e1" 1) |> ignore
+            sync (flow.Start "e2" 1) |> ignore
+            eventually "both are in their second step" (fun () -> outside.Calls.ContainsKey "second" && outside.Calls["second"] = 2)
+            stop first
+
+            // The second step was renamed while instances were in it.
+            let renamed = boot db "WorkflowParking" []
+            try
+                let flow = Workflows.register renamed (definition "renamed")
+                eventually "the instance is parked" (fun () -> parked (sync (flow.Status "e1")))
+                Expect.isFalse (outside.Calls.ContainsKey "renamed") "a parked instance runs nothing"
+                // A parked instance cannot run cleanup, so cancelling it ends it.
+                sync (flow.Cancel "e2")
+                Expect.equal (sync (flow.Result "e2" wait)) WorkflowOutcome.Cancelled "a parked instance can be cancelled"
+            finally
+                stop renamed
+
+            let restored = boot db "WorkflowParking" []
+            try
+                let flow = Workflows.register restored (definition "second")
+                outside.Gate.Set()
+                Expect.equal (sync (flow.Result "e1" wait)) (WorkflowOutcome.Finished 3) "with matching code the instance resumes and finishes"
+            finally
+                stop restored
+        finally
+            deleteDb db
+
 let tests =
     testSequenced (
         testList "workflow"
             [ startTest; faultTest; retryTest; shortTimerTest; restartTest; timerTest; tracingTest; startRaceTest; concurrentStartTest
-              signalTest; signalRestartTest; commandTest; parallelCommandTest; commandRestartTest; unknownOutcomeTest ]
+              signalTest; signalRestartTest; commandTest; parallelCommandTest; commandRestartTest; unknownOutcomeTest
+              cancelTest; childTest; childRestartTest; parkingTest ]
     )

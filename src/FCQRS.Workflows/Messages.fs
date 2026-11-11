@@ -87,6 +87,17 @@ module internal Protocol =
 
         interface ISerializable
 
+    type CancelWorkflow =
+        | CancelWorkflow
+
+        interface ISerializable
+
+    type CancelReply =
+        | CancelAccepted
+        | CancelRefused of WorkflowStatus
+
+        interface ISerializable
+
     /// Makes the shard recover an instance. The instance ignores it.
     type Wake =
         | Wake

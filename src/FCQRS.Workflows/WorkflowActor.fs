@@ -72,6 +72,7 @@ module internal WorkflowActor =
         let mutable startSender: IActorRef option = None
         /// The senders of signals being stored, in the order their records will be applied.
         let signalSenders = Queue<IActorRef>()
+        let cancelSenders = Queue<IActorRef>()
 
         let traceParent () : ActivityContext voption =
             match started with
@@ -236,7 +237,13 @@ module internal WorkflowActor =
                             | span -> span.SetTag("fcqrs.workflow.attempt", attempt) |> ignore
 
                             try
-                                let call = run { Api = api; Context = context }
+                                let call =
+                                    run
+                                        { Api = api
+                                          Context = context
+                                          WorkflowName = definition.Name
+                                          WorkflowId = id
+                                          Path = path }
 
                                 match policy.AttemptTimeout with
                                 | Some timeout ->
@@ -275,8 +282,9 @@ module internal WorkflowActor =
         let stepFailed (step: PendingStep) (kind: ErrorKind) (error: exn) : WorkflowRecord =
             // A command that got no reply may still have been applied.
             let kind =
-                match step.Leaf.Kind, kind with
-                | StepKind.Command, (ErrorKind.Exhausted | ErrorKind.DeadlineExceeded) -> ErrorKind.OutcomeUnknown
+                match step.Leaf.Kind, kind, error with
+                | _, _, (:? ChildEndedException) -> ErrorKind.ChildFaulted
+                | StepKind.Command, (ErrorKind.Exhausted | ErrorKind.DeadlineExceeded), _ -> ErrorKind.OutcomeUnknown
                 | _ -> kind
 
             WorkflowRecord.StepFailed(step.Path, step.Leaf.Name, step.Leaf.Kind, Payload.errorOf kind error, clock ())
@@ -410,7 +418,15 @@ module internal WorkflowActor =
                 | None ->
                     history.Apply record
                     []
-            | WorkflowRecord.CancelRequested _ -> []
+            | WorkflowRecord.CancelRequested _ ->
+                if cancelSenders.Count > 0 then
+                    cancelSenders.Dequeue().Tell(CancelAccepted, self)
+
+                match machine with
+                | Some machine -> guarded (fun () -> machine.Apply record)
+                | None ->
+                    history.Apply record
+                    []
 
         let applyRecovered (record: WorkflowRecord) =
             history.Apply record
@@ -539,6 +555,45 @@ module internal WorkflowActor =
                         mailbox.UntypedContext.Sender.Tell(SignalRefused(status ()), self)
                         passivate ()
                         return! loop ()
+                | :? CancelWorkflow ->
+                    match started, final with
+                    | None, _ ->
+                        mailbox.UntypedContext.Sender.Tell(CancelRefused(status ()), self)
+                        passivate ()
+                        return! loop ()
+                    | Some _, Some _ ->
+                        // Already over: there is nothing to cancel.
+                        mailbox.UntypedContext.Sender.Tell(CancelAccepted, self)
+                        passivate ()
+                        return! loop ()
+                    | Some _, None ->
+                        cancelSenders.Enqueue mailbox.UntypedContext.Sender
+                        let time = clock ()
+
+                        let cancelled: StepError =
+                            { Kind = ErrorKind.Cancelled
+                              ExceptionType = typeof<OperationCanceledException>.FullName |> Unchecked.nonNull
+                              Message = "The workflow was cancelled." }
+
+                        // The request and the failure of every pending step are one write, so a
+                        // restart never finds a request whose steps are still pending.
+                        let consequences =
+                            match machine with
+                            | Some machine ->
+                                [ for KeyValue(path, step) in machine.Pending do
+                                      if step.ScheduledAt.IsSome then
+                                          step.Leaf.OnCancel
+                                          |> Option.iter (fun onCancel ->
+                                              try
+                                                  onCancel api
+                                              with error ->
+                                                  log.LogWarning(error, "Workflow {Workflow} {Id}: cancelling step {Step} failed.", definition.Name, id, step.Leaf.Name))
+
+                                          WorkflowRecord.StepFailed(path, step.Leaf.Name, step.Leaf.Kind, cancelled, time) ]
+                            // A parked instance cannot run its cleanup: it ends.
+                            | None -> [ WorkflowRecord.Cancelled time ]
+
+                        return! store (WorkflowRecord.CancelRequested time :: consequences) (loop ())
                 | :? AttemptDone as outcome -> return! store (attemptDone outcome) (loop ())
                 | :? RetryDue as retry ->
                     match machine, running.TryGetValue retry.RetryPath with

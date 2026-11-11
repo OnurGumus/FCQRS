@@ -41,6 +41,17 @@ module Retry =
             MaxAttempts = None
             Deadline = Some deadline }
 
+/// A child workflow that was started. Give it to `awaitChild` to wait for its result.
+type ChildHandle<'Result> =
+    { /// The child workflow's name.
+      Workflow: string
+      /// The child instance's ID: the parent's ID, a colon, and the path of the step that started it.
+      Id: string }
+
+/// Raised inside an attempt when a child workflow ended without a result.
+type internal ChildEndedException(message: string) =
+    inherit Exception(message)
+
 /// What an activity receives for one attempt.
 type AttemptContext =
     { /// The same for every attempt of this step, across restarts: workflow name, workflow ID,
@@ -61,7 +72,10 @@ module internal Steps =
     /// What one attempt of an activity or a command receives.
     type AttemptEnv =
         { Api: IActor
-          Context: AttemptContext }
+          Context: AttemptContext
+          WorkflowName: string
+          WorkflowId: string
+          Path: string }
 
     type LeafOp =
         /// An external call or an aggregate command, attempted under a retry policy.
@@ -77,7 +91,9 @@ module internal Steps =
           Kind: StepKind
           Encode: objnull -> Payload
           Decode: Payload -> objnull
-          Op: LeafOp }
+          Op: LeafOp
+          /// Runs when the workflow is cancelled while this step is pending.
+          OnCancel: (IActor -> unit) option }
 
 /// A workflow that produces a `'T`. It is a description: a workflow instance interprets it,
 /// stores each step's result, and on recovery feeds the stored results back in.
@@ -166,7 +182,8 @@ module internal WorkflowCore =
                   Kind = kind
                   Encode = Payload.encode typeof<'T>
                   Decode = Payload.decode typeof<'T>
-                  Op = op },
+                  Op = op
+                  OnCancel = None },
             unboxed<'T>
         )
 
@@ -311,7 +328,8 @@ module WorkflowSteps =
                             box (None: 'T option)
                         else
                             box (Some(Payload.toValue<'T> payload))
-                  Op = SignalOp(Some timeout) },
+                  Op = SignalOp(Some timeout)
+                  OnCancel = None },
             WorkflowCore.unboxed<'T option>
         )
 
@@ -358,3 +376,15 @@ module WorkflowSteps =
     /// `sendWith` with a policy that resends on a timeout, with backoff, for five minutes.
     let send (aggregate: FCQRS.FSharp.AggregateHandle<'Command, 'Event>) (aggregateId: string) (command: 'Command) : Workflow<'Event> =
         sendWith commandPolicy aggregate aggregateId command
+
+    /// A value that records which version of the workflow's code an instance runs, for changing
+    /// a workflow while instances are running:
+    ///
+    ///     let! v = version "add-fraud-check" 2
+    ///     if v >= 2 then ... new steps ... else ... the steps as they were ...
+    ///
+    /// A new instance stores `latest` and gets it. An instance that had already passed this
+    /// point when the change was deployed gets 1 and stores nothing. The step takes no place
+    /// in the step sequence, so adding it does not move the steps after it.
+    let version (changeId: string) (latest: int) : Workflow<int> =
+        WorkflowCore.step<int> changeId StepKind.Version (ValueOp(fun _ -> box latest))

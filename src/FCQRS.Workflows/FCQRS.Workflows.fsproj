@@ -23,6 +23,7 @@
     <Compile Include="Messages.fs" />
     <Compile Include="WorkflowActor.fs" />
     <Compile Include="Api.fs" />
+    <Compile Include="Children.fs" />
     <Content Include="paket.references" />
   </ItemGroup>
   <ItemGroup>

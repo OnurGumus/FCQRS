@@ -16,6 +16,13 @@ type internal History() =
     member val Steps = Dictionary<string, StepState>()
     /// Stored signals no wait has consumed, oldest first.
     member val Signals = ResizeArray<struct (string * Payload)>()
+    /// Whether a cancel request is stored.
+    member val CancelRequested = false with get, set
+
+    /// Whether the journal holds a step at this path or under it.
+    member this.Reached(path: string) : bool =
+        this.Steps.ContainsKey path
+        || this.Steps.Keys |> Seq.exists (fun stored -> stored.StartsWith(path + "/"))
 
     /// Removes and returns the oldest stored signal with this name.
     member this.TakeSignal(name: string) : Payload voption =
@@ -38,6 +45,7 @@ type internal History() =
                 this.TakeSignal name |> ignore
         | WorkflowRecord.StepFailed(path, name, kind, error, _) -> this.Steps[path] <- Failed(name, kind, error)
         | WorkflowRecord.SignalReceived(name, payload, _, _) -> this.Signals.Add(struct (name, payload))
+        | WorkflowRecord.CancelRequested _ -> this.CancelRequested <- true
         | _ -> ()
 
 /// One line of execution: the body itself, or a branch of a parallel block. A branch's steps
@@ -50,6 +58,9 @@ type internal Fiber(prefix: string, parent: Fiber option) =
         let path = prefix + string next
         next <- next + 1
         path
+
+    /// The path the fiber's next step will take.
+    member _.PeekPath() = prefix + string next
 
     member _.Cancel() = cancelled <- true
 
@@ -138,7 +149,11 @@ type internal Machine(history: History, encodeResult: objnull -> Payload, clock:
         | Fail error -> onDone (Error error)
         | Lazy _ -> invalidOp "force leaves no Lazy"
         | Step(node, k) ->
-            let path = fiber.NextPath()
+            let path =
+                match node with
+                // A version marker sits beside the step sequence, so adding one moves no step.
+                | Leaf { Kind = StepKind.Version; Name = changeId } -> $"{fiber.PeekPath()}@{changeId}"
+                | _ -> fiber.NextPath()
 
             let resume (result: Result<objnull, exn>) =
                 queue.Enqueue(fun () ->
@@ -146,6 +161,10 @@ type internal Machine(history: History, encodeResult: objnull -> Payload, clock:
                         run fiber (WorkflowCore.protect (fun () -> k result)) onDone)
 
             match node with
+            | Leaf({ Kind = StepKind.Version } as leaf) when not (history.Steps.ContainsKey path) && history.Reached(fiber.PeekPath()) ->
+                // The instance passed this point before the marker existed: it runs the old code.
+                ignore leaf
+                resume (Ok(box 1))
             | Leaf leaf -> runLeaf fiber path leaf resume
             | AllOf(branches, limit) -> runAll fiber path (Array.ofList branches) limit resume
             | RaceOf branches -> runRace fiber path (Array.ofList branches) resume
@@ -283,6 +302,8 @@ type internal Machine(history: History, encodeResult: objnull -> Payload, clock:
                     WorkflowRecord.Faulted(Payload.errorOf ErrorKind.BodyFailed error, time)
 
             emits.Add(Store stored)
+        | Error(:? WorkflowStepFailedException as failed) when failed.Error.Kind = ErrorKind.Cancelled && history.CancelRequested ->
+            emits.Add(Store(WorkflowRecord.Cancelled time))
         | Error(:? WorkflowStepFailedException as failed) -> emits.Add(Store(WorkflowRecord.Faulted(failed.Error, time)))
         | Error error -> emits.Add(Store(WorkflowRecord.Faulted(Payload.errorOf ErrorKind.BodyFailed error, time)))
 
@@ -350,6 +371,7 @@ type internal Machine(history: History, encodeResult: objnull -> Payload, clock:
                 step.Resume(Error(WorkflowStepFailedException(path, name, error)))
             | _ -> ()
         | WorkflowRecord.SignalReceived(name, payload, _, _) -> history.Signals.Add(struct (name, payload))
+        | WorkflowRecord.CancelRequested _ -> history.CancelRequested <- true
         | _ -> ()
 
         drain ()

@@ -484,7 +484,71 @@ let private farTimerTest =
             Expect.equal (DateTime.Parse(due, null, Globalization.DateTimeStyles.RoundtripKind)) DateTime.MaxValue "the due time is capped"
         | other -> failtest $"expected a scheduled timer, found {other}"
 
+let private oldCode = workflow {
+    let! (price: decimal) = activity "price" (Retry.times 3) never
+    let! (stock: int) = activity "stock" (Retry.times 3) never
+    return $"{price}:{stock}"
+}
+
+/// The same workflow after a fraud check was added between its two steps.
+let private newCode = workflow {
+    let! (price: decimal) = activity "price" (Retry.times 3) never
+    let! change = version "add-fraud-check" 2
+    let! checkedBy = workflow {
+        if change >= 2 then
+            let! (verdict: string) = activity "fraud" (Retry.times 3) never
+            return verdict
+        else
+            return "unchecked"
+    }
+    let! (stock: int) = activity "stock" (Retry.times 3) never
+    return $"{price}:{stock}:{checkedBy}"
+}
+
+let private versionValues name =
+    match name with
+    | "price" -> Some(Ok(Payload.ofValue 12.5m))
+    | "stock" -> Some(Ok(Payload.ofValue 7))
+    | "fraud" -> Some(Ok(Payload.ofValue "clear"))
+    | _ -> None
+
+let private versionTest =
+    testCase "workflow machine: a version step lets running instances keep their old steps and new instances take new ones" <| fun _ ->
+        let fresh = drive [] versionValues newCode
+        Expect.equal (finished fresh |> Option.map Payload.toValue<string>) (Some "12.5:7:clear") "a new instance takes the new branch"
+        Expect.contains
+            (List.ofSeq fresh.Journal |> List.choose (function WorkflowRecord.StepCompleted(path, name, StepKind.Version, result, _) -> Some(path, name, Payload.toValue<int> result) | _ -> None))
+            ("1@add-fraud-check", "add-fraud-check", 2)
+            "its version is stored beside the step sequence"
+        replaysFromEveryPrefix (List.ofSeq fresh.Journal) versionValues newCode "12.5:7:clear"
+
+        let old = (drive [] versionValues oldCode).Journal |> List.ofSeq
+        // An instance that had begun its second step under the old code keeps the old steps.
+        for length in 3 .. old.Length - 1 do
+            let upgraded = drive (List.truncate length old) versionValues newCode
+            Expect.equal (finished upgraded |> Option.map Payload.toValue<string>) (Some "12.5:7:unchecked") $"an instance {length} records into the old code stays on it"
+            Expect.isFalse (upgraded.Journal |> Seq.exists (function WorkflowRecord.StepCompleted(_, _, StepKind.Version, _, _) -> true | _ -> false)) "and stores no version"
+        // An instance that had not reached the point takes the new branch.
+        let early = drive (List.truncate 2 old) versionValues newCode
+        Expect.equal (finished early |> Option.map Payload.toValue<string>) (Some "12.5:7:clear") "an instance that had not passed the point takes the new steps"
+
+let private versionLoopTest =
+    testCase "workflow machine: a version step in a loop stores a value for each iteration" <| fun _ ->
+        let body = workflow {
+            let mutable total = 0
+            for _ in 1 .. 3 do
+                let! change = version "loop-change" 2
+                let! (value: int) = activity "next" Retry.none never
+                total <- total + value * change
+            return total
+        }
+        let run = drive [] (fun _ -> Some(Ok(Payload.ofValue 1))) body
+        Expect.equal (finished run |> Option.map Payload.toValue<int>) (Some 6) "each iteration saw version 2"
+        let markers = run.Journal |> Seq.choose (function WorkflowRecord.StepCompleted(path, _, StepKind.Version, _, _) -> Some path | _ -> None) |> List.ofSeq
+        Expect.equal markers [ "0@loop-change"; "1@loop-change"; "2@loop-change" ] "one marker per iteration"
+        replaysFromEveryPrefix (List.ofSeq run.Journal) (fun _ -> Some(Ok(Payload.ofValue 1))) body 6
+
 let tests =
     testList "workflow machine"
         [ payloadTest; recordTest; liveTest; prefixTest; failureTest; unhandledTest; divergedTest; longTest; storedValueTest
-          allTest; allFailureTest; raceTest; limitTest; andTest; signalTest; liveSignalTest; unreadableTest; farTimerTest ]
+          allTest; allFailureTest; raceTest; limitTest; andTest; signalTest; liveSignalTest; unreadableTest; farTimerTest; versionTest; versionLoopTest ]
