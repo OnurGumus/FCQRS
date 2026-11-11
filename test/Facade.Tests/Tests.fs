@@ -2688,6 +2688,7 @@ let main argv =
     // A scenario that must terminate its process runs in a child started by its test.
     | [| flag; scenario; db |] when flag = JournalRejectionTests.ChildFlag -> JournalRejectionTests.runChild scenario db
     | [| flag; seed; db |] when flag = BankInvariantTests.ChildFlag -> BankInvariantTests.runChild seed db
+    | [| flag; seed; db |] when flag = WorkflowBankInvariantTests.ChildFlag -> WorkflowBankInvariantTests.runChild seed db
     | _ ->
         let allTests =
             testSequenced (testList "FCQRS" [
@@ -2707,6 +2708,7 @@ let main argv =
                 SagaStartOnceTests.tests
                 WorkflowMachineTests.tests
                 WorkflowTests.tests
+                WorkflowBankInvariantTests.tests
                 // Last: it checks the messages every earlier test sent.
                 VerifySerialization.tests
             ])

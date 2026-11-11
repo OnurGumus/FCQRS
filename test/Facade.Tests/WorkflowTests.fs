@@ -735,10 +735,99 @@ let private parkingTest =
         finally
             deleteDb db
 
+// ---------------------------------------------------------------------------
+// Akka.Streams and metrics.
+// ---------------------------------------------------------------------------
+
+open Akka.Streams.Dsl
+
+let private streamTest =
+    testCase "workflow: a stream starts one workflow per element, keeps to its limit, and a replayed stream starts none again" <| fun _ ->
+        withSystem "WorkflowStream" <| fun api ->
+            let calls = ConcurrentDictionary<int, int>()
+            let mutable running = 0
+            let mutable widest = 0
+            let flow =
+                Workflows.register api (Workflow.define "square" (fun (value: int) -> workflow {
+                    let! squared = activity "square" Retry.none (fun _ -> task {
+                        calls.AddOrUpdate(value, 1, fun _ seen -> seen + 1) |> ignore
+                        let now = Interlocked.Increment &running
+                        lock calls (fun () -> widest <- max widest now)
+                        do! Task.Delay 30
+                        Interlocked.Decrement &running |> ignore
+                        return value * value })
+                    return squared
+                }))
+            let run () =
+                Source.From([ 1 .. 20 ])
+                    .Via(WorkflowFlow.run flow (fun value -> $"sq{value}") 4 wait)
+                    .RunWith(Sink.Seq(), api.Materializer)
+                    .Result
+                |> List.ofSeq
+            let first = run ()
+            Expect.equal first [ for value in 1 .. 20 -> struct ($"sq{value}", WorkflowOutcome.Finished(value * value)) ] "outcomes come out in input order"
+            Expect.isLessThanOrEqual widest 4 "no more than four workflows ran at once"
+            // The same elements again, as an upstream that replays from its offset would send them.
+            Expect.equal (run ()) first "a replayed stream gets the same outcomes"
+            Expect.isTrue (calls.Values |> Seq.forall ((=) 1)) "and runs no activity again"
+            let starts =
+                Source.From([ 20; 21 ])
+                    .Via(WorkflowFlow.start flow (fun value -> $"sq{value}") 2)
+                    .RunWith(Sink.Seq(), api.Materializer)
+                    .Result
+                |> List.ofSeq
+            Expect.equal
+                starts
+                [ struct ("sq20", StartResult.AlreadyStarted WorkflowStatus.Completed); struct ("sq21", StartResult.Started) ]
+                "a start flow reports which elements started a workflow"
+
+let private metricsTest =
+    testCase "workflow: the meter counts starts, ends and retries, and times steps" <| fun _ ->
+        let measured = ConcurrentDictionary<string, float>()
+        use listener = new Metrics.MeterListener()
+        listener.InstrumentPublished <- fun instrument listener -> if instrument.Meter.Name = WorkflowTelemetry.MeterName then listener.EnableMeasurementEvents instrument
+        let add (name: string) (value: float) = measured.AddOrUpdate(name, value, fun _ seen -> seen + value) |> ignore
+        // A span of tags cannot leave the callback, so each callback reads its own.
+        listener.SetMeasurementEventCallback<int64>(
+            Metrics.MeasurementCallback<int64>(fun instrument value tags _ ->
+                let mutable ours = false
+                for tag in tags do
+                    if tag.Key = "fcqrs.workflow.name" && string tag.Value = "metered" then ours <- true
+                if ours then add instrument.Name (float value)))
+        listener.SetMeasurementEventCallback<float>(
+            Metrics.MeasurementCallback<float>(fun instrument value tags _ ->
+                let mutable ours = false
+                for tag in tags do
+                    if tag.Key = "fcqrs.workflow.name" && string tag.Value = "metered" then ours <- true
+                if ours then add instrument.Name value))
+        listener.Start()
+        withSystem "WorkflowMetrics" <| fun api ->
+            let mutable calls = 0
+            let flow =
+                Workflows.register api (Workflow.define "metered" (fun (fail: bool) -> workflow {
+                    let! (_: int) = activity "flaky" { fast with MaxAttempts = Some 3 } (fun _ -> task {
+                        if Interlocked.Increment &calls < 3 then failwith "not yet"
+                        return 1 })
+                    do! sleep (TimeSpan.FromMilliseconds 30.0)
+                    if fail then failwith "broken"
+                    return 1
+                }))
+            sync (flow.Start "m1" false) |> ignore
+            sync (flow.Result "m1" wait) |> ignore
+            sync (flow.Start "m2" true) |> ignore
+            sync (flow.Result "m2" wait) |> ignore
+            eventually "both ends were counted" (fun () -> measured.ContainsKey "fcqrs.workflow.finished" && measured.ContainsKey "fcqrs.workflow.faulted")
+            Expect.equal measured["fcqrs.workflow.started"] 2.0 "two workflows started"
+            Expect.equal measured["fcqrs.workflow.finished"] 1.0 "one finished"
+            Expect.equal measured["fcqrs.workflow.faulted"] 1.0 "one faulted"
+            Expect.equal measured["fcqrs.workflow.activity.retries"] 2.0 "two attempts were retried"
+            Expect.equal measured["fcqrs.workflow.running"] 0.0 "none is running at the end"
+            Expect.isGreaterThan measured["fcqrs.workflow.step.duration"] 0.0 "step durations were recorded"
+
 let tests =
     testSequenced (
         testList "workflow"
             [ startTest; faultTest; retryTest; shortTimerTest; restartTest; timerTest; tracingTest; startRaceTest; concurrentStartTest
               signalTest; signalRestartTest; commandTest; parallelCommandTest; commandRestartTest; unknownOutcomeTest
-              cancelTest; childTest; childRestartTest; parkingTest ]
+              cancelTest; childTest; childRestartTest; parkingTest; streamTest; metricsTest ]
     )

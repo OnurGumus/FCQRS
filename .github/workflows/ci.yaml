@@ -40,6 +40,12 @@ jobs:
         env:
           FCQRS_TEST_POSTGRES: "Host=localhost;Port=5432;Database=fcqrs_test;Username=fcqrs;Password=fcqrs-test"
         run: dotnet run --project test/Facade.Tests -c Release
+      - name: C# workflow tests
+        run: dotnet run --project test/Workflows.CSharp.Tests -c Release
+      - name: Workflow samples
+        run: |
+          dotnet run --project samples/workflows/fsharp -c Release
+          dotnet run --project samples/workflows/csharp -c Release
       - name: Samples build
         run: |
           dotnet build samples/getting-started-fsharp -c Release

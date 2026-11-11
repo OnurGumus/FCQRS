@@ -2,6 +2,20 @@ namespace FCQRS.Workflows
 
 open FCQRS.Common
 
+/// The names to register with a telemetry pipeline, for example OpenTelemetry's
+/// `tracing.AddSource(WorkflowTelemetry.ActivitySourceName)` and
+/// `metrics.AddMeter(WorkflowTelemetry.MeterName)`.
+type WorkflowTelemetry =
+    /// The source of workflow spans. It is also in `Telemetry.AllActivitySources`.
+    static member ActivitySourceName: string = Telemetry.WorkflowActivitySourceName
+    /// The meter of the workflow instruments:
+    /// `fcqrs.workflow.started`, `.finished`, `.faulted`, `.cancelled` (counters),
+    /// `fcqrs.workflow.running`, `.parked` (instances in memory in that state),
+    /// `fcqrs.workflow.step.duration` (milliseconds from a step's stored start to its end),
+    /// `fcqrs.workflow.activity.retries` (attempts that failed and were retried),
+    /// `fcqrs.workflow.recovery.duration` (milliseconds) and `fcqrs.workflow.recovery.records`.
+    static member MeterName: string = "FCQRS.Workflow"
+
 /// Where a workflow instance is.
 [<RequireQualifiedAccess>]
 type WorkflowStatus =

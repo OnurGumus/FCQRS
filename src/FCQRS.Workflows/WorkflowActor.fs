@@ -31,6 +31,18 @@ module internal WorkflowActor =
 
     let private source = new ActivitySource(Telemetry.WorkflowActivitySourceName)
 
+    let private meter = new Metrics.Meter(WorkflowTelemetry.MeterName)
+    let private startedCount = meter.CreateCounter<int64> "fcqrs.workflow.started"
+    let private finishedCount = meter.CreateCounter<int64> "fcqrs.workflow.finished"
+    let private faultedCount = meter.CreateCounter<int64> "fcqrs.workflow.faulted"
+    let private cancelledCount = meter.CreateCounter<int64> "fcqrs.workflow.cancelled"
+    let private runningCount = meter.CreateUpDownCounter<int64> "fcqrs.workflow.running"
+    let private parkedCount = meter.CreateUpDownCounter<int64> "fcqrs.workflow.parked"
+    let private stepDuration = meter.CreateHistogram<float>("fcqrs.workflow.step.duration", "ms")
+    let private retryCount = meter.CreateCounter<int64> "fcqrs.workflow.activity.retries"
+    let private recoveryDuration = meter.CreateHistogram<float>("fcqrs.workflow.recovery.duration", "ms")
+    let private recoveryRecords = meter.CreateHistogram<int64> "fcqrs.workflow.recovery.records"
+
     /// No single timer runs longer than this. A timer that fires early is armed again.
     let private longestTimer = TimeSpan.FromHours 12.0
 
@@ -60,6 +72,22 @@ module internal WorkflowActor =
         // are ignored, so an attempt outcome or timer of the previous incarnation changes nothing.
         let epoch = Random.Shared.NextInt64()
         let mutable passivationRequested = false
+        let created = Stopwatch.StartNew()
+        let mutable recovered = 0L
+        let nameTag = KeyValuePair<string, objnull>("fcqrs.workflow.name", box definition.Name)
+        // What this instance has added to the running and parked counts, taken back when it stops.
+        let mutable countedRunning = false
+        let mutable countedParked = false
+
+        let countRunning (running: bool) =
+            if running <> countedRunning then
+                countedRunning <- running
+                runningCount.Add((if running then 1L else -1L), nameTag)
+
+        let countParked (isParked: bool) =
+            if isParked <> countedParked then
+                countedParked <- isParked
+                parkedCount.Add((if isParked then 1L else -1L), nameTag)
 
         let history = History()
         let running = Dictionary<string, RunningStep>()
@@ -339,6 +367,8 @@ module internal WorkflowActor =
                 // A step at the wrong path, or a stored value the code can no longer read. An
                 // exception here would otherwise restart the actor into the same failure forever.
                 parked <- Some error.Message
+                countRunning false
+                countParked true
                 // The body ran against a journal it does not match: nothing of it may continue.
                 machine <- None
                 cleanup ()
@@ -354,6 +384,8 @@ module internal WorkflowActor =
             match record with
             | WorkflowRecord.Started(input, _, traceparent, _) ->
                 started <- Some(input, traceparent)
+                startedCount.Add(1L, nameTag)
+                countRunning true
                 mark $"Workflow.Start:{definition.Name}" None None None None
 
                 startSender
@@ -377,6 +409,10 @@ module internal WorkflowActor =
                     | true, Scheduled(_, _, scheduledAt, _) -> Some(at - scheduledAt)
                     | _ -> None
 
+                waited
+                |> Option.iter (fun waited ->
+                    stepDuration.Record(waited.TotalMilliseconds, nameTag, KeyValuePair<string, objnull>("fcqrs.workflow.step.kind", box (string kind))))
+
                 if kind = StepKind.Activity || kind = StepKind.Command then
                     release path error
                 else
@@ -391,6 +427,13 @@ module internal WorkflowActor =
             | WorkflowRecord.Cancelled _ ->
                 final <- Some record
                 cleanup ()
+                countRunning false
+                countParked false
+
+                match record with
+                | WorkflowRecord.Finished _ -> finishedCount.Add(1L, nameTag)
+                | WorkflowRecord.Faulted _ -> faultedCount.Add(1L, nameTag)
+                | _ -> cancelledCount.Add(1L, nameTag)
 
                 let error =
                     match record with
@@ -429,6 +472,7 @@ module internal WorkflowActor =
                     []
 
         let applyRecovered (record: WorkflowRecord) =
+            recovered <- recovered + 1L
             history.Apply record
 
             match record with
@@ -479,6 +523,8 @@ module internal WorkflowActor =
                                 step.Leaf.Name
                             )
 
+                            retryCount.Add(1L, nameTag)
+
                             schedule
                                 step.Path
                                 (retryDelay policy.Schedule message.Attempt)
@@ -506,8 +552,14 @@ module internal WorkflowActor =
                     return! loop ()
                 | Persisted mailbox (:? WorkflowRecord as record) -> return! store (applyLive record) (loop ())
                 | :? Akka.Persistence.RecoveryCompleted ->
+                    if recovered > 0L then
+                        recoveryDuration.Record(created.Elapsed.TotalMilliseconds, nameTag)
+                        recoveryRecords.Record(recovered, nameTag)
+
                     match started, final with
-                    | Some(input, _), None -> return! store (runBody input) (loop ())
+                    | Some(input, _), None ->
+                        countRunning true
+                        return! store (runBody input) (loop ())
                     | Some _, Some _ ->
                         // Remembered because the process stopped before its passivation finished.
                         passivate ()
@@ -629,6 +681,8 @@ module internal WorkflowActor =
                     | _ -> return! loop ()
                 | LifecycleEvent PostStop ->
                     cleanup ()
+                    countRunning false
+                    countParked false
                     return! loop ()
                 | PersistentLifecycleEvent(PersistRejected(error, _, sequenceNr)) ->
                     // The sequence number is used up, so the next record would leave a gap that stops
