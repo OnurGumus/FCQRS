@@ -511,6 +511,51 @@ let private commandRestartTest =
         finally
             deleteDb db
 
+/// Whether the gated aggregate replies. Static, so it outlives an actor system.
+let mutable private gatedReplies = false
+
+type GatedCommand = Knock
+type GatedEvent = Opened
+
+let private commandRecoveryTest =
+    testCase "workflow: a workflow that was waiting for a command's reply sends the command again soon after a restart" <| fun _ ->
+        let db = newDb ()
+        let gated (api: IActor) =
+            let handle =
+                Fcqrs.aggregate api
+                    { Name = "Gated"
+                      Initial = 0
+                      Decide = fun (_: Command<GatedCommand>) _ -> if gatedReplies then PersistEvent Opened else IgnoreEvent
+                      Fold = fun _ state -> state + 1
+                      Snapshots = NoSnapshots
+                      Passivation = PassivationPolicy.Default }
+            Fcqrs.wireSagaStarters api []
+            handle
+        let definition door =
+            Workflow.define "knocker" (fun (_: unit) -> workflow {
+                let! (_: GatedEvent) = send door "door" Knock
+                return "opened"
+            })
+        try
+            gatedReplies <- false
+            let first = boot db "WorkflowCommandRecovery" []
+            let flow = Workflows.register first (definition (gated first))
+            sync (flow.Start "k1" ()) |> ignore
+            eventually "the workflow is waiting for the reply" (fun () -> sync (flow.Status "k1") = WorkflowStatus.Running [ "0 send" ])
+            stop first
+            gatedReplies <- true
+            let second = boot db "WorkflowCommandRecovery" []
+            try
+                let timer = Diagnostics.Stopwatch.StartNew()
+                let flow = Workflows.register second (definition (gated second))
+                Expect.equal (sync (flow.Result "k1" wait)) (WorkflowOutcome.Finished "opened") "the command was sent again and answered"
+                printfn "workflow command recovery: the recovered command step finished %d ms after registration" timer.ElapsedMilliseconds
+                Expect.isLessThan timer.Elapsed (TimeSpan.FromSeconds 5.0) "the resend does not wait for a command timeout"
+            finally
+                stop second
+        finally
+            deleteDb db
+
 type SilentCommand = Ask
 type SilentEvent = Answered
 
@@ -556,6 +601,7 @@ let private cancelTest =
     testCase "workflow: a cancelled workflow fails its pending steps, runs its cleanup, and stays cancelled" <| fun _ ->
         let db = newDb ()
         let seen = ConcurrentBag<string>()
+        let cleanupGate = new ManualResetEventSlim(false)
         let definition =
             Workflow.define "booking" (fun (clean: bool) -> workflow {
                 try
@@ -573,6 +619,8 @@ let private cancelTest =
                 with :? WorkflowStepFailedException as failed when failed.Error.Kind = ErrorKind.Cancelled ->
                     if clean then
                         let! (_: int) = activity "release" Retry.none (fun _ -> task {
+                            seen.Add "release started"
+                            do! Task.Run(fun () -> cleanupGate.Wait())
                             seen.Add "released"
                             return 1 })
                         ()
@@ -585,6 +633,10 @@ let private cancelTest =
             sync (flow.Start "b1" true) |> ignore
             eventually "both branches are running" (fun () -> seen |> Seq.filter (fun text -> text.EndsWith "started") |> Seq.length = 2)
             sync (flow.Cancel "b1")
+            eventually "the cleanup step is running" (fun () -> seen |> Seq.contains "release started")
+            // A caller that retries its cancel request must not fail the cleanup that is running.
+            sync (flow.Cancel "b1")
+            cleanupGate.Set()
             Expect.equal (sync (flow.Result "b1" wait)) WorkflowOutcome.Cancelled "the workflow ended as cancelled"
             eventually "both activities saw their token cancelled" (fun () -> seen |> Seq.filter (fun text -> text.EndsWith "token cancelled") |> Seq.length = 2)
             Expect.contains seen "released" "the cleanup step ran"
@@ -828,6 +880,6 @@ let tests =
     testSequenced (
         testList "workflow"
             [ startTest; faultTest; retryTest; shortTimerTest; restartTest; timerTest; tracingTest; startRaceTest; concurrentStartTest
-              signalTest; signalRestartTest; commandTest; parallelCommandTest; commandRestartTest; unknownOutcomeTest
+              signalTest; signalRestartTest; commandTest; parallelCommandTest; commandRestartTest; commandRecoveryTest; unknownOutcomeTest
               cancelTest; childTest; childRestartTest; parkingTest; streamTest; metricsTest ]
     )

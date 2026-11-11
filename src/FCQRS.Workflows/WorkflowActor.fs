@@ -413,7 +413,8 @@ module internal WorkflowActor =
                 |> Option.iter (fun waited ->
                     stepDuration.Record(waited.TotalMilliseconds, nameTag, KeyValuePair<string, objnull>("fcqrs.workflow.step.kind", box (string kind))))
 
-                if kind = StepKind.Activity || kind = StepKind.Command then
+                // Activities, commands and child requests hold a token and a span while they run.
+                if running.ContainsKey path then
                     release path error
                 else
                     forget path
@@ -617,6 +618,11 @@ module internal WorkflowActor =
                         // Already over: there is nothing to cancel.
                         mailbox.UntypedContext.Sender.Tell(CancelAccepted, self)
                         passivate ()
+                        return! loop ()
+                    | Some _, None when history.CancelRequested ->
+                        // Already cancelling. A repeated request, such as a caller's retry, must not
+                        // fail the cleanup steps the body is running now.
+                        mailbox.UntypedContext.Sender.Tell(CancelAccepted, self)
                         return! loop ()
                     | Some _, None ->
                         cancelSenders.Enqueue mailbox.UntypedContext.Sender

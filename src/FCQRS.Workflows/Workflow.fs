@@ -346,7 +346,9 @@ module WorkflowSteps =
           MaxAttempts = None
           Deadline = Some(TimeSpan.FromMinutes 5.0)
           AttemptTimeout = None
-          ShouldRetry = fun error -> error :? TimeoutException }
+          // Core raises OperationCanceledException when the subscription stops with the actor
+          // system. The command may have been applied, so that is no reason to fail the step.
+          ShouldRetry = fun error -> error :? TimeoutException || error :? OperationCanceledException }
 
     let private correlationOf (key: string) : string =
         let hash = Security.Cryptography.SHA256.HashData(Text.Encoding.UTF8.GetBytes key)

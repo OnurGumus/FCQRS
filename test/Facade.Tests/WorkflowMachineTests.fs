@@ -548,7 +548,63 @@ let private versionLoopTest =
         Expect.equal markers [ "0@loop-change"; "1@loop-change"; "2@loop-change" ] "one marker per iteration"
         replaysFromEveryPrefix (List.ofSeq run.Journal) (fun _ -> Some(Ok(Payload.ofValue 1))) body 6
 
+let private wrongSignalTest =
+    testCase "workflow machine: a signal the wait cannot read fails that wait and is consumed" <| fun _ ->
+        let body = workflow {
+            let! first = workflow {
+                try
+                    let! (answer: string) = waitSignal "answer"
+                    return answer
+                with :? WorkflowStepFailedException as failed ->
+                    return string failed.Error.Kind
+            }
+            let! (second: string) = waitSignal "answer"
+            return first, second
+        }
+        // The first signal carries a number where the wait reads a string.
+        let run = drive [ signal "answer" 42; signal "answer" "two" ] (fun _ -> None) body
+        Expect.equal (finished run |> Option.map Payload.toValue<string * string>) (Some("NotRetryable", "two")) "the wait fails, and the next wait gets the next signal"
+        // From any point after both signals were stored, replay gives each wait the same outcome.
+        let journal = List.ofSeq run.Journal
+        for length in 2 .. journal.Length do
+            let replayed = drive (List.truncate length journal) (fun _ -> None) body
+            Expect.equal (finished replayed |> Option.map Payload.toValue<string * string>) (Some("NotRetryable", "two")) $"a restart after {length} records"
+
+let private versionInBranchTest =
+    testCase "workflow machine: a version step at the end of a branch gives 1 to an instance that passed the block" <| fun _ ->
+        let branch (guarded: bool) (name: string) = workflow {
+            let! (value: int) = activity name (Retry.times 3) never
+            if guarded then
+                let! change = version "check-branch" 2
+                if change >= 2 then
+                    let! (extra: int) = activity "extra" (Retry.times 3) never
+                    return value + extra
+                else
+                    return value
+            else
+                return value
+        }
+        let code (guarded: bool) = workflow {
+            let! values = all [ branch guarded "a"; branch false "b" ]
+            let! (last: int) = activity "sum" (Retry.times 3) never
+            return List.sum values + last
+        }
+        let values name =
+            match name with
+            | "a" -> Some(Ok(Payload.ofValue 1))
+            | "b" -> Some(Ok(Payload.ofValue 2))
+            | "sum" -> Some(Ok(Payload.ofValue 10))
+            | "extra" -> Some(Ok(Payload.ofValue 100))
+            | _ -> None
+        let old = (drive [] values (code false)).Journal |> List.ofSeq
+        // The old instance finished both branches and began the step after the block.
+        let passedBlock = old |> List.findIndex (function WorkflowRecord.StepScheduled("1", _, _, _, _) -> true | _ -> false)
+        let upgraded = drive (List.truncate (passedBlock + 1) old) values (code true)
+        Expect.equal (finished upgraded |> Option.map Payload.toValue<int>) (Some 13) "the instance keeps the old branch"
+        Expect.isFalse (upgraded.Begun |> Seq.exists (fun path -> path = "0/0/1")) "and does not run the new step"
+        Expect.equal (finished (drive [] values (code true)) |> Option.map Payload.toValue<int>) (Some 113) "a new instance runs it"
+
 let tests =
     testList "workflow machine"
         [ payloadTest; recordTest; liveTest; prefixTest; failureTest; unhandledTest; divergedTest; longTest; storedValueTest
-          allTest; allFailureTest; raceTest; limitTest; andTest; signalTest; liveSignalTest; unreadableTest; farTimerTest; versionTest; versionLoopTest ]
+          allTest; allFailureTest; raceTest; limitTest; andTest; signalTest; liveSignalTest; unreadableTest; farTimerTest; versionTest; versionLoopTest; wrongSignalTest; versionInBranchTest ]

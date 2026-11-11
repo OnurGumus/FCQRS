@@ -15,11 +15,20 @@ module ChildSteps =
     /// How long one request for a child's result waits before the parent asks again.
     let private resultTimeout = TimeSpan.FromMinutes 1.0
 
-    let private regionOf (api: IActor) (workflow: string) : IActorRef =
+    /// How many attempts wait for the child's workflow to be registered. A parent's running
+    /// instances resume as soon as the parent is registered, which can be before its children are.
+    let private registrationAttempts = 3
+
+    let private regionOf (api: IActor) (workflow: string) (attempt: int) : IActorRef =
         try
             ClusterSharding.Get(api.System).ShardRegion workflow
         with error ->
-            raise (InvalidOperationException($"Workflow '{workflow}' is not registered with this actor system, so it cannot run as a child.", error))
+            let message = $"Workflow '{workflow}' is not registered with this actor system, so it cannot run as a child."
+
+            if attempt <= registrationAttempts then
+                raise (TimeoutException(message, error))
+            else
+                raise (InvalidOperationException(message, error))
 
     let private envelope (id: string) (message: obj) : Akkling.Cluster.Sharding.ShardEnvelope =
         { ShardId = DEFAULT_SHARD
@@ -39,7 +48,7 @@ module ChildSteps =
           MaxAttempts = None
           Deadline = None
           AttemptTimeout = None
-          ShouldRetry = fun error -> not (error :? ChildEndedException) }
+          ShouldRetry = fun error -> not (error :? ChildEndedException || error :? InvalidOperationException) }
 
     /// Starts another workflow and gives its handle once the child's start is stored.
     /// The child's ID is this workflow's ID, a colon, and this step's path, so a repeated start
@@ -56,7 +65,7 @@ module ChildSteps =
                       Traceparent = currentTraceparent ()
                       Parent = Some $"{attempt.WorkflowName}/{attempt.WorkflowId}" }
 
-                let! reply = (regionOf attempt.Api definition.Name).Ask<obj>(envelope childId start, requestTimeout, attempt.Context.Cancellation)
+                let! reply = (regionOf attempt.Api definition.Name attempt.Context.Attempt).Ask<obj>(envelope childId start, requestTimeout, attempt.Context.Cancellation)
 
                 match reply with
                 | :? StartReply ->
@@ -77,7 +86,7 @@ module ChildSteps =
         let run (attempt: AttemptEnv) : Task<objnull> =
             task {
                 let! reply =
-                    (regionOf attempt.Api handle.Workflow).Ask<obj>(envelope handle.Id AwaitResult, resultTimeout, attempt.Context.Cancellation)
+                    (regionOf attempt.Api handle.Workflow attempt.Context.Attempt).Ask<obj>(envelope handle.Id AwaitResult, resultTimeout, attempt.Context.Cancellation)
 
                 match reply with
                 | :? ResultReply as reply ->
@@ -97,7 +106,7 @@ module ChildSteps =
                   Encode = Payload.encode typeof<'Result>
                   Decode = Payload.decode typeof<'Result>
                   Op = ActivityOp(awaitPolicy, run)
-                  OnCancel = Some(fun api -> (regionOf api handle.Workflow).Tell(envelope handle.Id CancelWorkflow, ActorRefs.NoSender)) },
+                  OnCancel = Some(fun api -> (regionOf api handle.Workflow Int32.MaxValue).Tell(envelope handle.Id CancelWorkflow, ActorRefs.NoSender)) },
             WorkflowCore.unboxed<'Result>
         )
 

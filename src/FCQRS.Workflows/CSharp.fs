@@ -104,11 +104,24 @@ type WorkflowTask<'T> internal () =
         | Failed error -> Fail error
         | Running -> Fail(InvalidOperationException "The workflow method did not reach an await or its end.")
         | Awaiting awaiter ->
-            WorkflowCore.bind (WorkflowCore.attempt awaiter.Node) (fun result ->
+            let advance (result: Result<objnull, exn>) =
                 awaiter.Complete result
                 this.State <- Running
                 this.MoveNext()
-                this.AsWorkflow())
+
+            // An awaited method that reached no step is over already. Continue in a loop, so a
+            // long run of such awaits does not grow the stack.
+            match WorkflowCore.force awaiter.Node with
+            | Return value ->
+                advance (Ok value)
+                this.AsWorkflow()
+            | Fail error ->
+                advance (Error error)
+                this.AsWorkflow()
+            | node ->
+                WorkflowCore.bind (WorkflowCore.attempt node) (fun result ->
+                    advance result
+                    this.AsWorkflow())
 
     /// Lets one workflow method `await` another. The other method's steps join this workflow.
     member this.GetAwaiter() = StepAwaiter<'T>(WorkflowCore.boxed (this.AsWorkflow()))
@@ -370,6 +383,14 @@ type WorkflowHost =
 
             member _.CancelAsync(id) = handle.Cancel id |> Async.StartAsTask :> Task }
 
+/// The client of one workflow class. Inject it when two workflows have the same input and result
+/// types, where `IWorkflowClient<TInput, TResult>` alone would not say which one is meant.
+[<Sealed>]
+type WorkflowClient<'TWorkflow, 'TInput, 'TResult when 'TWorkflow :> Workflow<'TInput, 'TResult>>
+    internal (client: IWorkflowClient<'TInput, 'TResult>) =
+    /// The workflow's client.
+    member _.Client = client
+
 /// Registers every workflow added with `AddWorkflow` when the host starts, so instances that
 /// were running when the process last stopped resume without waiting for a request.
 type internal WorkflowStarter(services: IServiceProvider, registrations: IEnumerable<WorkflowRegistration>) =
@@ -397,18 +418,23 @@ type WorkflowServiceExtensions =
     static member AddWorkflow<'TWorkflow, 'TInput, 'TResult when 'TWorkflow :> Workflow<'TInput, 'TResult>>
         (services: IServiceCollection)
         : IServiceCollection =
-        services.AddSingleton<IWorkflowClient<'TInput, 'TResult>>(fun (provider: IServiceProvider) ->
+        // One registration per workflow class, so two workflows with the same input and result
+        // types are both registered at startup.
+        services.AddSingleton<WorkflowClient<'TWorkflow, 'TInput, 'TResult>>(fun (provider: IServiceProvider) ->
             let workflow = ActivatorUtilities.CreateInstance<'TWorkflow> provider
-            WorkflowHost.Register(provider.GetRequiredService<IActor>(), workflow))
+            WorkflowClient<'TWorkflow, 'TInput, 'TResult>(WorkflowHost.Register(provider.GetRequiredService<IActor>(), workflow)))
+        |> ignore
+
+        // With several workflows of these types, this resolves the one added last.
+        services.AddSingleton<IWorkflowClient<'TInput, 'TResult>>(fun (provider: IServiceProvider) ->
+            provider.GetRequiredService<WorkflowClient<'TWorkflow, 'TInput, 'TResult>>().Client)
         |> ignore
 
         services.AddSingleton<WorkflowRegistration>(
-            WorkflowRegistration(fun provider -> provider.GetRequiredService<IWorkflowClient<'TInput, 'TResult>>() |> ignore)
+            WorkflowRegistration(fun provider -> provider.GetRequiredService<WorkflowClient<'TWorkflow, 'TInput, 'TResult>>() |> ignore)
         )
         |> ignore
 
-        // Added once, however many workflows are registered.
-        if not (services |> Seq.exists (fun service -> service.ImplementationType = typeof<WorkflowStarter>)) then
-            services.AddHostedService<WorkflowStarter>() |> ignore
-
+        // The host adds one starter however many workflows are registered.
+        services.AddHostedService<WorkflowStarter>() |> ignore
         services

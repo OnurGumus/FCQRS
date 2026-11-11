@@ -113,7 +113,8 @@ let approve =
 `Workflows.signal handle id "approval" true` stores the signal and then returns. A signal that
 arrives before the body reaches its wait is kept, and waits consume signals with one name oldest
 first. `waitSignalFor` gives `None` when its time passes; a signal that arrives later stays stored
-for the next wait.
+for the next wait. A signal whose payload the wait cannot read fails that wait with
+`WorkflowStepFailedException` and is consumed.
 
 A timer stores its due time when the body first reaches it. A restart arms it again with the time
 that remains.
@@ -219,6 +220,11 @@ let booking =
 A body that lets the cancellation pass ends as cancelled. A body that catches it and returns a value
 ends as finished. A child the body was waiting for is cancelled with it.
 
+- Put cleanup around a parallel block, not inside one branch. When one branch of `all` fails, the
+  other branches are abandoned, and a cleanup step a branch had begun is abandoned with it.
+- A second cancel request while cleanup runs changes nothing.
+- A child that was started with `startChild` and is not being awaited keeps running.
+
 ## Change a workflow while instances are running
 
 The journal stores each step's name, kind, and position. On replay, the body must ask for the same
@@ -245,7 +251,15 @@ let evolving =
 ```
 
 A new instance stores 2 and takes the new branch. An instance that had already passed this point
-gets 1 and keeps its old steps. For a large change, register the new code under a new workflow name
+gets 1 and keeps its old steps.
+
+FCQRS decides "had passed" from the journal: a step after the `version` step is stored. Two cases
+follow from that:
+
+- Put a `version` step before the steps it guards and before at least one step the old code already
+  had. A `version` step added as the last step of a workflow gives 2 to every running instance.
+- In a loop, an instance that is part-way through gets 1 for the iterations it has done and 2 for
+  the ones it has not. For a large change, register the new code under a new workflow name
 and keep the old definition until its instances have ended.
 
 An instance whose journal does not match its code is **parked**. It runs nothing, logs an error,

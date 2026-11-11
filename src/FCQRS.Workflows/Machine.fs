@@ -43,7 +43,12 @@ type internal History() =
             // A wait consumed the oldest signal with its name, unless its timeout passed first.
             if kind = StepKind.Signal && result <> Payload.timedOut then
                 this.TakeSignal name |> ignore
-        | WorkflowRecord.StepFailed(path, name, kind, error, _) -> this.Steps[path] <- Failed(name, kind, error)
+        | WorkflowRecord.StepFailed(path, name, kind, error, _) ->
+            this.Steps[path] <- Failed(name, kind, error)
+
+            // A wait that could not read its signal consumed it all the same.
+            if kind = StepKind.Signal && error.Kind = ErrorKind.NotRetryable then
+                this.TakeSignal name |> ignore
         | WorkflowRecord.SignalReceived(name, payload, _, _) -> this.Signals.Add(struct (name, payload))
         | WorkflowRecord.CancelRequested _ -> this.CancelRequested <- true
         | _ -> ()
@@ -61,6 +66,9 @@ type internal Fiber(prefix: string, parent: Fiber option) =
 
     /// The path the fiber's next step will take.
     member _.PeekPath() = prefix + string next
+
+    /// The block this branch belongs to, if it is a branch.
+    member _.Parent = parent
 
     member _.Cancel() = cancelled <- true
 
@@ -139,9 +147,32 @@ type internal Machine(history: History, encodeResult: objnull -> Payload, clock:
                 match history.TakeSignal step.Leaf.Name with
                 | ValueSome payload ->
                     signalWaits.Remove path |> ignore
-                    emits.Add(Store(WorkflowRecord.StepCompleted(path, step.Leaf.Name, step.Leaf.Kind, payload, clock ())))
+
+                    let record =
+                        try
+                            step.Leaf.Decode payload |> ignore
+                            WorkflowRecord.StepCompleted(path, step.Leaf.Name, step.Leaf.Kind, payload, clock ())
+                        with error ->
+                            // A signal of the wrong type must not be stored as the wait's result:
+                            // no replay could read it. The wait fails, and the body can handle it.
+                            let unreadable =
+                                { Kind = ErrorKind.NotRetryable
+                                  ExceptionType = error.GetType().FullName |> Unchecked.nonNull
+                                  Message = $"Signal '{step.Leaf.Name}' carried a {payload.Type} this wait cannot read: {error.Message}" }
+
+                            WorkflowRecord.StepFailed(path, step.Leaf.Name, step.Leaf.Kind, unreadable, clock ())
+
+                    emits.Add(Store record)
                 | ValueNone -> ()
             | _ -> signalWaits.Remove path |> ignore
+
+    /// Whether the journal shows that the instance went past the fiber's next step: a step is
+    /// stored there, or the block the fiber is a branch of was itself passed.
+    let rec passed (fiber: Fiber) : bool =
+        history.Reached(fiber.PeekPath())
+        || (match fiber.Parent with
+            | Some parent -> passed parent
+            | None -> false)
 
     let rec run (fiber: Fiber) (workflow: Workflow<objnull>) (onDone: Result<objnull, exn> -> unit) : unit =
         match WorkflowCore.force workflow with
@@ -161,7 +192,7 @@ type internal Machine(history: History, encodeResult: objnull -> Payload, clock:
                         run fiber (WorkflowCore.protect (fun () -> k result)) onDone)
 
             match node with
-            | Leaf({ Kind = StepKind.Version } as leaf) when not (history.Steps.ContainsKey path) && history.Reached(fiber.PeekPath()) ->
+            | Leaf({ Kind = StepKind.Version } as leaf) when not (history.Steps.ContainsKey path) && passed fiber ->
                 // The instance passed this point before the marker existed: it runs the old code.
                 ignore leaf
                 resume (Ok(box 1))

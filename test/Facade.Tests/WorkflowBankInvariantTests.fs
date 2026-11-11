@@ -303,19 +303,26 @@ let private killAndCheck (database: string) (rounds: int) (journal: Journal) =
         finally
             api.Stop().Wait(TimeSpan.FromSeconds 30.0) |> ignore
 
-    let confirmed =
-        [ for round in 1..rounds do
-            yield! killDuringTransfers journal (seed + 100 * round) (TimeSpan.FromMilliseconds(float (random.Next(300, 2000)))) ]
-
-    // The transfers the last kill left unfinished, read before any workflow recovers.
-    let unfinished =
+    // The transfers a kill left unfinished, read before any workflow recovers.
+    let unfinishedNow () =
         let reader = actorOn journal
         try
             (unfinishedIn reader).Length
         finally
             reader.Stop().Wait(TimeSpan.FromSeconds 30.0) |> ignore
 
+    let rounds =
+        [ for round in 1..rounds do
+            let started = killDuringTransfers journal (seed + 100 * round) (TimeSpan.FromMilliseconds(float (random.Next(300, 2000))))
+            started, unfinishedNow () ]
+    let confirmed = rounds |> List.collect fst
+    let interrupted = rounds |> List.sumBy snd
+    let unfinished = rounds |> List.last |> snd
+    // Without this, the test would pass even if every transfer had finished before each kill.
+    Expect.isGreaterThan interrupted 0 $"kills landed while transfers were running ({context})"
+
     // A new process recovers the transfers the kills interrupted. Nothing is sent to them.
+    let recovery = Stopwatch.StartNew()
     let api, vaults, transfers = start journal
     try
         let ended id =
@@ -326,8 +333,9 @@ let private killAndCheck (database: string) (rounds: int) (journal: Journal) =
         let deadline = DateTime.UtcNow.AddSeconds 180.0
         let mutable ids, _ = stored api
         while not (List.forall ended ids) && DateTime.UtcNow < deadline do
-            Thread.Sleep 1000
+            Thread.Sleep 200
             ids <- fst (stored api)
+        let recovered = recovery.Elapsed
         Expect.isTrue (List.forall ended ids) $"every started transfer ended ({context})"
 
         let ids, events = stored api
@@ -338,8 +346,8 @@ let private killAndCheck (database: string) (rounds: int) (journal: Journal) =
         let taken = pick (function Taken(id, _) -> Some id | _ -> None)
         let given = pick (function Given(id, _) -> Some id | _ -> None)
         let back = pick (function GivenBack(id, _) -> Some id | _ -> None)
-        printfn "workflow bank invariant (%s): %d transfers started, %d taken, %d given, %d given back; %d were unfinished after the last kill"
-            context ids.Length taken.Length given.Length back.Length unfinished
+        printfn "workflow bank invariant (%s): %d transfers started, %d taken, %d given, %d given back; kills found %d transfers unfinished, %d after the last, which ended %.1f s after the new process started"
+            context ids.Length taken.Length given.Length back.Length interrupted unfinished recovered.TotalSeconds
         let once (list: string list) what =
             Expect.isEmpty (list |> List.countBy id |> List.filter (fun (_, count) -> count > 1)) $"each transfer {what} once ({context})"
         once taken "was taken"

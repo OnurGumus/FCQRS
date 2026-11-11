@@ -142,13 +142,20 @@ async Task Eventually(Func<bool> condition, string what)
     builder.Services.AddFcqrs($"Data Source={db};", "CSharpHost");
     builder.Services.AddSingleton(new Greeting("hello"));
     builder.Services.AddWorkflow<GreetWorkflow, string, string>();
+    // A second workflow with the same input and result types.
+    builder.Services.AddWorkflow<ShoutWorkflow, string, string>();
     using var host = builder.Build();
     await host.StartAsync();
     try
     {
-        var greet = host.Services.GetRequiredService<IWorkflowClient<string, string>>();
+        var greet = host.Services.GetRequiredService<WorkflowClient<GreetWorkflow, string, string>>().Client;
         await greet.StartAsync("g1", "Ada");
         Check(await greet.ResultAsync("g1", wait) == "hello Ada", "a workflow added to the host gets its constructor's services");
+        var shout = host.Services.GetRequiredService<WorkflowClient<ShoutWorkflow, string, string>>().Client;
+        await shout.StartAsync("s1", "Ada");
+        Check(await shout.ResultAsync("s1", wait) == "ADA", "two workflows with the same input and result types are both registered");
+        var latest = host.Services.GetRequiredService<IWorkflowClient<string, string>>();
+        Check(latest.Name == "shout", "the plain client interface resolves the workflow added last");
     }
     finally
     {
@@ -300,6 +307,14 @@ public sealed class WaitingWorkflow() : Workflow<int, int>("waiting")
                 return Task.FromResult(1);
             });
         }
+    }
+}
+
+public sealed class ShoutWorkflow() : Workflow<string, string>("shout")
+{
+    public override async WorkflowTask<string> Run(WorkflowContext ctx, string name)
+    {
+        return await ctx.Activity("shout", Retry.none, _ => Task.FromResult(name.ToUpperInvariant()));
     }
 }
 
