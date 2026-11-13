@@ -75,6 +75,9 @@ coverage. highlight.js colours a C# type name only where it is declared, so
 `content/language-tabs.js` colours the other type names from the code around them, without a
 compiler. It can miss a type name or colour a property that stands where a type could.
 `<div class="cs-alt"></div>` pairs adjacent language alternatives in the rendered site.
+A page address with `?lang=csharp` (or `cs`) opens its examples in C#, and `?lang=fsharp` (or `fs`)
+in F#. Choosing a tab writes the choice into the address, so the address bar can be copied as a
+link.
 An F# example's collapsed setup stays in its F# tab, so it is hidden when C# is selected.
 F# examples and samples write a multi-line record, list, object expression, or computation
 expression in Stroustrup style: the opening brace or bracket ends a line, and the closing one

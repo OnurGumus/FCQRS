@@ -4,6 +4,21 @@
   const key = 'fcqrs-lang';
   let language = 'fsharp';
   try { language = localStorage.getItem(key) === 'csharp' ? 'csharp' : 'fsharp'; } catch (_) {}
+  // ?lang=csharp (or cs) and ?lang=fsharp (or fs) choose the language, so a link can open a page
+  // in C#. Choosing a tab writes the choice into the address, ready to copy.
+  const names = { csharp: 'csharp', cs: 'csharp', 'c#': 'csharp', fsharp: 'fsharp', fs: 'fsharp', 'f#': 'fsharp' };
+  try {
+    const requested = names[(new URLSearchParams(location.search).get('lang') || '').toLowerCase()];
+    if (requested) language = requested;
+  } catch (_) {}
+  function choose(value) {
+    apply(value);
+    try {
+      const url = new URL(location.href);
+      url.searchParams.set('lang', value);
+      history.replaceState(history.state, '', url);
+    } catch (_) {}
+  }
 
   function apply(value) {
     language = value;
@@ -65,13 +80,13 @@
       button.id = `example-${index}-${lang}-tab`;
       button.setAttribute('role', 'tab');
       button.setAttribute('aria-controls', `example-${index}-${lang}`);
-      button.addEventListener('click', () => apply(lang));
+      button.addEventListener('click', () => choose(lang));
       button.addEventListener('keydown', event => {
         if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
         event.preventDefault();
         const next = event.key === 'Home' ? 'fsharp' : event.key === 'End' ? 'csharp' :
           lang === 'fsharp' ? 'csharp' : 'fsharp';
-        apply(next);
+        choose(next);
         bar.querySelector(`[data-lang="${next}"]`).focus();
       });
       bar.appendChild(button);
