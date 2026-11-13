@@ -125,9 +125,37 @@ def read_the_clock(root):
                   '  10 Finished'], output)
 
 
+def reserve(id, quantity, number):
+    key = f'order/{id}/0'
+    return [f'  warehouse busy (key {key})', f'  warehouse busy (key {key})',
+            f'  warehouse reserved {quantity} widget (key {key})']
+
+
+# The journal of o-1 after it ran five steps.
+SHIPPED_JOURNAL = ['Journal of order/default-shard/o-1:'] + [
+    f'  {number} {record}' for number, record in enumerate(
+        ['Started', 'StepScheduled', 'StepCompleted', 'StepCompleted', 'StepCompleted', 'StepScheduled',
+         'StepCompleted', 'StepScheduled', 'StepCompleted', 'Finished'], 1)]
+
+
+def wait_for_approval(root):
+    [output] = runs(root, [('4-wait-for-approval', [], 0)])
+    # o-2's signal is sent right after its start, before the body waits for it, and is kept.
+    # o-3 gets no signal; after three seconds its wait ends without one.
+    same(output, ['Started o-1'] + reserve('o-1', 2, 1) +
+                 ['  carrier shipped r-1 (key order/o-1/4)',
+                  'o-1 finished: shipped as s-1',
+                  'Started o-2'] + reserve('o-2', 30, 2) +
+                 ['  carrier shipped r-2 (key order/o-2/5)',
+                  'o-2 finished: shipped as s-2',
+                  'Started o-3'] + reserve('o-3', 50, 3) +
+                 ['o-3 finished: not approved'] + SHIPPED_JOURNAL, output)
+
+
 STEPS = {'1-place-an-order': place_an_order,
          '2-retry-the-warehouse': retry_the_warehouse,
-         '3-read-the-clock': read_the_clock}
+         '3-read-the-clock': read_the_clock,
+         '4-wait-for-approval': wait_for_approval}
 
 # Optional arguments select steps by folder name, for example: 2-retry-the-warehouse
 selected = sys.argv[1:] or list(STEPS)

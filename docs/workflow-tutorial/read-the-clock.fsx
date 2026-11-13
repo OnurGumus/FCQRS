@@ -432,7 +432,7 @@ The journal shows the kinds of steps:
 
 ## Next
 
-Step 4: Wait for approval makes large orders wait for a person.
+[Step 4: Wait for approval](wait-for-approval.html) makes large orders wait for a person.
 
 *)
 
