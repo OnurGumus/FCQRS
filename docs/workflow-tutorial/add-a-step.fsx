@@ -572,9 +572,13 @@ The stand-in warehouse and carrier number their IDs from 1 in each process, so `
 
 Changes that keep each running order's stored steps in place are safe:
 
-- changing what an activity does, such as the code inside `Reserve`;
+- changing what an activity does, such as the code inside `Reserve`, as long as it returns the
+  same type;
 - changing steps that no running order has reached yet;
-- any change to a workflow that has no running orders.
+- changing the steps of a workflow that has no running orders.
+
+The input and result types are stored with every order, running or ended, so a change to their
+fields must keep the stored orders readable.
 
 Adding, removing, reordering, or renaming a step that a running order has passed is not. Step and
 workflow names are part of what is stored, so a renamed step parks every order that stored it.

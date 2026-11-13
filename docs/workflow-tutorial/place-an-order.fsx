@@ -129,8 +129,8 @@ public sealed record OrderResult(string Reservation);
 ```
 
 A workflow takes one input and returns one result. FCQRS stores both as JSON, so their field
-names are part of what is stored. Renaming a field later makes the stored orders unreadable to the
-new code.
+names are part of what is stored. After a field is renamed, the new code does not find that field
+in the orders already stored.
 
 ## Describe the warehouse
 

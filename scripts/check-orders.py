@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Run each workflow tutorial step from a clean copy and check the output its page shows."""
+"""Run each workflow tutorial step from a clean copy, check its output, and check that its page's
+"Run it" blocks show that output."""
 import re
 import shutil
 import subprocess
@@ -15,9 +16,9 @@ LANGUAGES = ['fsharp', 'csharp']
 
 
 def normalise(output):
-    """Replace the values that differ on every run with the placeholders the pages show."""
-    output = re.sub(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', '<guid>', output)
-    return re.sub(r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z?', '<time>', output)
+    """Replace the values that differ on every run, GUIDs and times, with the `…` the pages show."""
+    output = re.sub(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', '…', output)
+    return re.sub(r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?', '…', output)
 
 
 def run(project, *args, expect_exit=0):
@@ -81,6 +82,7 @@ def place_an_order(root):
                  '  4 Finished'], first)
     # The second run finds o-1 in the journal: nothing is stored and the warehouse is not called.
     same(second, ['o-1 is already started (Completed)'] + first[2:], second)
+    return [first, second]
 
 
 JOURNAL = ['Journal of order/default-shard/o-1:',
@@ -99,6 +101,7 @@ def retry_the_warehouse(root):
                   '  warehouse reserved 2 widget (key order/o-1/0)',
                   'o-1 finished: reservation r-1',
                   'o-1 is already started (Completed)'] + JOURNAL, output)
+    return [output]
 
 
 RESERVE = ['  warehouse busy (key order/o-1/0)',
@@ -112,7 +115,7 @@ def read_the_clock(root):
                  ['o-1 status: Running ["3 sleep"]',
                   '  carrier shipped r-1 (key order/o-1/4)',
                   'o-1 finished: reservation r-1, shipment s-1',
-                  '  confirmation <guid>, placed <time>',
+                  '  confirmation …, placed …',
                   'o-1 is already started (Completed)',
                   'Journal of order/default-shard/o-1:',
                   '  1 Started',
@@ -125,6 +128,7 @@ def read_the_clock(root):
                   '  8 StepScheduled',
                   '  9 StepCompleted',
                   '  10 Finished'], output)
+    return [output]
 
 
 def reserve(id, quantity, number):
@@ -152,6 +156,7 @@ def wait_for_approval(root):
                   'o-2 finished: shipped as s-2',
                   'Started o-3'] + reserve('o-3', 50, 3) +
                  ['o-3 finished: not approved'] + SHIPPED_JOURNAL, output)
+    return [output]
 
 
 def restart_during_shipping(root):
@@ -166,6 +171,7 @@ def restart_during_shipping(root):
     same(second, ['o-1 is already started (Running ["4 ship"])',
                   '  carrier shipped r-1 (key order/o-1/4)',
                   'o-1 finished: shipped as s-1'] + SHIPPED_JOURNAL, second)
+    return [first, second]
 
 
 def charge_the_customer(root):
@@ -185,12 +191,13 @@ def charge_the_customer(root):
           'Started o-4'] + reserve('o-4', 2, 4) +
          ['  warehouse released r-4 (key order/o-4/4)',
           'o-4 finished: payment refused',
-          # o-1's journal has the send step's records, 10 and 11.
+          # o-1's journal has the send step's records, 6 and 7.
           'Journal of order/default-shard/o-1:'] +
          [f'  {number} {record}' for number, record in enumerate(
              ['Started', 'StepScheduled', 'StepCompleted', 'StepCompleted', 'StepCompleted',
               'StepScheduled', 'StepCompleted', 'StepScheduled', 'StepCompleted', 'StepScheduled',
               'StepCompleted', 'Finished'], 1)], output)
+    return [output]
 
 
 def no_gizmo(id):
@@ -212,12 +219,13 @@ def when_a_step_fails(root):
           # o-7 is left waiting for its approval; step 8 finds it running.
           'Started o-7'] + reserve('o-7', 30, 1) +
          ['o-7 status: Running ["3 approval"]',
-          # o-6 was charged (records 8 and 9) before ship failed (10 and 11).
+          # o-6 was charged (records 6 and 7) before ship failed (10 and 11).
           'Journal of order/default-shard/o-6:'] +
          [f'  {number} {record}' for number, record in enumerate(
              ['Started', 'StepScheduled', 'StepCompleted', 'StepCompleted', 'StepCompleted',
               'StepScheduled', 'StepCompleted', 'StepScheduled', 'StepCompleted', 'StepScheduled',
               'StepFailed', 'Faulted'], 1)], output)
+    return [output]
 
 
 def add_a_step(root):
@@ -236,6 +244,7 @@ def add_a_step(root):
          [f'  {number} {record}' for number, record in enumerate(
              ['Started', 'StepScheduled', 'StepCompleted', 'StepCompleted', 'StepCompleted',
               'StepScheduled', 'SignalReceived'], 1)], output)
+    return [output]
 
 
 def guard_the_change(root):
@@ -259,6 +268,7 @@ def guard_the_change(root):
               'StepScheduled', 'SignalReceived', 'StepCompleted', 'StepScheduled', 'StepCompleted',
               'StepScheduled', 'StepCompleted', 'StepScheduled', 'StepCompleted', 'Finished'], 1)],
          output)
+    return [output]
 
 
 STEPS = {'1-place-an-order': place_an_order,
@@ -276,7 +286,22 @@ selected = sys.argv[1:] or list(STEPS)
 unknown = [step for step in selected if step not in STEPS]
 assert not unknown, f'unknown steps: {unknown}'
 
+def page_outputs(step):
+    """The program output a step's page shows: the text blocks in its "Run it" sections that are
+    not commands to run."""
+    page = ROOT / 'docs/workflow-tutorial' / (step.split('-', 1)[1] + '.fsx')
+    sections = re.split(r'^(?=## )', page.read_text(), flags=re.M)
+    runs_shown = ''.join(section for section in sections if section.startswith('## Run it'))
+    blocks = re.findall(r'^```text\n(.*?)\n```', runs_shown, re.S | re.M)
+    return [block.splitlines() for block in blocks
+            if not all(line.startswith('dotnet ') for line in block.splitlines())]
+
+
 for step in selected:
     with tempfile.TemporaryDirectory(prefix='fcqrs-orders-') as temp:
-        STEPS[step](Path(temp))
-        print(f'{step} passed (F# and C#).', flush=True)
+        outputs = STEPS[step](Path(temp))
+    shown = page_outputs(step)
+    assert len(shown) == len(outputs), f'{step}: the page shows {len(shown)} outputs, the check ran {len(outputs)}'
+    for printed, page in zip(outputs, shown):
+        same(page, printed, printed)
+    print(f'{step} passed (F# and C#, and its page).', flush=True)

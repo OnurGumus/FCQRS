@@ -415,7 +415,9 @@ The step's result is stored like an activity's, so a replay does not send the co
 process stops after the step began and before the reply was stored, FCQRS sends the command again,
 with the same correlation ID, and the account's repeat rule answers it.
 
-The step waits up to five minutes for a reply. With none, it fails as `OutcomeUnknown`. That is not
+The step waits up to five minutes for a reply, and while it waits it sends the command again,
+with the same correlation ID, each time an attempt times out. With no reply by then, it fails as
+`OutcomeUnknown`. That is not
 a refusal: the account may have taken the money, and its reply may have been lost.
 [Step 7](when-a-step-fails.html) shows how a body catches a failed step.
 
@@ -724,8 +726,9 @@ Journal of order/default-shard/o-1:
 - `o-3` was not approved, and its stock was released.
 - `o-4` costs 80 and Bob has 50. The account refused the debit, and the stock was released.
 
-`o-1`'s journal has two more records than in step 5: records 10 and 11 are the payment step, a
-`StepScheduled` when the command was sent and a `StepCompleted` with the reply.
+`o-1`'s journal has two more records than in step 5: records 6 and 7 are the payment step, a
+`StepScheduled` when the command was sent and a `StepCompleted` with the reply. The packing timer
+(8 and 9) and `ship` (10 and 11) follow it.
 
 ## Next
 

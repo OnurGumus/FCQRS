@@ -239,9 +239,9 @@ public sealed class OrderWorkflow(
 
 The handler catches only a failure of `reserve-stock`, checked by `StepName`. If the warehouse
 cannot reserve the stock, nothing has happened yet, so the order can end with a result,
-`out of stock`. The exception also carries `Error.Kind`, which tells why the step failed:
-`Exhausted` when the attempts ran out, `DeadlineExceeded` when the step's deadline passed, and
-`OutcomeUnknown` when a command got no reply.
+`out of stock`. The exception also carries `Error.Kind`, which tells why the step failed, for
+example `Exhausted` when the attempts ran out, `DeadlineExceeded` when the step's deadline passed,
+or `OutcomeUnknown` when a command got no reply.
 
 A failure of any other step is not caught. It leaves the body, and the order **faults**: FCQRS
 stores the failure as the order's end, and the order runs nothing more. A faulted order is final.
@@ -643,9 +643,9 @@ Journal of order/default-shard/o-6:
 
 ## What a faulted order leaves behind
 
-`o-6`'s journal shows what happened before the failure. Records 8 and 9 are the payment: Ada's
-account was charged. Records 10 and 11 are `ship`, which began and failed. Record 12 ends the
-order.
+`o-6`'s journal shows what happened before the failure. Records 6 and 7 are the payment: Ada's
+account was charged. Records 8 and 9 are the packing timer. Records 10 and 11 are `ship`, which
+began and failed. Record 12 ends the order.
 
 So the customer paid, the stock is reserved, and nothing will ship. FCQRS does not undo the earlier
 steps of a faulted order, because it cannot know what undoing them means. If a failure leaves work
