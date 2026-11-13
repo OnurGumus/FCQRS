@@ -62,7 +62,10 @@ module internal WorkflowActor =
         if span >= DateTime.MaxValue - at then DateTime.MaxValue else at + span
 
     let behavior (definition: Definition) (api: IActor) (mailbox: Eventsourced<obj>) =
+        // Failures, and what an operator must act on.
         let log = api.LoggerFactory.CreateLogger "FCQRS.Workflows"
+        // A run's progress, in the category aggregates and sagas tell theirs in.
+        let flow = api.LoggerFactory.CreateLogger Telemetry.MessageFlowCategory
         let id = Uri.UnescapeDataString mailbox.Self.Path.Name
         let self = mailbox.UntypedContext.Self
         let scheduler = mailbox.System.Scheduler
@@ -97,21 +100,63 @@ module internal WorkflowActor =
         let mutable final: WorkflowRecord option = None
         let mutable parked: string option = None
         let mutable machine: Machine option = None
+        /// The exception that failed each step whose failure is being stored, by path. The journal
+        /// keeps its type and message; the log line written once it is stored keeps the rest.
+        let failures = Dictionary<string, exn>()
         let mutable startSender: IActorRef option = None
         /// The senders of signals being stored, in the order their records will be applied.
         let signalSenders = Queue<IActorRef>()
         let cancelSenders = Queue<IActorRef>()
 
+        let contextOf (traceparent: string) : ActivityContext voption =
+            let mutable context = Unchecked.defaultof<ActivityContext>
+
+            if ActivityContext.TryParse(traceparent, null, &context) then
+                ValueSome context
+            else
+                ValueNone
+
         let traceParent () : ActivityContext voption =
             match started with
-            | Some(_, Some traceparent) ->
-                let mutable context = Unchecked.defaultof<ActivityContext>
-
-                if ActivityContext.TryParse(traceparent, null, &context) then
-                    ValueSome context
-                else
-                    ValueNone
+            | Some(_, Some traceparent) -> contextOf traceparent
             | _ -> ValueNone
+
+        /// What a log scope of this instance holds: the tags its spans carry.
+        let scopeOf (path: string option) (step: string option) (attempt: int option) : KeyValuePair<string, objnull>[] =
+            [| KeyValuePair<string, objnull>("fcqrs.workflow.name", box definition.Name)
+               KeyValuePair<string, objnull>("fcqrs.workflow.id", box id)
+
+               match path with
+               | Some path -> KeyValuePair<string, objnull>("fcqrs.workflow.step.path", box path)
+               | None -> ()
+
+               match step with
+               | Some step -> KeyValuePair<string, objnull>("fcqrs.workflow.step.name", box step)
+               | None -> ()
+
+               match attempt with
+               | Some attempt -> KeyValuePair<string, objnull>("fcqrs.workflow.attempt", box attempt)
+               | None -> () |]
+
+        /// Writes log lines of this instance in a scope that names the workflow and the step, and
+        /// under `span` when there is one, so that the lines carry its trace.
+        let report (logger: ILogger) (span: Activity | null) (path: string option) (step: string option) (write: unit -> unit) =
+            let previous = Activity.Current
+
+            match span with
+            | null -> ()
+            | span -> Activity.Current <- span
+
+            try
+                use _ = logger.BeginScope(scopeOf path step None)
+                write ()
+            finally
+                Activity.Current <- previous
+
+        /// A line of the run's progress, when the message-flow narrative is on. Progress lines
+        /// never hold an input, a result, or a signal's payload.
+        let told (write: unit -> unit) : (ILogger * (unit -> unit)) option =
+            if messageFlowEnabled flow then Some(flow, write) else None
 
         let tag (span: Activity | null) (path: string option) (name: string option) =
             match span with
@@ -127,18 +172,35 @@ module internal WorkflowActor =
             | ValueSome parent -> source.StartActivity(name, ActivityKind.Internal, parent)
             | ValueNone -> source.StartActivity(name, ActivityKind.Internal)
 
-        /// A span that marks a point in the workflow: it starts and ends at once.
-        let mark (name: string) (path: string option) (step: string option) (waited: TimeSpan option) (error: string option) =
+        /// A span that marks a point in the workflow: it starts and ends at once. `sender` is the
+        /// caller whose signal ended a wait, and `line` is written while the span is current.
+        let mark
+            (name: string)
+            (path: string option)
+            (step: string option)
+            (waited: TimeSpan option)
+            (error: string option)
+            (sender: ActivityContext voption)
+            (line: (ILogger * (unit -> unit)) option)
+            =
             // The actor has no ambient span of its own; do not leave one behind for the next message.
             let previous = Activity.Current
+            let span = startSpan name (traceParent ())
 
-            match startSpan name (traceParent ()) with
+            match span with
             | null -> ()
             | span ->
                 tag span path step
                 waited |> Option.iter (fun waited -> span.SetTag("fcqrs.workflow.waited_ms", int64 waited.TotalMilliseconds) |> ignore)
                 error |> Option.iter (fun error -> span.SetStatus(ActivityStatusCode.Error, error) |> ignore)
-                span.Dispose()
+                // The wait stays in the trace that started the workflow; the link leads to the sender's.
+                sender |> ValueOption.iter (fun sender -> span.AddLink(ActivityLink sender) |> ignore)
+
+            line |> Option.iter (fun (logger, write) -> report logger span path step write)
+
+            match span with
+            | null -> ()
+            | span -> span.Dispose()
 
             Activity.Current <- previous
 
@@ -264,6 +326,10 @@ module internal WorkflowActor =
                             | null -> ()
                             | span -> span.SetTag("fcqrs.workflow.attempt", attempt) |> ignore
 
+                            // The scope follows the attempt's async flow, so a line the activity
+                            // writes through this logger factory names the workflow and the step.
+                            use _ = log.BeginScope(scopeOf (Some path) (Some step.Leaf.Name) (Some attempt))
+
                             try
                                 let call =
                                     run
@@ -315,6 +381,7 @@ module internal WorkflowActor =
                 | StepKind.Command, (ErrorKind.Exhausted | ErrorKind.DeadlineExceeded), _ -> ErrorKind.OutcomeUnknown
                 | _ -> kind
 
+            failures[step.Path] <- error
             WorkflowRecord.StepFailed(step.Path, step.Leaf.Name, step.Leaf.Kind, Payload.errorOf kind error, clock ())
 
         let dueOf (step: PendingStep) : DateTime option =
@@ -372,7 +439,9 @@ module internal WorkflowActor =
                 // The body ran against a journal it does not match: nothing of it may continue.
                 machine <- None
                 cleanup ()
-                log.LogError(error, "Workflow {Workflow} {Id} is parked: its journal does not match its code.", definition.Name, id)
+                report log null None None (fun () ->
+                    log.LogError(error, "Workflow {Workflow} {Id} is parked: its journal does not match its code.", definition.Name, id))
+
                 []
 
         let runBody (input: Payload) : WorkflowRecord list =
@@ -386,7 +455,14 @@ module internal WorkflowActor =
                 started <- Some(input, traceparent)
                 startedCount.Add(1L, nameTag)
                 countRunning true
-                mark $"Workflow.Start:{definition.Name}" None None None None
+                mark
+                    $"Workflow.Start:{definition.Name}"
+                    None
+                    None
+                    None
+                    None
+                    ValueNone
+                    (told (fun () -> flow.LogInformation("Workflow {Workflow} {Id} started", definition.Name, id)))
 
                 startSender
                 |> Option.iter (fun sender -> sender.Tell({ Created = true; Status = WorkflowStatus.Running [] }, self))
@@ -413,12 +489,58 @@ module internal WorkflowActor =
                 |> Option.iter (fun waited ->
                     stepDuration.Record(waited.TotalMilliseconds, nameTag, KeyValuePair<string, objnull>("fcqrs.workflow.step.kind", box (string kind))))
 
+                let thrown: exn | null =
+                    match failures.TryGetValue path with
+                    | true, thrown ->
+                        failures.Remove path |> ignore
+                        thrown
+                    | _ -> null
+
+                let line =
+                    match record with
+                    // A cancellation was requested, and is told as that.
+                    | WorkflowRecord.StepFailed(_, _, _, failure, _) when failure.Kind = ErrorKind.Cancelled -> None
+                    // The body may handle the failure, so it is a warning. The exception is logged
+                    // here because the journal keeps only its type and message.
+                    | WorkflowRecord.StepFailed(_, _, _, failure, _) ->
+                        Some(
+                            log,
+                            fun () ->
+                                log.LogWarning(
+                                    thrown,
+                                    "Workflow {Workflow} {Id}: step {Path} {Step} failed as {Kind}: {Message}",
+                                    definition.Name,
+                                    id,
+                                    path,
+                                    name,
+                                    string failure.Kind,
+                                    failure.Message
+                                )
+                        )
+                    | WorkflowRecord.StepCompleted(_, _, _, result, _) when kind = StepKind.Signal && result = Payload.timedOut ->
+                        told (fun () ->
+                            flow.LogInformation("Workflow {Workflow} {Id} timed out at step {Path} {Step} ({Kind})", definition.Name, id, path, name, string kind))
+                    | _ ->
+                        told (fun () ->
+                            flow.LogInformation("Workflow {Workflow} {Id} completed step {Path} {Step} ({Kind})", definition.Name, id, path, name, string kind))
+
                 // Activities, commands and child requests hold a token and a span while they run.
-                if running.ContainsKey path then
+                match running.TryGetValue path with
+                | true, step ->
+                    line |> Option.iter (fun (logger, write) -> report logger step.Span (Some path) (Some name) write)
                     release path error
-                else
+                | _ ->
+                    let sender =
+                        if kind = StepKind.Signal then
+                            machine
+                            |> Option.bind (fun machine -> machine.TakeSignalSender path)
+                            |> Option.map contextOf
+                            |> Option.defaultValue ValueNone
+                        else
+                            ValueNone
+
                     forget path
-                    mark $"Step:{name}" (Some path) (Some name) waited error
+                    mark $"Step:{name}" (Some path) (Some name) waited error sender line
 
                 match machine with
                 | Some machine -> guarded (fun () -> machine.Apply record)
@@ -441,7 +563,24 @@ module internal WorkflowActor =
                     | WorkflowRecord.Faulted(error, _) -> Some $"{error.Kind}: {error.Message}"
                     | _ -> None
 
-                mark $"Workflow.End:{definition.Name}" None None None error
+                let line =
+                    match record with
+                    | WorkflowRecord.Faulted(fault, _) ->
+                        // The exception the body ended with, when it is still at hand.
+                        let thrown: exn | null =
+                            match machine |> Option.bind (fun machine -> machine.Outcome) with
+                            | Some(Error thrown) -> thrown
+                            | _ -> null
+
+                        Some(
+                            log,
+                            fun () ->
+                                log.LogError(thrown, "Workflow {Workflow} {Id} faulted: {Kind}: {Message}", definition.Name, id, string fault.Kind, fault.Message)
+                        )
+                    | WorkflowRecord.Finished _ -> told (fun () -> flow.LogInformation("Workflow {Workflow} {Id} finished", definition.Name, id))
+                    | _ -> told (fun () -> flow.LogInformation("Workflow {Workflow} {Id} was cancelled", definition.Name, id))
+
+                mark $"Workflow.End:{definition.Name}" None None None error ValueNone line
 
                 match resultReply () with
                 | Some reply ->
@@ -452,9 +591,12 @@ module internal WorkflowActor =
                 waiters.Clear()
                 passivate ()
                 []
-            | WorkflowRecord.SignalReceived _ ->
+            | WorkflowRecord.SignalReceived(signal, _, _, _) ->
                 if signalSenders.Count > 0 then
                     signalSenders.Dequeue().Tell(SignalAccepted, self)
+
+                told (fun () -> flow.LogInformation("Workflow {Workflow} {Id} received signal {Signal}", definition.Name, id, signal))
+                |> Option.iter (fun (logger, write) -> report logger null None None write)
 
                 match machine with
                 | Some machine -> guarded (fun () -> machine.Apply record)
@@ -465,6 +607,9 @@ module internal WorkflowActor =
             | WorkflowRecord.CancelRequested _ ->
                 if cancelSenders.Count > 0 then
                     cancelSenders.Dequeue().Tell(CancelAccepted, self)
+
+                told (fun () -> flow.LogInformation("Workflow {Workflow} {Id} was asked to cancel", definition.Name, id))
+                |> Option.iter (fun (logger, write) -> report logger null None None write)
 
                 match machine with
                 | Some machine -> guarded (fun () -> machine.Apply record)
@@ -515,14 +660,15 @@ module internal WorkflowActor =
                         elif deadlinePassed then
                             [ stepFailed step ErrorKind.DeadlineExceeded error ]
                         else
-                            log.LogWarning(
-                                error,
-                                "Workflow {Workflow} {Id}: attempt {Attempt} of step {Step} failed and will be retried.",
-                                definition.Name,
-                                id,
-                                message.Attempt,
-                                step.Leaf.Name
-                            )
+                            report log current.Span (Some step.Path) (Some step.Leaf.Name) (fun () ->
+                                log.LogWarning(
+                                    error,
+                                    "Workflow {Workflow} {Id}: attempt {Attempt} of step {Step} failed and will be retried.",
+                                    definition.Name,
+                                    id,
+                                    message.Attempt,
+                                    step.Leaf.Name
+                                ))
 
                             retryCount.Add(1L, nameTag)
 

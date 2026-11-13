@@ -2708,6 +2708,7 @@ let main argv =
                 SagaStartOnceTests.tests
                 WorkflowMachineTests.tests
                 WorkflowTests.tests
+                WorkflowLoggingTests.tests
                 WorkflowBankInvariantTests.tests
                 // Last: it checks the messages every earlier test sent.
                 VerifySerialization.tests

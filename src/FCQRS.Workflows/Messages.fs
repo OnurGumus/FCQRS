@@ -5,6 +5,9 @@ open FCQRS.Common
 /// The names to register with a telemetry pipeline, for example OpenTelemetry's
 /// `tracing.AddSource(WorkflowTelemetry.ActivitySourceName)` and
 /// `metrics.AddMeter(WorkflowTelemetry.MeterName)`.
+/// A workflow logs through the `ILoggerFactory` given to the actor system: its progress in the
+/// `Telemetry.MessageFlowCategory` category at Information, and failed steps, faulted workflows,
+/// and parked instances in the `FCQRS.Workflows` category.
 type WorkflowTelemetry =
     /// The source of workflow spans. It is also in `Telemetry.AllActivitySources`.
     static member ActivitySourceName: string = Telemetry.WorkflowActivitySourceName

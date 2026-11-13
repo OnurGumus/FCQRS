@@ -108,6 +108,8 @@ use that context as their parent, so a resumed workflow continues the same trace
 - A step that is replayed from the journal emits no span.
 - A timer or a signal wait emits one short span when it ends, with the time it waited in
   `fcqrs.workflow.waited_ms`. No span stays open across a wait.
+- The span of a signal wait has a link to the span of the caller that sent the signal. The wait
+  itself stays in the trace of the caller that started the workflow.
 - An attempt span is `Activity.Current` inside the activity, so `HttpClient` and database
   instrumentation attach to it. A command sent by a workflow carries it in `traceparent`.
 - Spans carry `fcqrs.workflow.name`, `fcqrs.workflow.id`, `fcqrs.workflow.step.path`,
@@ -125,6 +127,53 @@ use that context as their parent, so a resumed workflow continues the same trace
 
 A faulted workflow is final, and a parked one runs nothing until matching code is deployed. Alert on
 both.
+
+### Workflow logs
+
+A workflow writes its progress to the `FCQRS.MessageFlow` category at `Information`. These are the
+lines of the quote workflow from [Write a workflow](write-a-workflow.html), instance `q-1001`:
+
+| Line | Written when |
+|---|---|
+| `Workflow quote q-1001 started` | the start is stored |
+| `Workflow quote q-1001 completed step 0 price (Activity)` | a step's result is stored; `0` is the step's path |
+| `Workflow quote q-1001 received signal approval` | a signal is stored |
+| `Workflow quote q-1001 timed out at step 1 approval (Signal)` | a signal wait's timeout passes before a signal arrives |
+| `Workflow quote q-1001 was asked to cancel` | a cancel request is stored |
+| `Workflow quote q-1001 finished` or `... was cancelled` | the workflow ends |
+
+- A line is written after its record is stored. A process that stops in between loses the line, not
+  the record.
+- A step that is replayed from the journal writes no line.
+- The lines never contain an input, a step result, a signal payload, or the workflow's result.
+- `Telemetry.MessageFlowLogging` and a filter on the category turn these lines off, as they do for
+  aggregates and sagas.
+
+Failures go to the `FCQRS.Workflows` category. The message-flow switch does not affect them:
+
+| Level | Line | Meaning |
+|---|---|---|
+| Warning | `Workflow quote q-1001: attempt 1 of step price failed and will be retried.` | one attempt failed and the retry policy allows another |
+| Warning | `Workflow quote q-1001: step 0 price failed as Exhausted: <message>` | the step failed for good; the body may still catch the failure |
+| Error | `Workflow quote q-1001 faulted: BodyFailed: <message>` | the body ended with an exception it did not handle |
+| Error | `Workflow quote q-1001 is parked: its journal does not match its code.` | the instance runs nothing until matching code is deployed |
+
+The first three lines carry the exception that an activity or the body threw. The journal stores
+only an exception's type and message, so the warning for a failed step is the one place that keeps
+its stack trace. A step that fails because the workflow was cancelled writes no warning. An
+exception's message appears in these lines; keep sensitive values out of the exceptions an activity
+throws.
+
+Each of these lines is written in a log scope that holds `fcqrs.workflow.name` and
+`fcqrs.workflow.id`, and for a step `fcqrs.workflow.step.path` and `fcqrs.workflow.step.name`. An
+activity runs inside a scope that also holds `fcqrs.workflow.attempt`, so a line the activity writes
+through the same logger factory names the workflow and the step that wrote it. Log providers leave
+scopes out by default: set `IncludeScopes` on the console logger or on OpenTelemetry's logger options
+to export them.
+
+When a trace listener is attached, a line about a step, the start, or the end is written while that
+span is current, so it carries the span's trace and span IDs. The lines for a received signal and a
+cancel request belong to no span of the workflow and carry none.
 
 ## Keep payloads out of diagnostics
 

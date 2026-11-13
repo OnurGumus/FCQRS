@@ -1,5 +1,21 @@
 # Changelog
 
+## 7.1.0 (FCQRS.Workflows)
+
+- **A workflow logs its failures.** A step that fails for good writes a warning with its exception,
+  and a workflow that faults writes an error. Before, neither wrote a line, and the stack trace of a
+  step's last failure was kept nowhere: the journal stores an exception's type and message only.
+- **A workflow tells its progress in `FCQRS.MessageFlow`**, the category aggregates and sagas use: the
+  start, each stored step, each signal received, a cancel request, and the end, at `Information`. The
+  lines hold no input, result, or signal payload, a replayed step writes none, and
+  `Telemetry.MessageFlowLogging` turns them off.
+- **Log scopes.** A workflow's lines, and the lines an activity writes through the same logger
+  factory, are in a scope that names the workflow, the instance, the step, and the attempt. With a
+  trace listener attached they are written under the step's span, so they carry its trace ID.
+- **The span of a signal wait links to the caller that sent the signal.** The sender's trace context
+  was stored with the signal but not used.
+- No stored record changes. The package still needs FCQRS core 7.0.0.
+
 ## 7.0.0 (FCQRS core and FCQRS.Workflows)
 
 - **`FCQRS.Workflows` is a new package for durable workflows.** A workflow is straight-line code

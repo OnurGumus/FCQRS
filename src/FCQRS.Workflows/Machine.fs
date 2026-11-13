@@ -14,8 +14,9 @@ type internal StepState =
 type internal History() =
     /// The state of each step, by path.
     member val Steps = Dictionary<string, StepState>()
-    /// Stored signals no wait has consumed, oldest first.
-    member val Signals = ResizeArray<struct (string * Payload)>()
+    /// Stored signals no wait has consumed, oldest first: name, payload, and the trace context
+    /// of the caller that sent the signal.
+    member val Signals = ResizeArray<struct (string * Payload * string option)>()
     /// Whether a cancel request is stored.
     member val CancelRequested = false with get, set
 
@@ -24,14 +25,15 @@ type internal History() =
         this.Steps.ContainsKey path
         || this.Steps.Keys |> Seq.exists (fun stored -> stored.StartsWith(path + "/"))
 
-    /// Removes and returns the oldest stored signal with this name.
-    member this.TakeSignal(name: string) : Payload voption =
-        match this.Signals.FindIndex(fun (struct (stored, _)) -> stored = name) with
+    /// Removes and returns the oldest stored signal with this name: its payload and its sender's
+    /// trace context.
+    member this.TakeSignal(name: string) : struct (Payload * string option) voption =
+        match this.Signals.FindIndex(fun (struct (stored, _, _)) -> stored = name) with
         | -1 -> ValueNone
         | index ->
-            let struct (_, payload) = this.Signals[index]
+            let struct (_, payload, sender) = this.Signals[index]
             this.Signals.RemoveAt index
-            ValueSome payload
+            ValueSome(struct (payload, sender))
 
     /// Applies a record read from the journal, in journal order.
     member this.Apply(record: WorkflowRecord) =
@@ -49,7 +51,7 @@ type internal History() =
             // A wait that could not read its signal consumed it all the same.
             if kind = StepKind.Signal && error.Kind = ErrorKind.NotRetryable then
                 this.TakeSignal name |> ignore
-        | WorkflowRecord.SignalReceived(name, payload, _, _) -> this.Signals.Add(struct (name, payload))
+        | WorkflowRecord.SignalReceived(name, payload, _, sender) -> this.Signals.Add(struct (name, payload, sender))
         | WorkflowRecord.CancelRequested _ -> this.CancelRequested <- true
         | _ -> ()
 
@@ -110,6 +112,9 @@ type internal Machine(history: History, encodeResult: objnull -> Payload, clock:
     let pending = Dictionary<string, PendingStep>()
     /// Signal waits whose step is stored as scheduled, in the order they began waiting.
     let signalWaits = ResizeArray<string>()
+    /// The sender's trace context of the signal each wait consumed, by the wait's path, until the
+    /// actor takes it for the wait's span.
+    let signalSenders = Dictionary<string, string>()
     /// Races whose winner is decided and being stored.
     let decidedRaces = Dictionary<string, unit -> unit>()
     let queue = Queue<unit -> unit>()
@@ -145,8 +150,9 @@ type internal Machine(history: History, encodeResult: objnull -> Payload, clock:
             match pending.TryGetValue path with
             | true, step ->
                 match history.TakeSignal step.Leaf.Name with
-                | ValueSome payload ->
+                | ValueSome(struct (payload, sender)) ->
                     signalWaits.Remove path |> ignore
+                    sender |> Option.iter (fun sender -> signalSenders[path] <- sender)
 
                     let record =
                         try
@@ -401,11 +407,20 @@ type internal Machine(history: History, encodeResult: objnull -> Payload, clock:
                 signalWaits.Remove path |> ignore
                 step.Resume(Error(WorkflowStepFailedException(path, name, error)))
             | _ -> ()
-        | WorkflowRecord.SignalReceived(name, payload, _, _) -> history.Signals.Add(struct (name, payload))
+        | WorkflowRecord.SignalReceived(name, payload, _, sender) -> history.Signals.Add(struct (name, payload, sender))
         | WorkflowRecord.CancelRequested _ -> history.CancelRequested <- true
         | _ -> ()
 
         drain ()
+
+    /// Removes and returns the trace context of the caller whose signal the wait at `path`
+    /// consumed. `None` when the wait timed out, or the sender had no trace.
+    member _.TakeSignalSender(path: string) : string option =
+        match signalSenders.TryGetValue path with
+        | true, sender ->
+            signalSenders.Remove path |> ignore
+            Some sender
+        | _ -> None
 
     /// The steps the body is waiting on, by path.
     member _.Pending: IReadOnlyDictionary<string, PendingStep> = pending
