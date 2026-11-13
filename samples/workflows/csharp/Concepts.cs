@@ -97,6 +97,19 @@ public static class Steps
     }
     // docs:end
 
+    // docs:pair
+    static async WorkflowTask<(int, string)> PointsAndReceipt(
+        WorkflowContext ctx)
+    {
+        var (points, receipt) = await ctx.Both(
+            ctx.Activity("score", Retry.times(3), attempt =>
+                Score(attempt.IdempotencyKey, "A")),
+            ctx.Activity("charge", Retry.none, attempt =>
+                Charge(attempt.IdempotencyKey, 30m)));
+        return (points, receipt);
+    }
+    // docs:end
+
     // docs:pay
     static async WorkflowTask<string> Pay(
         WorkflowContext ctx, AggregateFactory accounts)

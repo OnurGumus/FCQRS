@@ -406,6 +406,29 @@ let private andTest =
         Expect.equal (finished live |> Option.map Payload.toValue<string>) (Some "42") "both results arrive"
         Expect.equal (List.ofSeq live.Begun) [ "0/0/0"; "0/1/0" ] "both began before either finished"
 
+let private andThreeTest =
+    testCase "workflow machine: three and! branches run together" <| fun _ ->
+        let body = workflow {
+            let! (left: int) = activity "left" Retry.none never
+            and! (middle: string) = activity "middle" Retry.none never
+            and! (right: bool) = activity "right" Retry.none never
+            return $"{left}{middle}{right}"
+        }
+        let complete name =
+            match name with
+            | "left" -> Some(Ok(Payload.ofValue 4))
+            | "middle" -> Some(Ok(Payload.ofValue "2"))
+            | "right" -> Some(Ok(Payload.ofValue true))
+            | _ -> None
+        let live = drive [] complete body
+        Expect.equal (finished live |> Option.map Payload.toValue<string>) (Some "42True") "every result arrives in order"
+        Expect.equal (Seq.length live.Begun) 3 "all three began before any finished"
+        // Replay the stored steps without the stored result: no step runs again.
+        let steps = live.Journal |> Seq.filter (function WorkflowRecord.Finished _ -> false | _ -> true) |> List.ofSeq
+        let replayed = drive steps (fun _ -> None) body
+        Expect.equal (finished replayed |> Option.map Payload.toValue<string>) (Some "42True") "replay gives the stored results"
+        Expect.isEmpty replayed.Begun "replay begins no step"
+
 let private signal (name: string) (value: 'T) = WorkflowRecord.SignalReceived(name, Payload.ofValue value, at, None)
 
 let private signalTest =
@@ -607,4 +630,4 @@ let private versionInBranchTest =
 let tests =
     testList "workflow machine"
         [ payloadTest; recordTest; liveTest; prefixTest; failureTest; unhandledTest; divergedTest; longTest; storedValueTest
-          allTest; allFailureTest; raceTest; limitTest; andTest; signalTest; liveSignalTest; unreadableTest; farTimerTest; versionTest; versionLoopTest; wrongSignalTest; versionInBranchTest ]
+          allTest; allFailureTest; raceTest; limitTest; andTest; andThreeTest; signalTest; liveSignalTest; unreadableTest; farTimerTest; versionTest; versionLoopTest; wrongSignalTest; versionInBranchTest ]

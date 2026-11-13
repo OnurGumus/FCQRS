@@ -1,5 +1,12 @@
 # Changelog
 
+## 7.2.0 (FCQRS.Workflows)
+
+- **`ctx.Both` runs two C# steps together** and gives both results as a tuple, whose types may
+  differ. It is the C# form of F#'s `and!`. `ctx.All` takes steps of one type only.
+- The workflow concept page shows `and!` and `ctx.Both`.
+- No stored record changes. The package still needs FCQRS core 7.0.0.
+
 ## 7.1.0 (FCQRS.Workflows)
 
 - **A workflow logs its failures.** A step that fails for good writes a warning with its exception,

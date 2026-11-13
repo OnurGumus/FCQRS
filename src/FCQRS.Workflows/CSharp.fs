@@ -298,6 +298,15 @@ type WorkflowContext internal () =
             WorkflowCore.bind (all [ for step in steps -> step.Workflow ]) (fun values -> Return(List.toArray values :> IReadOnlyList<'T>))
         )
 
+    /// Runs two steps together and gives both results, which may have different types:
+    /// `var (price, customer) = await ctx.Both(priceStep, customerStep);`. Both results are
+    /// stored. If one step fails, the other is abandoned and the failure is raised here. This is
+    /// `and!` in F#.
+    member _.Both<'A, 'B>(first: Step<'A>, second: Step<'B>) : Step<struct ('A * 'B)> =
+        Step<struct ('A * 'B)>(
+            WorkflowCore.bind (workflow.MergeSources(first.Workflow, second.Workflow)) (fun (a, b) -> Return(struct (a, b)))
+        )
+
     /// Runs the steps together. The first to finish decides the result, and the others are abandoned.
     member _.Race<'T>([<ParamArray>] steps: Step<'T>[]) : Step<'T> =
         Step<'T>(race [ for step in steps -> step.Workflow ])

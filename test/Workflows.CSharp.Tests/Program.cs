@@ -60,7 +60,7 @@ async Task Eventually(Func<bool> condition, string what)
         Check(!await orders.StartAsync("o1", new Order("XYZ", 9)), "a second start with the same ID stores nothing");
         await orders.SignalAsync("o1", "approval", "approved by Ada");
         var summary = await orders.ResultAsync("o1", wait);
-        Check(summary == new OrderSummary("ABC", 3, "approved by Ada", false, 30, "Exhausted", 6, 3, "cleaned", true),
+        Check(summary == new OrderSummary("ABC", 3, "approved by Ada", false, 30, "Exhausted", 10, 3, "cleaned", true),
             $"the C# workflow ran every kind of step: {summary}");
         Check(OrderWorkflow.PriceCalls == 3, "the flaky activity was retried until it succeeded");
     }
@@ -226,6 +226,10 @@ public sealed class OrderWorkflow(AggregateFactory counter) : Workflow<Order, Or
         var parts = await ctx.All(ctx.Run(() => Part(ctx, 1)), ctx.Run(() => Part(ctx, 2)));
         var winner = await ctx.Race(ctx.Run(() => Part(ctx, 3)), ctx.Activity("never", Retry.forever(TimeSpan.FromMinutes(5)),
             async attempt => { await Task.Delay(Timeout.Infinite, attempt.Cancellation); return 0; }));
+        // Two steps of different types together.
+        var (label, four) = await ctx.Both(
+            ctx.Activity("label", Retry.none, _ => Task.FromResult("pair")),
+            ctx.Run(() => Part(ctx, 4)));
 
         var counted = await ctx.Send<CounterCommand, CounterEvent>(counter, "c1", new CounterCommand(order.Quantity));
 
@@ -241,7 +245,7 @@ public sealed class OrderWorkflow(AggregateFactory counter) : Workflow<Order, Or
         }
 
         var after = await ctx.Now();
-        return new OrderSummary(symbol, order.Quantity, approval, second.Received, doubled, failure, parts.Sum() + winner, counted.Amount, cleanup, after >= before);
+        return new OrderSummary(symbol, order.Quantity, approval, second.Received, doubled, failure, parts.Sum() + winner + (label == "pair" ? four : 0), counted.Amount, cleanup, after >= before);
     }
 
     private static async WorkflowTask<int> Part(WorkflowContext ctx, int value)

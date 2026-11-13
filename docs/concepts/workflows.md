@@ -219,6 +219,42 @@ static async WorkflowTask<string?> TimedOut(WorkflowContext ctx)
   selects the same branch.
 - `allAtMost 4 items body` runs `body` for each item, four at a time.
 
+`and!` runs a fixed set of steps together when their results have different types. In C#,
+`ctx.Both` runs two steps and gives a tuple:
+
+```fsharp
+let pointsAndReceipt =
+    workflow {
+        let! points =
+            activity "score" (Retry.times 3) (fun attempt ->
+                score attempt.IdempotencyKey "A")
+        and! receipt =
+            activity "charge" Retry.none (fun attempt ->
+                charge attempt.IdempotencyKey 30m)
+        return points, receipt
+    }
+```
+
+<div class="cs-alt"></div>
+
+<!-- sample: workflows/csharp Concepts.cs pair -->
+```csharp
+static async WorkflowTask<(int, string)> PointsAndReceipt(
+    WorkflowContext ctx)
+{
+    var (points, receipt) = await ctx.Both(
+        ctx.Activity("score", Retry.times(3), attempt =>
+            Score(attempt.IdempotencyKey, "A")),
+        ctx.Activity("charge", Retry.none, attempt =>
+            Charge(attempt.IdempotencyKey, 30m)));
+    return (points, receipt);
+}
+```
+
+The body continues when both steps have finished, as with `all`. Each result is stored. If one
+step fails, the other is abandoned and the failure is raised at the `let!`, or at the `await` in
+C#. A third `and!` adds a third step. In C#, pass a `ctx.Both` as one of the two steps.
+
 Branches take turns inside one actor. Activities run outside it, so their I/O is concurrent.
 
 Every branch's results are stored in the instance's one journal. Recovery replays all of it, so a
@@ -486,6 +522,7 @@ A C# workflow derives from `Workflow<TInput, TResult>` and awaits steps from its
 | `now`, `newGuid`, `random` | `ctx.Now()`, `ctx.NewGuid()`, `ctx.Random()` |
 | `waitSignal`, `waitSignalFor` | `ctx.WaitSignal<T>(name)`, `ctx.WaitSignal<T>(name, timeout)` |
 | `all`, `race` | `ctx.All(...)`, `ctx.Race(...)`, with `ctx.Run(() => Method(ctx))` for a method |
+| `let! a = ... and! b = ...` | `var (a, b) = await ctx.Both(..., ...)` |
 | `startChild`, `awaitChild`, `child` | `ctx.StartChild`, `ctx.AwaitChild`, `ctx.Child`, by workflow name |
 | `send` | `ctx.Send<TCommand, TEvent>(factory, id, command)` |
 | `version` | `ctx.Version(changeId, latest)` |
