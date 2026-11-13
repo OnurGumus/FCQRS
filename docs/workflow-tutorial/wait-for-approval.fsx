@@ -319,7 +319,7 @@ releases the stock of an order that does not ship.
 
 ## Next
 
-Step 5: Restart during shipping stops the process in the middle of an order and starts it again.
+[Step 5: Restart during shipping](restart-during-shipping.html) stops the process in the middle of an order and starts it again.
 
 *)
 

@@ -152,10 +152,25 @@ def wait_for_approval(root):
                  ['o-3 finished: not approved'] + SHIPPED_JOURNAL, output)
 
 
+def restart_during_shipping(root):
+    step = '5-restart-during-shipping'
+    first, second = runs(root, [(step, ['--crash'], 1), (step, [], 0)])
+    # The first run stops after the carrier shipped and before FCQRS stored the step's result.
+    same(first, ['Started o-1'] + reserve('o-1', 2, 1) +
+                ['  carrier shipped r-1 (key order/o-1/4)',
+                 '  the process stops before this step is stored'], first)
+    # The second run resumes o-1: the warehouse is not called again, and ship runs again with the
+    # same key.
+    same(second, ['o-1 is already started (Running ["4 ship"])',
+                  '  carrier shipped r-1 (key order/o-1/4)',
+                  'o-1 finished: shipped as s-1'] + SHIPPED_JOURNAL, second)
+
+
 STEPS = {'1-place-an-order': place_an_order,
          '2-retry-the-warehouse': retry_the_warehouse,
          '3-read-the-clock': read_the_clock,
-         '4-wait-for-approval': wait_for_approval}
+         '4-wait-for-approval': wait_for_approval,
+         '5-restart-during-shipping': restart_during_shipping}
 
 # Optional arguments select steps by folder name, for example: 2-retry-the-warehouse
 selected = sys.argv[1:] or list(STEPS)
