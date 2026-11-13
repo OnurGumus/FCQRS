@@ -95,13 +95,13 @@ let note = {
 }
 
 let notes =
-    Fcqrs.aggregateWithEffects api note
-        (fun (SummarizeText text) -> async {
-            try
-                let! summary = ai.Summarize text
-                return RecordSummary summary
-            with _ ->
-                return GiveUp })
+    Fcqrs.aggregateWithEffects api note (fun (SummarizeText text) -> async {
+        try
+            let! summary = ai.Summarize text
+            return RecordSummary summary
+        with _ ->
+            return GiveUp
+    })
 ```
 
 <div class="cs-alt"></div>

@@ -69,10 +69,11 @@ before registering any aggregates, sagas, or projections:
 open FCQRS.FSharp
 
 let startRuntime configuration loggerFactory connectionString =
-    Fcqrs.journalTypes
-        [ journalType<DepositedV1> "account.deposited.v1"
-          journalType<DepositedV2> "account.deposited.v2"
-          journalType<DepositedV3> "account.deposited.v3" ]
+    Fcqrs.journalTypes [
+        journalType<DepositedV1> "account.deposited.v1"
+        journalType<DepositedV2> "account.deposited.v2"
+        journalType<DepositedV3> "account.deposited.v3"
+    ]
 
     let connection = Fcqrs.connect FCQRS.Actor.DBType.Sqlite connectionString
     let api =

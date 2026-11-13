@@ -63,10 +63,11 @@ coverage. highlight.js colours a C# type name only where it is declared, so
 compiler. It can miss a type name or colour a property that stands where a type could.
 `<div class="cs-alt"></div>` pairs adjacent language alternatives in the rendered site.
 An F# example's collapsed setup stays in its F# tab, so it is hidden when C# is selected.
-F# examples and samples write a multi-line record in Stroustrup style: the opening brace ends the
-line that names the record, and the closing brace stands on its own line. A multi-line
-copy-and-update or object expression keeps `{ state with` together and closes on its own line,
-aligned with the opening brace.
+F# examples and samples write a multi-line record, list, object expression, or computation
+expression in Stroustrup style: the opening brace or bracket ends a line, and the closing one
+stands on its own line, aligned with the start of that line. A copy-and-update in a match arm keeps
+`{ state with` on the line after the arrow and closes in the same column as its opening brace,
+because a closing brace under the match bar does not compile.
 
 ## Verification and publishing
 

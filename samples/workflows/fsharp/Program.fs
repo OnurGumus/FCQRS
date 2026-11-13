@@ -19,8 +19,8 @@ let api = Fcqrs.actor configuration logging (Some connection) "quotes"
 // Stand-ins for external systems. The price service fails twice.
 let mutable priceCalls = 0
 
-let prices =
-    { new IPriceService with
+let prices = {
+    new IPriceService with
         member _.Fetch(key, symbol) =
             task {
                 priceCalls <- priceCalls + 1
@@ -29,10 +29,10 @@ let prices =
                     failwith "the price service is busy"
                 return 12.5m
             }
-    }
+}
 
-let mailer =
-    { new IMailer with
+let mailer = {
+    new IMailer with
         member _.Send(key, customer, total) =
             task {
                 printfn "  mailer called (key %s)" key
@@ -41,7 +41,7 @@ let mailer =
                     exit 1
                 return $"quote of {total} sent to {customer}"
             }
-    }
+}
 
 // docs:register
 // Registering the workflow also resumes the instances that were running when

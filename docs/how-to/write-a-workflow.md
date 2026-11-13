@@ -93,10 +93,10 @@ public interface IMailer
 <!-- sample: workflows/fsharp Quote.fs workflow -->
 ```fsharp
 // Five attempts, 200 ms apart.
-let private retry =
-    { Retry.times 5 with
+let private retry = {
+    Retry.times 5 with
         Schedule = FixedInterval(TimeSpan.FromMilliseconds 200.0)
-    }
+}
 
 let definition (prices: IPriceService) (mailer: IMailer) =
     Workflow.define "quote" (fun (request: QuoteRequest) -> workflow {

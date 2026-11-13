@@ -162,15 +162,25 @@ that remains.
 ```fsharp
 let both =
     workflow {
-        let! points = all [ for order in [ "A"; "B"; "C" ] ->
-                              activity "score" (Retry.times 3) (fun attempt ->
-                                  score attempt.IdempotencyKey order) ]
+        let! points =
+            all [
+                for order in [ "A"; "B"; "C" ] ->
+                    activity "score" (Retry.times 3) (fun attempt ->
+                        score attempt.IdempotencyKey order)
+            ]
         let! first =
-            race [ workflow { let! paid = activity "charge" Retry.none (fun attempt ->
-                                              charge attempt.IdempotencyKey 30m)
-                              return Some paid }
-                   workflow { do! sleep (TimeSpan.FromMinutes 1.0)
-                              return None } ]
+            race [
+                workflow {
+                    let! paid =
+                        activity "charge" Retry.none (fun attempt ->
+                            charge attempt.IdempotencyKey 30m)
+                    return Some paid
+                }
+                workflow {
+                    do! sleep (TimeSpan.FromMinutes 1.0)
+                    return None
+                }
+            ]
         return points, first
     }
 ```
