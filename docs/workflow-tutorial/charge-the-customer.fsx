@@ -416,8 +416,8 @@ process stops after the step began and before the reply was stored, FCQRS sends 
 with the same correlation ID, and the account's repeat rule answers it.
 
 The step waits up to five minutes for a reply. With none, it fails as `OutcomeUnknown`. That is not
-a refusal: the account may have taken the money, and its reply may have been lost. Step 7 shows how a body
-catches a failed step.
+a refusal: the account may have taken the money, and its reply may have been lost.
+[Step 7](when-a-step-fails.html) shows how a body catches a failed step.
 
 `release-stock` undoes `reserve-stock` when the order does not ship, either because nobody approved
 it or because the account refused. Such an undo step is called **compensation**. It is an ordinary
@@ -729,7 +729,7 @@ Journal of order/default-shard/o-1:
 
 ## Next
 
-Step 7: When a step fails for good handles a step whose attempts run out.
+[Step 7: When a step fails for good](when-a-step-fails.html) handles a step whose attempts run out.
 
 *)
 

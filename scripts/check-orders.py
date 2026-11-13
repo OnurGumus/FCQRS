@@ -191,12 +191,40 @@ def charge_the_customer(root):
               'StepCompleted', 'Finished'], 1)], output)
 
 
+def no_gizmo(id):
+    return [f'  warehouse has no gizmo (key order/{id}/0)'] * 5
+
+
+def when_a_step_fails(root):
+    [output] = runs(root, [('7-when-a-step-fails', [], 0)])
+    same(output,
+         ['Deposited 1500 to ada', 'Deposited 50 to bob',
+          # The body catches reserve-stock's failure and returns a result.
+          'Started o-5'] + no_gizmo('o-5') +
+         ['o-5 finished: out of stock',
+          # Nothing catches ship's failure, so the order faults.
+          'Started o-6'] + reserve('o-6', 1, 1)[:2] +
+         ['  warehouse reserved 1 crate (key order/o-6/0)'] +
+         ['  carrier does not take crates (key order/o-6/5)'] * 3 +
+         ['o-6 faulted: The carrier does not take crates',
+          # o-7 is left waiting for its approval; step 8 finds it running.
+          'Started o-7'] + reserve('o-7', 30, 1) +
+         ['o-7 status: Running ["3 approval"]',
+          # o-6 was charged (records 8 and 9) before ship failed (10 and 11).
+          'Journal of order/default-shard/o-6:'] +
+         [f'  {number} {record}' for number, record in enumerate(
+             ['Started', 'StepScheduled', 'StepCompleted', 'StepCompleted', 'StepCompleted',
+              'StepScheduled', 'StepCompleted', 'StepScheduled', 'StepCompleted', 'StepScheduled',
+              'StepFailed', 'Faulted'], 1)], output)
+
+
 STEPS = {'1-place-an-order': place_an_order,
          '2-retry-the-warehouse': retry_the_warehouse,
          '3-read-the-clock': read_the_clock,
          '4-wait-for-approval': wait_for_approval,
          '5-restart-during-shipping': restart_during_shipping,
-         '6-charge-the-customer': charge_the_customer}
+         '6-charge-the-customer': charge_the_customer,
+         '7-when-a-step-fails': when_a_step_fails}
 
 # Optional arguments select steps by folder name, for example: 2-retry-the-warehouse
 selected = sys.argv[1:] or list(STEPS)
