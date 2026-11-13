@@ -472,7 +472,7 @@ type Warehouse() =
                                | _ -> 1)
                 if calls[key] <= 2 then
                     printfn $"  warehouse busy (key {key})"
-                    failwith "The warehouse is busy"
+                    invalidOp "The warehouse is busy"
                 if not (reservations.ContainsKey key) then
                     reservations[key] <- $"r-{reservations.Count + 1}"
                     printfn

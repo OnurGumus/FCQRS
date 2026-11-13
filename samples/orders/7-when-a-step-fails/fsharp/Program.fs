@@ -37,13 +37,13 @@ type Warehouse() =
             task {
                 if item = "gizmo" then
                     printfn $"  warehouse has no gizmo (key {key})"
-                    failwith "Out of stock"
+                    invalidOp "Out of stock"
                 calls[key] <- (match calls.TryGetValue key with
                                | true, count -> count + 1
                                | _ -> 1)
                 if calls[key] <= 2 then
                     printfn $"  warehouse busy (key {key})"
-                    failwith "The warehouse is busy"
+                    invalidOp "The warehouse is busy"
                 if not (reservations.ContainsKey key) then
                     reservations[key] <- $"r-{reservations.Count + 1}"
                     printfn
@@ -69,7 +69,7 @@ type Carrier(crash: bool) =
             task {
                 if item = "crate" then
                     printfn $"  carrier does not take crates (key {key})"
-                    failwith "The carrier does not take crates"
+                    invalidOp "The carrier does not take crates"
                 Thread.Sleep 2000
                 if not (shipments.ContainsKey key) then
                     shipments[key] <- $"s-{shipments.Count + 1}"

@@ -43,7 +43,9 @@ def copy(root, step, language):
             file.unlink()
     for file in source.iterdir():
         if file.is_file() and file.suffix in {'.fs', '.cs', '.fsproj', '.csproj'}:
-            shutil.copy2(file, project / file.name)
+            # A fresh modification time makes the build compile a later step's sources over an
+            # earlier step's output.
+            shutil.copy(file, project / file.name)
     shutil.copy2(GLOBAL_JSON, project / 'global.json')
     return project
 
@@ -218,13 +220,32 @@ def when_a_step_fails(root):
               'StepFailed', 'Faulted'], 1)], output)
 
 
+def add_a_step(root):
+    # Step 8 runs on the database step 7 left, with o-7 waiting for its approval.
+    _, output = runs(root, [('7-when-a-step-fails', [], 0), ('8-add-a-step', [], 0)])
+    # The new step stands where o-7's journal holds the approval wait, so o-7 is parked.
+    same(output,
+         ["o-7 is parked: The workflow body asks for Activity 'check-fraud' at step 3, "
+          "but the journal holds Signal 'approval'.",
+          'Sent approval to o-7',
+          'Started o-8'] + reserve('o-8', 2, 1) +
+         ['  fraud check passed for ada (key order/o-8/3)',
+          '  carrier shipped r-1 (key order/o-8/6)',
+          'o-8 finished: shipped as s-1',
+          'Journal of order/default-shard/o-7:'] +
+         [f'  {number} {record}' for number, record in enumerate(
+             ['Started', 'StepScheduled', 'StepCompleted', 'StepCompleted', 'StepCompleted',
+              'StepScheduled', 'SignalReceived'], 1)], output)
+
+
 STEPS = {'1-place-an-order': place_an_order,
          '2-retry-the-warehouse': retry_the_warehouse,
          '3-read-the-clock': read_the_clock,
          '4-wait-for-approval': wait_for_approval,
          '5-restart-during-shipping': restart_during_shipping,
          '6-charge-the-customer': charge_the_customer,
-         '7-when-a-step-fails': when_a_step_fails}
+         '7-when-a-step-fails': when_a_step_fails,
+         '8-add-a-step': add_a_step}
 
 # Optional arguments select steps by folder name, for example: 2-retry-the-warehouse
 selected = sys.argv[1:] or list(STEPS)

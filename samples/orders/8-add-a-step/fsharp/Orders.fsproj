@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net11.0</TargetFramework>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="Account.fs" />
+    <Compile Include="Order.fs" />
+    <Compile Include="Program.fs" />
+    <PackageReference Include="FCQRS.Workflows" Version="7.2.1" />
+    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3"
+                      Version="3.0.2" />
+    <PackageReference Include="SourceGear.sqlite3" Version="3.50.4.5" />
+  </ItemGroup>
+</Project>

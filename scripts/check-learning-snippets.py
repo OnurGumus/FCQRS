@@ -105,6 +105,9 @@ for path in PAGES:
         # A concept page's F# examples are not sample excerpts and keep their own width.
         if path.parent.name == 'concepts' and fence[1] != 'csharp':
             continue
+        # The workflow tutorial's text blocks show program output, which may hold a long line.
+        if path.parent.name == 'workflow-tutorial' and fence[1] == 'text':
+            continue
         if path.parent.name in {'tutorial', 'workflow-tutorial'} or fence[1] in WIDTH:
             limit = WIDTH.get(fence[1], PLAIN_WIDTH)
             for line in fence[2].splitlines():
