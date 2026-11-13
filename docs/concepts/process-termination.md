@@ -1,7 +1,7 @@
 ---
 title: When FCQRS stops the process
 category: Understand
-categoryindex: 3
+categoryindex: 4
 index: 9
 ---
 

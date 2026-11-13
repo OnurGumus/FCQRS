@@ -20,7 +20,8 @@ type OrderResult = { Reservation: string }
 // The warehouse is an external system. The key is the same for every
 // attempt of one step, so the warehouse can recognise a repeated call.
 type IWarehouse =
-    abstract Reserve: key: string * item: string * quantity: int -> Task<string>
+    abstract Reserve:
+        key: string * item: string * quantity: int -> Task<string>
 // docs:end
 
 // docs:workflow

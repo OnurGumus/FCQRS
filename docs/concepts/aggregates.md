@@ -1,7 +1,7 @@
 ---
 title: Aggregates and the write side
 category: Understand
-categoryindex: 3
+categoryindex: 4
 index: 3
 ---
 

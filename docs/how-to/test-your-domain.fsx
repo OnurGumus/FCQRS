@@ -2,7 +2,7 @@
 ---
 title: Test your domain
 category: Apply
-categoryindex: 4
+categoryindex: 5
 index: 8
 ---
 *)

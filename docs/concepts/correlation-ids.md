@@ -1,7 +1,7 @@
 ---
 title: Correlation IDs and read-your-writes
 category: Understand
-categoryindex: 3
+categoryindex: 4
 index: 5
 ---
 

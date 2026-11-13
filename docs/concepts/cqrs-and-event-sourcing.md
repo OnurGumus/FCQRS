@@ -1,7 +1,7 @@
 ---
 title: CQRS and event sourcing
 category: Understand
-categoryindex: 3
+categoryindex: 4
 index: 2
 ---
 

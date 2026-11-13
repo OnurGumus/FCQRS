@@ -7,7 +7,8 @@
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="FCQRS.Workflows" Version="7.2.1" />
-    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="3.0.2" />
+    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3"
+                      Version="3.0.2" />
     <PackageReference Include="SourceGear.sqlite3" Version="3.50.4.5" />
   </ItemGroup>
 </Project>

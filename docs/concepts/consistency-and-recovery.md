@@ -1,7 +1,7 @@
 ---
 title: Consistency and recovery
 category: Understand
-categoryindex: 3
+categoryindex: 4
 index: 8
 ---
 

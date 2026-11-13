@@ -1,7 +1,7 @@
 ---
 title: Deferring, snapshots, and passivation
 category: Understand
-categoryindex: 3
+categoryindex: 4
 index: 7
 ---
 

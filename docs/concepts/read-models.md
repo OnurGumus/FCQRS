@@ -1,7 +1,7 @@
 ---
 title: The read side
 category: Understand
-categoryindex: 3
+categoryindex: 4
 index: 4
 ---
 

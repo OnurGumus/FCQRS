@@ -31,7 +31,8 @@ type Warehouse() =
             task {
                 if not (reservations.ContainsKey key) then
                     reservations[key] <- $"r-{reservations.Count + 1}"
-                    printfn $"  warehouse reserved {quantity} {item} (key {key})"
+                    printfn
+                        $"  warehouse reserved {quantity} {item} (key {key})"
                 return reservations[key]
             }
 // docs:end
@@ -43,7 +44,12 @@ let orders = Workflows.register api (definition (Warehouse()))
 // docs:end
 
 // docs:start
-let request = { Customer = "ada"; Item = "widget"; Quantity = 2; UnitPrice = 40m }
+let request = {
+    Customer = "ada"
+    Item = "widget"
+    Quantity = 2
+    UnitPrice = 40m
+}
 
 // Start an order. A start with an ID that is already in the journal stores
 // nothing and returns the order's status.
@@ -56,7 +62,10 @@ let start id =
 start "o-1"
 
 // Wait for the order to end. The workflow does not depend on this wait.
-match orders.Result "o-1" (TimeSpan.FromSeconds 30.0) |> Async.RunSynchronously with
+let outcome =
+    orders.Result "o-1" (TimeSpan.FromSeconds 30.0) |> Async.RunSynchronously
+
+match outcome with
 | WorkflowOutcome.Finished result ->
     printfn $"o-1 finished: reservation {result.Reservation}"
 | other -> printfn $"o-1 ended: {other}"

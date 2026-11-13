@@ -1,7 +1,7 @@
 ---
 title: Configuration
 category: Reference
-categoryindex: 5
+categoryindex: 6
 index: 2
 ---
 

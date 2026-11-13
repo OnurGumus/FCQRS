@@ -17,6 +17,8 @@ OUTPUT = ROOT / 'output'
 CONFIG = json.loads((ROOT / '.livedocs/config.json').read_text())
 PROJECTS = [str(ROOT / project) for project in CONFIG['projects']]
 CONTEXTS = ROOT / '.livedocs/contexts'
+# The sidebar labels of the two tutorial tracks, by folder.
+SECTION_LABELS = {'tutorial': 'Tutorial: CQRS', 'workflow-tutorial': 'Tutorial: Workflows'}
 EXAMPLES_PROJECT = ROOT / '.livedocs/examples/Examples.fsproj'
 VERSION = ET.parse(PROJECTS[0]).findtext('.//Version')
 FSHARP_FENCE = re.compile(r'^```fsharp([^\n]*)\n(.*?)^```', re.M | re.S)
@@ -269,6 +271,10 @@ def finish(pages):
                 highlighter = '../' * depth + 'content/highlight.min.js'
                 scripts = f'<script src="{highlighter}" defer></script><script src="{asset}" defer></script>'
                 text = text.replace('</body>', scripts + '</body>')
+            # FsLiveDocs names a sidebar section after its folder. Name the two tutorial tracks.
+            for group, label in SECTION_LABELS.items():
+                text = re.sub(rf'(data-docs-group="{group}"><summary[^>]*><span>)[^<]*(</span>)',
+                              rf'\g<1>{label}\g<2>', text)
             # Guides use the base prose size on every screen width; FsLiveDocs enlarges it from md up.
             text = re.sub(r'(<main\b[^>]*class="[^"]*?)\s+md:prose-lg', r'\1', text, count=1)
             # Search indexes page content only, so navigation and redirect pages stay out of results.
