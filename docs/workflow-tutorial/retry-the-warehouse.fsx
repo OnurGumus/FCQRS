@@ -215,7 +215,7 @@ because the connection dropped, would be followed by a second reservation.
 
 ## Next
 
-Step 3: Read the clock adds a confirmation number, an order time, and a shipping step.
+[Step 3: Read the clock](read-the-clock.html) adds a confirmation number, an order time, and a shipping step.
 
 *)
 

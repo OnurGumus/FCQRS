@@ -99,8 +99,35 @@ def retry_the_warehouse(root):
                   'o-1 is already started (Completed)'] + JOURNAL, output)
 
 
+RESERVE = ['  warehouse busy (key order/o-1/0)',
+           '  warehouse busy (key order/o-1/0)',
+           '  warehouse reserved 2 widget (key order/o-1/0)']
+
+
+def read_the_clock(root):
+    [output] = runs(root, [('3-read-the-clock', [], 0)])
+    same(output, ['Started o-1'] + RESERVE +
+                 ['o-1 status: Running ["3 sleep"]',
+                  '  carrier shipped r-1 (key order/o-1/4)',
+                  'o-1 finished: reservation r-1, shipment s-1',
+                  '  confirmation <guid>, placed <time>',
+                  'o-1 is already started (Completed)',
+                  'Journal of order/default-shard/o-1:',
+                  '  1 Started',
+                  '  2 StepScheduled',
+                  '  3 StepCompleted',
+                  '  4 StepCompleted',
+                  '  5 StepCompleted',
+                  '  6 StepScheduled',
+                  '  7 StepCompleted',
+                  '  8 StepScheduled',
+                  '  9 StepCompleted',
+                  '  10 Finished'], output)
+
+
 STEPS = {'1-place-an-order': place_an_order,
-         '2-retry-the-warehouse': retry_the_warehouse}
+         '2-retry-the-warehouse': retry_the_warehouse,
+         '3-read-the-clock': read_the_clock}
 
 # Optional arguments select steps by folder name, for example: 2-retry-the-warehouse
 selected = sys.argv[1:] or list(STEPS)
