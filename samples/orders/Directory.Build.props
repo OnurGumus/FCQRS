@@ -1,0 +1,3 @@
+<!-- Stops the repository's Directory.Build.props at this folder, so these programs build as they
+     would in a reader's own folder, from the project files the tutorial shows. -->
+<Project />
