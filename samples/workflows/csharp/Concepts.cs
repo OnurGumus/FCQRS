@@ -20,6 +20,9 @@ public static class External
 
     public static Task<string> Charge(string key, decimal amount) =>
         Task.FromResult("paid");
+
+    public static Task<bool> IsShipped(string key, string order) =>
+        Task.FromResult(true);
 }
 
 public abstract record AccountCommand;
@@ -107,6 +110,19 @@ public static class Steps
             ctx.Activity("charge", Retry.none, attempt =>
                 Charge(attempt.IdempotencyKey, 30m)));
         return (points, receipt);
+    }
+    // docs:end
+
+    // docs:repeat
+    static async WorkflowTask<int> WaitUntilShipped(
+        WorkflowContext ctx, int checks)
+    {
+        var shipped = await ctx.Activity("check", Retry.times(3), attempt =>
+            IsShipped(attempt.IdempotencyKey, "A"));
+        if (shipped)
+            return checks;
+        await ctx.Sleep(TimeSpan.FromMinutes(5));
+        return await WaitUntilShipped(ctx, checks + 1);
     }
     // docs:end
 

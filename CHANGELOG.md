@@ -1,5 +1,17 @@
 # Changelog
 
+## 7.2.1 (FCQRS.Workflows)
+
+- **A workflow body can recurse to any depth.** A body that did more work after a recursive call,
+  or recursed inside `try`, wrapped each later step's continuation once per open level. Each step
+  then cost time in proportion to the depth, and a few thousand levels overflowed the stack. A stack
+  overflow cannot be caught, so the process stopped, and recovery replayed the same journal and
+  stopped again at every start. C# workflow methods that await themselves were affected the same
+  way. `bind`, `try ... with`, `try ... finally`, and the C# await path are now data that the
+  interpreter rewrites in a loop: 50,000 levels run and replay on a 256 KB stack.
+- The workflow concept page shows how to repeat steps, and that every round stays in the journal.
+- No stored record or step path changes. The package still needs FCQRS core 7.0.0.
+
 ## 7.2.0 (FCQRS.Workflows)
 
 - **`ctx.Both` runs two C# steps together** and gives both results as a tuple, whose types may

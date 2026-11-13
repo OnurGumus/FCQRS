@@ -261,6 +261,49 @@ Every branch's results are stored in the instance's one journal. Recovery replay
 fan-out over thousands of items makes recovery slow. Start a child workflow per item or per chunk
 for that.
 
+## Repeat steps
+
+A body can repeat steps with `while`, with `for`, or by calling itself. This one checks an order
+every five minutes until it has shipped:
+
+```fsharp
+let rec waitUntilShipped checks =
+    workflow {
+        let! shipped =
+            activity "check" (Retry.times 3) (fun attempt ->
+                isShipped attempt.IdempotencyKey "A")
+        if shipped then
+            return checks
+        else
+            do! sleep (TimeSpan.FromMinutes 5.0)
+            return! waitUntilShipped (checks + 1)
+    }
+```
+
+<div class="cs-alt"></div>
+
+<!-- sample: workflows/csharp Concepts.cs repeat -->
+```csharp
+static async WorkflowTask<int> WaitUntilShipped(
+    WorkflowContext ctx, int checks)
+{
+    var shipped = await ctx.Activity("check", Retry.times(3), attempt =>
+        IsShipped(attempt.IdempotencyKey, "A"));
+    if (shipped)
+        return checks;
+    await ctx.Sleep(TimeSpan.FromMinutes(5));
+    return await WaitUntilShipped(ctx, checks + 1);
+}
+```
+
+Steps are numbered in the order the body reaches them, so every round's `check` has its own number
+and its own stored result. Replay gives each round the result it had. The stack stays the same size
+at any depth, also when the body does more work after the call returns.
+
+A workflow has no snapshot. Every round stays in the instance's journal, and recovery replays all of
+it: checking every five minutes for a month leaves about 17,000 steps to replay. Give a loop a
+bound, and start a new instance for each period of work that has no end.
+
 ## Start other workflows
 
 ```fsharp

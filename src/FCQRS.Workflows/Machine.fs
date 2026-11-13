@@ -184,7 +184,8 @@ type internal Machine(history: History, encodeResult: objnull -> Payload, clock:
         match WorkflowCore.force workflow with
         | Return value -> onDone (Ok value)
         | Fail error -> onDone (Error error)
-        | Lazy _ -> invalidOp "force leaves no Lazy"
+        | Lazy _
+        | Bind _ -> invalidOp "force leaves no Lazy or Bind"
         | Step(node, k) ->
             let path =
                 match node with

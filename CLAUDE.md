@@ -127,7 +127,10 @@ Keep these distinctions intact in code comments and documentation.
   restart. The aggregate must answer a repeat with its first verdict, checked before anything the
   first command changed. No reply by the deadline is `OutcomeUnknown`, not a rejection.
 - A signal is stored before it is acknowledged. A race stores its winner.
-- A workflow has no snapshot. Recovery replays the whole journal.
+- A workflow has no snapshot. Recovery replays the whole journal, so a loop without a bound makes
+  recovery slower with every round.
+- A body may recurse to any depth. `bind`, `try`, and the C# await path are data that `force`
+  reassociates in a loop, so neither a pending `let!` nor a `try` grows the stack.
 - An instance whose journal does not match its code is parked, and the process keeps running. This is
   a deliberate exception to the fail-fast rule: running instances restart with the process, so a
   crash would repeat at every start.

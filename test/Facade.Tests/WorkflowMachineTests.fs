@@ -429,6 +429,58 @@ let private andThreeTest =
         Expect.equal (finished replayed |> Option.map Payload.toValue<string>) (Some "42True") "replay gives the stored results"
         Expect.isEmpty replayed.Begun "replay begins no step"
 
+let private recursionTest =
+    testCase "workflow machine: deep recursion keeps a small stack, live and on replay" <| fun _ ->
+        let depth = 50_000
+        // Work after the recursive call: each level leaves a pending let! behind.
+        let rec nested n = workflow {
+            if n = 0 then
+                return 0
+            else
+                let! (x: int) = activity "tick" Retry.none never
+                let! rest = nested (n - 1)
+                return x + rest
+        }
+        // The same, inside a try/finally at every level.
+        let rec guarded n = workflow {
+            if n = 0 then
+                return 0
+            else
+                try
+                    let! (x: int) = activity "tick" Retry.none never
+                    let! rest = guarded (n - 1)
+                    return x + rest
+                finally
+                    ()
+        }
+        let rec tail n total = workflow {
+            if n = 0 then
+                return total
+            else
+                let! (x: int) = activity "tick" Retry.none never
+                return! tail (n - 1) (total + x)
+        }
+        let ticks name = if name = "tick" then Some(Ok(Payload.ofValue 1)) else None
+        let results = ResizeArray()
+        // A 256 KB stack: a body whose stack grew with its depth would overflow here.
+        let thread =
+            System.Threading.Thread(
+                (fun () ->
+                    for name, body in [ "nested", nested depth; "guarded", guarded depth; "tail", tail depth 0 ] do
+                        let live = drive [] ticks body
+                        let steps =
+                            live.Journal |> Seq.filter (function WorkflowRecord.Finished _ -> false | _ -> true) |> List.ofSeq
+                        let replayed = drive steps (fun _ -> None) body
+                        results.Add((name, finished live |> Option.map Payload.toValue<int>, finished replayed |> Option.map Payload.toValue<int>, replayed.Begun.Count))),
+                256 * 1024)
+        thread.Start()
+        thread.Join()
+        for name, live, replayed, begun in results do
+            Expect.equal live (Some depth) $"{name}: every level returns"
+            Expect.equal replayed (Some depth) $"{name}: replay gives the same result"
+            Expect.equal begun 0 $"{name}: replay begins no step"
+        Expect.equal results.Count 3 "every body ran"
+
 let private signal (name: string) (value: 'T) = WorkflowRecord.SignalReceived(name, Payload.ofValue value, at, None)
 
 let private signalTest =
@@ -630,4 +682,4 @@ let private versionInBranchTest =
 let tests =
     testList "workflow machine"
         [ payloadTest; recordTest; liveTest; prefixTest; failureTest; unhandledTest; divergedTest; longTest; storedValueTest
-          allTest; allFailureTest; raceTest; limitTest; andTest; andThreeTest; signalTest; liveSignalTest; unreadableTest; farTimerTest; versionTest; versionLoopTest; wrongSignalTest; versionInBranchTest ]
+          allTest; allFailureTest; raceTest; limitTest; andTest; andThreeTest; recursionTest; signalTest; liveSignalTest; unreadableTest; farTimerTest; versionTest; versionLoopTest; wrongSignalTest; versionInBranchTest ]

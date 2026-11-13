@@ -96,6 +96,26 @@ async Task Eventually(Func<bool> condition, string what)
     }
 }
 
+// --- deep recursion ------------------------------------------------------------------------
+{
+    var db = NewDb();
+    var actor = Boot(db, "CSharpRecursion");
+    try
+    {
+        // Each level awaits a stored step and then the next level, so every level stays open
+        // until the deepest one returns.
+        var countdown = WorkflowHost.Register(actor, new CountdownWorkflow());
+        await countdown.StartAsync("r1", CountdownWorkflow.Depth);
+        Check(await countdown.ResultAsync("r1", TimeSpan.FromMinutes(2)) == CountdownWorkflow.Depth,
+            $"a C# workflow method that calls itself {CountdownWorkflow.Depth} levels deep finishes");
+    }
+    finally
+    {
+        await actor.Stop();
+        DeleteDb(db);
+    }
+}
+
 // --- a foreign await, a fault, and cancellation --------------------------------------------
 {
     var db = NewDb();
@@ -187,6 +207,20 @@ public record OrderSummary(string Symbol, int Quantity, string Approval, bool Se
 public record CounterCommand(int Amount);
 public record CounterEvent(int Amount);
 public record Greeting(string Text);
+
+public sealed class CountdownWorkflow() : Workflow<int, int>("countdown")
+{
+    public const int Depth = 3000;
+
+    public override WorkflowTask<int> Run(WorkflowContext ctx, int depth) => Count(ctx, depth);
+
+    private static async WorkflowTask<int> Count(WorkflowContext ctx, int remaining)
+    {
+        if (remaining == 0) return 0;
+        await ctx.Now();
+        return 1 + await Count(ctx, remaining - 1);
+    }
+}
 
 public sealed class Doubler() : Workflow<int, int>("doubler")
 {

@@ -104,6 +104,18 @@ type Workflow<'T> =
     | Fail of exn
     | Lazy of (unit -> Workflow<'T>)
     | Step of Node * (Result<objnull, exn> -> Workflow<'T>)
+    /// A workflow followed by what to do with its outcome. Keeping this as data, rather than
+    /// composing closures, lets `force` reassociate nested continuations in a loop: a body that
+    /// recurses below a pending `let!` neither grows the stack nor slows each later step.
+    | Bind of Continue<'T>
+
+/// A workflow whose outcome type is hidden, followed by a handler that gives a `Workflow<'T>`.
+and [<AbstractClass; NoEquality; NoComparison>] internal Continue<'T>() =
+    /// Rewrites this node one step toward a `Return`, `Fail` or `Step`.
+    abstract Advance: unit -> Workflow<'T>
+    /// Puts `next` after this node: `(source then h) then next` becomes
+    /// `source then (h then next)`, so left-nested binds never pile up.
+    abstract Then<'U> : next: (Result<'T, exn> -> Workflow<'U>) -> Workflow<'U>
 
 /// What a step waits on.
 and [<NoEquality; NoComparison>] internal Node =
@@ -121,38 +133,51 @@ module internal WorkflowCore =
         with error ->
             Fail error
 
+    /// `source`, then `handle` applied to its outcome. An exception from `handle` fails the result.
+    type Continuation<'A, 'T>(source: Workflow<'A>, handle: Result<'A, exn> -> Workflow<'T>) =
+        inherit Continue<'T>()
+
+        override _.Advance() =
+            match source with
+            | Return value -> protect (fun () -> handle (Ok value))
+            | Fail error -> protect (fun () -> handle (Error error))
+            | Lazy f -> Bind(Continuation(protect f, handle))
+            | Step(node, k) -> Step(node, fun result -> Bind(Continuation(protect (fun () -> k result), handle)))
+            | Bind inner -> inner.Then handle
+
+        override _.Then<'U>(next: Result<'T, exn> -> Workflow<'U>) : Workflow<'U> =
+            Bind(Continuation(source, fun outcome -> Bind(Continuation(protect (fun () -> handle outcome), next))))
+
+    let continueWith (source: Workflow<'A>) (handle: Result<'A, exn> -> Workflow<'T>) : Workflow<'T> =
+        Bind(Continuation(source, handle))
+
+    /// Runs plain code until the workflow is a `Return`, a `Fail` or a `Step`. It loops, so a
+    /// long chain of binds does not grow the stack.
     let rec force (workflow: Workflow<'T>) : Workflow<'T> =
         match workflow with
         | Lazy f -> force (protect f)
+        | Bind node -> force (node.Advance())
         | other -> other
 
-    let rec bind (workflow: Workflow<'A>) (next: 'A -> Workflow<'B>) : Workflow<'B> =
-        match workflow with
-        | Return value -> protect (fun () -> next value)
-        | Fail error -> Fail error
-        | Lazy f -> Lazy(fun () -> bind (protect f) next)
-        | Step(leaf, k) -> Step(leaf, fun result -> bind (protect (fun () -> k result)) next)
+    let bind (workflow: Workflow<'A>) (next: 'A -> Workflow<'B>) : Workflow<'B> =
+        continueWith workflow (fun outcome ->
+            match outcome with
+            | Ok value -> next value
+            | Error error -> Fail error)
 
-    let rec tryWith (workflow: Workflow<'T>) (handler: exn -> Workflow<'T>) : Workflow<'T> =
-        match workflow with
-        | Return value -> Return value
-        | Fail error -> protect (fun () -> handler error)
-        | Lazy f -> Lazy(fun () -> tryWith (protect f) handler)
-        | Step(leaf, k) -> Step(leaf, fun result -> tryWith (protect (fun () -> k result)) handler)
+    let tryWith (workflow: Workflow<'T>) (handler: exn -> Workflow<'T>) : Workflow<'T> =
+        continueWith workflow (fun outcome ->
+            match outcome with
+            | Ok value -> Return value
+            | Error error -> handler error)
 
-    let rec tryFinally (workflow: Workflow<'T>) (compensation: unit -> unit) : Workflow<'T> =
-        let finish (result: Workflow<'T>) =
-            try
-                compensation ()
-                result
-            with error ->
-                Fail error
+    let tryFinally (workflow: Workflow<'T>) (compensation: unit -> unit) : Workflow<'T> =
+        continueWith workflow (fun outcome ->
+            compensation ()
 
-        match workflow with
-        | Return value -> finish (Return value)
-        | Fail error -> finish (Fail error)
-        | Lazy f -> Lazy(fun () -> tryFinally (protect f) compensation)
-        | Step(leaf, k) -> Step(leaf, fun result -> tryFinally (protect (fun () -> k result)) compensation)
+            match outcome with
+            | Ok value -> Return value
+            | Error error -> Fail error)
 
     /// Runs `body` while `guard` holds. Iterations that reach no step run in a loop, so a long
     /// loop of plain code does not grow the stack.
@@ -176,12 +201,8 @@ module internal WorkflowCore =
         | Error error -> Fail error
 
     /// Turns a failure into a value, so a caller can continue after it.
-    let rec attempt (workflow: Workflow<'T>) : Workflow<Result<'T, exn>> =
-        match workflow with
-        | Return value -> Return(Ok value)
-        | Fail error -> Return(Error error)
-        | Lazy f -> Lazy(fun () -> attempt (protect f))
-        | Step(node, k) -> Step(node, fun result -> attempt (protect (fun () -> k result)))
+    let attempt (workflow: Workflow<'T>) : Workflow<Result<'T, exn>> =
+        continueWith workflow Return
 
     let step<'T> (name: string) (kind: StepKind) (op: LeafOp) : Workflow<'T> =
         Step(
