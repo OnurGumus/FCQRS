@@ -81,7 +81,26 @@ def place_an_order(root):
     same(second, ['o-1 is already started (Completed)'] + first[2:], second)
 
 
-STEPS = {'1-place-an-order': place_an_order}
+JOURNAL = ['Journal of order/default-shard/o-1:',
+           '  1 Started',
+           '  2 StepScheduled',
+           '  3 StepCompleted',
+           '  4 Finished']
+
+
+def retry_the_warehouse(root):
+    [output] = runs(root, [('2-retry-the-warehouse', [], 0)])
+    # Two failed attempts and one that succeeds, all with the step's key; only the result is stored.
+    same(output, ['Started o-1',
+                  '  warehouse busy (key order/o-1/0)',
+                  '  warehouse busy (key order/o-1/0)',
+                  '  warehouse reserved 2 widget (key order/o-1/0)',
+                  'o-1 finished: reservation r-1',
+                  'o-1 is already started (Completed)'] + JOURNAL, output)
+
+
+STEPS = {'1-place-an-order': place_an_order,
+         '2-retry-the-warehouse': retry_the_warehouse}
 
 # Optional arguments select steps by folder name, for example: 2-retry-the-warehouse
 selected = sys.argv[1:] or list(STEPS)

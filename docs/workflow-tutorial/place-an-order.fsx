@@ -507,7 +507,7 @@ program.
 
 ## Next
 
-Step 2: Retry the warehouse makes the warehouse fail some calls and
+[Step 2: Retry the warehouse](retry-the-warehouse.html) makes the warehouse fail some calls and
 gives the step a retry policy.
 
 *)
