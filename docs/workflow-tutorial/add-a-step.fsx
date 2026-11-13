@@ -581,7 +581,7 @@ workflow names are part of what is stored, so a renamed step parks every order t
 
 ## Next
 
-Step 9: Guard the change keeps the old steps for `o-7` and the new ones for new orders.
+[Step 9: Guard the change](guard-the-change.html) keeps the old steps for `o-7` and the new ones for new orders.
 
 *)
 

@@ -238,6 +238,29 @@ def add_a_step(root):
               'StepScheduled', 'SignalReceived'], 1)], output)
 
 
+def guard_the_change(root):
+    # Step 9 runs on the database steps 7 and 8 left: o-7 is parked with its approval stored.
+    _, _, output = runs(root, [('7-when-a-step-fails', [], 0), ('8-add-a-step', [], 0),
+                               ('9-guard-the-change', [], 0)])
+    # o-7 resumes without the fraud check, uses the approval stored while it was parked, and ships.
+    # o-9 is new and runs the fraud check.
+    same(output,
+         ['  carrier shipped r-2 (key order/o-7/6)',
+          'o-7 finished: shipped as s-1',
+          'Started o-9'] + reserve('o-9', 2, 1) +
+         ['  fraud check passed for ada (key order/o-9/3)',
+          '  carrier shipped r-1 (key order/o-9/6)',
+          'o-9 finished: shipped as s-2',
+          # Record 7 is the approval o-7 got while parked; record 8 completes its wait. The
+          # version step stored nothing for o-7.
+          'Journal of order/default-shard/o-7:'] +
+         [f'  {number} {record}' for number, record in enumerate(
+             ['Started', 'StepScheduled', 'StepCompleted', 'StepCompleted', 'StepCompleted',
+              'StepScheduled', 'SignalReceived', 'StepCompleted', 'StepScheduled', 'StepCompleted',
+              'StepScheduled', 'StepCompleted', 'StepScheduled', 'StepCompleted', 'Finished'], 1)],
+         output)
+
+
 STEPS = {'1-place-an-order': place_an_order,
          '2-retry-the-warehouse': retry_the_warehouse,
          '3-read-the-clock': read_the_clock,
@@ -245,7 +268,8 @@ STEPS = {'1-place-an-order': place_an_order,
          '5-restart-during-shipping': restart_during_shipping,
          '6-charge-the-customer': charge_the_customer,
          '7-when-a-step-fails': when_a_step_fails,
-         '8-add-a-step': add_a_step}
+         '8-add-a-step': add_a_step,
+         '9-guard-the-change': guard_the_change}
 
 # Optional arguments select steps by folder name, for example: 2-retry-the-warehouse
 selected = sys.argv[1:] or list(STEPS)
