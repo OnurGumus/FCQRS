@@ -314,7 +314,7 @@ Journal of order/default-shard/o-1:
 - `o-3` costs 2000 and gets no approval. After three seconds its wait returned no answer, and the
   order finished as `not approved`.
 
-`o-3` still holds a reservation at the warehouse: nothing releases it. Step 6 adds a step that
+`o-3` still holds a reservation at the warehouse: nothing releases it. [Step 6](charge-the-customer.html) adds a step that
 releases the stock of an order that does not ship.
 
 ## Next

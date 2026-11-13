@@ -48,7 +48,8 @@ let fold (event: Event<AccountEvent>) (state: AccountState) =
 FCQRS handles one account's commands one at a time; other accounts run independently.
 
 [Why FCQRS](https://onurgumus.github.io/FCQRS/overview.html) ·
-[Tutorial](https://onurgumus.github.io/FCQRS/tutorial/open-an-account.html) ·
+[CQRS tutorial](https://onurgumus.github.io/FCQRS/tutorial/open-an-account.html) ·
+[Workflow tutorial](https://onurgumus.github.io/FCQRS/workflow-tutorial/place-an-order.html) ·
 [Task guides](https://onurgumus.github.io/FCQRS/how-to/index.html) ·
 [API reference](https://onurgumus.github.io/FCQRS/reference/index.html) ·
 [Configuration](https://onurgumus.github.io/FCQRS/configuration.html)

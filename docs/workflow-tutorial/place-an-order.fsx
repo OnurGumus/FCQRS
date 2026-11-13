@@ -75,7 +75,7 @@ FCQRS.Workflows, which brings in FCQRS, and SQLite, where the journal is stored.
 ```
 
 The file is `Orders.fsproj` in F# and `Orders.csproj` in C#. The programs target .NET 11, and the
-C# program uses C# 15 from step 6 on. This `global.json` selects the
+C# program uses C# 15 from [step 6](charge-the-customer.html) on. This `global.json` selects the
 .NET 11 SDK, which was a release candidate at the time of writing:
 
 <!-- sample: orders global.json file -->
@@ -208,7 +208,8 @@ In F#, the body is a `workflow { }` block, and `let!` waits for a step. In C#, t
 
 The workflow's name, `order`, and the step's name, `reserve-stock`, are stored with every order.
 They identify the stored records when FCQRS reads them back, so changing either name breaks the
-orders that are already stored. Step 8 shows what happens when the steps change.
+orders that are already stored. [Step 8](add-a-step.html) shows what happens when the steps
+change.
 
 ## Start FCQRS
 

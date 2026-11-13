@@ -41,10 +41,18 @@ Good prose makes the example easier to reason about. It does not narrate the tea
 ## Learning-path structure
 
 - `README.md` gives repository orientation and the smallest domain example.
-- `docs/overview.fsx` explains why FCQRS separates aggregates from read models and maps the tutorial.
-- `docs/tutorial/` builds a small bank in order, from the first aggregate to sagas and changing stored
-  events. Each step has a runnable F# and C# program under `samples/accounts/`; step 6 continues from
-  step 5's database, so both build an assembly named `Accounts`.
+- `docs/overview.fsx` explains why FCQRS separates aggregates from read models and maps both
+  tutorials.
+- `docs/tutorial/` ("Tutorial: CQRS" in the sidebar) builds a small bank in order, from the first
+  aggregate to sagas and changing stored events. Each step has a runnable F# and C# program under
+  `samples/accounts/`; step 6 continues from step 5's database, so both build an assembly named
+  `Accounts`.
+- `docs/workflow-tutorial/` ("Tutorial: Workflows") builds an order workflow in nine steps, from one
+  activity to changing a workflow while orders run. Each step has an F# and C# program under
+  `samples/orders/`, and its page shows every line that is new or changed since the previous step:
+  `scripts/check-learning-snippets.py` fails otherwise. Steps 8 and 9 continue from the previous
+  step's database. `scripts/check-orders.py` runs every step and checks the output its page shows.
+  The track does not require the CQRS tutorial.
 - `docs/concepts/` explains the underlying models and boundaries.
 - `docs/how-to/` provides focused task instructions.
 - `docs/configuration.md` is the runtime configuration reference.
@@ -164,6 +172,8 @@ Keep these distinctions intact in code comments and documentation.
   C# API with its async method builder, and `Streams.fs` the Akka.Streams flows.
 - `samples/workflows/`: the quote workflow in F# and C# on .NET 10, with project references. The
   workflow task guide quotes it.
+- `samples/orders/`: the workflow tutorial's steps as equivalent F# and C# programs on .NET 11,
+  with the published packages. Its `Directory.Build.props` keeps the repository's settings out.
 - `samples/accounts/`: the tutorial's steps as equivalent F# and C# programs on .NET 11. The C#
   programs use C# 15 unions, and `samples/accounts/global.json` selects the .NET 11 SDK. The task
   guides quote these programs too; `serve-over-http/` puts step 4 behind ASP.NET Core endpoints.

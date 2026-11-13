@@ -50,12 +50,19 @@ read model can be built from the history that already exists.
 
 You write the rules of each aggregate: which event a command produces, and how an event changes the
 state. FCQRS runs one instance per aggregate ID and hands it one command at a time. It stores the events,
-rebuilds the state after a restart, and updates your read models. It also runs workflows that span
-several aggregates, called **sagas**. FCQRS runs on Akka.NET and has F# and C# APIs.
+rebuilds the state after a restart, and updates your read models. It also runs processes that span
+several aggregates: **sagas**, which react to stored events, and **workflows**, which are ordinary
+functions that FCQRS records step by step and resumes after a restart. FCQRS runs on Akka.NET and has F#
+and C# APIs.
 
 ## Learn it by building a bank
 
-The tutorial applies this split to a small bank. Each account is an aggregate, and a statement is a read
+There are two tutorials. Start with this one for aggregates, read models, and sagas: the parts of an
+application that decide and record what happened. Start with [the workflow
+tutorial](#Learn-workflows-by-building-an-order) for a process that calls other systems, waits, and must
+finish after a restart. Neither requires the other.
+
+The CQRS tutorial applies this split to a small bank. Each account is an aggregate, and a statement is a read
 model. Every step is a program you run.
 
 1. [Open an account](tutorial/open-an-account.html): commands, events, and the journal.
@@ -64,6 +71,24 @@ model. Every step is a program you run.
 4. [Show a statement](tutorial/show-a-statement.html): read models and projections.
 5. [Transfer money](tutorial/transfer-money.html): sagas and commands that are safe to repeat.
 6. [Add a memo](tutorial/add-a-memo.html): changing events the journal already holds.
+
+## Learn workflows by building an order
+
+The workflow tutorial builds an order that reserves stock, waits for approval, charges the customer,
+and ships. Every step is a program you run, and every page shows each line of it.
+
+1. [Place an order](workflow-tutorial/place-an-order.html): a workflow, an activity, and its journal.
+2. [Retry the warehouse](workflow-tutorial/retry-the-warehouse.html): retry policies and idempotency
+   keys.
+3. [Read the clock](workflow-tutorial/read-the-clock.html): a deterministic body and timers.
+4. [Wait for approval](workflow-tutorial/wait-for-approval.html): signals and timeouts.
+5. [Restart during shipping](workflow-tutorial/restart-during-shipping.html): recovery and replay.
+6. [Charge the customer](workflow-tutorial/charge-the-customer.html): commands to an aggregate and
+   compensation.
+7. [When a step fails for good](workflow-tutorial/when-a-step-fails.html): catching failures and
+   faulted orders.
+8. [Add a step](workflow-tutorial/add-a-step.html): changing a workflow while orders run.
+9. [Guard the change](workflow-tutorial/guard-the-change.html): `version`.
 
 ## When to use FCQRS
 

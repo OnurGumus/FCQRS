@@ -66,6 +66,8 @@ jobs:
         run: python3 scripts/check-accounts.py
       - name: Accounts HTTP API
         run: python3 scripts/check-accounts-http.py
+      - name: Orders workflow tutorial
+        run: python3 scripts/check-orders.py
       - name: Sample excerpts and legacy compatibility
         run: |
           python3 scripts/check-learning-snippets.py

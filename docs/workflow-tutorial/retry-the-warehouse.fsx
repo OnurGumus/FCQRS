@@ -179,7 +179,7 @@ public sealed class Warehouse : IWarehouse
 ```
 
 With step 1's `Retry.none`, the first failure would end the step. The policy above retries it.
-Step 7 shows what a workflow does when a step fails for good.
+[Step 7](when-a-step-fails.html) shows what a workflow does when a step fails for good.
 
 ## Run it
 

@@ -12,7 +12,8 @@ result of each step. After a crash, a workflow instance continues at the step it
 steps whose results are stored do not run again.
 
 Workflows are in the `FCQRS.Workflows` package. They sit beside [sagas](sagas.html) and do not
-replace them.
+replace them. The [workflow tutorial](../workflow-tutorial/place-an-order.html) builds one step by
+step; this page explains the model behind it.
 
 ## Start with a workflow that calls an external system
 

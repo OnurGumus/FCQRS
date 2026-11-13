@@ -55,8 +55,21 @@ Run `python3 scripts/check-learning-snippets.py --update` after changing sample 
 reads the tutorial, the task guides, and each concept page that has a marker. The check
 also fails when a code block has a line wider than it shows at desktop size: 80 columns for F# and C#
 in the tutorial and task guides, and 72 for the tutorial's other blocks, which sit in the text column.
-Task guides may quote wider logs and shell commands. `content/site.css` gives paired C#
+Task guides may quote wider logs and shell commands, and the workflow tutorial's `text` blocks may
+quote wider program output. `content/site.css` gives paired C#
 examples the same frame as F# examples.
+
+The workflow tutorial (`docs/workflow-tutorial/`) shows every line of its programs
+(`samples/orders/`). The region name `file` quotes a whole file without its `// docs:` markers, for
+project files and `global.json`. For those samples the check also fails when a non-blank source
+line is in no region, and when a region or project file that is new or changed since the previous
+step is quoted on no page. A step page puts `Order.fs` changes before `Program.fs` changes, because
+the compiler checks fences in page order; its `.livedocs/contexts/` template declares the unchanged
+types the shown fences use. `scripts/check-orders.py` runs each step from a clean copy, F# and C#,
+and compares the output with what the page shows.
+
+FsLiveDocs names a sidebar section after its folder. `build-docs.py` renames the two tutorial
+sections to "Tutorial: CQRS" and "Tutorial: Workflows" after rendering (`SECTION_LABELS`).
 FsLiveDocs does not compile C# fences; the sample build and behaviour checks in CI provide that
 coverage. highlight.js colours a C# type name only where it is declared, so
 `content/language-tabs.js` colours the other type names from the code around them, without a

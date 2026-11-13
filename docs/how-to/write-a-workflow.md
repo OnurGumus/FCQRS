@@ -12,7 +12,8 @@ person to approve a large quote, and sends the quote. The process can stop at an
 start continues the quote where it was.
 
 Read [Workflows](../concepts/workflows.html) first for the model: steps, the journal, replay, and
-what stays the application's responsibility.
+what stays the application's responsibility. The [workflow
+tutorial](../workflow-tutorial/place-an-order.html) teaches the same steps one at a time.
 
 > **Motivation:** Use a workflow here because a caller starts the process with input data, the work
 > is a sequence of external calls, and it must finish even if the process restarts in the middle.
