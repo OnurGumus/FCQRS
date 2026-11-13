@@ -58,7 +58,10 @@ in the tutorial and task guides, and 72 for the tutorial's other blocks, which s
 Task guides may quote wider logs and shell commands. `content/site.css` gives paired C#
 examples the same frame as F# examples.
 FsLiveDocs does not compile C# fences; the sample build and behaviour checks in CI provide that
-coverage. `<div class="cs-alt"></div>` pairs adjacent language alternatives in the rendered site.
+coverage. highlight.js colours a C# type name only where it is declared, so
+`content/language-tabs.js` colours the other type names from the code around them, without a
+compiler. It can miss a type name or colour a property that stands where a type could.
+`<div class="cs-alt"></div>` pairs adjacent language alternatives in the rendered site.
 An F# example's collapsed setup stays in its F# tab, so it is hidden when C# is selected.
 
 ## Verification and publishing
