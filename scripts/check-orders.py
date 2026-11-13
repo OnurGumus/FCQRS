@@ -166,11 +166,37 @@ def restart_during_shipping(root):
                   'o-1 finished: shipped as s-1'] + SHIPPED_JOURNAL, second)
 
 
+def charge_the_customer(root):
+    [output] = runs(root, [('6-charge-the-customer', [], 0)])
+    same(output,
+         ['Deposited 1500 to ada', 'Deposited 50 to bob', 'Started o-1'] + reserve('o-1', 2, 1) +
+         ['  carrier shipped r-1 (key order/o-1/5)',
+          'o-1 finished: shipped as s-1',
+          'Started o-2'] + reserve('o-2', 30, 2) +
+         ['  carrier shipped r-2 (key order/o-2/6)',
+          'o-2 finished: shipped as s-2',
+          # Not approved: the stock is released.
+          'Started o-3'] + reserve('o-3', 50, 3) +
+         ['  warehouse released r-3 (key order/o-3/4)',
+          'o-3 finished: not approved',
+          # Bob has 50 and the order costs 80: the account refuses the debit.
+          'Started o-4'] + reserve('o-4', 2, 4) +
+         ['  warehouse released r-4 (key order/o-4/4)',
+          'o-4 finished: payment refused',
+          # o-1's journal has the send step's records, 10 and 11.
+          'Journal of order/default-shard/o-1:'] +
+         [f'  {number} {record}' for number, record in enumerate(
+             ['Started', 'StepScheduled', 'StepCompleted', 'StepCompleted', 'StepCompleted',
+              'StepScheduled', 'StepCompleted', 'StepScheduled', 'StepCompleted', 'StepScheduled',
+              'StepCompleted', 'Finished'], 1)], output)
+
+
 STEPS = {'1-place-an-order': place_an_order,
          '2-retry-the-warehouse': retry_the_warehouse,
          '3-read-the-clock': read_the_clock,
          '4-wait-for-approval': wait_for_approval,
-         '5-restart-during-shipping': restart_during_shipping}
+         '5-restart-during-shipping': restart_during_shipping,
+         '6-charge-the-customer': charge_the_customer}
 
 # Optional arguments select steps by folder name, for example: 2-retry-the-warehouse
 selected = sys.argv[1:] or list(STEPS)

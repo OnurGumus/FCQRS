@@ -238,7 +238,7 @@ call harmless.
 
 ## Next
 
-Step 6: Charge the customer sends a command to an account from the workflow, and releases the
+[Step 6: Charge the customer](charge-the-customer.html) sends a command to an account from the workflow, and releases the
 stock when the payment is refused.
 
 *)
