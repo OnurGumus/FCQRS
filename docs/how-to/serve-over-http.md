@@ -113,11 +113,12 @@ type AmountRequest = { Amount: decimal }
 
 // One statement row, as the GET endpoint returns it.
 [<CLIMutable>]
-type Row =
-    { Version: int64
-      Entry: string
-      Amount: decimal
-      Balance: decimal }
+type Row = {
+    Version: int64
+    Entry: string
+    Amount: decimal
+    Balance: decimal
+}
 ```
 
 <div class="cs-alt"></div>

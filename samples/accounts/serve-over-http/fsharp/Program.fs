@@ -26,11 +26,12 @@ type AmountRequest = { Amount: decimal }
 
 // One statement row, as the GET endpoint returns it.
 [<CLIMutable>]
-type Row =
-    { Version: int64
-      Entry: string
-      Amount: decimal
-      Balance: decimal }
+type Row = {
+    Version: int64
+    Entry: string
+    Amount: decimal
+    Balance: decimal
+}
 // docs:end
 
 // An ID or an owner must be non-blank and at most 255 characters.
@@ -58,13 +59,14 @@ let main args =
     let api = Fcqrs.actor builder.Configuration logging (Some connection) "accounts"
     try
         let accounts =
-            Fcqrs.aggregate api
-                { Name = "Account"
-                  Initial = initial
-                  Decide = decide
-                  Fold = fold
-                  Snapshots = Default
-                  Passivation = PassivationPolicy.Default }
+            Fcqrs.aggregate api {
+                Name = "Account"
+                Initial = initial
+                Decide = decide
+                Fold = fold
+                Snapshots = Default
+                Passivation = PassivationPolicy.Default
+            }
         Fcqrs.wireSagaStarters api []
         let store =
             SqlProjectionStore(

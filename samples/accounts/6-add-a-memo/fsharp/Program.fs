@@ -39,13 +39,14 @@ let api = Fcqrs.actor configuration logging (Some connection) "accounts"
 
 // Register the account rules; `accounts` sends commands to them.
 let accounts =
-    Fcqrs.aggregate api
-        { Name = "Account"
-          Initial = initial
-          Decide = decide
-          Fold = fold
-          Snapshots = Default
-          Passivation = PassivationPolicy.Default }
+    Fcqrs.aggregate api {
+        Name = "Account"
+        Initial = initial
+        Decide = decide
+        Fold = fold
+        Snapshots = Default
+        Passivation = PassivationPolicy.Default
+    }
 
 // Register the transfer saga and install its start rule.
 let transfers = Fcqrs.saga api (Transfer.definition accounts.Factory)

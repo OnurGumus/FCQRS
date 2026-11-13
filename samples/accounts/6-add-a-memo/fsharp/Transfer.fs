@@ -7,13 +7,14 @@ open Account
 
 // docs:states
 // What a transfer moves, and between which accounts.
-type TransferDetails =
-    { Id: string
-      Source: string
-      Target: string
-      Amount: decimal
-      // New in this step. Transfers stored before it have none.
-      Memo: string option }
+type TransferDetails = {
+    Id: string
+    Source: string
+    Target: string
+    Amount: decimal
+    // New in this step. Transfers stored before it have none.
+    Memo: string option
+}
 
 // Where a transfer is.
 type TransferState =
@@ -33,12 +34,13 @@ let handleEvent (message: obj) (saga: SagaState<unit, TransferState option>) =
         let sender = string event.Sender.Value
         match event.EventDetails, state with
         | TransferSent(id, target, amount, memo), None ->
-            let transfer =
-                { Id = id
-                  Source = sender
-                  Target = target
-                  Amount = amount
-                  Memo = memo }
+            let transfer = {
+                Id = id
+                Source = sender
+                Target = target
+                Amount = amount
+                Memo = memo
+            }
             StateChangedEvent(Delivering transfer)
         | TransferReceived(id, _, _, _), Some(Delivering transfer)
             when id = transfer.Id -> StateChangedEvent Completed
@@ -82,12 +84,13 @@ let startsOn (event: Event<AccountEvent>) =
     | TransferSent _ -> true
     | _ -> false
 
-let definition accounts =
-    { Name = "Transfer"
-      InitialData = ()
-      Originator = accounts
-      HandleEvent = handleEvent
-      ApplySideEffects = applySideEffects accounts
-      StartOn = startsOn
-      Snapshots = Default }
+let definition accounts = {
+    Name = "Transfer"
+    InitialData = ()
+    Originator = accounts
+    HandleEvent = handleEvent
+    ApplySideEffects = applySideEffects accounts
+    StartOn = startsOn
+    Snapshots = Default
+}
 // docs:end

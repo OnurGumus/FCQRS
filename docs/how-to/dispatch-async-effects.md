@@ -85,10 +85,17 @@ No service client appears in `decide`, so the returned action can be compared di
 The runner maps every outcome to a command. Catch service failures and timeouts at this boundary:
 
 ```fsharp
+let note = {
+    Name = "Note"
+    Initial = Note.initial
+    Decide = decide
+    Fold = fold
+    Snapshots = Default
+    Passivation = PassivationPolicy.Default
+}
+
 let notes =
-    Fcqrs.aggregateWithEffects api
-        { Name = "Note"; Initial = Note.initial; Decide = decide; Fold = fold
-          Snapshots = Default; Passivation = PassivationPolicy.Default }
+    Fcqrs.aggregateWithEffects api note
         (fun (SummarizeText text) -> async {
             try
                 let! summary = ai.Summarize text

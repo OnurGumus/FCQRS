@@ -179,13 +179,14 @@ let api = Fcqrs.actor configuration logging (Some connection) "accounts"
 
 // Register the account rules; `accounts` sends commands to them.
 let accounts =
-    Fcqrs.aggregate api
-        { Name = "Account"
-          Initial = initial
-          Decide = decide
-          Fold = fold
-          Snapshots = Default
-          Passivation = PassivationPolicy.Default }
+    Fcqrs.aggregate api {
+        Name = "Account"
+        Initial = initial
+        Decide = decide
+        Fold = fold
+        Snapshots = Default
+        Passivation = PassivationPolicy.Default
+    }
 
 // Finish startup. This program has no sagas yet.
 Fcqrs.wireSagaStarters api []

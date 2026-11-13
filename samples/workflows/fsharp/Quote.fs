@@ -7,16 +7,18 @@ open FCQRS.Workflows
 
 // docs:messages
 // What the workflow is started with.
-type QuoteRequest =
-    { Customer: string
-      Symbol: string
-      Quantity: int }
+type QuoteRequest = {
+    Customer: string
+    Symbol: string
+    Quantity: int
+}
 
 // What the workflow returns.
-type Quote =
-    { Total: decimal
-      Approved: bool
-      Receipt: string }
+type Quote = {
+    Total: decimal
+    Approved: bool
+    Receipt: string
+}
 // docs:end
 
 // docs:services
@@ -35,7 +37,8 @@ type IMailer =
 // Five attempts, 200 ms apart.
 let private retry =
     { Retry.times 5 with
-        Schedule = FixedInterval(TimeSpan.FromMilliseconds 200.0) }
+        Schedule = FixedInterval(TimeSpan.FromMilliseconds 200.0)
+    }
 
 let definition (prices: IPriceService) (mailer: IMailer) =
     Workflow.define "quote" (fun (request: QuoteRequest) -> workflow {

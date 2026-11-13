@@ -98,11 +98,12 @@ let handle (connection: DbConnection) (transaction: DbTransaction)
         // Only account events go on a statement; Sender is the account's ID.
         | :? Event<AccountEvent> as stored ->
             let add (entry: string) (amount: decimal) =
-                let row =
-                    {| Account = string stored.Sender.Value
-                       Version = envelope.SequenceNr
-                       Entry = entry
-                       Amount = amount |}
+                let row = {|
+                    Account = string stored.Sender.Value
+                    Version = envelope.SequenceNr
+                    Entry = entry
+                    Amount = amount
+                |}
                 connection.ExecuteAsync(addRow, row, transaction) :> Task
             match stored.EventDetails with
             | Opened owner -> do! add $"Opened for {owner}" 0m

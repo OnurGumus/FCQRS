@@ -159,13 +159,14 @@ An aggregate whose idle policy belongs to the domain rather than to the deployme
 its definition, where it outranks both configuration levels:
 
 ```fsharp
-Fcqrs.aggregate api
-    { Name = "Account"
-      Initial = initial
-      Decide = decide
-      Fold = fold
-      Snapshots = Default
-      Passivation = PassivationPolicy.After(TimeSpan.FromHours 2.0) }
+Fcqrs.aggregate api {
+    Name = "Account"
+    Initial = initial
+    Decide = decide
+    Fold = fold
+    Snapshots = Default
+    Passivation = PassivationPolicy.After(TimeSpan.FromHours 2.0)
+}
 ```
 
 <div class="cs-alt"></div>

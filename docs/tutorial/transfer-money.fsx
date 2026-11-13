@@ -68,20 +68,22 @@ type AccountEvent =
 
 // What the account knows now. The sets hold the IDs of transfers it has
 // handled, so a repeated transfer command moves no money twice.
-type AccountState =
-    { Owner: string option
-      Balance: decimal
-      Sent: Set<string>
-      Received: Set<string>
-      Refunded: Set<string> }
+type AccountState = {
+    Owner: string option
+    Balance: decimal
+    Sent: Set<string>
+    Received: Set<string>
+    Refunded: Set<string>
+}
 
 // The state before the account's first event.
-let initial =
-    { Owner = None
-      Balance = 0m
-      Sent = Set.empty
-      Received = Set.empty
-      Refunded = Set.empty }
+let initial = {
+    Owner = None
+    Balance = 0m
+    Sent = Set.empty
+    Received = Set.empty
+    Refunded = Set.empty
+}
 ```
 
 <div class="cs-alt"></div>
@@ -175,18 +177,21 @@ let fold (event: Event<AccountEvent>) (state: AccountState) =
     | TransferSent(id, _, amount) ->
         { state with
             Balance = state.Balance - amount
-            Sent = state.Sent.Add id }
+            Sent = state.Sent.Add id
+        }
     // FCQRS folds a repeated reply too; a known ID changes nothing.
     | TransferReceived(id, _, _) when state.Received.Contains id -> state
     | TransferReceived(id, _, amount) ->
         { state with
             Balance = state.Balance + amount
-            Received = state.Received.Add id }
+            Received = state.Received.Add id
+        }
     | TransferRefunded(id, _, _) when state.Refunded.Contains id -> state
     | TransferRefunded(id, _, amount) ->
         { state with
             Balance = state.Balance + amount
-            Refunded = state.Refunded.Add id }
+            Refunded = state.Refunded.Add id
+        }
     | Rejected _ -> state
 ```
 
@@ -304,11 +309,12 @@ rejection is what sends a transfer back.
 <!-- sample: accounts/5-transfer-money/fsharp Transfer.fs states -->
 ```fsharp
 // What a transfer moves, and between which accounts.
-type TransferDetails =
-    { Id: string
-      Source: string
-      Target: string
-      Amount: decimal }
+type TransferDetails = {
+    Id: string
+    Source: string
+    Target: string
+    Amount: decimal
+}
 
 // Where a transfer is.
 type TransferState =
@@ -531,14 +537,15 @@ let startsOn (event: Event<AccountEvent>) =
     | TransferSent _ -> true
     | _ -> false
 
-let definition accounts =
-    { Name = "Transfer"
-      InitialData = ()
-      Originator = accounts
-      HandleEvent = handleEvent
-      ApplySideEffects = applySideEffects accounts
-      StartOn = startsOn
-      Snapshots = Default }
+let definition accounts = {
+    Name = "Transfer"
+    InitialData = ()
+    Originator = accounts
+    HandleEvent = handleEvent
+    ApplySideEffects = applySideEffects accounts
+    StartOn = startsOn
+    Snapshots = Default
+}
 ```
 
 <div class="cs-alt"></div>

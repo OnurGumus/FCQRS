@@ -7,11 +7,12 @@ open Account
 
 // docs:states
 // What a transfer moves, and between which accounts.
-type TransferDetails =
-    { Id: string
-      Source: string
-      Target: string
-      Amount: decimal }
+type TransferDetails = {
+    Id: string
+    Source: string
+    Target: string
+    Amount: decimal
+}
 
 // Where a transfer is.
 type TransferState =
@@ -75,12 +76,13 @@ let startsOn (event: Event<AccountEvent>) =
     | TransferSent _ -> true
     | _ -> false
 
-let definition accounts =
-    { Name = "Transfer"
-      InitialData = ()
-      Originator = accounts
-      HandleEvent = handleEvent
-      ApplySideEffects = applySideEffects accounts
-      StartOn = startsOn
-      Snapshots = Default }
+let definition accounts = {
+    Name = "Transfer"
+    InitialData = ()
+    Originator = accounts
+    HandleEvent = handleEvent
+    ApplySideEffects = applySideEffects accounts
+    StartOn = startsOn
+    Snapshots = Default
+}
 // docs:end

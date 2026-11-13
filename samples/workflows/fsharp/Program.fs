@@ -28,7 +28,8 @@ let prices =
                 if priceCalls < 3 then
                     failwith "the price service is busy"
                 return 12.5m
-            } }
+            }
+    }
 
 let mailer =
     { new IMailer with
@@ -39,7 +40,8 @@ let mailer =
                     printfn "  the process stops before this step is stored"
                     exit 1
                 return $"quote of {total} sent to {customer}"
-            } }
+            }
+    }
 
 // docs:register
 // Registering the workflow also resumes the instances that were running when

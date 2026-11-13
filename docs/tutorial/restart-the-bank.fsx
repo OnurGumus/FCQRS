@@ -67,13 +67,14 @@ ORDER BY sequence_number;
 ```fsharp
 // Register the account rules and save a snapshot every 100 events.
 let accounts =
-    Fcqrs.aggregate api
-        { Name = "Account"
-          Initial = initial
-          Decide = decide
-          Fold = fold
-          Snapshots = Every 100
-          Passivation = PassivationPolicy.Default }
+    Fcqrs.aggregate api {
+        Name = "Account"
+        Initial = initial
+        Decide = decide
+        Fold = fold
+        Snapshots = Every 100
+        Passivation = PassivationPolicy.Default
+    }
 ```
 
 <div class="cs-alt"></div>
