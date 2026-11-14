@@ -276,7 +276,7 @@ dotnet run --project 1-open-an-account/csharp
 ```
 
 Run the tutorial's programs from `samples/accounts`. Its `global.json` selects the .NET 11 SDK, which
-the C# programs need for C# 15. At the time of writing, that SDK is a release candidate.
+the C# programs need for C# 15.
 
 ```text
 Opened for Alice (version 1)

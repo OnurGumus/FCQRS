@@ -20,8 +20,7 @@ Start there for a runnable project.
 ## Compiler requirement for this guide
 
 The examples use C# discriminated unions. The `union` keyword is part of C# 15, which needs the .NET 11
-SDK, a release candidate at the time of writing, and a `net11.0` target. FCQRS targets `net10.0` and
-can run in a `net11.0` host. On .NET 10, use [record hierarchies](../concepts/csharp-interop.html) or
+SDK and a `net11.0` target. FCQRS targets `net10.0` and can run in a `net11.0` host. On .NET 10, use [record hierarchies](../concepts/csharp-interop.html) or
 define the domain in an F# class library and keep the host, endpoints, and projections in C#.
 
 FCQRS writes an explicit case discriminator for unions in the journal. Do not replace its event

@@ -61,7 +61,6 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 11.0.x
-          dotnet-quality: preview
       - name: Accounts tutorial
         run: python3 scripts/check-accounts.py
       - name: Accounts HTTP API

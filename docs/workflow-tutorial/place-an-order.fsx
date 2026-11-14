@@ -76,15 +76,14 @@ FCQRS.Workflows, which brings in FCQRS, and SQLite, where the journal is stored.
 
 The file is `Orders.fsproj` in F# and `Orders.csproj` in C#. The programs target .NET 11, and the
 C# program uses C# 15 from [step 6](charge-the-customer.html) on. This `global.json` selects the
-.NET 11 SDK, which was a release candidate at the time of writing:
+.NET 11 SDK:
 
 <!-- sample: orders global.json file -->
 ```json
 {
   "sdk": {
-    "version": "11.0.100-rc.1.26425.128",
-    "rollForward": "latestFeature",
-    "allowPrerelease": true
+    "version": "11.0.100",
+    "rollForward": "latestFeature"
   }
 }
 ```
