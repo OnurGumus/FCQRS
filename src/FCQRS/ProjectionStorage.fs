@@ -321,17 +321,47 @@ type SqlProjectionStore
     /// progress table is.
     member internal _.OwnedTable(name: string) : string = qualified "ownedTable" progressSchema name
 
-    /// Creates a table FCQRS owns in the progress table's schema, unless it exists. `columns` is the
-    /// SQL between CREATE TABLE's parentheses. On PostgreSQL it runs under the lock that serializes
-    /// FCQRS's other table creation.
-    member internal this.CreateOwnedTableAsync(name: string, columns: string, ct: CancellationToken) : Task =
+    /// Creates a table FCQRS owns in the progress table's schema, unless it exists, inside the
+    /// caller's transaction on a connection from `OpenProjectionAsync`, which must not have run
+    /// anything yet. `columns` is the SQL between CREATE TABLE's parentheses. On PostgreSQL it takes
+    /// the lock that serializes FCQRS's other table creation. Returns whether the table was created.
+    member internal this.CreateOwnedTableAsync(connection: DbConnection, transaction: DbTransaction, name: string, columns: string, ct: CancellationToken) : Task<bool> =
         task {
-            use! connection = openConnection projectionConnectionFactory validateProjectionConnection ct
-            use! transaction = connection.BeginTransactionAsync(ct)
             do! lockDefinitions connection transaction ct
-            use create = transactionCommand connection transaction ($"CREATE TABLE IF NOT EXISTS {this.OwnedTable name} ({columns})")
-            let! _ = create.ExecuteNonQueryAsync(ct)
-            do! transaction.CommitAsync(ct)
+            let table = this.OwnedTable name
+            use exists =
+                match dialect with
+                | ProjectionSqlDialect.PostgreSql ->
+                    let command = transactionCommand connection transaction "SELECT CASE WHEN to_regclass(CAST(@table AS text)) IS NULL THEN 0 ELSE 1 END"
+                    parameter command "@table" DbType.String table
+                    command
+                | _ ->
+                    let catalog =
+                        match progressSchema with
+                        | Some schema -> quote "progressTableSchema" schema + ".sqlite_master"
+                        | None -> "sqlite_master"
+                    let command = transactionCommand connection transaction ($"SELECT COUNT(*) FROM {catalog} WHERE type = 'table' AND name = @name")
+                    parameter command "@name" DbType.String name
+                    command
+            let! found = exists.ExecuteScalarAsync(ct)
+            if Convert.ToInt64 found > 0L then
+                return false
+            else
+                use create = transactionCommand connection transaction ($"CREATE TABLE {table} ({columns})")
+                let! _ = create.ExecuteNonQueryAsync(ct)
+                return true
+        }
+
+    /// Deletes every read position of a projection inside the caller's transaction, so its next
+    /// start reads its journal events from the beginning. The caller resets the read model in the
+    /// same transaction.
+    member internal _.ResetProjectionAsync(connection: DbConnection, transaction: DbTransaction, projectionName: string, ct: CancellationToken) : Task =
+        task {
+            validateName (nameof projectionName) projectionName
+            use delete = transactionCommand connection transaction ($"DELETE FROM {progressSql} WHERE projection_name = @projection")
+            parameter delete "@projection" DbType.String projectionName
+            let! _ = delete.ExecuteNonQueryAsync(ct)
+            ()
         }
 
     /// Binds a projection to this store's journal source, replacing the source it was bound to. Only

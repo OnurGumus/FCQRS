@@ -699,9 +699,10 @@ type internal Dispatcher
     // The longest single wait; a semaphore wait takes at most Int32.MaxValue milliseconds.
     let longestWait = TimeSpan.FromDays 1.0
 
-    // The journal's database, which holds the stored index and its read positions. Built here, so
-    // a journal the index cannot use raises from Schedules.register.
+    // The journal's database, which holds the stored index and its read positions. Built and
+    // checked here, so a journal the index cannot use raises from Schedules.register.
     let store = FCQRS.Projections.journalStore api
+    do FCQRS.Projections.checkOwnedStore api store
     let table = store.OwnedTable ScheduleIndex.Table
 
     // Upcasters are fixed when the dispatcher is registered, as when its projection started there.
@@ -1033,30 +1034,80 @@ type internal Dispatcher
             | _ -> ()
         }
 
-    // Creates the table on first use, binds the projection's read positions to this journal, and
-    // reads every row into the index in memory.
+    // Binds the projection's read positions to this journal, creates the table on first use, and
+    // reads every row into the index in memory. The index is derived from the journal, so when the
+    // table is new (a first start, or a table dropped while its read positions stayed) or a row
+    // cannot be read, the rows and the read positions are deleted in one transaction and the
+    // projection reads the schedules' whole history again. A rebuilt index can re-drive a pending
+    // run, which the schedule answers with its first verdict.
     let load (token: Threading.CancellationToken) =
         task {
             do! store.InitializeAsync token
-            do! store.CreateOwnedTableAsync(ScheduleIndex.Table, ScheduleIndex.Columns, token)
             // The table and the read positions live in the journal's database and move with it, so a
             // changed connection string still names the journal they were read from.
             do! store.RebindProjectionAsync(ScheduleIndex.ProjectionName, token)
             use! connection = store.OpenProjectionAsync token
-            use select = connection.CreateCommand()
-            select.CommandText <- $"SELECT schedule_id, entry FROM {table}"
-            use! reader = select.ExecuteReaderAsync token
-            let rows = ResizeArray<string * ScheduleState>()
-            let mutable reading = true
+            use! transaction = connection.BeginTransactionAsync token
+            let! created = store.CreateOwnedTableAsync(connection, transaction, ScheduleIndex.Table, ScheduleIndex.Columns, token)
 
-            while reading do
-                let! available = reader.ReadAsync token
+            let reset () =
+                task {
+                    use delete = connection.CreateCommand()
+                    delete.Transaction <- transaction
+                    delete.CommandText <- $"DELETE FROM {table}"
+                    let! _ = delete.ExecuteNonQueryAsync token
+                    do! store.ResetProjectionAsync(connection, transaction, ScheduleIndex.ProjectionName, token)
+                }
 
-                if available then
-                    let id = reader.GetString 0
-                    rows.Add((id, decodeRow id (reader.GetString 1)))
-                else
-                    reading <- false
+            let! stored =
+                task {
+                    if created then
+                        do! reset ()
+                        return []
+                    else
+                        use select = connection.CreateCommand()
+                        select.Transaction <- transaction
+                        select.CommandText <- $"SELECT schedule_id, entry FROM {table}"
+                        use! reader = select.ExecuteReaderAsync token
+                        let rows = ResizeArray<string * string>()
+                        let mutable reading = true
+
+                        while reading do
+                            let! available = reader.ReadAsync token
+
+                            if available then
+                                rows.Add((reader.GetString 0, reader.GetString 1))
+                            else
+                                reading <- false
+
+                        return List.ofSeq rows
+                }
+
+            let decoded =
+                stored
+                |> List.map (fun (id, entry) ->
+                    try
+                        Ok(id, ScheduleIndex.decode entry)
+                    with error ->
+                        Error(id, error))
+
+            let! rows =
+                task {
+                    match decoded |> List.tryPick (function Error failure -> Some failure | Ok _ -> None) with
+                    | None -> return decoded |> List.choose (function Ok row -> Some row | Error _ -> None)
+                    | Some(id, error) ->
+                        logger.LogWarning(
+                            error,
+                            "The row of schedule '{Schedule}' in {Table} cannot be read. The dispatcher deletes the index and reads the schedules' history again.",
+                            id,
+                            ScheduleIndex.Table
+                        )
+
+                        do! reset ()
+                        return []
+                }
+
+            do! transaction.CommitAsync token
 
             lock gate (fun () ->
                 for id, state in rows do

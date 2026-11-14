@@ -568,6 +568,30 @@ let private gap name (envelope: EventEnvelope) (position: int64) =
     if position = Int64.MaxValue || envelope.SequenceNr <> position + 1L then
         raise (JournalHistoryException $"Projection '{name}' found a journal gap for '{envelope.PersistenceId}' after sequence {position}. Retain or restore its journal history, and make every event adapter return exactly one event.")
 
+// The journal settings, after checking that `store` addresses the journal that Akka's reader and
+// writer use. With `owned`, Akka event adapters are allowed.
+let private checkStore (owned: bool) (actor: IActor) (store: SqlProjectionStore) =
+    let settings = journalSettings actor owned
+    if (store.Dialect = ProjectionSqlDialect.Sqlite && not (settings.Provider.StartsWith("SQLite", StringComparison.OrdinalIgnoreCase)))
+       || (store.Dialect = ProjectionSqlDialect.PostgreSql && not (settings.Provider.StartsWith("PostgreSQL", StringComparison.OrdinalIgnoreCase))) then
+        invalidArg "options" "The projection store dialect must match the actor's SQL journal provider."
+    store.ValidateJournal(
+        settings.ConnectionString, settings.Table, settings.Schema,
+        settings.PersistenceIdColumn, settings.SequenceNumberColumn, settings.OrderingColumn)
+    let writeConfig, writeMapping = settings.WriteConfig, settings.WriteMapping
+    store.ValidateJournal(
+        writeConfig.GetString("connection-string", ""),
+        writeConfig.GetString(writeMapping + ".journal.table-name", "journal"),
+        writeConfig.GetString(writeMapping + ".schema-name", null) |> Option.ofObj,
+        writeConfig.GetString(writeMapping + ".journal.columns.persistence-id", "persistence_id"),
+        writeConfig.GetString(writeMapping + ".journal.columns.sequence-number", "sequence_number"),
+        writeConfig.GetString(writeMapping + ".journal.columns.ordering", "ordering"))
+    settings
+
+/// Raises as `startOwned` would for a store that does not address the actor's SQL journal, so a
+/// caller can check its configuration before it starts the projection.
+let internal checkOwnedStore (actor: IActor) (store: SqlProjectionStore) : unit = checkStore true actor store |> ignore
+
 // `start`, or with `owned` the projection of a read model FCQRS keeps: see `startOwned`.
 let private startWith
     (owned: bool)
@@ -591,21 +615,7 @@ let private startWith
     let name, store = options.Name, options.Store
     let entities = validateEntities "Entities" options.Entities
     let logger = actor.LoggerFactory.CreateLogger "TransactionalProjection"
-    let settings = journalSettings actor owned
-    if (store.Dialect = ProjectionSqlDialect.Sqlite && not (settings.Provider.StartsWith("SQLite", StringComparison.OrdinalIgnoreCase)))
-       || (store.Dialect = ProjectionSqlDialect.PostgreSql && not (settings.Provider.StartsWith("PostgreSQL", StringComparison.OrdinalIgnoreCase))) then
-        invalidArg "options" "The projection store dialect must match the actor's SQL journal provider."
-    store.ValidateJournal(
-        settings.ConnectionString, settings.Table, settings.Schema,
-        settings.PersistenceIdColumn, settings.SequenceNumberColumn, settings.OrderingColumn)
-    let writeConfig, writeMapping = settings.WriteConfig, settings.WriteMapping
-    store.ValidateJournal(
-        writeConfig.GetString("connection-string", ""),
-        writeConfig.GetString(writeMapping + ".journal.table-name", "journal"),
-        writeConfig.GetString(writeMapping + ".schema-name", null) |> Option.ofObj,
-        writeConfig.GetString(writeMapping + ".journal.columns.persistence-id", "persistence_id"),
-        writeConfig.GetString(writeMapping + ".journal.columns.sequence-number", "sequence_number"),
-        writeConfig.GetString(writeMapping + ".journal.columns.ordering", "ordering"))
+    let settings = checkStore owned actor store
 
     let apply (publish: IMessageWithCID -> unit) (envelope: EventEnvelope) (token: CancellationToken) = task {
         use! connection = store.OpenProjectionAsync(token)

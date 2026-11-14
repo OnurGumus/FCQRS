@@ -837,10 +837,13 @@ let private withJournal (postgres: string option) (test: Journal -> unit) =
             NpgsqlConnection.ClearAllPools()
             admin $"DROP DATABASE IF EXISTS {database} WITH (FORCE)"
 
+/// Opens the journal's database. A SQLite connection is not pooled: a pooled one that dropped a
+/// table can keep it out of its cached schema after another connection creates it again, and
+/// report "no such table" while a writer holds the lock it needs to check the schema.
 let private openJournal (journal: Journal) : DbConnection =
     let connection: DbConnection =
         match journal with
-        | SqliteFile path -> new SqliteConnection($"Data Source={path}")
+        | SqliteFile path -> new SqliteConnection($"Data Source={path};Pooling=False")
         | Postgres text -> new NpgsqlConnection(text)
     connection.Open()
     connection
@@ -1039,6 +1042,82 @@ let private upgradeBuildsIndex (postgres: string option) =
             finally
                 third.Stop()
 
+/// Runs one statement on the journal's database.
+let private execute (journal: Journal) (sql: string) =
+    use connection = openJournal journal
+    use statement = command connection sql []
+    statement.ExecuteNonQuery() |> ignore
+
+/// An hourly schedule "u" whose first run started; `damage` then breaks the stored index while the
+/// dispatcher is down. The restart must rebuild the index from the journal and run the next due
+/// time once. `logged` checks the restart's log lines.
+let private indexRecovers (postgres: string option) (what: string) (damage: Journal -> unit) (logged: Capture -> unit) =
+    let database = if postgres.IsSome then "PostgreSQL" else "SQLite"
+    testCase $"schedules: {what}, the restart rebuilds the index and fires the next due time once ({database})" <| fun _ ->
+        withJournal postgres <| fun journal ->
+            let runs = Runs()
+            let connection = connectionOf journal
+            let anchor =
+                let first = bootOn connection "ScheduleIndexDamage" TimeSpan.Zero nullLoggers [] true (remindOnly runs)
+                try
+                    sync (Schedules.create first.Schedules "u" "remind" "x" (ScheduleRule.Every hour) CatchUp.Latest)
+                    eventually "the index has the schedule" (fun () -> hasView first "u")
+                    let anchor = (view first "u").Anchor
+                    shiftTo first pastFirstHour
+                    eventually "the first run started" (fun () -> (view first "u").LastStarted && (view first "u").LastDue = Some(anchor + hour))
+                    indexCaughtUp first
+                    anchor
+                finally
+                    first.Stop()
+
+            damage journal
+
+            let capture = new Capture()
+            use loggers = LoggerFactory.Create(fun builder -> builder.AddProvider capture |> ignore)
+            let second = bootOn connection "ScheduleIndexDamage" (TimeSpan.FromHours 2.0 + TimeSpan.FromSeconds 2.0) loggers [] true (remindOnly runs)
+            try
+                ready second
+                Expect.equal (view second "u").LastDue (Some(anchor + hour)) "the index is rebuilt from the journal"
+                eventually "the next due time runs" (fun () -> runs.Count >= 2)
+                eventually "its start is reported" (fun () -> (view second "u").LastDue = Some(anchor + 2.0 * hour) && (view second "u").LastStarted)
+                Thread.Sleep 1500
+                Expect.equal (dues runs) [ anchor + hour; anchor + 2.0 * hour ] "each due time ran once"
+                indexCaughtUp second
+                let row = (indexRows journal)["u"]
+                Expect.stringContains row "\"format\":1" "the row is written again"
+                logged capture
+            finally
+                second.Stop()
+
+let private unreadableRow (postgres: string option) =
+    indexRecovers
+        postgres
+        "after a row was stored in a format this version cannot read"
+        (fun journal -> execute journal "UPDATE fcqrs_schedule_index SET entry = REPLACE(entry, '\"format\":1', '\"format\":2')")
+        (fun capture ->
+            let warnings =
+                capture.Lines
+                |> List.filter (fun (level, _, text) -> level = LogLevel.Warning && text.Contains "fcqrs_schedule_index" && text.Contains "'u'")
+            Expect.isNonEmpty warnings "a warning names the table and the row")
+
+let private droppedTable (postgres: string option) =
+    indexRecovers postgres "after the index table was dropped and its read positions kept" (fun journal -> execute journal "DROP TABLE fcqrs_schedule_index") ignore
+
+let private mismatchedReader =
+    testCase "schedules: a query journal on another connection string than the write journal raises from register" <| fun _ ->
+        withDb <| fun db ->
+            let configuration =
+                VerifySerialization.configuration()
+                    .AddInMemoryCollection(
+                        [ KeyValuePair<string, string | null>("config:akka:persistence:query:journal:sql:connection-string", $"Data Source={db};Default Timeout=31;") ]
+                    )
+                    .Build()
+            let api = Fcqrs.actor configuration nullLoggers (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite $"Data Source={db};")) "ScheduleIndexReader"
+            try
+                Expect.throwsT<ArgumentException> (fun () -> Schedules.register api [] |> ignore) "register raises"
+            finally
+                stopApi api
+
 let private deleteWhileDown =
     testCase "schedules: a schedule deleted while the dispatcher is down loses its index row" <| fun _ ->
         withJournal None <| fun journal ->
@@ -1169,12 +1248,17 @@ let tests =
             upgradeBuildsIndex None
             deleteWhileDown
             changedConnectionString
+            unreadableRow None
+            droppedTable None
+            mismatchedReader
             match Environment.GetEnvironmentVariable "FCQRS_TEST_POSTGRES" with
             | null | "" -> ptestCase "schedules: the stored index on PostgreSQL: set FCQRS_TEST_POSTGRES to run" ignore
             | root ->
                 testList "schedules: the stored index on PostgreSQL" [
                     restartReadsNewEvents (Some root)
                     upgradeBuildsIndex (Some root)
+                    unreadableRow (Some root)
+                    droppedTable (Some root)
                 ]
         ]
     )
