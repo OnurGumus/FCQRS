@@ -624,7 +624,22 @@ follow from that:
   had. A `version` step added as the last step of a workflow gives 2 to every running instance.
 - In a loop, an instance that is part-way through gets 1 for the iterations it has done and 2 for
   the ones it has not. For a large change, register the new code under a new workflow name
-and keep the old definition until its instances have ended.
+  and keep the old definition until its instances have ended.
+
+The first argument, `"add-charge"`, names the change. FCQRS stores the number an instance got
+under the step's position and that name, so the name decides which stored number a `version` step
+reads back:
+
+- One name can be used at different positions. A `version` step inside a loop or a recursive
+  workflow stores one marker per round, each at its own position.
+- Different names can share a position. Two `version` steps in a row, for two changes, keep two
+  markers.
+- The same name twice at one position is not allowed: both steps would read and write one marker.
+- A later change at the same point keeps the name and raises the number, for example
+  `version "add-charge" 3`. An instance that stored 2 keeps 2.
+- The name must not change while instances that ran it exist. After a rename, an instance that
+  stored 2 finds no marker under the new name, has later steps stored, and so gets 1: it switches
+  to the old steps on its next replay.
 
 An instance whose journal does not match its code is **parked**. It runs nothing, logs an error,
 reports `Parked` from `handle.Status`, and resumes when code that matches its journal is deployed.

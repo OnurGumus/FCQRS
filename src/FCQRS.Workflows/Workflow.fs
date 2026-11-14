@@ -454,8 +454,9 @@ module WorkflowSteps =
     /// restart, is not seen. Each attempt listens for the policy's `AttemptTimeout`, or for
     /// `akka.fcqrs.command-timeout` when the policy sets none, and then the command is sent again,
     /// so the aggregate must answer a repeated command with an event the filter accepts once the
-    /// outcome is known. Wait for a signal when the event must not be missed. `filter` must depend on the event alone. The step is stored as `send` stores its
-    /// step, so one can replace the other in a workflow that is running.
+    /// outcome is known. Wait for a signal when the event must not be missed. `filter` must
+    /// depend on the event alone. The step is stored as `send` stores its step, so one can
+    /// replace the other in a workflow that is running.
     let sendWithFilter
         (policy: RetryPolicy)
         (filter: 'Event -> bool)
@@ -474,5 +475,12 @@ module WorkflowSteps =
     /// A new instance stores `latest` and gets it. An instance that had already passed this
     /// point when the change was deployed gets 1 and stores nothing. The step takes no place
     /// in the step sequence, so adding it does not move the steps after it.
+    ///
+    /// `changeId` names the change. The number is stored under the step's position and this
+    /// name. One name may appear at different positions, such as once per round of a loop, and
+    /// different names may share a position. The same name twice at one position is not allowed.
+    /// A later change at the same point keeps the name and raises `latest`. The name is a
+    /// persistent contract: after a rename, an instance that stored a number finds none under the
+    /// new name and gets 1.
     let version (changeId: string) (latest: int) : Workflow<int> =
         WorkflowCore.step<int> changeId StepKind.Version (ValueOp(fun _ -> box latest))

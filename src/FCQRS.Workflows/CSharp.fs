@@ -330,6 +330,9 @@ type WorkflowContext internal () =
         Step<'T>(race [ for step in steps -> step.Workflow ])
 
     /// The version of the workflow's code this instance runs at this point. See `version` in F#.
+    /// `changeId` names the change, and the number is stored under the step's position and this
+    /// name: use a name once per position, keep it when a later change raises `latest`, and never
+    /// rename it while instances that ran it exist.
     member _.Version(changeId: string, latest: int) : Step<int> = Step<int>(version changeId latest)
 
 /// A C# workflow. Derive from it, give it a name, and write `Run` as an `async` method.
