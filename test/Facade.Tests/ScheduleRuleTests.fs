@@ -373,6 +373,19 @@ let aggregateTests =
             let reply, _ = run (nine 1) (ScheduleCommand.Fire(nine 1)) next
             Expect.equal reply (Stored(ScheduleEvent.Firing(nine 1, hello))) "at the due time"
 
+        testCase "schedule aggregate: a firing stores its due time as UTC, whatever kind the fire named" <| fun _ ->
+            let state = given (created CatchUp.Latest)
+            for kind in [ DateTimeKind.Unspecified; DateTimeKind.Local ] do
+                // The same ticks as 09:00 UTC, so the fire names the allowed due time.
+                let named = DateTime.SpecifyKind(nine 1, kind)
+                let reply, next = run (nine 1) (ScheduleCommand.Fire named) state
+                match reply with
+                | Stored(ScheduleEvent.Firing(due, _)) ->
+                    Expect.equal due.Kind DateTimeKind.Utc $"{kind}: the stored due time is UTC"
+                    Expect.equal (due.ToString "O") "2026-11-01T09:00:00.0000000Z" $"{kind}: a run ID formats it with Z"
+                | other -> failtest $"{kind}: firing stored, got {other}"
+                Expect.equal next.Last.Value.Due.Kind DateTimeKind.Utc $"{kind}: the state's due time is UTC"
+
         testCase "schedule aggregate: repeated pause, resume and delete get the first verdict" <| fun _ ->
             let pausedAt = utc 2026 11 1 8 10
             let state = given (created CatchUp.Latest @ [ pausedAt, ScheduleCommand.Pause ])

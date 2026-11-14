@@ -322,7 +322,9 @@ module Schedule =
             match allowedDue state now with
             | Some allowed when allowed = due && due - now > EarlyTolerance ->
                 refuse $"The due time {due:O} has not come; it is {now:O}."
-            | Some allowed when allowed = due -> PersistEvent(ScheduleEvent.Firing(due, spec.Input))
+            // The allowed value is stored, not the one named: a run ID formats the due time, and a
+            // due time named with another DateTimeKind would format differently.
+            | Some allowed when allowed = due -> PersistEvent(ScheduleEvent.Firing(DateTime.SpecifyKind(allowed, DateTimeKind.Utc), spec.Input))
             | Some allowed -> refuse $"{due:O} is not the due time to run; {allowed:O} is."
             | None -> refuse $"{due:O} is not the due time to run."
 
