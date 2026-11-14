@@ -285,6 +285,64 @@ async Task Eventually(Func<bool> condition, string what)
     }
 }
 
+// --- a schedule created without a policy, after downtime ----------------------------------
+// An hourly schedule, a stop, and a restart with the clock 3.5 hours later: three due times were
+// missed, and a schedule created without a policy starts one run, for the most recent, as
+// CatchUp.Latest does.
+{
+    var db = NewDb();
+    var hour = TimeSpan.FromHours(1);
+    Common.IActor BootShifted(TimeSpan shift)
+    {
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["config:akka:scheduler:implementation"] = "FCQRS.Scheduler+ShiftedScheduler, FCQRS",
+                ["config:akka:fcqrs:schedule-check-interval"] = "1",
+            })
+            .Build();
+        var booted = ActorApi.Create(configuration, NullLoggerFactory.Instance, $"Data Source={db};", "CSharpScheduleDowntime");
+        ((FCQRS.Scheduler.ShiftedScheduler)booted.System.Scheduler).Shift = shift;
+        return booted;
+    }
+
+    var first = BootShifted(TimeSpan.Zero);
+    DateTime anchor;
+    try
+    {
+        var reminders = WorkflowHost.Register(first, new ReminderWorkflow());
+        var schedules = ScheduleHost.Register(first, ScheduleHost.Workflow(reminders));
+        ActorWiring.InitSagaStarterEmpty(first);
+        await schedules.CreateAsync("default-hourly", "reminder", "x", ScheduleRule.NewEvery(hour));
+        await Eventually(() => schedules.State("default-hourly") is not null, "the index has the schedule created without a policy");
+        anchor = schedules.State("default-hourly")!.Anchor;
+    }
+    finally
+    {
+        await first.Stop();
+    }
+
+    var second = BootShifted(TimeSpan.FromHours(3.5));
+    try
+    {
+        var reminders = WorkflowHost.Register(second, new ReminderWorkflow());
+        ScheduleHost.Register(second, ScheduleHost.Workflow(reminders));
+        ActorWiring.InitSagaStarterEmpty(second);
+        List<DateTime> Dues() =>
+            ReminderWorkflow.Runs.Values.Where(run => run.Schedule == "default-hourly").Select(run => run.Due).Order().ToList();
+        await Eventually(() => Dues().Count >= 1, "a schedule created without a policy starts a run after downtime");
+        await Task.Delay(3000);
+        var dues = Dues();
+        Check(dues.Count == 1 && dues[0] == anchor + 3 * hour,
+            $"it starts one run, for the most recent missed due time, as CatchUp.Latest does: {string.Join(", ", dues.Select(due => due.ToString("O")))}");
+    }
+    finally
+    {
+        await second.Stop();
+        DeleteDb(db);
+    }
+}
+
 // --- schedules in a host -------------------------------------------------------------------
 // AddFcqrs wires the saga starters when the host starts, so the schedules are registered from a
 // singleton resolved after that, as the concept page shows.

@@ -1508,9 +1508,11 @@ module Schedules =
         | _ -> invalidOp $"Workflow '{workflow}' is not registered with the schedule dispatcher."
 
     /// Creates the schedule `id`, which starts the workflow named `workflow` with `input` at each
-    /// due time of `rule`. Returns once the schedule is stored. Raises `ArgumentException` for a rule
-    /// that `ScheduleRule.validate` rejects, a missing rule or policy, or an ID that is blank,
-    /// contains '~', or is too long (see `MaxIdLength`). Raises `InvalidOperationException` when
+    /// due time of `rule`, with `catchUp` deciding which missed due times run (`createLatest` uses
+    /// the default, `CatchUp.Latest`). Returns once the schedule is stored. Raises
+    /// `ArgumentException` for a rule that `ScheduleRule.validate` rejects, a missing rule or policy,
+    /// or an ID that is blank, contains '~', or is too long (see `MaxIdLength`). Raises
+    /// `InvalidOperationException` when
     /// the saga starters are not wired, when the workflow is not registered with the dispatcher or
     /// takes another input, and when the schedule refuses: a schedule with this ID exists with a
     /// different content, or was deleted. A repeat with the same content is accepted and stores
@@ -1520,6 +1522,12 @@ module Schedules =
             let spec = specOf handle id workflow input rule catchUp
             return! run handle id (ScheduleCommand.Create spec)
         }
+
+    /// `create` with `CatchUp.Latest`, the default policy: after downtime, the schedule starts one
+    /// run, for the most recent missed due time. Raises as `create` does. C#'s `CreateAsync` without
+    /// a policy calls it.
+    let createLatest (handle: ScheduleHandle) (id: string) (workflow: string) (input: 'Input) (rule: ScheduleRule) : Async<unit> =
+        create handle id workflow input rule CatchUp.Latest
 
     /// Replaces the schedule's workflow, input, rule and catch-up policy. An `Every` rule counts from
     /// the change, and no due time at or before it runs. A run decided before the change starts the

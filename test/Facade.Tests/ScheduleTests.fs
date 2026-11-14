@@ -482,17 +482,16 @@ let private checkIntervalRejected =
                 finally
                     api.Stop().Wait(TimeSpan.FromSeconds 30.0) |> ignore
 
-/// Creates an hourly schedule, stops, moves the clock 3.5 hours and restarts: three due times were
-/// missed while nothing ran.
-let private downtime (policy: CatchUp) (expected: int) =
-    testCase $"schedules: after downtime over three due times, {policy} starts {expected} runs" <| fun _ ->
+/// Creates an hourly schedule with `create`, stops, moves the clock 3.5 hours and restarts: three
+/// due times were missed while nothing ran.
+let private downtimeWith (what: string) (name: string) (create: ScheduleHandle -> Async<unit>) (expected: int) =
+    testCase $"schedules: after downtime over three due times, {what} starts {expected} runs" <| fun _ ->
         withDb <| fun db ->
             let runs = Runs()
-            let name = $"ScheduleDowntime{policy}"
             let first = boot db name TimeSpan.Zero runs
             let anchor =
                 try
-                    sync (Schedules.create first.Schedules "h" "remind" "x" (ScheduleRule.Every hour) policy)
+                    sync (create first.Schedules)
                     eventually "the index has the schedule" (fun () -> hasView first "h")
                     (view first "h").Anchor
                 finally
@@ -509,6 +508,13 @@ let private downtime (policy: CatchUp) (expected: int) =
                 Expect.equal (view second "h").NextDue (Some(anchor + TimeSpan.FromHours 4.0)) "the next due time is the first in the future"
             finally
                 second.Stop()
+
+let private downtime (policy: CatchUp) (expected: int) =
+    downtimeWith $"{policy}" $"ScheduleDowntime{policy}" (fun schedules -> Schedules.create schedules "h" "remind" "x" (ScheduleRule.Every hour) policy) expected
+
+/// A schedule created without a policy catches up as `CatchUp.Latest` does.
+let private downtimeDefault =
+    downtimeWith "a schedule created without a policy" "ScheduleDowntimeDefault" (fun schedules -> Schedules.createLatest schedules "h" "remind" "x" (ScheduleRule.Every hour)) 1
 
 let private failedRunContinues =
     testCase "schedules: a run that faults does not stop the schedule" <| fun _ ->
@@ -1233,6 +1239,7 @@ let tests =
             downtime CatchUp.Latest 1
             downtime CatchUp.All 3
             downtime CatchUp.None 0
+            downtimeDefault
             failedRunContinues
             snapshotRecovery
             invalidRuleRaises

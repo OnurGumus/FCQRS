@@ -427,9 +427,10 @@ type ScheduleClient internal (handle: ScheduleHandle) =
     member _.Handle = handle
 
     /// Creates the schedule `id`, which starts the workflow named `workflow` with `input` at each
-    /// due time of `rule`. Completes once the schedule is stored. Throws `ArgumentException` for a
-    /// rule that `ScheduleRule.validate` rejects, a null rule or policy, or an ID that is blank,
-    /// contains '~', or is too long (see `Schedules.MaxIdLength`). Throws
+    /// due time of `rule`, with `catchUp` deciding which missed due times run (the overload without
+    /// it uses the default, `CatchUp.Latest`). Completes once the schedule is stored. Throws
+    /// `ArgumentException` for a rule that `ScheduleRule.validate` rejects, a null rule or policy, or
+    /// an ID that is blank, contains '~', or is too long (see `Schedules.MaxIdLength`). Throws
     /// `InvalidOperationException` when the saga starters are not wired, when the workflow is not
     /// registered with the dispatcher or takes another input, and when the schedule refuses: a
     /// schedule with this ID exists with a different content, or was deleted. A repeat with the
@@ -437,6 +438,11 @@ type ScheduleClient internal (handle: ScheduleHandle) =
     /// repeats removed before the comparison.
     member _.CreateAsync<'TInput>(id: string, workflow: string, input: 'TInput, rule: ScheduleRule, catchUp: CatchUp) : Task =
         Schedules.create handle id workflow input rule catchUp |> Async.StartAsTask :> Task
+
+    /// `CreateAsync` with `CatchUp.Latest`, the default policy: after downtime, the schedule starts
+    /// one run, for the most recent missed due time. Throws as the overload with a policy does.
+    member _.CreateAsync<'TInput>(id: string, workflow: string, input: 'TInput, rule: ScheduleRule) : Task =
+        Schedules.createLatest handle id workflow input rule |> Async.StartAsTask :> Task
 
     /// Replaces the schedule's workflow, input, rule and catch-up policy. An `Every` rule counts
     /// from the change. A run decided before the change starts the workflow, with the input, it was
