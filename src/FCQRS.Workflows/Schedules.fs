@@ -496,9 +496,18 @@ type internal Dispatcher
     // The schedules whose fire is running. A schedule has at most one, and the loop does not wait
     // for it, so a start that hangs delays only its own schedule.
     let inFlight = Collections.Generic.HashSet<string>()
+    // Schedules to look at before the next pass over the index: those a pass found due, whose entry
+    // changed, or whose fire ended. Each is looked at again when it gets a slot, so a burst of due
+    // schedules costs work in proportion to the burst, not a pass over the index per fire.
+    let ready = Collections.Generic.Queue<string>()
+    let queued = Collections.Generic.HashSet<string>()
+    // When the next pass over the index is due: the earliest time a schedule outside `ready` and
+    // `inFlight` needs looking at, and at most a check interval after the last pass.
+    let mutable wakeAt = DateTime.MinValue
     let held = Collections.Generic.Queue<string * Event<ScheduleEvent>>()
     let mutable holding = false
     let mutable refusals = 0
+    let mutable computations = 0L
     let mutable afterFiring: string -> DateTime -> bool = fun _ _ -> true
     let wake = new Threading.SemaphoreSlim(0, 1)
     let lifetime = new Threading.CancellationTokenSource()
@@ -566,11 +575,18 @@ type internal Dispatcher
         else
             false
 
+    // Puts a schedule in `ready`, unless it is there already or its fire is running; the end of
+    // that fire puts it there.
+    let enqueue (id: string) =
+        if not (inFlight.Contains id) && queued.Add id then
+            ready.Enqueue id
+
     // An event the projection read. A change clears a deferred due time, which the change may
-    // have made right or wrong.
+    // have made right or wrong, and the schedule is looked at again.
     let observed (id: string) (event: Event<ScheduleEvent>) =
         if apply id event then
             deferred.Remove id |> ignore
+            enqueue id
 
     // Logs once per due time of the rule that passes while `workflow` is not registered. `due` is
     // the due time the schedule would accept, which does not move until a fire is accepted, so the
@@ -592,67 +608,96 @@ type internal Dispatcher
                 workflow
             )
 
-    // What is due at `now`, and when to look again. A schedule whose fire is running is left out;
-    // the end of that fire wakes the loop. The schedules returned are marked as firing.
+    // Moves the next pass forward to `at`.
+    let later (at: DateTime) = if at < wakeAt then wakeAt <- at
+
+    // One schedule at `now`: the due time to fire, when a run should be asked for now. Otherwise
+    // nothing, and the next pass is moved forward to the time the schedule needs looking at again.
+    // Called under the gate, for a schedule whose fire is not running.
+    let evaluate (now: DateTime) (id: string) : DateTime option =
+        match index.TryGetValue id with
+        | true, ({ Spec = Some spec } as state) ->
+            try
+                // A Firing without its Fired: the run may not have started. Its start is repeated
+                // whatever the schedule's state is now, on the workflow the Firing names.
+                let pending = state.Last |> Option.filter (fun last -> not last.Started)
+
+                let workflow =
+                    match pending with
+                    | Some last -> last.Workflow
+                    | None -> spec.Workflow
+
+                let next =
+                    match pending with
+                    | Some last -> Some last.Due
+                    | None ->
+                        match upcoming.TryGetValue id with
+                        | true, cached when cached > now -> Some cached
+                        | _ ->
+                            computations <- computations + 1L
+                            let allowed = Schedule.allowedDue state now
+
+                            match allowed with
+                            | Some allowed when allowed > now -> upcoming[id] <- allowed
+                            | _ -> upcoming.Remove id |> ignore
+
+                            allowed
+
+                match next with
+                | None -> None
+                | Some next ->
+                    match deferred.TryGetValue id with
+                    | true, (refused, until) when refused = next && until > now ->
+                        later until
+                        None
+                    | _ when next > now ->
+                        later next
+                        None
+                    | _ when workflows.ContainsKey workflow -> Some next
+                    | _ ->
+                        report id state spec workflow next now
+                        // Report again at the next due time.
+                        later (ScheduleRule.next spec.Rule state.Anchor now)
+                        None
+            with error ->
+                logger.LogError(error, "The schedule dispatcher could not compute the next due time of schedule {Schedule}.", id)
+                None
+        | _ -> None
+
+    // What to fire at `now`, and how long to wait before looking again. A pass over the index runs
+    // when `wakeAt` has come and a slot is free; it only finds the schedules that are due. Slots go
+    // to schedules from `ready`, each looked at again at that moment, so a burst of due schedules
+    // costs a few due-time computations per schedule. While every slot is taken nothing is looked
+    // at: the end of a fire wakes the loop. The schedules returned are marked as firing.
     let plan (now: DateTime) =
         lock gate (fun () ->
             let due = ResizeArray<string * DateTime>()
-            let mutable wakeAt = now + checkInterval
-            let later (at: DateTime) = if at < wakeAt then wakeAt <- at
-            let free = parallelFires - inFlight.Count
 
-            for KeyValue(id, state) in index do
-                try
-                    match state.Spec with
-                    | None -> ()
-                    | Some _ when inFlight.Contains id -> ()
-                    | Some spec ->
-                        // A Firing without its Fired: the run may not have started. Its start is
-                        // repeated whatever the schedule's state is now, on the workflow the Firing
-                        // names.
-                        let pending = state.Last |> Option.filter (fun last -> not last.Started)
+            if parallelFires > inFlight.Count && now >= wakeAt then
+                // The loop waits at most a day at a time, whatever the check interval.
+                wakeAt <- now + min checkInterval longestWait
 
-                        let workflow =
-                            match pending with
-                            | Some last -> last.Workflow
-                            | None -> spec.Workflow
-
-                        let next =
-                            match pending with
-                            | Some last -> Some last.Due
-                            | None ->
-                                match upcoming.TryGetValue id with
-                                | true, cached when cached > now -> Some cached
-                                | _ ->
-                                    let allowed = Schedule.allowedDue state now
-
-                                    match allowed with
-                                    | Some allowed when allowed > now -> upcoming[id] <- allowed
-                                    | _ -> upcoming.Remove id |> ignore
-
-                                    allowed
-
-                        match next with
+                for KeyValue(id, _) in index do
+                    if not (inFlight.Contains id) && not (queued.Contains id) then
+                        match evaluate now id with
+                        | Some _ -> enqueue id
                         | None -> ()
-                        | Some next ->
-                            match deferred.TryGetValue id with
-                            | true, (refused, until) when refused = next && until > now -> later until
-                            | _ when next > now -> later next
-                            | _ ->
-                                if workflows.ContainsKey workflow then
-                                    // Past the limit, a schedule waits for a running fire to end.
-                                    if due.Count < free then due.Add((id, next))
-                                else
-                                    report id state spec workflow next now
-                                    // Report again at the next due time.
-                                    later (ScheduleRule.next spec.Rule state.Anchor now)
-                with error ->
-                    logger.LogError(error, "The schedule dispatcher could not compute the next due time of schedule {Schedule}.", id)
 
-            for id, _ in due do
-                inFlight.Add id |> ignore
+            while inFlight.Count < parallelFires && ready.Count > 0 do
+                let id = ready.Dequeue()
+                queued.Remove id |> ignore
 
-            List.ofSeq due, wakeAt)
+                match evaluate now id with
+                | Some next ->
+                    inFlight.Add id |> ignore
+                    due.Add((id, next))
+                | None -> ()
+
+            let wait =
+                if inFlight.Count >= parallelFires then longestWait
+                else min longestWait (wakeAt - now)
+
+            List.ofSeq due, wait)
 
     let deferTo (id: string) (due: DateTime) (until: DateTime) =
         lock gate (fun () -> deferred[id] <- (due, until))
@@ -707,12 +752,16 @@ type internal Dispatcher
                 deferTo id due (now () + retryDelay)
         }
 
-    // Starts a fire without waiting for it. Its end frees the schedule and wakes the loop.
+    // Starts a fire without waiting for it. Its end frees the schedule, puts it in `ready` to find
+    // its next due time, and wakes the loop.
     let launch (id: string, due: DateTime) =
         Async
             .StartAsTask(fire (id, due), cancellationToken = lifetime.Token)
             .ContinueWith(fun (_: Threading.Tasks.Task<unit>) ->
-                lock gate (fun () -> inFlight.Remove id |> ignore)
+                lock gate (fun () ->
+                    inFlight.Remove id |> ignore
+                    enqueue id)
+
                 signal ())
         |> ignore
 
@@ -724,7 +773,8 @@ type internal Dispatcher
             let rules = (FCQRS.Common.SagaStarter.Internal.startRulesOf api.System).Task
 
             if not rules.IsCompleted then
-                let! first = Threading.Tasks.Task.WhenAny(rules :> Threading.Tasks.Task, Threading.Tasks.Task.Delay(checkInterval, lifetime.Token))
+                // A delay takes at most about 49 days; a longer check interval would raise.
+                let! first = Threading.Tasks.Task.WhenAny(rules :> Threading.Tasks.Task, Threading.Tasks.Task.Delay(min checkInterval longestWait, lifetime.Token))
 
                 if not (obj.ReferenceEquals(first, rules)) && not lifetime.IsCancellationRequested then
                     logger.LogWarning(
@@ -744,22 +794,35 @@ type internal Dispatcher
                 if not lifetime.IsCancellationRequested then
                     logger.LogWarning(error, "The schedule index did not catch up with the journal. The dispatcher starts from what it has read.")
 
-            try
-                do! starters ()
-            with :? OperationCanceledException ->
-                ()
+            let mutable waiting = true
+
+            while waiting && not lifetime.IsCancellationRequested do
+                let mutable failed = false
+
+                try
+                    do! starters ()
+                    waiting <- false
+                with
+                | :? OperationCanceledException -> waiting <- false
+                | error ->
+                    logger.LogError(error, "The schedule dispatcher could not wait for the saga starters. It tries again in a second.")
+                    failed <- true
+
+                if failed then
+                    try
+                        do! Threading.Tasks.Task.Delay(1000, lifetime.Token)
+                    with :? OperationCanceledException ->
+                        ()
 
             while not lifetime.IsCancellationRequested do
                 let mutable failed = false
 
                 try
-                    let at = now ()
-                    let due, wakeAt = plan at
+                    let due, wait = plan (now ())
 
                     for fire in due do
                         launch fire
 
-                    let wait = min longestWait (wakeAt - at)
                     let milliseconds = Math.Ceiling(max 0.0 wait.TotalMilliseconds)
                     let! _ = wake.WaitAsync(TimeSpan.FromMilliseconds milliseconds, lifetime.Token)
                     ()
@@ -817,7 +880,14 @@ type internal Dispatcher
                 logger.LogCritical(completion.Exception, "The schedule index stopped. Schedules fire from what it had read until the process restarts."))
         |> ignore
 
-        Threading.Tasks.Task.Run(fun () -> loop projection) |> ignore
+        // The loop logs and survives its own errors. Anything that still ends it is logged here, so
+        // the dispatcher never stops without a word.
+        Threading.Tasks.Task
+            .Run(fun () -> loop projection)
+            .ContinueWith(fun (ended: Threading.Tasks.Task) ->
+                if ended.IsFaulted then
+                    logger.LogCritical(ended.Exception, "The schedule dispatcher stopped. No schedule fires until the process restarts."))
+        |> ignore
 
     /// The index's view of a schedule.
     member _.View(id: string) : ScheduleView option =
@@ -865,6 +935,9 @@ type internal Dispatcher
 
     /// How many fires the schedules refused.
     member _.Refusals = lock gate (fun () -> refusals)
+
+    /// Test hook: how many due times the dispatcher has computed with `Schedule.allowedDue`.
+    member _.Computations = lock gate (fun () -> computations)
 
 /// The registered schedule dispatcher. Pass it to the functions of `Schedules`.
 [<Sealed>]

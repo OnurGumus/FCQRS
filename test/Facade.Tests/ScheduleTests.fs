@@ -91,7 +91,8 @@ let private bootConfigured (db: string) (name: string) (shift: TimeSpan) (logger
     let settings =
         [ "config:akka:scheduler:implementation", "FCQRS.Scheduler+ShiftedScheduler, FCQRS"
           "config:akka:fcqrs:schedule-check-interval", "1" ]
-        @ extra
+        |> List.filter (fun (key, _) -> not (List.exists (fun (given, _) -> given = key) extra))
+        |> fun defaults -> defaults @ extra
     let configuration =
         VerifySerialization.configuration()
             .AddInMemoryCollection([ for key, value in settings -> KeyValuePair<string, string | null>(key, value) ])
@@ -638,6 +639,7 @@ let private stuckStartAlone =
     testCase "schedules: a start that hangs delays only its own schedule, which is tried again a retry delay after it fails" <| fun _ ->
         withDb <| fun db ->
             let runs = Runs()
+            let ranAt = ConcurrentQueue<DateTime>()
             let began = ConcurrentQueue<DateTime>()
             let failed = ConcurrentQueue<DateTime>()
             // A start that answers only after four seconds, with the timeout an ask would raise.
@@ -649,23 +651,117 @@ let private stuckStartAlone =
                         failed.Enqueue DateTime.UtcNow
                         return raise (TimeoutException "The start did not answer.")
                     })
+            // Records when each run of the other schedule ran.
+            let timed =
+                Workflow.define "remind" (fun (run: ScheduledRun<string>) -> workflow {
+                    do! activity "record" Retry.none (fun _ -> task {
+                        runs[runIdOf run] <- run
+                        ranAt.Enqueue DateTime.UtcNow })
+                    return run.Input
+                })
             let node =
                 bootWith db "ScheduleStuck" TimeSpan.Zero nullLoggers (fun api ->
-                    let handle = Workflows.register api (remind runs)
+                    let handle = Workflows.register api timed
                     [ ScheduledWorkflow.ofHandle handle; hanging ], Some handle)
             try
                 sync (Schedules.create node.Schedules "stuck" "hang" "x" (ScheduleRule.Every second) CatchUp.Latest)
                 eventually "the hanging start began" (fun () -> not began.IsEmpty)
                 sync (Schedules.create node.Schedules "free" "remind" "y" (ScheduleRule.Every second) CatchUp.Latest)
-                Thread.Sleep 8000
-                let free = runs.Values |> Seq.filter (fun run -> run.Schedule = "free") |> Seq.length
-                Expect.isGreaterThanOrEqual free 6 "the other schedule ran about once a second meanwhile"
+                // While one start hangs for four seconds, the every-second schedule keeps running. A
+                // dispatcher that waited for the hanging start would run nothing inside it.
+                let ranDuringOneHang () =
+                    let ends = List.ofSeq failed
+                    let starts = List.ofSeq began |> List.truncate ends.Length
+                    List.zip starts ends
+                    |> List.exists (fun (start, ending) -> ranAt |> Seq.filter (fun at -> at > start && at < ending) |> Seq.length >= 2)
+                eventuallyWithin 30.0 "the other schedule ran at least twice during one hanging start" ranDuringOneHang
                 eventually "the hanging start was tried again" (fun () -> began.Count >= 2)
                 let attempts = List.ofSeq began
                 let failures = List.ofSeq failed
                 // retryDelay is min(check interval, 5 s): one second here.
-                for retried, failure in List.zip (List.tail attempts) (List.take (attempts.Length - 1) failures) do
+                for retried, failure in List.zip (List.tail attempts) (List.truncate (attempts.Length - 1) failures) do
                     Expect.isGreaterThanOrEqual (retried - failure).TotalMilliseconds 900.0 "a failed start waits the retry delay from its failure"
+            finally
+                node.Stop()
+
+// A dispatcher fed thousands of schedules that are all due, through its own projection handler, with
+// a schedule aggregate that accepts every fire and a workflow that only counts its starts. Counting
+// the due times the dispatcher computes keeps the check independent of the machine's speed.
+let private burstLinear =
+    testCase "schedules: thousands of schedules due at once cost the dispatcher work linear in their number, at most 16 fires at once and one per schedule" <| fun _ ->
+        withDb <| fun db ->
+            let count = 4000
+            let api = Fcqrs.actor (VerifySerialization.configuration().Build()) nullLoggers (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite $"Data Source={db};")) "ScheduleBurst"
+            try
+                Fcqrs.wireSagaStarters api []
+                let messageId () = Guid.CreateVersion7().ToString() |> FCQRS.Model.Data.ValueLens.CreateAsResult |> FCQRS.Model.Data.Result.value
+                let envelope (id: string) details : Event<ScheduleEvent> =
+                    { EventDetails = details
+                      CreationDate = DateTime.UtcNow
+                      Id = messageId ()
+                      Sender = Some(Fcqrs.aggregateId id)
+                      CorrelationId = Fcqrs.newCid ()
+                      Version = FCQRS.Model.Data.Version.Zero
+                      Metadata = Map.empty }
+                let input: Payload = { Type = "System.String"; Json = "\"x\"" }
+                let send (id: string) (_: FCQRS.Model.Data.CID) command =
+                    async {
+                        match command with
+                        | ScheduleCommand.Fire due -> return envelope id (ScheduleEvent.Firing(due, "burst", input))
+                        | ScheduleCommand.Started due -> return envelope id (ScheduleEvent.Fired due)
+                        | other -> return envelope id (ScheduleEvent.Refused $"unexpected {other}")
+                    }
+                let started = ConcurrentDictionary<string, int>()
+                let counting = obj ()
+                let mutable running = 0
+                let mutable most = 0
+                let burst =
+                    ScheduledWorkflow("burst", typeof<string>, fun _ schedule _ _ ->
+                        async {
+                            lock counting (fun () ->
+                                running <- running + 1
+                                most <- max most running)
+                            do! Async.Sleep 1
+                            started.AddOrUpdate(schedule, 1, fun _ seen -> seen + 1) |> ignore
+                            lock counting (fun () -> running <- running - 1)
+                        })
+                let workflows = Dictionary<string, ScheduledWorkflow>()
+                workflows["burst"] <- burst
+                let dispatcher = Dispatcher(api, send, workflows, TimeSpan.FromMinutes 1.0, api.LoggerFactory.CreateLogger "burst")
+                // Half of the schedules were due five seconds ago, and the dispatcher reads them from
+                // its projection. The other half fall due together three seconds from now, which a
+                // pass over the index finds. Each schedule's next due time is an hour later.
+                let spec = { Workflow = "burst"; Input = input; Rule = ScheduleRule.Every hour; CatchUp = CatchUp.Latest }
+                let overdue = DateTime.UtcNow - hour - TimeSpan.FromSeconds 5.0
+                let soon = DateTime.UtcNow - hour + TimeSpan.FromSeconds 3.0
+                for i in 1..count do
+                    let anchor = if i % 2 = 0 then overdue else soon
+                    dispatcher.Observe(box (envelope $"s{i}" (ScheduleEvent.Created(spec, anchor)))) |> ignore
+                let projection =
+                    Fcqrs.projection api (Projection.multi FromStart dispatcher.Observe |> Projection.ofEntities [ Schedule.EntityName ])
+                dispatcher.Start projection
+                eventuallyWithin 120.0 "every schedule started its run" (fun () -> started.Count = count)
+                Thread.Sleep 500
+                Expect.isTrue (started.Values |> Seq.forall (fun runs -> runs = 1)) "each schedule fired once"
+                Expect.isLessThanOrEqual (lock counting (fun () -> most)) 16 "at most 16 fires ran at once"
+                // A few computations per schedule: when it is read or found due, when it gets a slot,
+                // and after it fired. Looking at every waiting schedule again at each end of a fire
+                // costs about count * count / 2.
+                Expect.isLessThanOrEqual dispatcher.Computations (int64 (5 * count)) "the due times computed grow linearly with the schedules due"
+            finally
+                api.Stop().Wait(TimeSpan.FromSeconds 30.0) |> ignore
+
+let private longCheckInterval =
+    testCase "schedules: a check interval longer than a delay can take does not stop the dispatcher while it waits for the saga starters" <| fun _ ->
+        withDb <| fun db ->
+            let runs = Runs()
+            // Longer than the 49.7 days a Task.Delay takes.
+            let node = bootConfigured db "ScheduleLongCheck" TimeSpan.Zero nullLoggers [ "config:akka:fcqrs:schedule-check-interval", "60d" ] false (remindOnly runs)
+            try
+                Thread.Sleep 1000
+                Fcqrs.wireSagaStarters node.Api []
+                sync (Schedules.create node.Schedules "long" "remind" "x" (ScheduleRule.Every second) CatchUp.Latest)
+                eventually "a run starts" (fun () -> runs.Count >= 1)
             finally
                 node.Stop()
 
@@ -709,6 +805,8 @@ let tests =
             longIdRaises
             unwiredWaits
             stuckStartAlone
+            burstLinear
+            longCheckInterval
             weeklyDaysNormalized
         ]
     )
