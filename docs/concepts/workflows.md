@@ -717,7 +717,8 @@ an empty list.
 stores nothing. A different content for an existing ID raises `InvalidOperationException`, and so
 does a workflow the dispatcher does not list, an input whose type differs from the workflow's, an
 unknown time zone, a weekly rule without days, or an `Every` interval shorter than one second. A
-schedule ID must not be blank, contain `~`, or be longer than 200 characters.
+schedule ID that is blank, contains `~`, or is longer than 200 characters raises
+`ArgumentException`.
 
 ### A run starts at least once per due time
 
@@ -744,8 +745,8 @@ goes on. A run that is still going at the next due time runs alongside the next 
 ### Due times, downtime, and changes
 
 - `ScheduleRule.Daily(time, zone)` and `ScheduleRule.Weekly(days, time, zone)` take a local time
-  and a time-zone ID. Due times are stored in UTC, so Ada's reminder runs at 09:00 Oslo time in
-  winter (08:00 UTC) and in summer (07:00 UTC). A local time that does not exist on a day, because
+  and a time-zone ID. Due times are computed in the schedule's zone and stored in UTC, so Ada's
+  reminder runs at 09:00 Oslo time in winter (08:00 UTC) and in summer (07:00 UTC). A local time that does not exist on a day, because
   clocks move forward, runs at the next local time that does. A local time that occurs twice,
   because clocks move back, runs once, at the first occurrence.
 - `ScheduleRule.Every interval` counts from the creation or the last change.

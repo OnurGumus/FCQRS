@@ -168,9 +168,10 @@ Keep these distinctions intact in code comments and documentation.
   can read before any workflow is registered. The type's name, namespace, and assembly are
   persistent contracts too.
 - A schedule is an instance of the aggregate `fcqrs-schedule`, which decides every run. The
-  dispatcher's index is a hint: a fire it sends from a stale index is refused. The aggregate name,
-  `ScheduleCommand`, `ScheduleEvent`, `ScheduleRule`, `CatchUp`, and `ScheduleSpec` are persistent
-  contracts.
+  dispatcher's index is a hint: a stale index cannot start a run for a paused or deleted schedule,
+  or for a due time that a change removed. The aggregate takes snapshots, so the aggregate name,
+  `ScheduleEvent`, `ScheduleRule`, `CatchUp`, `ScheduleSpec`, and the snapshot state
+  `ScheduleState` and `AcceptedDue` are persistent contracts. Commands are not journaled.
 - A schedule's run starts at least once per accepted due time. Its workflow ID is
   `<schedule ID>@<due time in UTC, "O" format>`, so a repeated start stores nothing. The run's input
   is `ScheduledRun { Schedule; Due; Input }`. Run IDs are a contract.

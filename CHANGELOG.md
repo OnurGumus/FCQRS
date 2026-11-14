@@ -16,13 +16,15 @@
 - A run starts at least once per accepted due time. Its workflow ID is `<schedule ID>@<due time in
   UTC, ISO 8601>`, so a repeated start stores nothing, and its input is
   `ScheduledRun { Schedule; Due; Input }`. The schedule aggregate decides every run, so a stale
-  index cannot start a run for a paused, changed, or deleted schedule. A run decided before a
+  index cannot start a run for a paused or deleted schedule, or for a due time that a change
+  removed. A run decided before a
   change, pause, or delete still starts, on the workflow and input it was decided with.
-- A schedule whose workflow is not registered logs an error at each due time and starts no run
-  until a later start registers it. `akka.fcqrs.schedule-check-interval` (default one minute) is the
+- A schedule whose workflow the dispatcher does not list, because no `Schedules.register` call
+  passed it, logs an error at each due time and starts no run until a later start lists it. `akka.fcqrs.schedule-check-interval` (default one minute) is the
   longest the dispatcher sleeps between reads of its index.
-- New persistent contracts: the aggregate `fcqrs-schedule`, its command and event cases,
-  `ScheduleRule`, `CatchUp`, `ScheduleSpec`, and run IDs.
+- New persistent contracts: the aggregate `fcqrs-schedule`, its event cases, `ScheduleRule`,
+  `CatchUp`, `ScheduleSpec`, run IDs, and, because the aggregate takes snapshots, `ScheduleState`
+  and `AcceptedDue`. Commands are not journaled.
 - The documentation of `version` says what its name decides: when a name may repeat, and that a
   rename switches instances that ran it back to the old steps.
 - The schedule index reads only the schedule aggregate's events, through the entity filter of
