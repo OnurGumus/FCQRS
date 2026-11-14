@@ -103,7 +103,8 @@ Keep these distinctions intact in code comments and documentation.
   rows in every query. A filtered pass reads each persistence ID's events with its own query, so
   interleaved identities cost about one query per one or two events at startup. A pass still
   applies the named entities' events in journal order. An event of an entity it does not name never
-  reaches it, and an unnamed projection also receives `Event<ScheduleEvent>`.
+  reaches it. An unnamed projection in an application that has schedules also receives
+  `Event<ScheduleEvent>`.
 - Most projection queries read only recent writes. A write that commits more than
   `LateWriteWindow` after taking its journal number is handled at the next full scan, so
   `CatchUpAsync` can return before it.
