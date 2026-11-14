@@ -214,9 +214,16 @@ module Schedule =
           DeletedAt = None
           Last = None }
 
-    /// How late a `Fire` may arrive for a due time and still be on time under `CatchUp.None`. A due
-    /// time older than this when its `Fire` arrives was missed, and `CatchUp.None` skips it.
+    /// How late a `Fire` may arrive for a due time and still be on time under `CatchUp.None`: one
+    /// minute. A due time more than a minute old when its `Fire` arrives was missed, and
+    /// `CatchUp.None` skips it. For a rule whose due times are less than a minute apart, a gap
+    /// shorter than a minute therefore runs its latest due time, as `CatchUp.Latest` does.
     let OnTimeWindow = TimeSpan.FromMinutes 1.0
+
+    /// How early a `Fire` may arrive for a due time: one second, which covers timer imprecision. A
+    /// `Fire` that arrives earlier is refused and changes nothing, so a dispatcher fault cannot
+    /// start a run early. The same due time is accepted when its time comes.
+    let EarlyTolerance = TimeSpan.FromSeconds 1.0
 
     // No due time at or before this is accepted: the last accepted due time, the creation or last
     // change, and the last resume. `ScheduleRule.next` and `missed` count only an `Every` rule from
@@ -232,7 +239,8 @@ module Schedule =
     /// creation, the last change and the last resume. When that due time has already passed, the
     /// catch-up policy chooses among the passed ones: `Latest` the most recent, `All` the oldest of
     /// the most recent `ScheduleRule.MaxMissed`, and `None` the most recent if it passed within
-    /// `OnTimeWindow`, otherwise the next due time after `now`. A pending `Firing` is not checked here.
+    /// `OnTimeWindow`, otherwise the next due time after `now`. The result can be later than `now`:
+    /// `decide` accepts it only from `EarlyTolerance` before it. A pending `Firing` is not checked here.
     let allowedDue (state: ScheduleState) (now: DateTime) : DateTime option =
         match state.Spec with
         | Some spec when state.DeletedAt.IsNone && state.PausedAt.IsNone ->
@@ -312,6 +320,8 @@ module Schedule =
             refuse $"The run for {state.Last.Value.Due:O} has not been reported started."
         | ScheduleCommand.Fire due, Some spec ->
             match allowedDue state now with
+            | Some allowed when allowed = due && due - now > EarlyTolerance ->
+                refuse $"The due time {due:O} has not come; it is {now:O}."
             | Some allowed when allowed = due -> PersistEvent(ScheduleEvent.Firing(due, spec.Input))
             | Some allowed -> refuse $"{due:O} is not the due time to run; {allowed:O} is."
             | None -> refuse $"{due:O} is not the due time to run."
