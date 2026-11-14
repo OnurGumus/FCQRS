@@ -89,6 +89,8 @@ and ships. Every step is a program you run, and every page shows each line of it
    faulted orders.
 8. [Add a step](workflow-tutorial/add-a-step.html): changing a workflow while orders run.
 9. [Guard the change](workflow-tutorial/guard-the-change.html): `version`.
+10. [Feed orders from a stream](workflow-tutorial/feed-orders-from-a-stream.html): starting
+    workflows from an Akka.Streams flow.
 
 ## When to use FCQRS
 

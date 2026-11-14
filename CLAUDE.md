@@ -47,10 +47,11 @@ Good prose makes the example easier to reason about. It does not narrate the tea
   aggregate to sagas and changing stored events. Each step has a runnable F# and C# program under
   `samples/accounts/`; step 6 continues from step 5's database, so both build an assembly named
   `Accounts`.
-- `docs/workflow-tutorial/` ("Tutorial: Workflows") builds an order workflow in nine steps, from one
-  activity to changing a workflow while orders run. Each step has an F# and C# program under
-  `samples/orders/`, and its page shows every line that is new or changed since the previous step:
-  `scripts/check-learning-snippets.py` fails otherwise. Steps 8 and 9 continue from the previous
+- `docs/workflow-tutorial/` ("Tutorial: Workflows") builds an order workflow in ten steps, from one
+  activity to changing a workflow while orders run. Step 10, "Feed orders from a stream", starts
+  orders from an Akka.Streams flow and stops the process while two of them ship. Each step has an F#
+  and C# program under `samples/orders/`, and its page shows every line that is new or changed since
+  the previous step: `scripts/check-learning-snippets.py` fails otherwise. Steps 8 and 9 continue from the previous
   step's database. `scripts/check-orders.py` runs every step and checks the output its page shows.
   The track does not require the CQRS tutorial.
 - `docs/concepts/` explains the underlying models and boundaries.

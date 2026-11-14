@@ -401,18 +401,10 @@ A larger change, such as reordering many steps, is easier as a new workflow: reg
 under a new name, start new orders with it, and keep the old definition registered until its orders
 have ended.
 
-## What you built
+## Next
 
-The order workflow now reserves stock with retries, takes its time and confirmation number from
-steps, waits for an approval signal, charges an aggregate, compensates when it cannot ship, catches
-the failure it has an answer for, and survives a process that stops in the middle of a step and a
-change to its own code.
-
-The [workflow concept page](../concepts/workflows.html) covers what the tutorial left out: running
-steps together, repeating steps, child workflows, cancellation, streams, and the C# API in full.
-[Write a workflow](../how-to/write-a-workflow.html) is the same material as a task guide, and
-[Observability](../how-to/observability.html) shows the traces, metrics, and logs that each order
-produces.
+[Step 10: Feed orders from a stream](feed-orders-from-a-stream.html) starts orders from an
+Akka.Streams flow, two at a time, and stops the process while two orders are shipping.
 
 *)
 

@@ -271,6 +271,34 @@ def guard_the_change(root):
     return [output]
 
 
+def feed_orders_from_a_stream(root):
+    step = '10-feed-orders-from-a-stream'
+    # The journal starts empty. The first run stops once o-widget and o-gadget are both in ship.
+    first, second = runs(root, [(step, ['--stop'], 1), (step, [], 0)])
+    same(first, ['Deposited 500 to ada',
+                 '  the process stops while two orders are being shipped'], first)
+    # Registering resumed both orders before the stream handed over any element. The stream then
+    # feeds the same five orders again; outcomes come in input order.
+    same(second,
+         ['Deposited 500 to ada',
+          'o-widget is running: 6 ship',
+          'o-gadget is running: 6 ship',
+          'o-widget finished: shipped',
+          'o-gadget finished: shipped',
+          'o-gizmo finished: out of stock',
+          'o-crate faulted: The carrier does not take crates',
+          'o-sprocket finished: shipped',
+          'At most 2 orders were in the stream at once',
+          # One Started record: the element fed again stored nothing. Record 6 is the version step.
+          'Journal of order/default-shard/o-widget:'] +
+         [f'  {number} {record}' for number, record in enumerate(
+             ['Started', 'StepScheduled', 'StepCompleted', 'StepCompleted', 'StepCompleted',
+              'StepCompleted', 'StepScheduled', 'StepCompleted', 'StepScheduled', 'StepCompleted',
+              'StepScheduled', 'StepCompleted', 'StepScheduled', 'StepCompleted', 'Finished'], 1)],
+         second)
+    return [first, second]
+
+
 STEPS = {'1-place-an-order': place_an_order,
          '2-retry-the-warehouse': retry_the_warehouse,
          '3-read-the-clock': read_the_clock,
@@ -279,7 +307,8 @@ STEPS = {'1-place-an-order': place_an_order,
          '6-charge-the-customer': charge_the_customer,
          '7-when-a-step-fails': when_a_step_fails,
          '8-add-a-step': add_a_step,
-         '9-guard-the-change': guard_the_change}
+         '9-guard-the-change': guard_the_change,
+         '10-feed-orders-from-a-stream': feed_orders_from_a_stream}
 
 # Optional arguments select steps by folder name, for example: 2-retry-the-warehouse
 selected = sys.argv[1:] or list(STEPS)

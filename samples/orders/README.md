@@ -22,6 +22,8 @@ would in a folder of your own.
 8. [Add a step](8-add-a-step/): a new step parks `o-7`. It continues from step 7's database.
 9. [Guard the change](9-guard-the-change/): `version` lets `o-7` resume. It continues from step 8's
    database.
+10. [Feed orders from a stream](10-feed-orders-from-a-stream/): `WorkflowFlow` starts five orders,
+    two at a time. Run with `--stop`, then again, to see the orders resume and the stream not.
 
 Steps 8 and 9 continue from the previous step's database, so their projects share the assembly name
 `Orders`. `python3 scripts/check-orders.py` runs every step and checks its output.
