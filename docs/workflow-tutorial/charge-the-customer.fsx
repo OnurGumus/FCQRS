@@ -7,7 +7,7 @@ index: 6
 ---
 *)
 (*** hide ***)
-#r "nuget: FCQRS.Workflows, 7.2.1"
+#r "nuget: FCQRS.Workflows, 7.5.0"
 #load "../../samples/orders/6-charge-the-customer/fsharp/Account.fs"
 #load "../../samples/orders/6-charge-the-customer/fsharp/Order.fs"
 
@@ -191,7 +191,7 @@ file in the folder, so `Orders.csproj` does not change:
     <Compile Include="Account.fs" />
     <Compile Include="Order.fs" />
     <Compile Include="Program.fs" />
-    <PackageReference Include="FCQRS.Workflows" Version="7.2.1" />
+    <PackageReference Include="FCQRS.Workflows" Version="7.5.0" />
     <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3"
                       Version="3.0.2" />
     <PackageReference Include="SourceGear.sqlite3" Version="3.50.4.5" />

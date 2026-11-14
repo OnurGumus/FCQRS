@@ -7,7 +7,7 @@ index: 2
 ---
 *)
 (*** hide ***)
-#r "nuget: FCQRS.Workflows, 7.2.1"
+#r "nuget: FCQRS.Workflows, 7.5.0"
 #load "../../samples/orders/2-retry-the-warehouse/fsharp/Order.fs"
 
 (**
