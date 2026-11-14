@@ -285,6 +285,37 @@ async Task Eventually(Func<bool> condition, string what)
     }
 }
 
+// --- schedules in a host -------------------------------------------------------------------
+// AddFcqrs wires the saga starters when the host starts, so the schedules are registered from a
+// singleton resolved after that, as the concept page shows.
+{
+    var db = NewDb();
+    var builder = Host.CreateApplicationBuilder();
+    builder.Services.AddFcqrs($"Data Source={db};", "CSharpScheduleHost");
+    builder.Services.AddWorkflow<ReminderWorkflow, ScheduledRun<string>, string>();
+    builder.Services.AddSingleton(services => ScheduleHost.Register(
+        services.GetRequiredService<FCQRS.Common.IActor>(),
+        ScheduleHost.Workflow(services.GetRequiredService<
+            IWorkflowClient<ScheduledRun<string>, string>>())));
+    using var host = builder.Build();
+    await host.StartAsync();
+    try
+    {
+        var schedules = host.Services.GetRequiredService<ScheduleClient>();
+        await schedules.CreateAsync("host-daily", "reminder", "stretch", ScheduleRule.NewEvery(TimeSpan.FromSeconds(1)), CatchUp.Latest);
+        await Eventually(() => ReminderWorkflow.Runs.Keys.Any(id => id.StartsWith("host-daily@")), "a schedule registered after the host started starts a run");
+        var argument = false;
+        try { await schedules.CreateAsync("host-oslo", "reminder", "x", ScheduleRule.NewDaily(new TimeOnly(9, 0), "Europe"), CatchUp.Latest); }
+        catch (ArgumentException) { argument = true; }
+        Check(argument, "a time zone the system cannot read throws ArgumentException");
+    }
+    finally
+    {
+        await host.StopAsync();
+        DeleteDb(db);
+    }
+}
+
 Console.WriteLine(failures.Count == 0 ? "All C# workflow checks passed." : $"{failures.Count} C# workflow check(s) failed.");
 return failures.Count == 0 ? 0 : 1;
 

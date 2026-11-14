@@ -86,10 +86,12 @@ type private Node =
 
 /// Boots an actor system on `db`, moves its clock by `shift`, registers the workflows `register`
 /// returns, and the dispatcher.
-let private bootWith (db: string) (name: string) (shift: TimeSpan) (loggers: ILoggerFactory) (register: IActor -> ScheduledWorkflow list * WorkflowHandle<ScheduledRun<string>, string> option) =
+/// `bootWith`, with more settings, and the saga starters wired only when `wire` is true.
+let private bootConfigured (db: string) (name: string) (shift: TimeSpan) (loggers: ILoggerFactory) (extra: (string * string) list) (wire: bool) (register: IActor -> ScheduledWorkflow list * WorkflowHandle<ScheduledRun<string>, string> option) =
     let settings =
         [ "config:akka:scheduler:implementation", "FCQRS.Scheduler+ShiftedScheduler, FCQRS"
           "config:akka:fcqrs:schedule-check-interval", "1" ]
+        @ extra
     let configuration =
         VerifySerialization.configuration()
             .AddInMemoryCollection([ for key, value in settings -> KeyValuePair<string, string | null>(key, value) ])
@@ -98,8 +100,11 @@ let private bootWith (db: string) (name: string) (shift: TimeSpan) (loggers: ILo
     (api.System.Scheduler :?> FCQRS.Scheduler.ShiftedScheduler).Shift <- shift
     let runs, remind = register api
     let schedules = Schedules.register api runs
-    Fcqrs.wireSagaStarters api []
+    if wire then Fcqrs.wireSagaStarters api []
     { Api = api; Remind = remind; Schedules = schedules }
+
+let private bootWith (db: string) (name: string) (shift: TimeSpan) (loggers: ILoggerFactory) (register: IActor -> ScheduledWorkflow list * WorkflowHandle<ScheduledRun<string>, string> option) =
+    bootConfigured db name shift loggers [] true register
 
 let private boot db name shift (runs: Runs) =
     bootWith db name shift Microsoft.Extensions.Logging.Abstractions.NullLoggerFactory.Instance (fun api ->
@@ -546,6 +551,138 @@ let private snapshotRecovery =
             finally
                 third.Stop()
 
+let private invalidRuleRaises =
+    testCase "schedules: a rule or policy that cannot produce due times raises ArgumentException before anything is stored" <| fun _ ->
+        withDb <| fun db ->
+            let node = boot db "ScheduleInvalidRule" TimeSpan.Zero (Runs())
+            try
+                let at = TimeOnly(9, 0)
+                let create rule policy = Schedules.create node.Schedules "v" "remind" "x" rule policy
+                for rule in [ ScheduleRule.Daily(at, "Mars/Base")
+                              ScheduleRule.Daily(at, "Europe")
+                              ScheduleRule.Daily(at, "")
+                              ScheduleRule.Weekly([], at, "UTC")
+                              ScheduleRule.Weekly([ enum<DayOfWeek> 9 ], at, "UTC")
+                              ScheduleRule.Every TimeSpan.Zero
+                              ScheduleRule.Every(TimeSpan.FromDays 367.0) ] do
+                    Expect.throwsT<ArgumentException> (fun () -> sync (create rule CatchUp.Latest)) $"create with {rule}"
+                for rule in [ ScheduleRule.Daily(at, Unchecked.defaultof<string>); ScheduleRule.Weekly(Unchecked.defaultof<DayOfWeek list>, at, "UTC") ] do
+                    Expect.throwsT<ArgumentException> (fun () -> sync (create rule CatchUp.Latest)) $"create with {rule}"
+                Expect.throwsT<ArgumentNullException> (fun () -> sync (create Unchecked.defaultof<ScheduleRule> CatchUp.Latest)) "create with no rule"
+                Expect.throwsT<ArgumentNullException> (fun () -> sync (create (ScheduleRule.Every hour) Unchecked.defaultof<CatchUp>)) "create with no policy"
+                sync (create (ScheduleRule.Every hour) CatchUp.Latest)
+                Expect.throwsT<ArgumentException> (fun () -> sync (Schedules.change node.Schedules "v" "remind" "x" (ScheduleRule.Daily(at, "Europe")) CatchUp.Latest)) "change to an unreadable zone"
+                eventually "the index has the schedule" (fun () -> hasView node "v")
+                Expect.equal (view node "v").Rule (ScheduleRule.Every hour) "only the valid create was stored"
+            finally
+                node.Stop()
+
+/// The length of the longest persistence ID in the journal that starts with `prefix`.
+let private longestPersistenceId (db: string) (prefix: string) =
+    use connection = new SqliteConnection($"Data Source={db}")
+    connection.Open()
+    use command = connection.CreateCommand()
+    command.CommandText <- "SELECT MAX(LENGTH(persistence_id)) FROM journal WHERE substr(persistence_id, 1, length($prefix)) = $prefix"
+    command.Parameters.AddWithValue("$prefix", prefix) |> ignore
+    Convert.ToInt32(command.ExecuteScalar())
+
+let private longIdRaises =
+    testCase "schedules: an ID whose escaped persistence IDs do not fit in 255 characters raises ArgumentException" <| fun _ ->
+        withDb <| fun db ->
+            let runs = Runs()
+            let node = boot db "ScheduleLongId" TimeSpan.Zero runs
+            try
+                let create id = Schedules.create node.Schedules id "remind" "x" (ScheduleRule.Every second) CatchUp.Latest
+                // A run's persistence ID is "remind/default-shard/" and the escaped run ID: 50
+                // characters besides the escaped workflow name and schedule ID.
+                Expect.throwsT<ArgumentException> (fun () -> sync (create (String('a', 200)))) "a run's persistence ID of 256 characters"
+                // 'ş' escapes to "%C5%9F": 34 of them are 204 characters.
+                Expect.throwsT<ArgumentException> (fun () -> sync (create (String('ş', 34)))) "a short ID that escapes long"
+                let longest = String('a', 199)
+                sync (create longest)
+                Expect.throwsT<ArgumentException> (fun () -> sync (Schedules.change node.Schedules (String('a', 200)) "remind" "x" (ScheduleRule.Every second) CatchUp.Latest)) "change checks the length too"
+                eventually "a run" (fun () -> runs.Count >= 1)
+                Expect.equal (longestPersistenceId db "remind/") 255 "the run's persistence ID is 255 characters"
+                Expect.equal (longestPersistenceId db "fcqrs-schedule/") (29 + 199) "the schedule's persistence ID is its prefix and the escaped ID"
+            finally
+                node.Stop()
+
+let private unwiredWaits =
+    testCase "schedules: before the saga starters are wired, commands raise and the dispatcher fires nothing" <| fun _ ->
+        withDb <| fun db ->
+            let runs = Runs()
+            let first = boot db "ScheduleUnwired" TimeSpan.Zero runs
+            try
+                sync (Schedules.create first.Schedules "z" "remind" "x" (ScheduleRule.Every hour) CatchUp.Latest)
+            finally
+                first.Stop()
+
+            // A short handshake timeout: an aggregate that stores an event before the starters are
+            // wired terminates the process after it.
+            let second =
+                bootConfigured db "ScheduleUnwired" pastFirstHour nullLoggers [ "config:akka:fcqrs:saga-start-timeout", "2" ] false (remindOnly runs)
+            try
+                let error = Expect.throwsC (fun () -> sync (Schedules.create second.Schedules "y" "remind" "x" (ScheduleRule.Every hour) CatchUp.Latest)) id
+                Expect.isTrue (error :? InvalidOperationException) $"an InvalidOperationException, got {error.GetType()}"
+                Expect.stringContains error.Message "Fcqrs.wireSagaStarters" "the error names the call that wires them"
+                Expect.throwsT<InvalidOperationException> (fun () -> sync (Schedules.pause second.Schedules "z")) "a pause raises too"
+                eventually "the index has the schedule" (fun () -> hasView second "z")
+                Thread.Sleep 5000
+                Expect.isEmpty runs "the due run waits for the starters"
+                Fcqrs.wireSagaStarters second.Api []
+                eventually "the run starts once they are wired" (fun () -> runs.Count = 1)
+            finally
+                second.Stop()
+
+let private stuckStartAlone =
+    testCase "schedules: a start that hangs delays only its own schedule, which is tried again a retry delay after it fails" <| fun _ ->
+        withDb <| fun db ->
+            let runs = Runs()
+            let began = ConcurrentQueue<DateTime>()
+            let failed = ConcurrentQueue<DateTime>()
+            // A start that answers only after four seconds, with the timeout an ask would raise.
+            let hanging =
+                ScheduledWorkflow("hang", typeof<string>, fun _ _ _ _ ->
+                    async {
+                        began.Enqueue DateTime.UtcNow
+                        do! Async.Sleep 4000
+                        failed.Enqueue DateTime.UtcNow
+                        return raise (TimeoutException "The start did not answer.")
+                    })
+            let node =
+                bootWith db "ScheduleStuck" TimeSpan.Zero nullLoggers (fun api ->
+                    let handle = Workflows.register api (remind runs)
+                    [ ScheduledWorkflow.ofHandle handle; hanging ], Some handle)
+            try
+                sync (Schedules.create node.Schedules "stuck" "hang" "x" (ScheduleRule.Every second) CatchUp.Latest)
+                eventually "the hanging start began" (fun () -> not began.IsEmpty)
+                sync (Schedules.create node.Schedules "free" "remind" "y" (ScheduleRule.Every second) CatchUp.Latest)
+                Thread.Sleep 8000
+                let free = runs.Values |> Seq.filter (fun run -> run.Schedule = "free") |> Seq.length
+                Expect.isGreaterThanOrEqual free 6 "the other schedule ran about once a second meanwhile"
+                eventually "the hanging start was tried again" (fun () -> began.Count >= 2)
+                let attempts = List.ofSeq began
+                let failures = List.ofSeq failed
+                // retryDelay is min(check interval, 5 s): one second here.
+                for retried, failure in List.zip (List.tail attempts) (List.take (attempts.Length - 1) failures) do
+                    Expect.isGreaterThanOrEqual (retried - failure).TotalMilliseconds 900.0 "a failed start waits the retry delay from its failure"
+            finally
+                node.Stop()
+
+let private weeklyDaysNormalized =
+    testCase "schedules: the days of a weekly rule are sorted and repeats removed, so a reordered create is the same content" <| fun _ ->
+        withDb <| fun db ->
+            let node = boot db "ScheduleWeekly" TimeSpan.Zero (Runs())
+            try
+                let weekly days = ScheduleRule.Weekly(days, TimeOnly(9, 0), "UTC")
+                let create days = Schedules.create node.Schedules "wk" "remind" "x" (weekly days) CatchUp.Latest
+                sync (create [ DayOfWeek.Thursday; DayOfWeek.Monday ])
+                sync (create [ DayOfWeek.Monday; DayOfWeek.Thursday; DayOfWeek.Monday ])
+                eventually "the index has the schedule" (fun () -> hasView node "wk")
+                Expect.equal (view node "wk").Rule (weekly [ DayOfWeek.Monday; DayOfWeek.Thursday ]) "the stored days are sorted, without repeats"
+            finally
+                node.Stop()
+
 let tests =
     testSequenced (
         testList "schedules" [
@@ -568,5 +705,10 @@ let tests =
             downtime CatchUp.None 0
             failedRunContinues
             snapshotRecovery
+            invalidRuleRaises
+            longIdRaises
+            unwiredWaits
+            stuckStartAlone
+            weeklyDaysNormalized
         ]
     )

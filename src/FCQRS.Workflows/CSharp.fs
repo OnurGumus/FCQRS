@@ -427,18 +427,21 @@ type ScheduleClient internal (handle: ScheduleHandle) =
     member _.Handle = handle
 
     /// Creates the schedule `id`, which starts the workflow named `workflow` with `input` at each
-    /// due time of `rule`. Completes once the schedule is stored. Throws
-    /// `InvalidOperationException` when the workflow is not registered with the dispatcher or takes
-    /// another input, and when the schedule refuses: a schedule with this ID exists with a different
-    /// content, or was deleted. A repeat with the same content is accepted and stores nothing.
+    /// due time of `rule`. Completes once the schedule is stored. Throws `ArgumentException` for a
+    /// rule that `ScheduleRule.validate` rejects, a null rule or policy, or an ID that is blank,
+    /// contains '~', or is too long (see `Schedules.MaxIdLength`). Throws
+    /// `InvalidOperationException` when the saga starters are not wired, when the workflow is not
+    /// registered with the dispatcher or takes another input, and when the schedule refuses: a
+    /// schedule with this ID exists with a different content, or was deleted. A repeat with the
+    /// same content is accepted and stores nothing; a weekly rule's days are sorted and their
+    /// repeats removed before the comparison.
     member _.CreateAsync<'TInput>(id: string, workflow: string, input: 'TInput, rule: ScheduleRule, catchUp: CatchUp) : Task =
         Schedules.create handle id workflow input rule catchUp |> Async.StartAsTask :> Task
 
     /// Replaces the schedule's workflow, input, rule and catch-up policy. An `Every` rule counts
     /// from the change. A run decided before the change starts the workflow, with the input, it was
-    /// decided with.
-    /// Throws `InvalidOperationException` as `CreateAsync` does, and when the schedule does not
-    /// exist or was deleted.
+    /// decided with. Throws `ArgumentException` and `InvalidOperationException` as `CreateAsync`
+    /// does, and `InvalidOperationException` when the schedule does not exist or was deleted.
     member _.ChangeAsync<'TInput>(id: string, workflow: string, input: 'TInput, rule: ScheduleRule, catchUp: CatchUp) : Task =
         Schedules.change handle id workflow input rule catchUp |> Async.StartAsTask :> Task
 
@@ -488,7 +491,13 @@ type ScheduleHost =
     /// Registers the schedule aggregate and starts this actor system's dispatcher, which may start
     /// the listed workflows. Register each workflow with `WorkflowHost.Register` first. Throws
     /// `InvalidOperationException` when the actor system has a dispatcher already, and
-    /// `ConfigurationException` when `akka.fcqrs.schedule-check-interval` is not positive.
+    /// `ConfigurationException` when `akka.fcqrs.schedule-check-interval` is not positive. The
+    /// schedule aggregate stores no event until the actor system's saga starters are wired, and
+    /// terminates the process when they are not wired within `akka.fcqrs.saga-start-timeout`: call
+    /// `ActorWiring.InitSagaStarterEmpty` (or `InitSagaStarter` with the sagas) after registering
+    /// every aggregate and saga. `AddFcqrs` wires them when the host starts. Until they are wired
+    /// the dispatcher fires nothing and every `ScheduleClient` command throws
+    /// `InvalidOperationException`.
     static member Register(actor: IActor, [<ParamArray>] workflows: ScheduledWorkflow[]) : ScheduleClient =
         ScheduleClient(Schedules.register actor (List.ofArray workflows))
 

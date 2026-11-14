@@ -22,7 +22,10 @@ type CatchUp =
     /// Start one run for every missed due time, oldest first. At most the 1000 most recent are
     /// started; older ones are dropped.
     | All
-    /// Start no run for a missed due time and wait for the next one in the future.
+    /// Start no run for a missed due time and wait for the next one in the future. A due time
+    /// whose run is asked for within one minute of it (`Schedule.OnTimeWindow`) is on time, not
+    /// missed, so a rule whose due times are less than a minute apart runs its latest one after a
+    /// shorter gap, as `Latest` does.
     | None
 
 /// Due-time calculation for a `ScheduleRule`. Every `DateTime` it takes or returns is UTC.
@@ -98,22 +101,43 @@ module ScheduleRule =
                 due <- next rule anchor due
             List.ofSeq window
 
-    /// Checks that a rule can produce due times: a known time zone, at least one day, and an interval of at
-    /// least one second.
+    /// The longest `Every` interval: 366 days, which keeps every due time far from the largest
+    /// `DateTime`.
+    let MaxInterval = TimeSpan.FromDays 366.0
+
+    /// Checks that a rule can produce due times: a time zone this system can read, at least one day
+    /// that exists, and an interval from one second to `MaxInterval` (366 days). Returns an error,
+    /// never an exception, whatever the rule holds.
     let validate (rule: ScheduleRule) : Result<unit, string> =
         let checkZone (zone: string) =
-            try
-                zoneOf zone |> ignore
-                Ok()
-            with
-            | :? TimeZoneNotFoundException
-            | :? InvalidTimeZoneException -> Error $"Unknown time zone '{zone}'."
-        match rule with
-        | ScheduleRule.Daily(_, zone) -> checkZone zone
-        | ScheduleRule.Weekly([], _, _) -> Error "A weekly schedule needs at least one day."
-        | ScheduleRule.Weekly(_, _, zone) -> checkZone zone
-        | ScheduleRule.Every interval when interval < TimeSpan.FromSeconds 1.0 -> Error "The interval must be at least 1 second."
-        | ScheduleRule.Every _ -> Ok()
+            if String.IsNullOrWhiteSpace zone then
+                Error "A schedule needs a time zone."
+            else
+                // Not only TimeZoneNotFoundException: on macOS an ID that names a directory of the
+                // zone database, such as "Europe", raises SecurityException.
+                try
+                    zoneOf zone |> ignore
+                    Ok()
+                with _ ->
+                    Error $"Unknown time zone '{zone}'."
+
+        let checkDays (days: DayOfWeek list) =
+            if isNull (box days) || days.IsEmpty then
+                Error "A weekly schedule needs at least one day."
+            else
+                match days |> List.tryFind (fun day -> not (Enum.IsDefined day)) with
+                | Some day -> Error $"{int day} is not a day of the week."
+                | Option.None -> Ok()
+
+        if isNull (box rule) then
+            Error "A schedule needs a rule."
+        else
+            match rule with
+            | ScheduleRule.Daily(_, zone) -> checkZone zone
+            | ScheduleRule.Weekly(days, _, zone) -> checkDays days |> Result.bind (fun () -> checkZone zone)
+            | ScheduleRule.Every interval when interval < TimeSpan.FromSeconds 1.0 -> Error "The interval must be at least 1 second."
+            | ScheduleRule.Every interval when interval > MaxInterval -> Error "The interval must be at most 366 days."
+            | ScheduleRule.Every _ -> Ok()
 
 /// What a schedule starts and when. Stored in the schedule's journal, so its fields are a
 /// persistent contract.
@@ -225,7 +249,7 @@ module Schedule =
 
     /// How early a `Fire` may arrive for a due time: one second, which covers timer imprecision. A
     /// `Fire` that arrives earlier is refused and changes nothing, so a dispatcher fault cannot
-    /// start a run early. The same due time is accepted when its time comes.
+    /// start a run more than a second early. The same due time is accepted when its time comes.
     let EarlyTolerance = TimeSpan.FromSeconds 1.0
 
     // No due time at or before this is accepted: the last accepted due time, the creation or last
@@ -263,15 +287,21 @@ module Schedule =
 
     let private refuse reason = DeferEvent(ScheduleEvent.Refused reason)
 
+    // Total, like ScheduleRule.validate: the actor treats an exception from decide as fatal.
     let private validate (spec: ScheduleSpec) =
         if String.IsNullOrWhiteSpace spec.Workflow then
             Error "A schedule needs a workflow name."
+        elif isNull (box spec.CatchUp) then
+            Error "A schedule needs a catch-up policy."
+        elif isNull (box spec.Input) then
+            Error "A schedule needs an input."
         else
             ScheduleRule.validate spec.Rule
 
     /// Chooses what to do with a command. The command's `CreationDate` is the current time. A
     /// refusal is a deferred `Refused`. A repeat of an accepted command is answered with a deferred
-    /// copy of the first verdict, checked before anything the first command changed.
+    /// copy of the first verdict, checked before anything the first command changed. A spec that
+    /// fails validation, or a due time that cannot be computed, is refused: decide raises nothing.
     let decide (command: Command<ScheduleCommand>) (state: ScheduleState) : EventAction<ScheduleEvent> =
         let now = command.CreationDate
         match command.CommandDetails, state.Spec with
@@ -322,14 +352,22 @@ module Schedule =
         | ScheduleCommand.Fire _, Some _ when state.Last |> Option.exists (fun last -> not last.Started) ->
             refuse $"The run for {state.Last.Value.Due:O} has not been reported started."
         | ScheduleCommand.Fire due, Some spec ->
-            match allowedDue state now with
-            | Some allowed when allowed = due && due - now > EarlyTolerance ->
+            // A stored rule can stop computing, for example when a system update removes its zone.
+            let allowed =
+                try
+                    Ok(allowedDue state now)
+                with error ->
+                    Error error.Message
+
+            match allowed with
+            | Error reason -> refuse $"The due time could not be computed: {reason}"
+            | Ok(Some allowed) when allowed = due && due - now > EarlyTolerance ->
                 refuse $"The due time {due:O} has not come; it is {now:O}."
             // The allowed value is stored, not the one named: a run ID formats the due time, and a
             // due time named with another DateTimeKind would format differently.
-            | Some allowed when allowed = due -> PersistEvent(ScheduleEvent.Firing(DateTime.SpecifyKind(allowed, DateTimeKind.Utc), spec.Workflow, spec.Input))
-            | Some allowed -> refuse $"{due:O} is not the due time to run; {allowed:O} is."
-            | None -> refuse $"{due:O} is not the due time to run."
+            | Ok(Some allowed) when allowed = due -> PersistEvent(ScheduleEvent.Firing(DateTime.SpecifyKind(allowed, DateTimeKind.Utc), spec.Workflow, spec.Input))
+            | Ok(Some allowed) -> refuse $"{due:O} is not the due time to run; {allowed:O} is."
+            | Ok None -> refuse $"{due:O} is not the due time to run."
 
     /// Applies one event. It runs for stored events and for deferred replies, so a refusal or a
     /// repeated reply changes nothing.
@@ -455,6 +493,9 @@ type internal Dispatcher
     // Each schedule's next due time while it is in the future. It stays right until the schedule's
     // entry changes, so a pass over the index computes only the due times that passed or changed.
     let upcoming = Collections.Generic.Dictionary<string, DateTime>()
+    // The schedules whose fire is running. A schedule has at most one, and the loop does not wait
+    // for it, so a start that hangs delays only its own schedule.
+    let inFlight = Collections.Generic.HashSet<string>()
     let held = Collections.Generic.Queue<string * Event<ScheduleEvent>>()
     let mutable holding = false
     let mutable refusals = 0
@@ -462,9 +503,9 @@ type internal Dispatcher
     let wake = new Threading.SemaphoreSlim(0, 1)
     let lifetime = new Threading.CancellationTokenSource()
 
-    // How many schedules fire at once when several are due.
+    // How many fires run at once when several schedules are due.
     let parallelFires = 16
-    // How long a failed fire waits before it is tried again.
+    // How long a failed fire waits, from its failure, before it is tried again.
     let retryDelay = min checkInterval (TimeSpan.FromSeconds 5.0)
     // The longest single wait; a semaphore wait takes at most Int32.MaxValue milliseconds.
     let longestWait = TimeSpan.FromDays 1.0
@@ -551,17 +592,20 @@ type internal Dispatcher
                 workflow
             )
 
-    // What is due at `now`, and when to look again.
+    // What is due at `now`, and when to look again. A schedule whose fire is running is left out;
+    // the end of that fire wakes the loop. The schedules returned are marked as firing.
     let plan (now: DateTime) =
         lock gate (fun () ->
             let due = ResizeArray<string * DateTime>()
             let mutable wakeAt = now + checkInterval
             let later (at: DateTime) = if at < wakeAt then wakeAt <- at
+            let free = parallelFires - inFlight.Count
 
             for KeyValue(id, state) in index do
                 try
                     match state.Spec with
                     | None -> ()
+                    | Some _ when inFlight.Contains id -> ()
                     | Some spec ->
                         // A Firing without its Fired: the run may not have started. Its start is
                         // repeated whatever the schedule's state is now, on the workflow the Firing
@@ -596,13 +640,17 @@ type internal Dispatcher
                             | _ when next > now -> later next
                             | _ ->
                                 if workflows.ContainsKey workflow then
-                                    due.Add((id, next))
+                                    // Past the limit, a schedule waits for a running fire to end.
+                                    if due.Count < free then due.Add((id, next))
                                 else
                                     report id state spec workflow next now
                                     // Report again at the next due time.
                                     later (ScheduleRule.next spec.Rule state.Anchor now)
                 with error ->
                     logger.LogError(error, "The schedule dispatcher could not compute the next due time of schedule {Schedule}.", id)
+
+            for id, _ in due do
+                inFlight.Add id |> ignore
 
             List.ofSeq due, wakeAt)
 
@@ -611,7 +659,8 @@ type internal Dispatcher
 
     // Asks the schedule to fire, starts the run on the workflow and with the input from its reply,
     // and reports the start.
-    let fire (startedAt: DateTime) (id: string, due: DateTime) =
+    // A failure or a refusal defers the due time from the moment it happens.
+    let fire (id: string, due: DateTime) =
         async {
             try
                 let! reply = send id (cidOf (runIdOf id due)) (ScheduleCommand.Fire due)
@@ -634,7 +683,7 @@ type internal Dispatcher
                         | ScheduleEvent.Fired _ -> lock gate (fun () -> apply id started |> ignore)
                         | other ->
                             logger.LogWarning("Schedule {Schedule} answered the start of run {Run} with {Reply}.", id, runId, other)
-                            deferTo id due (startedAt + retryDelay)
+                            deferTo id due (now () + retryDelay)
                 | ScheduleEvent.Refused reason ->
                     lock gate (fun () -> refusals <- refusals + 1)
 
@@ -642,20 +691,48 @@ type internal Dispatcher
                     // Refused only for being early: try again at the due time. Otherwise the index
                     // was behind, and the change it missed arrives from the projection.
                     if due - reply.CreationDate > Schedule.EarlyTolerance then
-                        deferTo id due (max due (startedAt + Schedule.EarlyTolerance))
+                        deferTo id due (max due (now () + Schedule.EarlyTolerance))
                     else
-                        deferTo id due (startedAt + checkInterval)
+                        deferTo id due (now () + checkInterval)
                 | other ->
                     logger.LogWarning("Schedule {Schedule} answered a fire for {Due:O} with {Reply}.", id, due, other)
-                    deferTo id due (startedAt + retryDelay)
+                    deferTo id due (now () + retryDelay)
             with
             | _ when lifetime.IsCancellationRequested -> ()
             | :? TimeoutException as error ->
                 logger.LogWarning(error, "The run of schedule {Schedule} for {Due:O} did not start in time. It is tried again.", id, due)
-                deferTo id due (startedAt + retryDelay)
+                deferTo id due (now () + retryDelay)
             | error ->
                 logger.LogError(error, "The run of schedule {Schedule} for {Due:O} did not start. It is tried again.", id, due)
-                deferTo id due (startedAt + retryDelay)
+                deferTo id due (now () + retryDelay)
+        }
+
+    // Starts a fire without waiting for it. Its end frees the schedule and wakes the loop.
+    let launch (id: string, due: DateTime) =
+        Async
+            .StartAsTask(fire (id, due), cancellationToken = lifetime.Token)
+            .ContinueWith(fun (_: Threading.Tasks.Task<unit>) ->
+                lock gate (fun () -> inFlight.Remove id |> ignore)
+                signal ())
+        |> ignore
+
+    // An aggregate that stores an event before the actor system's saga starters are wired waits
+    // for them, and terminates the process when they do not come within saga-start-timeout. The
+    // dispatcher fires nothing until they are wired.
+    let starters () =
+        task {
+            let rules = (FCQRS.Common.SagaStarter.Internal.startRulesOf api.System).Task
+
+            if not rules.IsCompleted then
+                let! first = Threading.Tasks.Task.WhenAny(rules :> Threading.Tasks.Task, Threading.Tasks.Task.Delay(checkInterval, lifetime.Token))
+
+                if not (obj.ReferenceEquals(first, rules)) && not lifetime.IsCancellationRequested then
+                    logger.LogWarning(
+                        "The schedule dispatcher fires nothing until the actor system's saga starters are wired. Call Fcqrs.wireSagaStarters, or ActorWiring.InitSagaStarterEmpty in C#, after registering every aggregate and saga."
+                    )
+
+                    let! _ = rules.WaitAsync(lifetime.Token)
+                    ()
         }
 
     let loop (projection: FCQRS.Projections.IProjection) : Threading.Tasks.Task =
@@ -667,6 +744,11 @@ type internal Dispatcher
                 if not lifetime.IsCancellationRequested then
                     logger.LogWarning(error, "The schedule index did not catch up with the journal. The dispatcher starts from what it has read.")
 
+            try
+                do! starters ()
+            with :? OperationCanceledException ->
+                ()
+
             while not lifetime.IsCancellationRequested do
                 let mutable failed = false
 
@@ -674,14 +756,13 @@ type internal Dispatcher
                     let at = now ()
                     let due, wakeAt = plan at
 
-                    if due.IsEmpty then
-                        let wait = min longestWait (wakeAt - at)
-                        let milliseconds = Math.Ceiling(max 0.0 wait.TotalMilliseconds)
-                        let! _ = wake.WaitAsync(TimeSpan.FromMilliseconds milliseconds, lifetime.Token)
-                        ()
-                    else
-                        let! _ = Async.StartAsTask(Async.Parallel(due |> List.map (fire at), parallelFires), cancellationToken = lifetime.Token)
-                        ()
+                    for fire in due do
+                        launch fire
+
+                    let wait = min longestWait (wakeAt - at)
+                    let milliseconds = Math.Ceiling(max 0.0 wait.TotalMilliseconds)
+                    let! _ = wake.WaitAsync(TimeSpan.FromMilliseconds milliseconds, lifetime.Token)
+                    ()
                 with
                 | :? OperationCanceledException -> ()
                 | error ->
@@ -792,11 +873,13 @@ type ScheduleHandle
     (
         send: string -> FCQRS.Model.Data.CID -> ScheduleCommand -> Async<Event<ScheduleEvent>>,
         workflows: Collections.Generic.IReadOnlyDictionary<string, ScheduledWorkflow>,
-        dispatcher: Dispatcher
+        dispatcher: Dispatcher,
+        startersWired: unit -> bool
     ) =
     member internal _.Send = send
     member internal _.Workflows = workflows
     member internal _.Dispatcher = dispatcher
+    member internal _.StartersWired = startersWired
 
 /// Schedules that start a registered workflow at each due time. A schedule is created, changed,
 /// paused, resumed and deleted while the application runs, and is stored in the journal as an
@@ -833,10 +916,29 @@ module Schedules =
     let private registered =
         Runtime.CompilerServices.ConditionalWeakTable<Akka.Actor.ActorSystem, obj>()
 
-    /// The longest schedule ID. A run ID adds "@" and 28 characters of due time, and the correlation
-    /// IDs of a run's commands add a few more; they must fit in 255.
+    /// The longest schedule ID, in characters: a run ID adds "@" and 28 characters of due time, the
+    /// correlation IDs of a run's commands add up to 8 more, and a correlation ID holds at most 255.
+    /// The persistence IDs must fit too (see `MaxPersistenceIdLength`), and Akka escapes their
+    /// parts as `Uri.EscapeDataString` does, so `create` and `change` also require the escaped
+    /// workflow name and the escaped schedule ID to be at most 205 characters together. A
+    /// non-ASCII character escapes to 6 to 12 characters.
     [<Literal>]
     let MaxIdLength = 200
+
+    /// The longest persistence ID: 255 characters, the size of the journal's column on PostgreSQL.
+    /// A run journals as "<escaped workflow name>/default-shard/<escaped run ID>", which is 50
+    /// characters besides the escaped workflow name and schedule ID, and a schedule as
+    /// "fcqrs-schedule/default-shard/<escaped schedule ID>".
+    [<Literal>]
+    let MaxPersistenceIdLength = 255
+
+    // A persistence ID's parts as Akka escapes them: the sharding region's name and the entity's ID.
+    let private persistenceIdLength (entity: string) (id: string) =
+        Uri.EscapeDataString(entity).Length + 1 + DEFAULT_SHARD.Length + 1 + Uri.EscapeDataString(id).Length
+
+    // Every run ID of a schedule has this length, because the due time has a fixed format.
+    let private sampleRunId (id: string) =
+        $"""{id}@{DateTime.SpecifyKind(DateTime.UnixEpoch, DateTimeKind.Utc).ToString "O"}"""
 
     let private checkId (id: string) =
         if String.IsNullOrWhiteSpace id then
@@ -848,12 +950,41 @@ module Schedules =
         if id.Length > MaxIdLength then
             invalidArg (nameof id) $"A schedule ID must be at most {MaxIdLength} characters."
 
+        let length =
+            try
+                persistenceIdLength Schedule.EntityName id
+            with :? UriFormatException as error ->
+                invalidArg (nameof id) $"Schedule ID '{id}' cannot be escaped: {error.Message}"
+
+        if length > MaxPersistenceIdLength then
+            invalidArg (nameof id) $"Schedule ID '{id}' escapes to a persistence ID of {length} characters; the most is {MaxPersistenceIdLength}."
+
+    // A run's persistence ID holds the escaped workflow name and the escaped run ID.
+    let private checkRunId (id: string) (workflow: string) =
+        let length =
+            try
+                persistenceIdLength workflow (sampleRunId id)
+            with :? UriFormatException as error ->
+                invalidArg (nameof workflow) $"Workflow '{workflow}' cannot be escaped: {error.Message}"
+
+        if length > MaxPersistenceIdLength then
+            invalidArg
+                (nameof id)
+                $"Schedule ID '{id}' with workflow '{workflow}' gives its runs a persistence ID of {length} characters; the most is {MaxPersistenceIdLength}. The escaped workflow name and schedule ID must be at most {MaxPersistenceIdLength - 50} characters together."
+
     /// Registers the schedule aggregate and starts this actor system's dispatcher, which may start
     /// the listed workflows. Register each workflow with `Workflows.register` first. Raises
     /// `InvalidOperationException` when the actor system has a dispatcher already, and
     /// `Akka.Configuration.ConfigurationException` when `akka.fcqrs.schedule-check-interval` is not
     /// positive. A schedule whose workflow is not listed starts no run, and the dispatcher logs an
     /// error at each of its due times, until a later start lists the workflow again.
+    ///
+    /// The schedule aggregate, like every aggregate, waits for the actor system's saga starters
+    /// before it stores an event, and terminates the process when they are not wired within
+    /// `akka.fcqrs.saga-start-timeout`. Wire them with `Fcqrs.wireSagaStarters` after registering
+    /// every aggregate and saga, this one included. Until they are wired the dispatcher fires
+    /// nothing, and every function of this module that sends a command raises
+    /// `InvalidOperationException`.
     let register (api: IActor) (runs: ScheduledWorkflow list) : ScheduleHandle =
         let checkInterval = checkIntervalOf api.System.Settings.Config
         let workflows = Collections.Generic.Dictionary<string, ScheduledWorkflow>()
@@ -887,10 +1018,17 @@ module Schedules =
             Fcqrs.projection api (Projection.multi FromStart dispatcher.Observe |> Projection.ofEntities [ Schedule.EntityName ])
 
         dispatcher.Start projection
-        ScheduleHandle(send, workflows, dispatcher)
+        let rules = SagaStarter.Internal.startRulesOf api.System
+        ScheduleHandle(send, workflows, dispatcher, fun () -> rules.Task.IsCompleted)
 
+    // Sent only once the saga starters are wired: before that, the aggregate would wait for them
+    // and terminate the process when they never come.
     let private run (handle: ScheduleHandle) (id: string) (command: ScheduleCommand) =
         async {
+            if not (handle.StartersWired()) then
+                invalidOp
+                    $"Schedule '{id}': the actor system's saga starters are not wired, and an aggregate stores no event until they are. Call Fcqrs.wireSagaStarters (ActorWiring.InitSagaStarterEmpty in C#; AddFcqrs wires them when the host starts) after registering every aggregate and saga."
+
             let! reply = handle.Send id (Fcqrs.newCid ()) command
 
             match reply.EventDetails with
@@ -898,37 +1036,61 @@ module Schedules =
             | _ -> return ()
         }
 
-    let private specOf (handle: ScheduleHandle) (workflow: string) (input: 'Input) rule catchUp : ScheduleSpec =
+    // A weekly rule's days in order and without repeats, so the same days are the same content.
+    let private normalize (rule: ScheduleRule) =
+        match rule with
+        | ScheduleRule.Weekly(days, time, zone) -> ScheduleRule.Weekly(days |> List.distinct |> List.sort, time, zone)
+        | rule -> rule
+
+    // Checks the arguments before anything is sent, so a caller's mistake raises ArgumentException
+    // here instead of reaching the aggregate.
+    let private specOf (handle: ScheduleHandle) (id: string) (workflow: string) (input: 'Input) (rule: ScheduleRule) (catchUp: CatchUp) : ScheduleSpec =
+        checkId id
+
+        if isNull (box rule) then
+            nullArg (nameof rule)
+
+        if isNull (box catchUp) then
+            nullArg (nameof catchUp)
+
+        match ScheduleRule.validate rule with
+        | Error reason -> invalidArg (nameof rule) reason
+        | Ok() -> ()
+
         match handle.Workflows.TryGetValue workflow with
         | true, registered when registered.InputType = typeof<'Input> ->
+            checkRunId id workflow
+
             { Workflow = workflow
               Input = Payload.ofValue input
-              Rule = rule
+              Rule = normalize rule
               CatchUp = catchUp }
         | true, registered ->
             invalidOp $"Workflow '{workflow}' takes a {registered.InputType.Name} as its schedule input, not a {typeof<'Input>.Name}."
         | _ -> invalidOp $"Workflow '{workflow}' is not registered with the schedule dispatcher."
 
     /// Creates the schedule `id`, which starts the workflow named `workflow` with `input` at each
-    /// due time of `rule`. Returns once the schedule is stored. Raises `InvalidOperationException`
-    /// when the workflow is not registered with the dispatcher or takes another input, and when the
-    /// schedule refuses: a schedule with this ID exists with a different content, or was deleted. A
-    /// repeat with the same content is accepted and stores nothing.
+    /// due time of `rule`. Returns once the schedule is stored. Raises `ArgumentException` for a rule
+    /// that `ScheduleRule.validate` rejects, a missing rule or policy, or an ID that is blank,
+    /// contains '~', or is too long (see `MaxIdLength`). Raises `InvalidOperationException` when
+    /// the saga starters are not wired, when the workflow is not registered with the dispatcher or
+    /// takes another input, and when the schedule refuses: a schedule with this ID exists with a
+    /// different content, or was deleted. A repeat with the same content is accepted and stores
+    /// nothing; a weekly rule's days are sorted and their repeats removed before the comparison.
     let create (handle: ScheduleHandle) (id: string) (workflow: string) (input: 'Input) (rule: ScheduleRule) (catchUp: CatchUp) : Async<unit> =
         async {
-            checkId id
-            let spec = specOf handle workflow input rule catchUp
+            let spec = specOf handle id workflow input rule catchUp
             return! run handle id (ScheduleCommand.Create spec)
         }
 
     /// Replaces the schedule's workflow, input, rule and catch-up policy. An `Every` rule counts from
     /// the change, and no due time at or before it runs. A run decided before the change starts the
-    /// workflow, with the input, it was decided with. Raises `InvalidOperationException` as `create` does, and when the
+    /// workflow, with the input, it was decided with. Raises `ArgumentException` and
+    /// `InvalidOperationException` as `create` does, and `InvalidOperationException` when the
     /// schedule does not exist or was deleted.
     let change (handle: ScheduleHandle) (id: string) (workflow: string) (input: 'Input) (rule: ScheduleRule) (catchUp: CatchUp) : Async<unit> =
         async {
-            checkId id
-            let spec = specOf handle workflow input rule catchUp
+            let spec = specOf handle id workflow input rule catchUp
             return! run handle id (ScheduleCommand.Change spec)
         }
 

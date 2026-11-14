@@ -95,6 +95,26 @@ let tests =
             Expect.isOk (ScheduleRule.validate (ScheduleRule.Every(TimeSpan.FromSeconds 1.0))) "one second"
             Expect.isOk (ScheduleRule.validate (ScheduleRule.Daily(TimeOnly(9, 0), oslo))) "valid"
 
+        testCase "schedule rule: validate returns an error, never an exception, for any rule" <| fun _ ->
+            let nine = TimeOnly(9, 0)
+            // On macOS a zone ID that names a directory of the zone database throws SecurityException.
+            for zone in [ "Europe"; "America"; "Etc"; "Europe/"; "America/Argentina"; ""; " "; Unchecked.defaultof<string> ] do
+                Expect.isError (ScheduleRule.validate (ScheduleRule.Daily(nine, zone))) $"daily, zone '{zone}'"
+                Expect.isError (ScheduleRule.validate (ScheduleRule.Weekly([ DayOfWeek.Monday ], nine, zone))) $"weekly, zone '{zone}'"
+            Expect.isError (ScheduleRule.validate (ScheduleRule.Weekly(Unchecked.defaultof<DayOfWeek list>, nine, "UTC"))) "no day list"
+            Expect.isError (ScheduleRule.validate (ScheduleRule.Weekly([ enum<DayOfWeek> 9 ], nine, "UTC"))) "a day that does not exist"
+            Expect.isError (ScheduleRule.validate (ScheduleRule.Every TimeSpan.MaxValue)) "the largest interval"
+            Expect.isError (ScheduleRule.validate (ScheduleRule.Every(TimeSpan.FromDays 366.0 + TimeSpan.FromTicks 1L))) "over 366 days"
+            Expect.isOk (ScheduleRule.validate (ScheduleRule.Every(TimeSpan.FromDays 366.0))) "366 days"
+            Expect.isError (ScheduleRule.validate Unchecked.defaultof<ScheduleRule>) "no rule"
+
+        testCase "schedule rule: a rule that validates computes due times without an exception" <| fun _ ->
+            let anchor = utc 2026 11 14 10 0
+            let longest = ScheduleRule.Every(TimeSpan.FromDays 366.0)
+            Expect.equal (ScheduleRule.next longest anchor anchor) (anchor.AddDays 366.0) "the longest interval"
+            let now = utc 2036 11 14 10 0
+            Expect.equal (ScheduleRule.missed longest anchor anchor now CatchUp.All |> List.length) 9 "ten years of the longest interval"
+
         testCase "schedule rule: rules and policies survive the journal serializer" <| fun _ ->
             let serializer = Payload.ofValue
             for rule in [ ScheduleRule.Daily(TimeOnly(9, 0), oslo)
@@ -205,6 +225,32 @@ let aggregateTests =
         testCase "schedule aggregate: a create with an invalid rule is refused" <| fun _ ->
             let bad = spec (ScheduleRule.Daily(TimeOnly(9, 0), "Mars/Base")) CatchUp.Latest
             refused (utc 2026 11 1 8 0) (ScheduleCommand.Create bad) Schedule.initial "unknown zone"
+
+        // The aggregate actor treats an exception from decide as fatal, so a rule from a caller must
+        // be refused, never raised.
+        testCase "schedule aggregate: a create or change with a rule that cannot produce due times is refused, never raised" <| fun _ ->
+            let at = TimeOnly(9, 0)
+            let rules =
+                [ ScheduleRule.Daily(at, "Europe")
+                  ScheduleRule.Daily(at, Unchecked.defaultof<string>)
+                  ScheduleRule.Weekly(Unchecked.defaultof<DayOfWeek list>, at, "UTC")
+                  ScheduleRule.Weekly([ enum<DayOfWeek> 9 ], at, "UTC")
+                  ScheduleRule.Every TimeSpan.MaxValue
+                  Unchecked.defaultof<ScheduleRule> ]
+            let existing = given (created CatchUp.Latest)
+            for rule in rules do
+                refused (utc 2026 11 1 8 0) (ScheduleCommand.Create(spec rule CatchUp.Latest)) Schedule.initial $"create with {rule}"
+                refused (utc 2026 11 1 8 30) (ScheduleCommand.Change(spec rule CatchUp.Latest)) existing $"change to {rule}"
+            let noPolicy = spec daily Unchecked.defaultof<CatchUp>
+            refused (utc 2026 11 1 8 0) (ScheduleCommand.Create noPolicy) Schedule.initial "create with no catch-up policy"
+            refused (utc 2026 11 1 8 30) (ScheduleCommand.Change noPolicy) existing "change to no catch-up policy"
+
+        testCase "schedule aggregate: a fire whose due time cannot be computed is refused, never raised" <| fun _ ->
+            let state = given (created CatchUp.Latest)
+            for rule in [ ScheduleRule.Daily(TimeOnly(9, 0), "Europe"); ScheduleRule.Every TimeSpan.MaxValue ] do
+                // A stored rule that a later runtime cannot compute, such as a zone a system update removed.
+                let broken = { state with Spec = state.Spec |> Option.map (fun current -> { current with Rule = rule }) }
+                refused (nine 1) (ScheduleCommand.Fire(nine 1)) broken $"{rule}"
 
         testCase "schedule aggregate: commands for a schedule that does not exist are refused" <| fun _ ->
             let now = utc 2026 11 1 9 0
@@ -434,4 +480,44 @@ let aggregateTests =
                                                   utc 2026 11 1 9 30, ScheduleCommand.Delete ])
             Expect.equal (roundTrip state) state "state"
             Expect.equal (roundTrip Schedule.initial) Schedule.initial "initial state"
+
+        // The journal and the snapshots hold this JSON. A change here breaks stored schedules and
+        // runs, so it must come with a migration.
+        testCase "schedule aggregate: stored values keep their exact JSON" <| fun _ ->
+            let json (value: 'T) = Text.Json.JsonSerializer.Serialize<'T>(value, Serialization.jsonOptions)
+            let golden (value: 'T) (expected: string) what =
+                Expect.equal (json value) expected what
+                Expect.equal (Text.Json.JsonSerializer.Deserialize<'T>(expected, Serialization.jsonOptions)) value $"{what} reads back"
+            let at = utc 2026 11 1 8 0
+            let weekly = ScheduleRule.Weekly([ DayOfWeek.Monday; DayOfWeek.Thursday ], TimeOnly(8, 15), "Europe/Oslo")
+            let s = spec weekly CatchUp.All
+            golden (ScheduleRule.Daily(TimeOnly(9, 0), "Europe/Oslo")) """{"Case":"Daily","time":"09:00:00","zone":"Europe/Oslo"}""" "Daily"
+            golden weekly """{"Case":"Weekly","days":[1,4],"time":"08:15:00","zone":"Europe/Oslo"}""" "Weekly"
+            golden (ScheduleRule.Every(TimeSpan.FromMinutes 90.0)) """{"Case":"Every","interval":"01:30:00"}""" "Every"
+            golden CatchUp.Latest """{"Case":"Latest"}""" "Latest"
+            golden CatchUp.All """{"Case":"All"}""" "All"
+            golden CatchUp.None """{"Case":"None"}""" "None"
+            golden (ScheduleEvent.Created(s, at)) """{"Case":"Created","spec":{"Workflow":"remind","Input":{"Type":"System.String","Json":"\u0022hello\u0022"},"Rule":{"Case":"Weekly","days":[1,4],"time":"08:15:00","zone":"Europe/Oslo"},"CatchUp":{"Case":"All"}},"at":"2026-11-01T08:00:00Z"}""" "Created"
+            golden (ScheduleEvent.Changed(s, at)) """{"Case":"Changed","spec":{"Workflow":"remind","Input":{"Type":"System.String","Json":"\u0022hello\u0022"},"Rule":{"Case":"Weekly","days":[1,4],"time":"08:15:00","zone":"Europe/Oslo"},"CatchUp":{"Case":"All"}},"at":"2026-11-01T08:00:00Z"}""" "Changed"
+            golden (ScheduleEvent.Paused at) """{"Case":"Paused","at":"2026-11-01T08:00:00Z"}""" "Paused"
+            golden (ScheduleEvent.Resumed at) """{"Case":"Resumed","at":"2026-11-01T08:00:00Z"}""" "Resumed"
+            golden (ScheduleEvent.Deleted at) """{"Case":"Deleted","at":"2026-11-01T08:00:00Z"}""" "Deleted"
+            golden (ScheduleEvent.Firing(nine 1, "remind", hello)) """{"Case":"Firing","due":"2026-11-01T09:00:00Z","workflow":"remind","input":{"Type":"System.String","Json":"\u0022hello\u0022"}}""" "Firing"
+            golden (ScheduleEvent.Fired(nine 1)) """{"Case":"Fired","due":"2026-11-01T09:00:00Z"}""" "Fired"
+            golden (ScheduleEvent.Refused "no") """{"Case":"Refused","reason":"no"}""" "Refused"
+            let last = { Due = nine 1; Workflow = "remind"; Input = hello; Started = true }
+            golden last """{"Due":"2026-11-01T09:00:00Z","Workflow":"remind","Input":{"Type":"System.String","Json":"\u0022hello\u0022"},"Started":true}""" "AcceptedDue"
+            let state =
+                { Created = Some(s, at)
+                  Spec = Some { s with CatchUp = CatchUp.Latest }
+                  Anchor = utc 2026 11 1 8 30
+                  PausedAt = Some(utc 2026 11 1 9 10)
+                  ResumedAt = Some(utc 2026 11 1 9 5)
+                  DeletedAt = Some(utc 2026 11 1 9 30)
+                  Last = Some last }
+            golden state """{"Created":[{"Workflow":"remind","Input":{"Type":"System.String","Json":"\u0022hello\u0022"},"Rule":{"Case":"Weekly","days":[1,4],"time":"08:15:00","zone":"Europe/Oslo"},"CatchUp":{"Case":"All"}},"2026-11-01T08:00:00Z"],"Spec":{"Workflow":"remind","Input":{"Type":"System.String","Json":"\u0022hello\u0022"},"Rule":{"Case":"Weekly","days":[1,4],"time":"08:15:00","zone":"Europe/Oslo"},"CatchUp":{"Case":"Latest"}},"Anchor":"2026-11-01T08:30:00Z","PausedAt":"2026-11-01T09:10:00Z","ResumedAt":"2026-11-01T09:05:00Z","DeletedAt":"2026-11-01T09:30:00Z","Last":{"Due":"2026-11-01T09:00:00Z","Workflow":"remind","Input":{"Type":"System.String","Json":"\u0022hello\u0022"},"Started":true}}""" "ScheduleState"
+            golden Schedule.initial """{"Anchor":"0001-01-01T00:00:00"}""" "the initial ScheduleState"
+            golden { Schedule = "ada daily"; Due = nine 1; Input = "drink water" } """{"Schedule":"ada daily","Due":"2026-11-01T09:00:00Z","Input":"drink water"}""" "ScheduledRun"
+            Expect.equal (Payload.ofValue { Schedule = "ada daily"; Due = nine 1; Input = "drink water" }).Json
+                (json { Schedule = "ada daily"; Due = nine 1; Input = "drink water" }) "a run's stored input is that JSON"
     ]
