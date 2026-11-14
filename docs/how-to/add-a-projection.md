@@ -153,6 +153,8 @@ the policy.
 A failure to read the journal or to store progress is handled differently: FCQRS logs the error and
 retries with a backoff that starts at 1 second and grows to 30 seconds, plus up to 20 percent random
 delay. Monitor that error log; the read model stays behind until the database is reachable again.
+A caller that waits on a correlation ID for an event the failed read had already applied is notified
+when a later read completes.
 Missing journal history, such as a deleted journal row, terminates the process, because reading again
 cannot bring it back.
 

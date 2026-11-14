@@ -15,12 +15,15 @@ open FCQRS.ProjectionStorage
 
 /// A running projection and its request-scoped notification subscriptions.
 /// Catch-up covers every application persistence ID in one committed journal snapshot.
-/// Akka's own cluster-sharding records (IDs starting with "/sharding/") are excluded.
+/// Akka's own cluster-sharding records (IDs starting with "/sharding/" or "/system/sharding/")
+/// are excluded.
 /// It does not wait for other projections, later writes, or external effects.
 /// A correlation-ID subscription (`Subscribe(cid, ...)`, which `sendAwaiting` uses) receives
 /// its notifications after the whole snapshot containing them commits, so it can wait longer
-/// than the commit of its own event. If the projection fails before then, the subscription is
-/// cancelled. Other subscriptions receive each notification when its event commits.
+/// than the commit of its own event. When a projection retries a pass that failed part-way, the
+/// subscription receives them after the next pass that completes. If the projection stops after
+/// an error before then, the subscription is cancelled. Other subscriptions receive each
+/// notification when its event commits.
 type IProjection =
     inherit FCQRS.Query.ISubscribe
     inherit IDisposable
@@ -262,19 +265,23 @@ let private run (actor: IActor) (logger: ILogger) (settings: JournalSettings)
     let missing persistenceId position =
         JournalHistoryException $"Projection '{name}' could not read journal sequence {position + 1L} for '{persistenceId}'. Retain or restore its journal history, and make every event adapter return exactly one event."
 
+    // An event whose write commits late is applied in a later pass, so a saga's follow-up event
+    // can commit before the originator event that caused it. Both share a correlation ID, and a
+    // snapshot holding the follow-up also holds its cause.
+    // Correlation-ID waiters therefore receive their notifications only after the whole
+    // snapshot commits, so whichever one wakes them, the events that caused it are already
+    // readable. Subscribers without a correlation ID still receive every notification as its
+    // event commits.
+    // A pass that fails part-way keeps what it held: the events it applied are not applied again,
+    // so the next pass that completes delivers their notifications. Only a pass reads or changes
+    // this list, and passes run one at a time.
+    let held = ResizeArray<unit -> unit>()
+
     let processTargets (targets: Map<string, int64>) (full: bool) = task {
         let! positions =
             if full then tracking.ReadPositions None lifetime.Token
             elif targets.IsEmpty then Task.FromResult Map.empty
             else tracking.ReadPositions (Some [ for KeyValue(persistenceId, _) in targets -> persistenceId ]) lifetime.Token
-        // An event whose write commits late is applied in a later pass, so a saga's follow-up event
-        // can commit before the originator event that caused it. Both share a correlation ID, and a
-        // snapshot holding the follow-up also holds its cause.
-        // Correlation-ID waiters therefore receive their notifications only after the whole
-        // snapshot commits, so whichever one wakes them, the events that caused it are already
-        // readable. Subscribers without a correlation ID still receive every notification as its
-        // event commits.
-        let held = ResizeArray<unit -> unit>()
         let publish message = notifications.PublishExceptWaiters message |> Option.iter held.Add
         // The persistence IDs with events to apply in this pass, and their positions.
         let pending = Collections.Generic.Dictionary<string, int64>()
@@ -318,7 +325,9 @@ let private run (actor: IActor) (logger: ILogger) (settings: JournalSettings)
                 if pending.Count > 0 && after = start then
                     let first = pending |> Seq.head
                     raise (missing first.Key first.Value)
-        for deliver in held do
+        let deliveries = held.ToArray()
+        held.Clear()
+        for deliver in deliveries do
             deliver ()
     }
 
@@ -477,8 +486,9 @@ let private gap name (envelope: EventEnvelope) (position: int64) =
 /// Creates an independently running projection. The handler must write exclusively
 /// through the supplied connection and transaction, and await all its database work.
 /// FCQRS commits the handler's updates and contiguous journal position together.
-/// Events are processed in sequence order within each persistence ID; there is no
-/// cross-persistence-ID order. Retain journal history until it has been processed.
+/// Each pass applies the events it found in journal order: per persistence ID in sequence
+/// order, and across persistence IDs in write order on SQLite; on PostgreSQL an event that
+/// commits late is applied in a later pass. Retain journal history until it has been processed.
 /// Configured Akka event adapters are currently unsupported by this projection reader.
 /// Configure the SQL journal through HOCON; DataOptionsSetup overrides are rejected
 /// because capture and replay must be validated against the same database and mapping.
@@ -555,8 +565,10 @@ type internal TrackedProgress =
     | Stored of string
 
 /// Creates a projection that follows each persistence ID's own sequence numbers, so it never skips
-/// an event that commits after later-numbered ones, and hands each event to `handler`. Events are
-/// processed in sequence order within each persistence ID; there is no cross-persistence-ID order.
+/// an event that commits after later-numbered ones, and hands each event to `handler`. Each pass
+/// hands over the events it found in journal order: per persistence ID in sequence order, and
+/// across persistence IDs in write order on SQLite; on PostgreSQL an event that commits late
+/// arrives in a later pass.
 /// With stored progress, a handler can see an event again after a crash: its position is stored
 /// after the handler returns. A handler that throws terminates the process. The journal must be
 /// SQLite or PostgreSQL, configured through HOCON.

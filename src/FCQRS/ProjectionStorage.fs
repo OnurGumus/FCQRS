@@ -16,6 +16,14 @@ type ProjectionSqlDialect =
     /// PostgreSQL with a provider such as Npgsql.
     | PostgreSql = 1
 
+/// Whether a persistence ID holds Akka cluster sharding's own bookkeeping for remembered entities,
+/// such as sagas and workflows: a shard's is under "/sharding/", and a coordinator's is under
+/// "/system/sharding/". Akka deletes the early history of both after each of its snapshots, and
+/// neither holds an application event.
+let internal isShardingBookkeeping (persistenceId: string) : bool =
+    persistenceId.StartsWith("/sharding/", StringComparison.Ordinal)
+    || persistenceId.StartsWith("/system/sharding/", StringComparison.Ordinal)
+
 /// Stores one durable, contiguous sequence position per projection and persistence ID.
 /// Connection factories must return new, unopened connections. The journal factory must
 /// read the authoritative journal database, not a replica. Read-model writes must use the
@@ -250,9 +258,8 @@ type SqlProjectionStore
     /// Captures every persistence ID's last sequence number in a committed snapshot, and the highest
     /// global journal number read before it. Reads the whole journal.
     /// Per-persistence-ID targets do not assume global journal ordering follows commit ordering.
-    /// Akka cluster sharding stores its own bookkeeping, such as remembered saga entities, under
-    /// persistence IDs that start with "/sharding/", and deletes their early history after each of
-    /// its snapshots. Those records are not application events, so the snapshot excludes them.
+    /// Akka cluster sharding's own bookkeeping is not application events and loses its early
+    /// history, so the snapshot excludes it: see `isShardingBookkeeping`.
     member internal _.CaptureAllAsync(ct: CancellationToken) : Task<Map<string, int64> * int64> =
         task {
             use! connection = openConnection journalConnectionFactory validateJournalConnection ct
@@ -263,7 +270,7 @@ type SqlProjectionStore
             command.CommandText <- $"SELECT {persistenceIdSql}, MAX({sequenceNumberSql}) FROM {journalSql} GROUP BY {persistenceIdSql}"
             let! positions = readPositions command ct
             return
-                positions |> Map.filter (fun persistenceId _ -> not (persistenceId.StartsWith("/sharding/", StringComparison.Ordinal))),
+                positions |> Map.filter (fun persistenceId _ -> not (isShardingBookkeeping persistenceId)),
                 Convert.ToInt64 top
         }
 
@@ -291,7 +298,7 @@ type SqlProjectionStore
                     if String.IsNullOrWhiteSpace persistenceId || sequenceNumber < 0L then
                         invalidOp "The journal contains an invalid persistence ID or sequence number."
                     top <- max top ordering
-                    if not (persistenceId.StartsWith("/sharding/", StringComparison.Ordinal)) then
+                    if not (isShardingBookkeeping persistenceId) then
                         positions <- positions.Add(persistenceId, sequenceNumber)
                 else
                     reading <- false

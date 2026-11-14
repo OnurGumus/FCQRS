@@ -31,8 +31,8 @@ These transactional projection APIs are available in FCQRS 6.4.0 and later.
 persistence identity visible in one database read. A persistence identity identifies one actor's
 journal history. The call succeeds after this projection has committed every event through those
 captured sequence numbers. The snapshot includes aggregate events and saga journal records. It
-excludes Akka's cluster-sharding records, whose persistence identities start with `/sharding/`.
-Akka deletes their early history itself, and they are not application events.
+excludes Akka's cluster-sharding records, whose persistence identities start with `/sharding/` or
+`/system/sharding/`. Akka deletes their early history itself, and they are not application events.
 
 The order matters. Await the aggregate reply before calling `CatchUpAsync` so the snapshot includes
 that event when the reply was journaled. It also includes every other event committed before the

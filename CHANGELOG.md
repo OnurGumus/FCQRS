@@ -1,5 +1,22 @@
 # Changelog
 
+## 7.0.1 (FCQRS core)
+
+- **A correlation waiter is notified after a projection retries a failed read.** A projection holds
+  correlation-ID notifications until its read of the journal completes. When a projection started
+  with `Fcqrs.projection` or `AddProjection` failed part-way through a read, it dropped the
+  notifications of the events it had applied, and the retry did not apply those events again.
+  `sendAwaiting` then timed out although the read model was current. The next read that completes
+  now delivers them.
+- **Projections skip the sharding coordinator's records.** Akka journals the coordinator of each
+  saga and workflow type under `/system/sharding/`, beside the shard records under `/sharding/` that
+  projections already skipped. Projections handed the coordinator's records to their handlers. Akka
+  deletes the start of that history after its snapshots. A projection that then read the journal
+  from the start stopped on the missing records, and one started with `Fcqrs.projection` terminated
+  the process.
+- The XML comments of `Projections.start`, `startTracked`, and `AddTransactionalProjection` describe
+  the journal order of a pass, as the F# facade's comments already did.
+
 ## 7.2.1 (FCQRS.Workflows)
 
 - **A workflow body can recurse to any depth.** A body that did more work after a recursive call,

@@ -381,7 +381,9 @@ type FcqrsBuilder internal (services: IServiceCollection, connectionString: stri
     /// The handler must write through the supplied connection and transaction and
     /// await all database work. FCQRS commits updates with durable contiguous progress.
     /// Resolve FCQRS.Projections.IProjection from DI to wait after an aggregate reply.
-    /// Ordering is per persistence ID, and unprocessed journal history must be retained.
+    /// Each pass applies events in journal order: per persistence ID in sequence order, and across
+    /// persistence IDs in write order on SQLite; on PostgreSQL an event that commits late is applied
+    /// in a later pass. Unprocessed journal history must be retained.
     member this.AddTransactionalProjection(
             options: FCQRS.Projections.TransactionalProjectionOptions,
             handler: Func<System.Data.Common.DbConnection, System.Data.Common.DbTransaction, Akka.Persistence.Query.EventEnvelope, Task>) : FcqrsBuilder =

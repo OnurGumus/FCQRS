@@ -488,6 +488,33 @@ let private deleteDatabases paths =
         for path in [ database; database + "-wal"; database + "-shm" ] do
             if File.Exists path then File.Delete path
 
+/// An aggregate whose every event starts a saga that stops at once. Sagas remember their entities
+/// through Akka cluster sharding, which journals that bookkeeping beside the application's events.
+let private bookkeepingAccounts api (name: string) =
+    let accounts =
+        Fcqrs.aggregate api
+            { Name = name + "Account"
+              Initial = 0
+              Decide = fun (_: Command<BookkeepingCommand>) _ -> PersistEvent Opened
+              Fold = fun (_: Event<BookkeepingEvent>) state -> state + 1
+              Snapshots = NoSnapshots
+              Passivation = PassivationPolicy.Default }
+    let saga =
+        Fcqrs.saga api
+            { Name = name + "Saga"
+              InitialData = ()
+              Originator = accounts.Factory
+              HandleEvent =
+                fun event state ->
+                    match event, state.State with
+                    | :? Event<BookkeepingEvent>, None -> StateChangedEvent Closed
+                    | _ -> UnhandledEvent
+              ApplySideEffects = fun state _ -> match state.State with Closed -> StopSaga, []
+              StartOn = fun (_: Event<BookkeepingEvent>) -> true
+              Snapshots = NoSnapshots }
+    Fcqrs.wireSagaStarters api [ saga ]
+    accounts
+
 let private shardingBookkeeping =
     testCase "catch-up: a new projection skips Akka's trimmed sharding history"
     <| fun _ ->
@@ -504,28 +531,7 @@ let private shardingBookkeeping =
             Fcqrs.actor configuration NullLoggerFactory.Instance
                 (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite (sqliteString journalPath))) ("Bookkeeping" + suffix)
         try
-            let accounts =
-                Fcqrs.aggregate api
-                    { Name = "BookkeepingAccount"
-                      Initial = 0
-                      Decide = fun (_: Command<BookkeepingCommand>) _ -> PersistEvent Opened
-                      Fold = fun (_: Event<BookkeepingEvent>) state -> state + 1
-                      Snapshots = NoSnapshots
-                      Passivation = PassivationPolicy.Default }
-            let saga =
-                Fcqrs.saga api
-                    { Name = "BookkeepingSaga"
-                      InitialData = ()
-                      Originator = accounts.Factory
-                      HandleEvent =
-                        fun event state ->
-                            match event, state.State with
-                            | :? Event<BookkeepingEvent>, None -> StateChangedEvent Closed
-                            | _ -> UnhandledEvent
-                      ApplySideEffects = fun state _ -> match state.State with Closed -> StopSaga, []
-                      StartOn = fun (_: Event<BookkeepingEvent>) -> true
-                      Snapshots = NoSnapshots }
-            Fcqrs.wireSagaStarters api [ saga ]
+            let accounts = bookkeepingAccounts api "Bookkeeping"
             // Each correlation ID starts and stops its own saga.
             for _ in 1..40 do
                 accounts.Send (Fcqrs.newCid ()) (Fcqrs.aggregateId "account") Open (fun _ -> true)
@@ -547,6 +553,51 @@ let private shardingBookkeeping =
                         Task.CompletedTask)
             wait (projection.CatchUpAsync())
             Expect.equal applied.Value 40 "every aggregate event is projected"
+        finally
+            wait (api.Stop())
+            deleteDatabases [ journalPath; projectionPath ]
+
+/// The coordinator of a remembered entity type journals under "/system/sharding/", and Akka trims
+/// that history the way it trims a shard's.
+let private coordinatorBookkeeping =
+    testCase "catch-up: a new projection skips the sharding coordinator's trimmed history"
+    <| fun _ ->
+        let suffix, journalPath, projectionPath = sqlitePaths ()
+        let api =
+            Fcqrs.actor (VerifySerialization.configuration().Build()) NullLoggerFactory.Instance
+                (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite (sqliteString journalPath))) ("Coordinator" + suffix)
+        try
+            let accounts = bookkeepingAccounts api "Coordinator"
+            accounts.Send (Fcqrs.newCid ()) (Fcqrs.aggregateId "account") Open (fun _ -> true)
+            |> fun work -> Async.RunSynchronously(work, 20000)
+            |> ignore
+            // The coordinator stores a marker, then each shard it allocates.
+            let coordinatorRows () =
+                sqliteScalar journalPath "SELECT COUNT(*) FROM journal WHERE persistence_id LIKE '/system/sharding/%'"
+            let deadline = DateTime.UtcNow.AddSeconds 20.0
+            while coordinatorRows () < 2L && DateTime.UtcNow < deadline do
+                Thread.Sleep 100
+            Expect.isGreaterThanOrEqual (coordinatorRows ()) 2L "the coordinator journaled its bookkeeping"
+            // Akka deletes the start of this history after its snapshots. With its default of a
+            // snapshot every 1000 rows that takes thousands of process starts, so delete it here.
+            (use journal = new SqliteConnection(sqliteString journalPath)
+             journal.Open()
+             execute journal None "DELETE FROM journal WHERE persistence_id LIKE '/system/sharding/%' AND sequence_number = 1" [])
+            let handed = Collections.Concurrent.ConcurrentQueue<string>()
+            use projection =
+                Fcqrs.transactionalProjection api (TransactionalProjectionOptions("coordinator", sqliteStore journalPath projectionPath))
+                    (fun _ _ envelope ->
+                        handed.Enqueue envelope.PersistenceId
+                        Task.CompletedTask)
+            let failure =
+                try
+                    wait (projection.CatchUpAsync())
+                    None
+                with error ->
+                    Some(error.GetBaseException().Message)
+            Expect.equal failure None "the projection reads past the coordinator's missing history"
+            Expect.isEmpty (handed |> Seq.filter (fun id -> id.Contains "/sharding/")) "no sharding bookkeeping reaches the handler"
+            Expect.isTrue (handed |> Seq.exists (fun id -> id.StartsWith "CoordinatorAccount/")) "the aggregate's event is projected"
         finally
             wait (api.Stop())
             deleteDatabases [ journalPath; projectionPath ]
@@ -997,6 +1048,72 @@ let private transientJournalFailure =
             deleteDatabases [ journalPath; projectionPath ]
 
 
+/// A resilient projection retries a pass that fails part-way. The events that pass had applied are
+/// not applied again, so their correlation waiters are told when a later pass completes.
+let private heldAcrossRetry =
+    testCase "projection: a correlation waiter is notified when its pass fails after its event was applied"
+    <| fun _ ->
+        let suffix, journalPath, projectionPath = sqlitePaths ()
+        let api =
+            Fcqrs.actor (VerifySerialization.configuration().Build()) NullLoggerFactory.Instance
+                (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite (sqliteString journalPath))) ("HeldRetry" + suffix)
+        try
+            let tallies = tallyAggregate api "HeldRetryTally"
+            Fcqrs.wireSagaStarters api []
+            let seen = Collections.Concurrent.ConcurrentQueue<int>()
+            use projection =
+                Fcqrs.projection api
+                    (Projection.single (Named "held-retry") (fun message ->
+                        match message with
+                        | :? Event<TallyEvent> as event -> let (Tallied amount) = event.EventDetails in seen.Enqueue amount
+                        | _ -> ()))
+            // Creates the progress table.
+            wait (projection.CatchUpAsync())
+            let journal (sql: string) =
+                use connection = new SqliteConnection(sqliteString journalPath)
+                connection.Open()
+                execute connection None sql []
+            // While its trigger exists, the progress of this aggregate cannot be stored.
+            let failProgressOf (id: string) =
+                journal $"CREATE TRIGGER fail_{id} BEFORE INSERT ON fcqrs_projection_progress WHEN NEW.persistence_id LIKE '%%/{id}' BEGIN SELECT RAISE(ABORT, 'injected failure'); END"
+            let allowProgressOf (id: string) = journal $"DROP TRIGGER fail_{id}"
+            let tally (id: string) (amount: int) =
+                tallies.Send (Fcqrs.newCid ()) (Fcqrs.aggregateId id) (Tally amount) (fun _ -> true)
+                |> fun work -> Async.RunSynchronously(work, 20000)
+                |> ignore
+            let until (what: string) (condition: unit -> bool) =
+                let deadline = DateTime.UtcNow.AddSeconds 20.0
+                while not (condition ()) && DateTime.UtcNow < deadline do
+                    Thread.Sleep 20
+                Expect.isTrue (condition ()) what
+            // The projection cannot get past the first event, so the two after it share one pass.
+            failProgressOf "blocker"
+            tally "blocker" 0
+            let waiting =
+                Fcqrs.sendAwaiting (projection :> FCQRS.Query.ISubscribe<IMessageWithCID>)
+                    tallies (Fcqrs.newCid ()) (Fcqrs.aggregateId "first") (Tally 1) (fun _ -> true)
+                |> Async.StartAsTask
+            until "the waiter's event is journaled" (fun () ->
+                sqliteScalar journalPath "SELECT COUNT(*) FROM journal WHERE persistence_id LIKE 'HeldRetryTally/%/first'" = 1L)
+            tally "second" 2
+            // The next pass applies the waiter's event and fails on the one after it.
+            failProgressOf "second"
+            allowProgressOf "blocker"
+            until "the pass reached the event after the waiter's" (fun () -> seen |> Seq.contains 2)
+            // The handler has returned, and storing its progress fails straight after.
+            Thread.Sleep 300
+            allowProgressOf "second"
+            let first = Task.WhenAny(waiting, Task.Delay(TimeSpan.FromSeconds 15.0)).GetAwaiter().GetResult()
+            let told = obj.ReferenceEquals(first, waiting) && waiting.Status = TaskStatus.RanToCompletion
+            // Observe a timeout the waiter may still raise.
+            waiting.ContinueWith(fun (work: Task<Event<TallyEvent>>) -> work.Exception |> ignore) |> ignore
+            Expect.isGreaterThanOrEqual (seen |> Seq.filter (fun amount -> amount = 2) |> Seq.length) 2 "the pass that applied the waiter's event failed on the next one"
+            Expect.isTrue told "the waiter is told once a later pass completes"
+        finally
+            wait (api.Stop())
+            deleteDatabases [ journalPath; projectionPath ]
+
+
 // Most queries read only writes numbered above what was handled a LateWriteWindow ago. A write that
 // takes longer than the window to commit is found by the next full scan instead of being skipped.
 let private postgresVeryLateCommit connectionString =
@@ -1046,6 +1163,7 @@ let tests =
               actorShutdown
               hostedProjectionInjection
               shardingBookkeeping
+              coordinatorBookkeeping
               causalNotification
               heldWaiterOrder
               observedTimeout
@@ -1053,6 +1171,7 @@ let tests =
               namedProgress
               journalOrder
               transientJournalFailure
+              heldAcrossRetry
               testCase "SQLite: competing projection instances do not double-apply" (fun _ -> concurrentInstances None)
               match postgres with
               | Some connection ->
