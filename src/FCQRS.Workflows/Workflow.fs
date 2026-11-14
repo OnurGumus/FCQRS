@@ -14,7 +14,8 @@ type RetryPolicy =
       /// The time allowed for the whole step, measured from the stored start of the step.
       /// A restart does not extend it.
       Deadline: TimeSpan option
-      /// The time allowed for one attempt.
+      /// The time allowed for one attempt. For a command step it is how long one send waits for
+      /// its event, in place of `akka.fcqrs.command-timeout`.
       AttemptTimeout: TimeSpan option
       /// Whether an exception is worth another attempt. `false` fails the step at once.
       ShouldRetry: exn -> bool }
@@ -40,6 +41,14 @@ module Retry =
         { none with
             MaxAttempts = None
             Deadline = Some deadline }
+
+    /// The policy `send` uses: send again when no reply came in time, with backoff, for five
+    /// minutes.
+    let command: RetryPolicy =
+        { forever (TimeSpan.FromMinutes 5.0) with
+            // Core raises OperationCanceledException when the subscription stops with the actor
+            // system. The command may have been applied, so that is no reason to fail the step.
+            ShouldRetry = fun error -> error :? TimeoutException || error :? OperationCanceledException }
 
 /// A child workflow that was started. Give it to `awaitChild` to wait for its result.
 type ChildHandle<'Result> =
@@ -368,38 +377,42 @@ module WorkflowSteps =
             WorkflowCore.unboxed<'T option>
         )
 
-    let private commandPolicy: RetryPolicy =
-        { Schedule = Backoff(TimeSpan.FromSeconds 1.0, 2.0, TimeSpan.FromMinutes 1.0)
-          MaxAttempts = None
-          Deadline = Some(TimeSpan.FromMinutes 5.0)
-          AttemptTimeout = None
-          // Core raises OperationCanceledException when the subscription stops with the actor
-          // system. The command may have been applied, so that is no reason to fail the step.
-          ShouldRetry = fun error -> error :? TimeoutException || error :? OperationCanceledException }
-
     let private correlationOf (key: string) : string =
         let hash = Security.Cryptography.SHA256.HashData(Text.Encoding.UTF8.GetBytes key)
         Guid(ReadOnlySpan(hash, 0, 16)).ToString()
 
-    /// The policy `send` uses: resend on a timeout, with backoff, for five minutes.
-    let internal defaultCommandPolicy = commandPolicy
-
-    /// `sendWith` for an aggregate given by its entity-ref factory.
+    /// `sendWith`, or `sendWithFilter` when a filter is given, for an aggregate given by its
+    /// entity-ref factory. Both store a step named "send", so one can replace the other.
     let internal sendTo
         (policy: RetryPolicy)
+        (filter: ('Event -> bool) option)
         (factory: string -> Akkling.Cluster.Sharding.IEntityRef<obj>)
         (aggregateId: string)
         (command: 'Command)
         : Workflow<'Event> =
         let run (attempt: AttemptEnv) : Task<objnull> =
-            let reply =
-                attempt.Api.CreateCommandSubscription
+            let key = attempt.Context.IdempotencyKey
+            let correlation = FCQRS.FSharp.Fcqrs.cid (correlationOf key)
+            // Every send of this step carries one command ID. The reply to an earlier send, which
+            // can arrive after that attempt ended, is then still the reply to this step.
+            let commandId = correlationOf (key + "/command")
+            let target = FCQRS.FSharp.Fcqrs.aggregateId aggregateId
+
+            let reply: Async<FCQRS.Common.Event<'Event>> =
+                FCQRS.Actor.Internal.createRepeatableCommandSubscription
+                    attempt.Api
                     factory
-                    (FCQRS.FSharp.Fcqrs.cid (correlationOf attempt.Context.IdempotencyKey))
-                    (FCQRS.FSharp.Fcqrs.aggregateId aggregateId)
+                    correlation
+                    target
                     command
-                    (fun (_: 'Event) -> true)
+                    // With a filter: the first event under the correlation ID that it accepts.
+                    (defaultArg filter (fun _ -> true))
                     None
+                    commandId
+                    // Without one: only an event that a send of this step caused.
+                    filter.IsNone
+                    // One send waits as long as one attempt may take.
+                    policy.AttemptTimeout
 
             task {
                 let! event = Async.StartAsTask(reply, cancellationToken = attempt.Context.Cancellation)
@@ -409,10 +422,15 @@ module WorkflowSteps =
         WorkflowCore.step<'Event> "send" StepKind.Command (ActivityOp(policy, run))
 
 
-    /// Sends a command to an aggregate under `policy` and gives the reply's event.
-    /// The workflow subscribes to the aggregate's replies before it sends. Every resend uses the
-    /// same correlation ID, and after a restart the command is sent again unless its reply was
-    /// stored, so the aggregate must answer a repeated command with the same verdict.
+    /// Sends a command to an aggregate under `policy` and gives the reply: an event that this
+    /// command caused. An event that another command caused under the same correlation ID, such
+    /// as a command of the saga this one started, is not taken.
+    /// The workflow subscribes to the aggregate's replies before it sends. Every send of the step
+    /// carries the same correlation ID and the same command ID, so the reply to an earlier send
+    /// still answers the step. One send waits for the policy's `AttemptTimeout`, or for
+    /// `akka.fcqrs.command-timeout` when the policy sets none, and then the command is sent again.
+    /// After a restart the command is sent again unless its reply was stored, so the aggregate
+    /// must answer a repeated command with the same verdict.
     /// When the policy runs out, the step fails as `OutcomeUnknown`: the command may have been
     /// applied.
     let sendWith
@@ -421,11 +439,31 @@ module WorkflowSteps =
         (aggregateId: string)
         (command: 'Command)
         : Workflow<'Event> =
-        sendTo policy aggregate.Factory aggregateId command
+        sendTo policy None aggregate.Factory aggregateId command
 
-    /// `sendWith` with a policy that resends on a timeout, with backoff, for five minutes.
+    /// `sendWith` under `Retry.command`: send again when no reply came in time, with backoff, for
+    /// five minutes.
     let send (aggregate: FCQRS.FSharp.AggregateHandle<'Command, 'Event>) (aggregateId: string) (command: 'Command) : Workflow<'Event> =
-        sendWith commandPolicy aggregate aggregateId command
+        sendWith Retry.command aggregate aggregateId command
+
+    /// Sends a command to an aggregate under `policy` and gives the first event that `filter`
+    /// accepts, among the events the aggregate publishes under the step's correlation ID. The
+    /// event need not be the reply to this command: a saga's commands carry the correlation ID
+    /// of the command that started the saga, so the step can wait for an event the saga caused.
+    /// The wait is in memory. An event published while no attempt listens, for example during a
+    /// restart, is not seen. Each attempt listens for the policy's `AttemptTimeout`, or for
+    /// `akka.fcqrs.command-timeout` when the policy sets none, and then the command is sent again,
+    /// so the aggregate must answer a repeated command with an event the filter accepts once the
+    /// outcome is known. Wait for a signal when the event must not be missed. `filter` must depend on the event alone. The step is stored as `send` stores its
+    /// step, so one can replace the other in a workflow that is running.
+    let sendWithFilter
+        (policy: RetryPolicy)
+        (filter: 'Event -> bool)
+        (aggregate: FCQRS.FSharp.AggregateHandle<'Command, 'Event>)
+        (aggregateId: string)
+        (command: 'Command)
+        : Workflow<'Event> =
+        sendTo policy (Some filter) aggregate.Factory aggregateId command
 
     /// A value that records which version of the workflow's code an instance runs, for changing
     /// a workflow while instances are running:

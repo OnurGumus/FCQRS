@@ -378,20 +378,147 @@ static async WorkflowTask<string> Pay(
 ```
 
 `send` subscribes to the aggregate's replies and then sends, so the reply cannot be missed. It gives
-the first event the aggregate replies with.
+an event that its own command caused. An event that another command caused is not taken, also when
+it carries the same correlation ID.
 
 The subscription lives in memory. After a restart, a command whose reply was not stored is sent
-again with the same correlation ID. The aggregate must answer a repeated command with the verdict
-it gave the first time, and must check for the repeat before it checks anything the first command
-changed. A withdrawal that is repeated must not be refused for lack of funds because the first one
-took the money.
+again. Every send of one step carries the same correlation ID and the same command ID, so a reply
+that arrives late for one send still answers the step, and the aggregate can recognise a repeat by
+the command's ID. The aggregate must answer a repeated command with the verdict it gave the first
+time, and must check for the repeat before it checks anything the first command changed. A
+withdrawal that is repeated must not be refused for lack of funds because the first one took the
+money.
 
 With no reply before the step's deadline, the step fails as `OutcomeUnknown`. That does not mean the
 command was refused: it may have been applied.
 
+One send waits for its reply for `akka.fcqrs.command-timeout`, and then the command is sent again. A
+policy's `AttemptTimeout` replaces that time for its step.
+
 A restart can take longer than the deadline. The command is still sent again, because a repeat is
 safe and the first outcome is unknown. After a restart each attempt runs to its end, and the
 deadline ends the step only when an attempt has failed after it. `startChild` follows the same rule.
+
+## A command whose event starts a saga
+
+A stored event can start a [saga](sagas.html). When a workflow's command makes an aggregate store
+such an event, the event is the step's reply and the saga starts. The workflow goes on to its next
+step. It does not wait for the saga.
+
+To go on only when the saga has finished, wait for a signal after the command. In the bank,
+`TransferSent` starts the transfer saga:
+
+```fsharp
+let transferAndWait (accounts: AggregateHandle<AccountCommand, AccountEvent>) =
+    workflow {
+        let! reply = send accounts "alice" (SendTransfer("t-1", "bob", 30m))
+        match reply with
+        | TransferSent _ ->
+            // The transfer saga has started and runs on its own.
+            let! delivered =
+                waitSignalFor<bool> "transfer-finished" (TimeSpan.FromMinutes 10.0)
+            return defaultArg delivered false
+        | _ -> return false
+    }
+```
+
+<div class="cs-alt"></div>
+
+<!-- sample: workflows/csharp Concepts.cs saga -->
+```csharp
+static async WorkflowTask<bool> TransferAndWait(
+    WorkflowContext ctx, AggregateFactory accounts)
+{
+    var reply = await ctx.Send<AccountCommand, AccountEvent>(
+        accounts, "alice", new SendTransfer("t-1", "bob", 30m));
+    if (reply is not TransferSent)
+        return false;
+    // The transfer saga has started and runs on its own.
+    var delivered = await ctx.WaitSignal<bool>(
+        "transfer-finished", TimeSpan.FromMinutes(10));
+    return delivered.Received && delivered.Value;
+}
+```
+
+A projection that handles the saga's last event sends the signal with `Workflows.signal`. Its
+handler needs the workflow's ID: carry the ID in the command and its events, or use it as the
+aggregate's ID. The signal is stored, so the workflow gets it after a restart, and a signal that
+arrives before the body reaches its wait is kept. Two cases need care in the handler:
+
+- A workflow that has ended refuses a signal with `InvalidOperationException`. A projection started
+  with `Fcqrs.projection` terminates the process when its handler throws, so the handler must catch
+  that exception.
+- A projection can hand an event to its handler again. The second signal stays stored for a later
+  wait on the same name.
+
+The rule for a repeated command decides what a lost reply costs here:
+
+- An aggregate that answers the repeat with a deferred copy of its first event completes the step. A
+  deferred event starts no saga, so the saga that is running is left alone.
+- An aggregate that stores the event again is refused. A saga starts once per correlation ID and
+  aggregate, so nothing is stored, and the step fails with `SagaAlreadyStartedException` although
+  the first command was applied.
+
+A saga's commands carry the correlation ID of the command that started it. When they come back to
+the same aggregate, their events are published under the ID the step waits on. `send` does not take
+them: it gives only the reply to its own command.
+
+`sendWithFilter` does. It gives the first event its filter accepts, among the events that the
+aggregate it sends to publishes under the step's correlation ID. Here a reservation stores
+`Reserved`, which starts a saga, and the saga's last command makes the same reservation store
+`Confirmed`:
+
+```fsharp
+let reserveAndWait
+    (reservations: AggregateHandle<ReservationCommand, ReservationEvent>)
+    (id: string) =
+    workflow {
+        let isConfirmed reply =
+            match reply with
+            | Confirmed _ -> true
+            | Reserved _ -> false
+        // One send, and five minutes to wait for the saga.
+        let patient =
+            { Retry.command with AttemptTimeout = Some(TimeSpan.FromMinutes 5.0) }
+        return! sendWithFilter patient isConfirmed reservations id (Reserve id)
+    }
+```
+
+<div class="cs-alt"></div>
+
+<!-- sample: workflows/csharp Concepts.cs filter -->
+```csharp
+static async WorkflowTask<ReservationEvent> ReserveAndWait(
+    WorkflowContext ctx, AggregateFactory reservations, string id)
+{
+    // One send, and five minutes to wait for the saga.
+    var patient = Retry.command
+        .WithAttemptTimeout(TimeSpan.FromMinutes(5));
+    return await ctx.Send<ReservationCommand, ReservationEvent>(
+        patient, reservations, id, new Reserve(id),
+        reply => reply is Confirmed);
+}
+```
+
+This wait is in memory, which sets its limits:
+
+- An event published while no attempt listens is not seen. That happens during a restart and between
+  two attempts.
+- Each attempt listens for the policy's `AttemptTimeout`, and then the command is sent again. A
+  policy without one, such as `Retry.command`, listens for `akka.fcqrs.command-timeout`, which is
+  30 seconds, so a wait for a saga sends the command again and again. With a long `AttemptTimeout`
+  the step sends once and waits. A command that never reached the aggregate is then sent again only
+  when that time has passed.
+- The aggregate must answer a repeated command with an event the filter accepts once the outcome is
+  known. An aggregate that answers with its first event leaves the step waiting, and the step fails
+  as `OutcomeUnknown` although the saga finished.
+- The policy's deadline bounds the whole wait. `Retry.command`, the policy of `send`, allows five
+  minutes.
+- Only events of the aggregate the command was sent to are heard. An event that the saga makes
+  another aggregate store is not.
+
+Wait for a signal when the event must not be missed. `send` and `sendWithFilter` store the same
+step, so one can replace the other in a workflow that is running.
 
 ## Cancel a workflow
 
@@ -580,6 +707,8 @@ A C# workflow derives from `Workflow<TInput, TResult>` and awaits steps from its
 | `let! a = ... and! b = ...` | `var (a, b) = await ctx.Both(..., ...)` |
 | `startChild`, `awaitChild`, `child` | `ctx.StartChild`, `ctx.AwaitChild`, `ctx.Child`, by workflow name |
 | `send` | `ctx.Send<TCommand, TEvent>(factory, id, command)` |
+| `sendWith policy` | `ctx.Send<TCommand, TEvent>(policy, factory, id, command)` |
+| `sendWithFilter policy filter` | `ctx.Send<TCommand, TEvent>(policy, factory, id, command, filter)` |
 | `version` | `ctx.Version(changeId, latest)` |
 | `try ... with` for cleanup | `try`/`catch`, or `await` in a `finally` block |
 

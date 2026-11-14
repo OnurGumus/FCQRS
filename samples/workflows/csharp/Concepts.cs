@@ -27,9 +27,19 @@ public static class External
 
 public abstract record AccountCommand;
 public sealed record Withdraw(decimal Amount) : AccountCommand;
+public sealed record SendTransfer(string Id, string Target, decimal Amount)
+    : AccountCommand;
 public abstract record AccountEvent;
 public sealed record Withdrawn(decimal Amount) : AccountEvent;
+public sealed record TransferSent(string Id, string Target, decimal Amount)
+    : AccountEvent;
 public sealed record Rejected(string Reason) : AccountEvent;
+
+public abstract record ReservationCommand;
+public sealed record Reserve(string Id) : ReservationCommand;
+public abstract record ReservationEvent;
+public sealed record Reserved(string Id) : ReservationEvent;
+public sealed record Confirmed(string Id) : ReservationEvent;
 
 public sealed record Summary(string Detached, int Points, DateTime At);
 
@@ -135,6 +145,34 @@ public static class Steps
         return reply is Withdrawn taken
             ? $"took {taken.Amount}"
             : $"refused: {reply}";
+    }
+    // docs:end
+
+    // docs:saga
+    static async WorkflowTask<bool> TransferAndWait(
+        WorkflowContext ctx, AggregateFactory accounts)
+    {
+        var reply = await ctx.Send<AccountCommand, AccountEvent>(
+            accounts, "alice", new SendTransfer("t-1", "bob", 30m));
+        if (reply is not TransferSent)
+            return false;
+        // The transfer saga has started and runs on its own.
+        var delivered = await ctx.WaitSignal<bool>(
+            "transfer-finished", TimeSpan.FromMinutes(10));
+        return delivered.Received && delivered.Value;
+    }
+    // docs:end
+
+    // docs:filter
+    static async WorkflowTask<ReservationEvent> ReserveAndWait(
+        WorkflowContext ctx, AggregateFactory reservations, string id)
+    {
+        // One send, and five minutes to wait for the saga.
+        var patient = Retry.command
+            .WithAttemptTimeout(TimeSpan.FromMinutes(5));
+        return await ctx.Send<ReservationCommand, ReservationEvent>(
+            patient, reservations, id, new Reserve(id),
+            reply => reply is Confirmed);
     }
     // docs:end
 

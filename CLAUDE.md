@@ -135,6 +135,12 @@ Keep these distinctions intact in code comments and documentation.
 - A command step subscribes before it sends and resends with the same correlation ID after a
   restart. The aggregate must answer a repeat with its first verdict, checked before anything the
   first command changed. No reply by the deadline is `OutcomeUnknown`, not a rejection.
+- Every send of a command step carries the same correlation ID and the same command ID, both made
+  from the step's idempotency key. The step takes only an event that one of its sends caused.
+  `sendWithFilter` takes the first event its filter accepts under the step's correlation ID,
+  whichever command caused it. That wait is in memory: an event published while no attempt listens
+  is not seen. One send waits for the policy's `AttemptTimeout`, or for the command timeout when
+  the policy sets none.
 - After a restart, a command step and a child start make whole attempts, because a repeat is safe
   and the first outcome is unknown. The deadline ends them only when an attempt fails after it.
 - An activity result is read back before it is stored. One that cannot be read fails the step as

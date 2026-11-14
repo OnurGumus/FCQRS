@@ -78,7 +78,9 @@ The timeout keys share one unit rule: a **bare number means seconds**. `command-
 as milliseconds; FCQRS reads it as seconds, matching `saga-start-timeout`. The command timeout is a deadline that starts when the command subscription
 accepts the command. Non-matching events on the same correlation topic do not restart it. The same
 key bounds the projection wait in the F# facade's `sendAwaiting`: a projection that suppresses the
-matching notification raises `TimeoutException` instead of hanging the caller.
+matching notification raises `TimeoutException` instead of hanging the caller. A workflow's command
+step whose retry policy sets `AttemptTimeout` waits that long for each send, in place of the command
+timeout.
 
 The notification buffer is not a durable queue. Notifications without an active subscriber may be
 dropped, which is correct for the request-scoped read-your-writes mechanism.

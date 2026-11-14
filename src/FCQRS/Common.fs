@@ -1381,10 +1381,18 @@ module CommandHandler =
                     defaultCommandTimeout
             with _ -> defaultCommandTimeout
 
-        let private subscribeForCommandCore<'Command, 'Event when 'Event : not null> expectedVersion system mediator (command: Command<'Command, 'Event>) =
+        // `ownReply` takes only an event that a command with the request's command ID caused. A
+        // sender that repeats its command under one ID gets the reply to any of those sends.
+        // Without it, the first event that the target publishes under the correlation ID and that
+        // the filter accepts is taken, whichever command caused it: a saga's commands carry the
+        // correlation ID of the command that started the saga.
+        // `listenFor` is how long the request waits for its event. Without it the request waits
+        // for the configured command timeout.
+        let private subscribeForCommandCore<'Command, 'Event when 'Event : not null> (ownReply: bool) (listenFor: TimeSpan option) expectedVersion system mediator (command: Command<'Command, 'Event>) =
             let actorProp mediator (mailbox: Actor<obj>) =
                 let log = mailbox.UntypedContext.GetLogger()
-                let commandTimeout = resolveCommandTimeout mailbox.System.Settings.Config
+                let commandTimeout =
+                    listenFor |> Option.defaultWith (fun () -> resolveCommandTimeout mailbox.System.Settings.Config)
                 let mutable deadline: ICancelable option = None
                 let mutable commandSent = false
                 let mutable replied = false
@@ -1506,7 +1514,7 @@ module CommandHandler =
                             match state with
                             | Some s when commandSent
                                           && sameTrace e.CorrelationId s.CommandDetails.Cmd.CorrelationId
-                                          && (expectedVersion.IsNone || e.Id = s.CommandDetails.Cmd.Id)
+                                          && ((expectedVersion.IsNone && not ownReply) || e.Id = s.CommandDetails.Cmd.Id)
                                           && matchesTarget s.CommandDetails.EntityRef ->
                                 match (try Choice1Of2(s.CommandDetails.Filter e.EventDetails) with ex -> Choice2Of2 ex) with
                                 | Choice1Of2 true ->
@@ -1575,8 +1583,10 @@ module CommandHandler =
                     | :? IActorContext as context -> Some context.System.Settings.Config
                     | _ -> None
                     |> Option.map (fun config ->
-                        let bound = resolveCommandTimeout config + TimeSpan.FromSeconds 5.0
-                        if bound > maxBound then maxBound else bound)
+                        let listens = listenFor |> Option.defaultWith (fun () -> resolveCommandTimeout config)
+                        // A sum beyond TimeSpan's range would throw.
+                        if listens >= maxBound - TimeSpan.FromSeconds 5.0 then maxBound
+                        else listens + TimeSpan.FromSeconds 5.0)
 
                 let subscriber = spawnAnonymous system (props (actorProp mediator))
 
@@ -1626,20 +1636,31 @@ module CommandHandler =
                             )
                         )
                 | :? CommandSubscriptionTimeout as t ->
+                    let waited =
+                        match listenFor with
+                        | Some time -> $"within {time}, the time this request listens"
+                        | None -> "within the command timeout (akka.fcqrs.command-timeout)"
+
                     return
                         raise (
                             TimeoutException(
-                                $"No matching event from entity '{t.EntityId}' [cid: {t.Cid}] within the command timeout (akka.fcqrs.command-timeout). The aggregate may have returned UnhandledEvent/IgnoreEvent, or the filter never matched."
+                                $"No matching event from entity '{t.EntityId}' [cid: {t.Cid}] {waited}. The aggregate may have returned UnhandledEvent/IgnoreEvent, or the filter never matched."
                             )
                         )
                 | r -> return r |> nonNull :?> Event<'Event> // Return the awaited event
             }
 
         let subscribeForCommand system mediator command =
-            subscribeForCommandCore None system mediator command
+            subscribeForCommandCore false None None system mediator command
+
+        /// `subscribeForCommand` for a sender that repeats its command under one command ID. With
+        /// `ownReply` it gives only an event that a command with this ID caused. `listenFor`
+        /// replaces the configured command timeout.
+        let internal subscribeForRepeatableCommand ownReply listenFor system mediator command =
+            subscribeForCommandCore ownReply listenFor None system mediator command
 
         let internal subscribeForConditionalCommand expectedVersion system mediator command =
-            subscribeForCommandCore (Some expectedVersion) system mediator command
+            subscribeForCommandCore false None (Some expectedVersion) system mediator command
 
     // Internal types for command subscription actor state -> Made public for Command DU
     type CommandDetails<'Command, 'Event> =

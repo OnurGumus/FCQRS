@@ -1058,19 +1058,15 @@ module internal Internal =
                                     },
                                     (fun (boxedCommand: obj) ->
                                         disposeActivity ()
-                                        // Conditional continuations retain their request ID and
-                                        // recheck the original version after the async work.
+                                        // The continuation keeps the ID of the command that started
+                                        // the effect, so its event is still the reply to that
+                                        // command: a caller that waits for the reply to its own
+                                        // command gets it, and a conditional command rechecks the
+                                        // original version after the async work.
                                         let selfCmd =
                                             { cmd with
                                                 // A runner can return a single case of a C# union.
                                                 CommandDetails = unbox (UnionCommands<'Command>.Payload boxedCommand)
-                                                Id =
-                                                    match condition with
-                                                    | Some _ -> cmd.Id
-                                                    | None ->
-                                                        Guid.CreateVersion7().ToString()
-                                                        |> ValueLens.CreateAsResult
-                                                        |> Result.value
                                                 Sender = None }
 
                                         match condition with
@@ -1112,7 +1108,7 @@ module internal Internal =
 
 
 
-    let private createCommandSubscriptionCore (actorApi: IActor) factory (cid: CID) (id: AggregateId) command filter (metadata: Map<string, string> option) expectedVersion =
+    let private createCommandSubscriptionCore (actorApi: IActor) factory (cid: CID) (id: AggregateId) command filter (metadata: Map<string, string> option) expectedVersion (repeatable: (string * bool * TimeSpan option) option) =
         let actor = factory (id |> ValueLens.Value |> ValueLens.Value)
 
         // Stamp the ambient trace context (if any) so spans downstream — the
@@ -1130,7 +1126,12 @@ module internal Internal =
         let commonCommand: Command<_> =
             {
                 CommandDetails = command
-                Id = Guid.CreateVersion7().ToString() |> ValueLens.CreateAsResult |> Result.value
+                Id =
+                    match repeatable with
+                    | Some(commandId, _, _) -> commandId
+                    | None -> Guid.CreateVersion7().ToString()
+                    |> ValueLens.CreateAsResult
+                    |> Result.value
                 CreationDate = actorApi.System.Scheduler.Now.UtcDateTime
                 CorrelationId = cid
                 Sender = None
@@ -1142,20 +1143,32 @@ module internal Internal =
                 EntityRef = actor
                 Filter = filter }
 
-        match expectedVersion with
-        | Some version ->
+        match expectedVersion, repeatable with
+        | Some version, _ ->
             Common.CommandHandler.Internal.subscribeForConditionalCommand
                 version actorApi.System (typed actorApi.Mediator) (Execute e)
-        | None -> Execute e |> actorApi.SubscribeForCommand
+        | None, Some(_, ownReply, listenFor) ->
+            Common.CommandHandler.Internal.subscribeForRepeatableCommand
+                ownReply listenFor actorApi.System (typed actorApi.Mediator) (Execute e)
+        | None, None -> Execute e |> actorApi.SubscribeForCommand
 
     let createCommandSubscription actorApi factory cid id command filter metadata =
-        createCommandSubscriptionCore actorApi factory cid id command filter metadata None
+        createCommandSubscriptionCore actorApi factory cid id command filter metadata None None
+
+    /// The subscription of a command that is sent again under the same `commandId`, as a
+    /// workflow's command step sends it. With `ownReply`, only an event that a command with this
+    /// ID caused is taken: the reply to any of the sends, and not an event that another command
+    /// caused under the same correlation ID, such as a saga's. `listenFor` is how long this send
+    /// waits for its event; without it, the configured command timeout.
+    let createRepeatableCommandSubscription
+        actorApi factory cid id command filter metadata (commandId: string) (ownReply: bool) (listenFor: TimeSpan option) =
+        createCommandSubscriptionCore actorApi factory cid id command filter metadata None (Some(commandId, ownReply, listenFor))
 
     let createConditionalCommandSubscription actorApi factory expectedVersion cid id command filter =
         async {
             if expectedVersion < 0L then
                 invalidArg (nameof expectedVersion) "An expected aggregate version must be nonnegative."
-            return! createCommandSubscriptionCore actorApi factory cid id command filter None (Some expectedVersion)
+            return! createCommandSubscriptionCore actorApi factory cid id command filter None (Some expectedVersion) None
         }
 
     /// System.Text.Json writes a value through an abstract class or interface as `{}` unless the

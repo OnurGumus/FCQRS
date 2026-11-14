@@ -1,5 +1,37 @@
 # Changelog
 
+## 7.4.0 (FCQRS.Workflows)
+
+- **`send` gives only the reply to its own command.** A saga's commands carry the correlation ID of
+  the command that started the saga. A command step took the first event its aggregate published
+  under that ID. A step that sent its command again, after a lost reply or a restart, could
+  therefore store an event the saga had caused as the reply to its own command. The step now takes
+  only an event that its own command caused. Every send of one step carries the same command ID, so
+  the reply to an earlier send still answers the step, and an aggregate can recognise a repeat by
+  the command's ID.
+- **`sendWithFilter` waits for an event a filter accepts.** It gives the first event that the
+  aggregate publishes under the step's correlation ID and that the filter accepts, whichever
+  command caused it, so a step can wait for an event of the saga its command started. C# has
+  `ctx.Send(policy, aggregate, id, command, filter)`. The wait is in memory and can miss an event
+  that is published while no attempt listens; the workflow concept page states the limits.
+- **A command step waits for its policy's `AttemptTimeout`.** One send waited for
+  `akka.fcqrs.command-timeout` whatever the policy said, so a longer `AttemptTimeout` had no
+  effect: the step sent its command again every 30 seconds. One send now waits for the policy's
+  `AttemptTimeout`, and for the command timeout when the policy sets none. A `sendWithFilter` that
+  waits for a saga can send once and wait.
+- **`Retry.command`** is the policy `send` uses, for a `sendWith` or `sendWithFilter` that changes
+  one of its settings.
+- The workflow concept page has a section on a command whose event starts a saga.
+- No stored record or step path changes. `send` and `sendWithFilter` store the same step. The
+  package needs FCQRS core 7.1.0, released with it.
+
+## 7.1.0 (FCQRS core)
+
+- **The command of an async effect keeps the ID of the command that started the effect.** An
+  aggregate that answers through `RunAsync` gave the effect's command a new ID, so its events did
+  not carry the ID of the command they answer. Only a command sent with an expected version kept
+  its ID. Every effect's command now does.
+
 ## 7.3.0 (FCQRS.Workflows)
 
 - **`version` gives 1 to an instance that passed a step which stored nothing.** FCQRS decided that

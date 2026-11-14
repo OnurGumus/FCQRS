@@ -214,7 +214,8 @@ type RetryPolicyExtensions =
     [<Extension>]
     static member WithDeadline(policy: RetryPolicy, deadline: TimeSpan) : RetryPolicy = { policy with Deadline = Some deadline }
 
-    /// The time allowed for one attempt.
+    /// The time allowed for one attempt. For a command step it is how long one send waits for its
+    /// event, in place of `akka.fcqrs.command-timeout`.
     [<Extension>]
     static member WithAttemptTimeout(policy: RetryPolicy, timeout: TimeSpan) : RetryPolicy =
         { policy with
@@ -265,17 +266,33 @@ type WorkflowContext internal () =
                 | None -> Return(SignalOutcome<'T>(false, Unchecked.defaultof<'T>)))
         )
 
-    /// Sends a command to an aggregate and gives the reply's event. The aggregate must answer a
-    /// repeated command with the same verdict. With no reply for five minutes the step fails as
-    /// `OutcomeUnknown`.
+    /// Sends a command to an aggregate and gives the reply: the event that this command caused.
+    /// An event that another command caused under the same correlation ID, such as a command of
+    /// the saga this one started, is not taken. The aggregate must answer a repeated command with
+    /// the same verdict. With no reply for five minutes the step fails as `OutcomeUnknown`.
     member _.Send<'TCommand, 'TEvent when 'TEvent: not null>(aggregate: FCQRS.CSharp.AggregateFactory, aggregateId: string, command: 'TCommand) : Step<'TEvent> =
-        Step<'TEvent>(sendTo defaultCommandPolicy aggregate.Invoke aggregateId command)
+        Step<'TEvent>(sendTo Retry.command None aggregate.Invoke aggregateId command)
 
     /// `Send` under a retry policy of its own.
     member _.Send<'TCommand, 'TEvent when 'TEvent: not null>
         (policy: RetryPolicy, aggregate: FCQRS.CSharp.AggregateFactory, aggregateId: string, command: 'TCommand)
         : Step<'TEvent> =
-        Step<'TEvent>(sendTo policy aggregate.Invoke aggregateId command)
+        Step<'TEvent>(sendTo policy None aggregate.Invoke aggregateId command)
+
+    /// Sends a command under `policy` and gives the first event that `filter` accepts, among the
+    /// events the aggregate publishes under the step's correlation ID. The event need not be the
+    /// reply to this command: a saga's commands carry the correlation ID of the command that
+    /// started the saga. The wait is in memory. An event published while no attempt listens, for
+    /// example during a restart, is not seen. Each attempt listens for the policy's attempt
+    /// timeout, or for `akka.fcqrs.command-timeout` when the policy sets none, and then the command
+    /// is sent again. The aggregate must answer a repeated command with an event
+    /// the filter accepts once the outcome is known. Wait for a signal when the event must not be
+    /// missed. `filter` must depend on the event alone.
+    member _.Send<'TCommand, 'TEvent when 'TEvent: not null>
+        (policy: RetryPolicy, aggregate: FCQRS.CSharp.AggregateFactory, aggregateId: string, command: 'TCommand, filter: Func<'TEvent, bool>)
+        : Step<'TEvent> =
+        ArgumentNullException.ThrowIfNull filter
+        Step<'TEvent>(sendTo policy (Some(fun event -> filter.Invoke event)) aggregate.Invoke aggregateId command)
 
     /// Starts the registered workflow named `workflow` as a child and gives its handle once the
     /// child's start is stored. A child that is never awaited outlives this workflow.

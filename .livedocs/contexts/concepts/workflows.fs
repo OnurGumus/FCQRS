@@ -8,6 +8,10 @@ open Account
 let score (key: string) (order: string) : Task<int> = Task.FromResult 42
 let charge (key: string) (amount: decimal) : Task<string> = Task.FromResult "paid"
 let isShipped (key: string) (order: string) : Task<bool> = Task.FromResult true
+type ReservationCommand = Reserve of id: string
+type ReservationEvent =
+    | Reserved of id: string
+    | Confirmed of id: string
 // snippet: 1
 // snippet: 2
 // snippet: 3
@@ -18,3 +22,5 @@ let isShipped (key: string) (order: string) : Task<bool> = Task.FromResult true
 // snippet: 8
 // snippet: 9
 // snippet: 10
+// snippet: 11
+// snippet: 12

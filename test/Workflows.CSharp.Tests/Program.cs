@@ -60,7 +60,7 @@ async Task Eventually(Func<bool> condition, string what)
         Check(!await orders.StartAsync("o1", new Order("XYZ", 9)), "a second start with the same ID stores nothing");
         await orders.SignalAsync("o1", "approval", "approved by Ada");
         var summary = await orders.ResultAsync("o1", wait);
-        Check(summary == new OrderSummary("ABC", 3, "approved by Ada", false, 30, "Exhausted", 10, 3, "cleaned", true),
+        Check(summary == new OrderSummary("ABC", 3, "approved by Ada", false, 30, "Exhausted", 10, 10, "cleaned", true),
             $"the C# workflow ran every kind of step: {summary}");
         Check(OrderWorkflow.PriceCalls == 3, "the flaky activity was retried until it succeeded");
     }
@@ -266,6 +266,9 @@ public sealed class OrderWorkflow(AggregateFactory counter) : Workflow<Order, Or
             ctx.Run(() => Part(ctx, 4)));
 
         var counted = await ctx.Send<CounterCommand, CounterEvent>(counter, "c1", new CounterCommand(order.Quantity));
+        // With a filter: the first event the filter accepts under the step's correlation ID.
+        var filtered = await ctx.Send<CounterCommand, CounterEvent>(
+            Retry.command, counter, "c1", new CounterCommand(order.Quantity + 4), reply => reply.Amount == order.Quantity + 4);
 
         var cleanup = "not cleaned";
         try
@@ -279,7 +282,7 @@ public sealed class OrderWorkflow(AggregateFactory counter) : Workflow<Order, Or
         }
 
         var after = await ctx.Now();
-        return new OrderSummary(symbol, order.Quantity, approval, second.Received, doubled, failure, parts.Sum() + winner + (label == "pair" ? four : 0), counted.Amount, cleanup, after >= before);
+        return new OrderSummary(symbol, order.Quantity, approval, second.Received, doubled, failure, parts.Sum() + winner + (label == "pair" ? four : 0), counted.Amount + filtered.Amount, cleanup, after >= before);
     }
 
     private static async WorkflowTask<int> Part(WorkflowContext ctx, int value)

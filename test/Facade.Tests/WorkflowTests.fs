@@ -1083,11 +1083,451 @@ let private manifestTest =
             Expect.equal manifest $"FCQRS.Workflows.WorkflowRecord+{case}, FCQRS.Workflows" $"the name of a {case} row"
             Expect.equal (serializer.FromBinary(serializer.ToBinary record, manifest)) (box record) $"a {case} row reads back"
 
+// ---------------------------------------------------------------------------
+// A command whose event starts a saga.
+// ---------------------------------------------------------------------------
+
+type BookingCommand =
+    | Request of booking: string
+    | Confirm
+    | Hold
+
+type BookingEvent =
+    | Requested of booking: string
+    | Confirmed of booking: string
+    | Held
+
+type BookingStep =
+    | Confirming
+    | Booked
+
+type BookingState = { Booking: string; Confirmed: bool }
+
+/// What a test changes about the booking aggregate and its saga. It outlives an actor system.
+type private BookingSwitches() =
+    /// Whether a request is applied. One that is not stores nothing and gets no reply.
+    member val Applies = true with get, set
+    /// Whether a repeated request gets a deferred copy of the first event. Otherwise the
+    /// aggregate stores the event again.
+    member val AnswersRepeat = true with get, set
+    /// Whether a repeated request for a confirmed booking gets a deferred Confirmed: the
+    /// current outcome, not the first event.
+    member val AnswersWithOutcome = false with get, set
+    /// How many milliseconds the saga waits before it confirms.
+    member val ConfirmDelay = 0L with get, set
+    /// Every request the aggregate received.
+    member val Requests = ConcurrentQueue<Command<BookingCommand>>()
+    /// Keeps the aggregate inside a Hold command, so that later commands queue behind it.
+    member val Gate = new ManualResetEventSlim(false)
+
+/// A booking stores Requested, which starts a saga. The saga sends Confirm back to the booking.
+let private bookingsOf (api: IActor) (switches: BookingSwitches) =
+    let bookings =
+        Fcqrs.aggregate api
+            { Name = "Booking"
+              Initial = { Booking = ""; Confirmed = false }
+              Decide =
+                fun (command: Command<BookingCommand>) state ->
+                    match command.CommandDetails with
+                    | Request booking ->
+                        switches.Requests.Enqueue command
+                        if not switches.Applies then IgnoreEvent
+                        elif state.Booking = "" then PersistEvent(Requested booking)
+                        elif switches.AnswersWithOutcome && state.Confirmed then DeferEvent(Confirmed booking)
+                        elif switches.AnswersRepeat then DeferEvent(Requested booking)
+                        else PersistEvent(Requested booking)
+                    | Confirm ->
+                        if state.Confirmed then DeferEvent(Confirmed state.Booking) else PersistEvent(Confirmed state.Booking)
+                    | Hold ->
+                        switches.Gate.Wait(TimeSpan.FromSeconds 20.0) |> ignore
+                        DeferEvent Held
+              Fold =
+                fun (event: Event<BookingEvent>) state ->
+                    match event.EventDetails with
+                    | Requested booking -> { state with Booking = booking }
+                    | Confirmed _ -> { state with Confirmed = true }
+                    | Held -> state
+              Snapshots = NoSnapshots
+              Passivation = PassivationPolicy.Default }
+    let saga =
+        Fcqrs.saga api
+            { Name = "BookingSaga"
+              InitialData = ()
+              Originator = bookings.Factory
+              HandleEvent =
+                fun event state ->
+                    match event, state.State with
+                    | (:? Event<BookingEvent> as stored), None ->
+                        match stored.EventDetails with
+                        | Requested _ -> StateChangedEvent Confirming
+                        | _ -> UnhandledEvent
+                    | (:? Event<BookingEvent> as stored), Some Confirming ->
+                        match stored.EventDetails with
+                        | Confirmed _ -> StateChangedEvent Booked
+                        | _ -> UnhandledEvent
+                    | _ -> UnhandledEvent
+              ApplySideEffects =
+                fun state _ ->
+                    match state.State with
+                    | Confirming when switches.ConfirmDelay > 0L ->
+                        Stay, [ toOriginatorAfter bookings.Factory switches.ConfirmDelay "confirm" Confirm ]
+                    | Confirming -> Stay, [ toOriginator bookings.Factory Confirm ]
+                    | Booked -> StopSaga, []
+              StartOn =
+                fun (event: Event<BookingEvent>) ->
+                    match event.EventDetails with
+                    | Requested _ -> true
+                    | _ -> false
+              Snapshots = NoSnapshots }
+    Fcqrs.wireSagaStarters api [ saga ]
+    bookings
+
+/// How many events the journal holds for one booking.
+let private storedFor (db: string) (booking: string) =
+    // A connection of its own. One from the actor system's pool can hold a view of the schema from
+    // before the journal table existed. SQLite refreshes that view when it uses the connection,
+    // except while a write keeps the database busy, and then reports that the table is missing.
+    use connection = new SqliteConnection($"Data Source={db};Pooling=False;Default Timeout=5")
+    connection.Open()
+    use command = connection.CreateCommand()
+    command.CommandText <- "SELECT COUNT(*) FROM journal WHERE persistence_id = $id"
+    command.Parameters.AddWithValue("$id", $"Booking/default-shard/{booking}") |> ignore
+    command.ExecuteScalar() :?> int64
+
+/// Requests a booking with `request` and gives the reply, or how the step failed.
+let private bookerWith (request: string -> Workflow<BookingEvent>) =
+    Workflow.define "booker" (fun (booking: string) -> workflow {
+        try
+            let! reply = request booking
+            return $"%A{reply}"
+        with :? WorkflowStepFailedException as failed ->
+            return $"{failed.Error.Kind}: {failed.Error.ExceptionType}"
+    })
+
+let private booker (bookings: AggregateHandle<BookingCommand, BookingEvent>) =
+    bookerWith (fun booking -> send bookings booking (Request booking))
+
+/// Whether an event says that the saga finished.
+let private isConfirmed (event: BookingEvent) =
+    match event with
+    | Confirmed _ -> true
+    | _ -> false
+
+/// Two attempts, each as long as the command timeout.
+let private twice: RetryPolicy =
+    { Retry.none with
+        Schedule = FixedInterval(TimeSpan.FromMilliseconds 50.0)
+        MaxAttempts = Some 2
+        ShouldRetry = fun error -> error :? TimeoutException }
+
+/// Brings a booking to the state after a lost reply: the aggregate stored the event of the
+/// workflow's request, and the workflow stored no reply. The workflow's request first goes
+/// unanswered and stores nothing. A second actor system then applies the same request under the
+/// same correlation ID while no workflow runs, and `run` gets that system before any workflow is
+/// registered in it.
+let private afterLostReply
+    (db: string)
+    (name: string)
+    (settings: (string * string) list)
+    (switches: BookingSwitches)
+    (run: IActor -> AggregateHandle<BookingCommand, BookingEvent> -> unit)
+    =
+    switches.Applies <- false
+    let first = boot db name settings
+    let waiting = Workflows.register first (booker (bookingsOf first switches))
+    sync (waiting.Start "b1" "b1") |> ignore
+    eventually "the aggregate received the workflow's request" (fun () -> not switches.Requests.IsEmpty)
+    stop first
+    let request = Seq.head switches.Requests
+    switches.Applies <- true
+    let second = boot db name settings
+    try
+        let bookings = bookingsOf second switches
+        let applied = sync (bookings.Send request.CorrelationId (Fcqrs.aggregateId "b1") (Request "b1") (fun _ -> true))
+        Expect.equal applied.EventDetails (Requested "b1") "the request was applied"
+        run second bookings
+    finally
+        stop second
+
+let private sagaStartTest =
+    testCase "workflow: a command's first event is the step's reply and also starts its saga, which the workflow does not wait for" <| fun _ ->
+        let db = newDb ()
+        let switches = BookingSwitches()
+        // Long enough for the workflow to end first.
+        switches.ConfirmDelay <- 1500L
+        let api = boot db "WorkflowSagaStart" []
+        try
+            let flow = Workflows.register api (booker (bookingsOf api switches))
+            sync (flow.Start "b1" "b1") |> ignore
+            Expect.equal (sync (flow.Result "b1" wait)) (WorkflowOutcome.Finished "Requested \"b1\"") "the step's reply is the first event"
+            Expect.equal (storedFor db "b1") 1L "the workflow ended before the saga confirmed"
+            eventually "the saga confirmed the booking by itself" (fun () -> storedFor db "b1" = 2L)
+        finally
+            stop api
+            deleteDb db
+
+let private sagaRepeatTest =
+    testCase "workflow: after a lost reply, a repeat answered with a deferred event completes the step and starts no second saga" <| fun _ ->
+        let db = newDb ()
+        let switches = BookingSwitches()
+        try
+            afterLostReply db "WorkflowSagaRepeat" [] switches <| fun api bookings ->
+                eventually "the saga confirmed the booking" (fun () -> storedFor db "b1" = 2L)
+                let flow = Workflows.register api (booker bookings)
+                Expect.equal (sync (flow.Result "b1" wait)) (WorkflowOutcome.Finished "Requested \"b1\"") "the repeat got the first event again"
+                Expect.isGreaterThanOrEqual switches.Requests.Count 3 "the workflow sent its request again after the restart"
+                Expect.equal
+                    (switches.Requests |> Seq.map (fun sent -> sent.CorrelationId) |> Seq.distinct |> Seq.length)
+                    1
+                    "every send of the step carried one correlation ID"
+                // The first request is the workflow's before the restart, the last its repeat after it.
+                let sent = Seq.toArray switches.Requests
+                Expect.equal sent[sent.Length - 1].Id sent[0].Id "the repeat after the restart carried the command ID of the first send"
+                Thread.Sleep 500
+                Expect.equal (storedFor db "b1") 2L "the repeat stored nothing, so no second saga started"
+        finally
+            deleteDb db
+
+let private sagaRepeatStoredTest =
+    testCase "workflow: a repeat that would store the saga's starting event again is refused, and the step fails" <| fun _ ->
+        let db = newDb ()
+        let switches = BookingSwitches()
+        switches.AnswersRepeat <- false
+        try
+            afterLostReply db "WorkflowSagaRepeatStored" [] switches <| fun api bookings ->
+                eventually "the saga confirmed the booking" (fun () -> storedFor db "b1" = 2L)
+                let flow = Workflows.register api (booker bookings)
+                Expect.equal
+                    (sync (flow.Result "b1" wait))
+                    (WorkflowOutcome.Finished "NotRetryable: FCQRS.Common+SagaAlreadyStartedException")
+                    "the step failed, although the first request was applied"
+                Thread.Sleep 500
+                Expect.equal (storedFor db "b1") 2L "the refused repeat stored nothing"
+        finally
+            deleteDb db
+
+let private sagaSignalTest =
+    testCase "workflow: a workflow waits for the saga its command started, through a signal a projection sends" <| fun _ ->
+        withSystem "WorkflowSagaSignal" <| fun api ->
+            let switches = BookingSwitches()
+            switches.ConfirmDelay <- 500L
+            let bookings = bookingsOf api switches
+            let flow =
+                Workflows.register api (Workflow.define "patient-booker" (fun (booking: string) -> workflow {
+                    let! (accepted: BookingEvent) = send bookings booking (Request booking)
+                    let! confirmed = waitSignalFor<string> "booking-confirmed" (TimeSpan.FromSeconds 20.0)
+                    return $"%A{accepted}", defaultArg confirmed "no signal"
+                }))
+            // The projection reads the saga's last event from the journal and tells the workflow.
+            use _projection =
+                Fcqrs.projection api (Projection.single FromStart (fun stored ->
+                    match stored with
+                    | :? Event<BookingEvent> as event ->
+                        match event.EventDetails with
+                        | Confirmed booking ->
+                            // A workflow that has ended refuses a signal, and a handler must not throw.
+                            try
+                                sync (Workflows.signal flow booking "booking-confirmed" booking)
+                            with :? InvalidOperationException -> ()
+                        | _ -> ()
+                    | _ -> ()))
+            sync (flow.Start "b1" "b1") |> ignore
+            Expect.equal
+                (sync (flow.Result "b1" wait))
+                (WorkflowOutcome.Finished("Requested \"b1\"", "b1"))
+                "the workflow went on when the saga's last event was stored"
+
+// A saga's commands carry the correlation ID of the command that started the saga, so their
+// events are published under the ID the step waits on.
+let private sagaEventReplyTest =
+    testCase "workflow: a resent command takes the reply to its own command, not an event its saga caused" <| fun _ ->
+        let db = newDb ()
+        let switches = BookingSwitches()
+        // The saga confirms one second after it starts.
+        switches.ConfirmDelay <- 1000L
+        try
+            afterLostReply db "WorkflowSagaEventReply" [] switches <| fun api bookings ->
+                // The booking is busy, as an aggregate is while it recovers after a restart, so
+                // the commands that follow queue in the order they arrive.
+                let held =
+                    bookings.Send (Fcqrs.newCid ()) (Fcqrs.aggregateId "b1") Hold (fun _ -> true) |> Async.StartAsTask
+                // First in the queue: the saga's Confirm.
+                Thread.Sleep 2000
+                // Second: the workflow's repeated request, sent once its subscription is ready.
+                let flow = Workflows.register api (booker bookings)
+                Thread.Sleep 2000
+                switches.Gate.Set()
+                held.Wait wait |> ignore
+                Expect.equal
+                    (sync (flow.Result "b1" wait))
+                    (WorkflowOutcome.Finished "Requested \"b1\"")
+                    "the step's result is the reply to its own command"
+        finally
+            deleteDb db
+
+let private sagaFilterTest =
+    testCase "workflow: sendWithFilter gives the first event its filter accepts, here one the saga's command caused" <| fun _ ->
+        withSystem "WorkflowSagaFilter" <| fun api ->
+            let switches = BookingSwitches()
+            switches.ConfirmDelay <- 500L
+            let bookings = bookingsOf api switches
+            let flow =
+                Workflows.register api (bookerWith (fun booking ->
+                    sendWithFilter Retry.command isConfirmed bookings booking (Request booking)))
+            sync (flow.Start "b1" "b1") |> ignore
+            Expect.equal
+                (sync (flow.Result "b1" wait))
+                (WorkflowOutcome.Finished "Confirmed \"b1\"")
+                "the step passed over Requested and took the saga's event"
+
+let private sagaFilterMissedTest =
+    testCase "workflow: sendWithFilter does not see an event published while no attempt listened" <| fun _ ->
+        let db = newDb ()
+        let switches = BookingSwitches()
+        try
+            // Each attempt waits one second.
+            afterLostReply db "WorkflowSagaFilterMissed" [ "config:akka:fcqrs:command-timeout", "1s" ] switches <| fun api bookings ->
+                eventually "the saga confirmed while no workflow listened" (fun () -> storedFor db "b1" = 2L)
+                // The same step under the same name, now with a filter: the instance is not parked.
+                let flow =
+                    Workflows.register api (bookerWith (fun booking ->
+                        sendWithFilter twice isConfirmed bookings booking (Request booking)))
+                // The booking answers the repeat with its first event, which the filter refuses.
+                Expect.equal
+                    (sync (flow.Result "b1" wait))
+                    (WorkflowOutcome.Finished "OutcomeUnknown: System.TimeoutException")
+                    "the step never saw Confirmed, although the saga finished"
+        finally
+            deleteDb db
+
+let private sagaFilterOutcomeTest =
+    testCase "workflow: sendWithFilter completes after a missed event when the aggregate answers a repeat with its outcome" <| fun _ ->
+        let db = newDb ()
+        let switches = BookingSwitches()
+        switches.AnswersWithOutcome <- true
+        try
+            afterLostReply db "WorkflowSagaFilterOutcome" [ "config:akka:fcqrs:command-timeout", "1s" ] switches <| fun api bookings ->
+                eventually "the saga confirmed while no workflow listened" (fun () -> storedFor db "b1" = 2L)
+                let flow =
+                    Workflows.register api (bookerWith (fun booking ->
+                        sendWithFilter twice isConfirmed bookings booking (Request booking)))
+                Expect.equal
+                    (sync (flow.Result "b1" wait))
+                    (WorkflowOutcome.Finished "Confirmed \"b1\"")
+                    "the repeat was answered with the outcome, which the filter accepts"
+        finally
+            deleteDb db
+
+let private attemptTimeoutTest =
+    testCase "workflow: a command step listens for its policy's attempt timeout and sends once in that time" <| fun _ ->
+        // Without an attempt timeout, each attempt would listen for one second.
+        withSettings "WorkflowAttemptTimeout" [ "config:akka:fcqrs:command-timeout", "1s" ] <| fun api ->
+            let switches = BookingSwitches()
+            // The saga confirms after three seconds.
+            switches.ConfirmDelay <- 3000L
+            // A repeat is answered with the outcome, so the step would also complete if it sent again.
+            switches.AnswersWithOutcome <- true
+            let bookings = bookingsOf api switches
+            let patient = { Retry.command with AttemptTimeout = Some(TimeSpan.FromSeconds 15.0) }
+            let flow =
+                Workflows.register api (bookerWith (fun booking ->
+                    sendWithFilter patient isConfirmed bookings booking (Request booking)))
+            sync (flow.Start "b1" "b1") |> ignore
+            Expect.equal
+                (sync (flow.Result "b1" wait))
+                (WorkflowOutcome.Finished "Confirmed \"b1\"")
+                "the step took the saga's event"
+            Expect.equal switches.Requests.Count 1 "the command was sent once"
+
+type LookupCommand =
+    | Look of key: string
+    | Found of key: string * value: int
+
+type LookupEvent = Looked of key: string * value: int
+
+let private effectReplyTest =
+    testCase "workflow: a command that an aggregate answers through an async effect gets its reply" <| fun _ ->
+        withSettings "WorkflowEffectReply" [ "config:akka:fcqrs:command-timeout", "2s" ] <| fun api ->
+            // Look stores nothing and starts an effect. The effect's result is the command Found,
+            // and the event of Found is the reply to Look.
+            let lookups =
+                Fcqrs.aggregateWithEffects
+                    api
+                    { Name = "Lookup"
+                      Initial = 0
+                      Decide =
+                        fun (command: Command<LookupCommand>) _ ->
+                            match command.CommandDetails with
+                            | Look key -> dispatch key
+                            | Found(key, value) -> PersistEvent(Looked(key, value))
+                      Fold = fun (_: Event<LookupEvent>) state -> state + 1
+                      Snapshots = NoSnapshots
+                      Passivation = PassivationPolicy.Default }
+                    (fun (key: string) -> async { return Found(key, key.Length) })
+            Fcqrs.wireSagaStarters api []
+            let flow =
+                Workflows.register api (Workflow.define "looker" (fun (key: string) -> workflow {
+                    try
+                        let! (reply: LookupEvent) = sendWith twice lookups "table" (Look key)
+                        return $"%A{reply}"
+                    with :? WorkflowStepFailedException as failed ->
+                        return string failed.Error.Kind
+                }))
+            sync (flow.Start "l1" "abc") |> ignore
+            Expect.equal
+                (sync (flow.Result "l1" wait))
+                (WorkflowOutcome.Finished "Looked (\"abc\", 3)")
+                "the event of the effect's command answered the workflow's command"
+
+type SlowCommand = Work
+type SlowEvent = Worked
+
+let private lateReplyTest =
+    testCase "workflow: a reply that arrives after its attempt ended still completes the step" <| fun _ ->
+        // Each attempt waits two seconds.
+        withSettings "WorkflowLateReply" [ "config:akka:fcqrs:command-timeout", "2s" ] <| fun api ->
+            let sends = ConcurrentQueue<Command<SlowCommand>>()
+            // Every command takes longer than an attempt waits, as on a loaded node, so each reply
+            // arrives during the next attempt. A repeat gets the first verdict.
+            let slow =
+                Fcqrs.aggregate api
+                    { Name = "Slow"
+                      Initial = 0
+                      Decide =
+                        fun (command: Command<SlowCommand>) state ->
+                            sends.Enqueue command
+                            Thread.Sleep 3000
+                            if state = 0 then PersistEvent Worked else DeferEvent Worked
+                      Fold = fun (_: Event<SlowEvent>) _ -> 1
+                      Snapshots = NoSnapshots
+                      Passivation = PassivationPolicy.Default }
+            Fcqrs.wireSagaStarters api []
+            let flow =
+                Workflows.register api (Workflow.define "slow-worker" (fun (_: unit) -> workflow {
+                    try
+                        let! (_: SlowEvent) = sendWith twice slow "s1" Work
+                        return "worked"
+                    with :? WorkflowStepFailedException as failed ->
+                        return string failed.Error.Kind
+                }))
+            sync (flow.Start "w1" ()) |> ignore
+            Expect.equal
+                (sync (flow.Result "w1" wait))
+                (WorkflowOutcome.Finished "worked")
+                "the reply to the first send answered the second attempt"
+            Expect.equal
+                (sends |> Seq.map (fun sent -> sent.Id) |> Seq.distinct |> Seq.length)
+                1
+                "every send of the step carried one command ID"
+
 let tests =
     testSequenced (
         testList "workflow"
             [ startTest; faultTest; retryTest; shortTimerTest; restartTest; timerTest; tracingTest; startRaceTest; concurrentStartTest
               signalTest; signalRestartTest; commandTest; parallelCommandTest; commandRestartTest; commandRecoveryTest; unknownOutcomeTest
               cancelTest; childTest; childRestartTest; parkingTest; streamTest; metricsTest
-              lateCommandTest; cancelParkedTest; childResultTest; unreadableResultTest; idleTest; manifestTest ]
+              lateCommandTest; cancelParkedTest; childResultTest; unreadableResultTest; idleTest; manifestTest
+              sagaStartTest; sagaRepeatTest; sagaRepeatStoredTest; sagaSignalTest; sagaEventReplyTest
+              sagaFilterTest; sagaFilterMissedTest; sagaFilterOutcomeTest; effectReplyTest; lateReplyTest
+              attemptTimeoutTest ]
     )
