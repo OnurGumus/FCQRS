@@ -61,11 +61,13 @@ let private hour = TimeSpan.FromHours 1.0
 let private runIdOf (run: ScheduledRun<string>) = $"""{run.Schedule}@{run.Due.ToString "O"}"""
 
 /// Records its input in `runs` under the run ID it should have, and returns the input.
-let private remind (runs: Runs) =
-    Workflow.define "remind" (fun (run: ScheduledRun<string>) -> workflow {
+let private recorder (name: string) (runs: Runs) =
+    Workflow.define name (fun (run: ScheduledRun<string>) -> workflow {
         do! activity "record" Retry.none (fun _ -> task { runs[runIdOf run] <- run })
         return run.Input
     })
+
+let private remind (runs: Runs) = recorder "remind" runs
 
 /// Records its input and then fails.
 let private broken (runs: Runs) =
@@ -113,6 +115,13 @@ let private hasView (node: Node) id = (Schedules.state node.Schedules id).IsSome
 
 let private dues (runs: Runs) = runs.Values |> Seq.map _.Due |> Seq.sort |> List.ofSeq
 
+/// Expects no run for a due time after `stored`. A run decided before a command may still start
+/// after it, but its due time is no later than the command's stored time. `stored` is the time the
+/// command returned, which is on the same clock and no earlier than the time it stored.
+let private noRunAfter (runs: Runs) (stored: DateTime) what =
+    let late = dues runs |> List.filter (fun due -> due > stored)
+    Expect.isEmpty late $"{what}: no run for a due time after {stored:O}"
+
 let private everyFires =
     testCase "schedules: an every-second schedule starts a run at each due time, with the due time in its ID and input" <| fun _ ->
         withDb <| fun db ->
@@ -145,16 +154,13 @@ let private pauseStops =
                 eventually "a first run" (fun () -> runs.Count >= 1)
                 sync (Schedules.pause node.Schedules "p")
                 let paused = DateTime.UtcNow
-                // A run decided before the pause still starts.
-                Thread.Sleep 500
-                let before = runs.Count
                 Thread.Sleep 3000
-                Expect.equal runs.Count before "no run starts while paused"
+                noRunAfter runs paused "while paused"
                 eventually "the index shows the pause" (fun () -> (view node "p").Paused)
                 Expect.isNone (view node "p").NextDue "a paused schedule has no next due time"
                 let resuming = DateTime.UtcNow
                 sync (Schedules.resume node.Schedules "p")
-                eventually "runs start again" (fun () -> runs.Count >= before + 2)
+                eventually "runs start again" (fun () -> dues runs |> List.filter (fun due -> due > resuming) |> List.length >= 2)
                 for due in dues runs do
                     Expect.isTrue (due <= paused || due > resuming) $"no run for {due:O}, inside the pause"
             finally
@@ -169,18 +175,17 @@ let private staleIndexRefused =
                 sync (Schedules.create node.Schedules "s" "remind" "x" (ScheduleRule.Every second) CatchUp.Latest)
                 eventually "a first run" (fun () -> runs.Count >= 1)
                 node.Schedules.Dispatcher.HoldIndex()
-                sync (Schedules.pause node.Schedules "s")
-                Thread.Sleep 500
-                let before = runs.Count
                 let refusals = node.Schedules.Dispatcher.Refusals
+                sync (Schedules.pause node.Schedules "s")
+                let paused = DateTime.UtcNow
                 Thread.Sleep 3000
                 Expect.isFalse (view node "s").Paused "the held index does not know of the pause"
                 Expect.isGreaterThan node.Schedules.Dispatcher.Refusals refusals "the dispatcher fired from the stale index and was refused"
-                Expect.equal runs.Count before "no run starts"
+                noRunAfter runs paused "while the index is held"
                 node.Schedules.Dispatcher.ReleaseIndex()
                 eventually "the index shows the pause" (fun () -> (view node "s").Paused)
                 Thread.Sleep 1500
-                Expect.equal runs.Count before "still no run"
+                noRunAfter runs paused "after the index caught up"
             finally
                 node.Stop()
 
@@ -215,11 +220,10 @@ let private deleteStops =
                 sync (Schedules.create node.Schedules "d" "remind" "x" (ScheduleRule.Every second) CatchUp.Latest)
                 eventually "a first run" (fun () -> runs.Count >= 1)
                 sync (Schedules.delete node.Schedules "d")
-                Thread.Sleep 500
-                let before = runs.Count
+                let deleted = DateTime.UtcNow
                 Thread.Sleep 3000
-                Expect.equal runs.Count before "no run starts after the delete"
-                eventually "the index shows the delete" (fun () -> (view node "d").Deleted)
+                noRunAfter runs deleted "after the delete"
+                eventually "the index drops the deleted schedule" (fun () -> not (hasView node "d"))
                 Expect.throwsT<InvalidOperationException> (fun () -> sync (Schedules.pause node.Schedules "d")) "a pause is refused"
                 sync (Schedules.delete node.Schedules "d")
             finally
@@ -323,6 +327,148 @@ let private crashBetween =
             finally
                 second.Stop()
 
+
+let private shiftTo (node: Node) (shift: TimeSpan) =
+    (node.Api.System.Scheduler :?> FCQRS.Scheduler.ShiftedScheduler).Shift <- shift
+
+let private nullLoggers = Microsoft.Extensions.Logging.Abstractions.NullLoggerFactory.Instance
+
+/// Registers no workflow.
+let private noWorkflows (_: IActor) = [], None
+
+/// Registers "remind", recording into `runs`.
+let private remindOnly (runs: Runs) (api: IActor) =
+    let handle = Workflows.register api (remind runs)
+    [ ScheduledWorkflow.ofHandle handle ], Some handle
+
+/// Registers "remind" and "other", recording into `runs` and `others`.
+let private remindAndOther (runs: Runs) (others: Runs) (api: IActor) =
+    let handle = Workflows.register api (remind runs)
+    let other = Workflows.register api (recorder "other" others)
+    [ ScheduledWorkflow.ofHandle handle; ScheduledWorkflow.ofHandle other ], Some handle
+
+/// Clock shift past the first due time of an hourly schedule.
+let private pastFirstHour = hour + TimeSpan.FromSeconds 2.0
+
+/// Creates the hourly schedule "k" for "remind", moves the clock past its first due time, and stops
+/// the dispatcher right after that Firing is stored, as a crash would. `between` runs before the
+/// actor system stops. Returns the due time decided.
+let private crashAfterFiring db name register (between: Node -> unit) =
+    let first = bootWith db name TimeSpan.Zero nullLoggers register
+    let decided = Threading.Tasks.TaskCompletionSource<DateTime>()
+    first.Schedules.Dispatcher.AfterFiring <- fun _ due ->
+        decided.TrySetResult due |> ignore
+        false
+    try
+        sync (Schedules.create first.Schedules "k" "remind" "x" (ScheduleRule.Every hour) CatchUp.Latest)
+        shiftTo first pastFirstHour
+        Expect.isTrue (decided.Task.Wait(TimeSpan.FromSeconds 20.0)) "the dispatcher decided the run"
+        between first
+        decided.Task.Result
+    finally
+        first.Stop()
+
+/// Error lines that say a workflow is not registered.
+let private unregisteredErrors (capture: Capture) =
+    capture.Lines
+    |> List.filter (fun (level, _, text) -> level = LogLevel.Error && text.Contains "is not registered")
+    |> List.map (fun (_, _, text) -> text)
+    |> List.distinct
+
+let private allLogsEachDue =
+    testCase "schedules: under CatchUp.All, a schedule whose workflow is not registered logs an error at each due time" <| fun _ ->
+        withDb <| fun db ->
+            let first = bootWith db "ScheduleAllLogs" TimeSpan.Zero nullLoggers (remindOnly (Runs()))
+            try
+                sync (Schedules.create first.Schedules "a" "remind" "x" (ScheduleRule.Every hour) CatchUp.All)
+            finally
+                first.Stop()
+
+            let capture = new Capture()
+            use loggers = LoggerFactory.Create(fun builder -> builder.AddProvider capture |> ignore)
+            // Two due times have passed; the schedule would accept the older one.
+            let second = bootWith db "ScheduleAllLogs" (TimeSpan.FromHours 2.5) loggers noWorkflows
+            try
+                eventually "an error for the due times passed" (fun () -> (unregisteredErrors capture).Length >= 1)
+                Thread.Sleep 1500
+                Expect.equal (unregisteredErrors capture).Length 1 "one error while no further due time passes"
+                shiftTo second (TimeSpan.FromHours 3.5)
+                eventually "a second error at the next due time" (fun () -> (unregisteredErrors capture).Length >= 2)
+            finally
+                second.Stop()
+
+let private pendingLogsEachDue =
+    testCase "schedules: a decided run whose workflow is not registered logs an error at each due time" <| fun _ ->
+        withDb <| fun db ->
+            crashAfterFiring db "SchedulePendingLogs" (remindOnly (Runs())) ignore |> ignore
+            let capture = new Capture()
+            use loggers = LoggerFactory.Create(fun builder -> builder.AddProvider capture |> ignore)
+            let second = bootWith db "SchedulePendingLogs" pastFirstHour loggers noWorkflows
+            try
+                eventually "an error for the decided run" (fun () -> (unregisteredErrors capture).Length >= 1)
+                Thread.Sleep 1500
+                Expect.equal (unregisteredErrors capture).Length 1 "one error while no further due time passes"
+                shiftTo second (pastFirstHour + hour)
+                eventually "a second error at the next due time" (fun () -> (unregisteredErrors capture).Length >= 2)
+                Expect.isFalse (view second "k").LastStarted "the run is still not started"
+            finally
+                second.Stop()
+
+let private decidedWorkflowKept =
+    testCase "schedules: a run decided before a change of workflow starts on the workflow it was decided with" <| fun _ ->
+        withDb <| fun db ->
+            let runs = Runs()
+            let others = Runs()
+            let due =
+                crashAfterFiring db "ScheduleDecidedWorkflow" (remindAndOther runs others) (fun first ->
+                    sync (Schedules.change first.Schedules "k" "other" "y" (ScheduleRule.Every hour) CatchUp.Latest))
+            let second = bootWith db "ScheduleDecidedWorkflow" pastFirstHour nullLoggers (remindAndOther runs others)
+            try
+                let runId = $"""k@{due.ToString "O"}"""
+                eventually "the run starts after the restart" (fun () -> runs.ContainsKey runId)
+                eventually "its start is reported" (fun () -> (view second "k").LastStarted)
+                Expect.equal runs[runId].Input "x" "the run has the input it was decided with"
+                Expect.isEmpty others "the changed workflow started no run"
+                Expect.equal (view second "k").Workflow "other" "the schedule names the new workflow"
+            finally
+                second.Stop()
+
+let private deletedLeavesIndex =
+    testCase "schedules: a deleted schedule stays in the index until its decided run has started" <| fun _ ->
+        withDb <| fun db ->
+            let runs = Runs()
+            let due =
+                crashAfterFiring db "ScheduleDeletedPending" (remindOnly runs) (fun first ->
+                    sync (Schedules.delete first.Schedules "k")
+                    eventually "the index shows the delete, with the run waiting" (fun () ->
+                        match Schedules.state first.Schedules "k" with
+                        | Some view -> view.Deleted && not view.LastStarted
+                        | None -> false))
+            let second = bootWith db "ScheduleDeletedPending" pastFirstHour nullLoggers (remindOnly runs)
+            try
+                eventually "the decided run starts after the restart" (fun () -> runs.ContainsKey $"""k@{due.ToString "O"}""")
+                eventually "the index drops the schedule once the run started" (fun () -> not (hasView second "k"))
+                Thread.Sleep 1500
+                Expect.equal runs.Count 1 "no other run"
+            finally
+                second.Stop()
+
+let private checkIntervalRejected =
+    testCase "schedules: a check interval that is not positive is refused at registration" <| fun _ ->
+        for value in [ "0"; "-5"; "0s" ] do
+            withDb <| fun db ->
+                let configuration =
+                    VerifySerialization.configuration()
+                        .AddInMemoryCollection([ KeyValuePair<string, string | null>("config:akka:fcqrs:schedule-check-interval", value) ])
+                        .Build()
+                let api = Fcqrs.actor configuration nullLoggers (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite $"Data Source={db};")) "ScheduleInterval"
+                try
+                    let error = Expect.throwsC (fun () -> Schedules.register api [] |> ignore) id
+                    Expect.isTrue (error :? Akka.Configuration.ConfigurationException) $"{value}: a configuration error, got {error.GetType()}"
+                    Expect.stringContains error.Message "akka.fcqrs.schedule-check-interval" $"{value}: the error names the key"
+                finally
+                    api.Stop().Wait(TimeSpan.FromSeconds 30.0) |> ignore
+
 /// Creates an hourly schedule, stops, moves the clock 3.5 hours and restarts: three due times were
 /// missed while nothing ran.
 let private downtime (policy: CatchUp) (expected: int) =
@@ -412,6 +558,11 @@ let tests =
             unregisteredRefused
             droppedWorkflowWaits
             crashBetween
+            allLogsEachDue
+            pendingLogsEachDue
+            decidedWorkflowKept
+            deletedLeavesIndex
+            checkIntervalRejected
             downtime CatchUp.Latest 1
             downtime CatchUp.All 3
             downtime CatchUp.None 0

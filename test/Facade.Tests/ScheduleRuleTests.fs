@@ -219,8 +219,8 @@ let aggregateTests =
         testCase "schedule aggregate: the first fire is the next due time after the creation, with the stored input" <| fun _ ->
             let state = given (created CatchUp.Latest)
             let reply, next = run (utc 2026 11 1 9 0) (ScheduleCommand.Fire(nine 1)) state
-            Expect.equal reply (Stored(ScheduleEvent.Firing(nine 1, hello))) "firing"
-            Expect.equal next.Last (Some { Due = nine 1; Input = hello; Started = false }) "pending"
+            Expect.equal reply (Stored(ScheduleEvent.Firing(nine 1, "remind", hello))) "firing"
+            Expect.equal next.Last (Some { Due = nine 1; Workflow = "remind"; Input = hello; Started = false }) "pending"
 
         testCase "schedule aggregate: a fire for a due time other than the next allowed one is refused" <| fun _ ->
             let state = given (created CatchUp.Latest)
@@ -241,21 +241,21 @@ let aggregateTests =
             refused (nine 2) (ScheduleCommand.Fire(nine 2)) state "waiting"
             let reply, state = run (nine 2) (ScheduleCommand.Started(nine 1)) state
             Expect.equal reply (Stored(ScheduleEvent.Fired(nine 1))) "fired"
-            Expect.equal state.Last (Some { Due = nine 1; Input = hello; Started = true }) "started"
+            Expect.equal state.Last (Some { Due = nine 1; Workflow = "remind"; Input = hello; Started = true }) "started"
             let reply, _ = run (nine 2) (ScheduleCommand.Fire(nine 2)) state
-            Expect.equal reply (Stored(ScheduleEvent.Firing(nine 2, hello))) "the next one"
+            Expect.equal reply (Stored(ScheduleEvent.Firing(nine 2, "remind", hello))) "the next one"
 
-        testCase "schedule aggregate: a repeated fire gets the first verdict, with the first input, after a change" <| fun _ ->
-            let changed = { spec daily CatchUp.Latest with Input = Payload.ofValue "bye" }
+        testCase "schedule aggregate: a repeated fire gets the first verdict, with the first workflow and input, after a change" <| fun _ ->
+            let changed = { spec daily CatchUp.Latest with Workflow = "other"; Input = Payload.ofValue "bye" }
             let state =
                 given (created CatchUp.Latest @ [ nine 1, ScheduleCommand.Fire(nine 1)
                                                   utc 2026 11 1 9 10, ScheduleCommand.Change changed ])
             let reply, next = run (utc 2026 11 1 9 20) (ScheduleCommand.Fire(nine 1)) state
-            Expect.equal reply (Answered(ScheduleEvent.Firing(nine 1, hello))) "first verdict while waiting"
+            Expect.equal reply (Answered(ScheduleEvent.Firing(nine 1, "remind", hello))) "first verdict while waiting"
             Expect.equal next state "unchanged while waiting"
             let state = given (created CatchUp.Latest @ [ nine 1, ScheduleCommand.Fire(nine 1); nine 1, ScheduleCommand.Started(nine 1) ])
             let reply, next = run (utc 2026 11 1 9 20) (ScheduleCommand.Fire(nine 1)) state
-            Expect.equal reply (Answered(ScheduleEvent.Firing(nine 1, hello))) "first verdict after fired"
+            Expect.equal reply (Answered(ScheduleEvent.Firing(nine 1, "remind", hello))) "first verdict after fired"
             Expect.equal next state "unchanged after fired"
 
         testCase "schedule aggregate: started is accepted after a pause, a change or a delete" <| fun _ ->
@@ -264,7 +264,7 @@ let aggregateTests =
                 let state = given (created CatchUp.Latest @ [ nine 1, ScheduleCommand.Fire(nine 1); utc 2026 11 1 9 1, later ])
                 let reply, next = run (utc 2026 11 1 9 2) (ScheduleCommand.Started(nine 1)) state
                 Expect.equal reply (Stored(ScheduleEvent.Fired(nine 1))) $"after {later}"
-                Expect.equal next.Last (Some { Due = nine 1; Input = hello; Started = true }) $"started after {later}"
+                Expect.equal next.Last (Some { Due = nine 1; Workflow = "remind"; Input = hello; Started = true }) $"started after {later}"
 
         testCase "schedule aggregate: a repeated started gets the first verdict; started for a due time never accepted is refused" <| fun _ ->
             let state = given (created CatchUp.Latest @ [ nine 1, ScheduleCommand.Fire(nine 1); nine 1, ScheduleCommand.Started(nine 1) ])
@@ -282,7 +282,7 @@ let aggregateTests =
                 for day in 1..3 do
                     refused now (ScheduleCommand.Fire(nine day)) state $"{policy}: 9:00 on day {day} fell inside the pause"
                 let reply, _ = run (nine 4) (ScheduleCommand.Fire(nine 4)) state
-                Expect.equal reply (Stored(ScheduleEvent.Firing(nine 4, hello))) $"{policy}: the first due time after the resume"
+                Expect.equal reply (Stored(ScheduleEvent.Firing(nine 4, "remind", hello))) $"{policy}: the first due time after the resume"
 
         testCase "schedule aggregate: create after delete is refused, with the same or a different content" <| fun _ ->
             let state = given (created CatchUp.Latest @ [ utc 2026 11 1 8 30, ScheduleCommand.Delete ])
@@ -302,7 +302,7 @@ let aggregateTests =
             Expect.equal state.Spec (Some changed) "spec"
             refused (utc 2026 11 1 9 0) (ScheduleCommand.Fire(utc 2026 11 1 9 0)) state "a due time of the old anchor"
             let reply, _ = run (utc 2026 11 1 9 30) (ScheduleCommand.Fire(utc 2026 11 1 9 30)) state
-            Expect.equal reply (Stored(ScheduleEvent.Firing(utc 2026 11 1 9 30, Payload.ofValue "bye"))) "counted from the change"
+            Expect.equal reply (Stored(ScheduleEvent.Firing(utc 2026 11 1 9 30, "remind", Payload.ofValue "bye"))) "counted from the change"
 
         testCase "schedule aggregate: a repeated change gets the first verdict and keeps the anchor" <| fun _ ->
             let changed = spec daily CatchUp.All
@@ -317,7 +317,7 @@ let aggregateTests =
             refused (utc 2026 11 2 10 5) (ScheduleCommand.Fire(nine 1)) state "day 1, missed before the change"
             refused (utc 2026 11 2 10 5) (ScheduleCommand.Fire(nine 2)) state "day 2, missed before the change"
             let reply, _ = run (nine 3) (ScheduleCommand.Fire(nine 3)) state
-            Expect.equal reply (Stored(ScheduleEvent.Firing(nine 3, hello))) "the first due time after the change"
+            Expect.equal reply (Stored(ScheduleEvent.Firing(nine 3, "remind", hello))) "the first due time after the change"
 
         testCase "schedule aggregate: after downtime, Latest accepts only the latest missed due time" <| fun _ ->
             let state = given (created CatchUp.Latest)
@@ -326,7 +326,7 @@ let aggregateTests =
                 refused now (ScheduleCommand.Fire(nine day)) state $"day {day}"
             refused now (ScheduleCommand.Fire(nine 5)) state "the next future due time"
             let reply, _ = run now (ScheduleCommand.Fire(nine 4)) state
-            Expect.equal reply (Stored(ScheduleEvent.Firing(nine 4, hello))) "latest"
+            Expect.equal reply (Stored(ScheduleEvent.Firing(nine 4, "remind", hello))) "latest"
 
         testCase "schedule aggregate: after downtime, All accepts each missed due time in order" <| fun _ ->
             let mutable state = given (created CatchUp.All)
@@ -334,12 +334,12 @@ let aggregateTests =
             for day in 1..4 do
                 refused now (ScheduleCommand.Fire(nine (day + 1))) state $"out of order before day {day}"
                 let reply, next = run now (ScheduleCommand.Fire(nine day)) state
-                Expect.equal reply (Stored(ScheduleEvent.Firing(nine day, hello))) $"day {day}"
+                Expect.equal reply (Stored(ScheduleEvent.Firing(nine day, "remind", hello))) $"day {day}"
                 state <- next
                 refused now (ScheduleCommand.Fire(nine (day + 1))) state $"waits for day {day}'s fired"
                 state <- snd (run now (ScheduleCommand.Started(nine day)) state)
             let reply, _ = run (nine 5) (ScheduleCommand.Fire(nine 5)) state
-            Expect.equal reply (Stored(ScheduleEvent.Firing(nine 5, hello))) "then continues"
+            Expect.equal reply (Stored(ScheduleEvent.Firing(nine 5, "remind", hello))) "then continues"
 
         testCase "schedule aggregate: after downtime, None accepts only the next future due time, when it comes" <| fun _ ->
             let state = given (created CatchUp.None)
@@ -348,18 +348,18 @@ let aggregateTests =
                 refused now (ScheduleCommand.Fire(nine day)) state $"day {day}"
             refused now (ScheduleCommand.Fire(nine 5)) state "the next future due time has not come"
             let reply, _ = run (nine 5) (ScheduleCommand.Fire(nine 5)) state
-            Expect.equal reply (Stored(ScheduleEvent.Firing(nine 5, hello))) "the next future due time"
+            Expect.equal reply (Stored(ScheduleEvent.Firing(nine 5, "remind", hello))) "the next future due time"
 
         testCase "schedule aggregate: None accepts a fire that arrives on time" <| fun _ ->
             let state = given (created CatchUp.None)
             let reply, _ = run ((nine 1).AddSeconds 5.0) (ScheduleCommand.Fire(nine 1)) state
-            Expect.equal reply (Stored(ScheduleEvent.Firing(nine 1, hello))) "on time"
+            Expect.equal reply (Stored(ScheduleEvent.Firing(nine 1, "remind", hello))) "on time"
 
         testCase "schedule aggregate: a fire up to a second early is accepted" <| fun _ ->
             let state = given (created CatchUp.Latest)
             for early in [ 50.0; 500.0; 1000.0 ] do
                 let reply, _ = run ((nine 1).AddMilliseconds -early) (ScheduleCommand.Fire(nine 1)) state
-                Expect.equal reply (Stored(ScheduleEvent.Firing(nine 1, hello))) $"{early} ms early"
+                Expect.equal reply (Stored(ScheduleEvent.Firing(nine 1, "remind", hello))) $"{early} ms early"
 
         testCase "schedule aggregate: a fire more than a second early is refused, and the due time runs when it comes" <| fun _ ->
             let state = given (created CatchUp.Latest)
@@ -371,7 +371,7 @@ let aggregateTests =
             Expect.equal next state "10 minutes early: state unchanged"
             refused ((nine 1).AddMilliseconds -1001.0) (ScheduleCommand.Fire(nine 1)) state "just over a second early"
             let reply, _ = run (nine 1) (ScheduleCommand.Fire(nine 1)) next
-            Expect.equal reply (Stored(ScheduleEvent.Firing(nine 1, hello))) "at the due time"
+            Expect.equal reply (Stored(ScheduleEvent.Firing(nine 1, "remind", hello))) "at the due time"
 
         testCase "schedule aggregate: a firing stores its due time as UTC, whatever kind the fire named" <| fun _ ->
             let state = given (created CatchUp.Latest)
@@ -380,7 +380,7 @@ let aggregateTests =
                 let named = DateTime.SpecifyKind(nine 1, kind)
                 let reply, next = run (nine 1) (ScheduleCommand.Fire named) state
                 match reply with
-                | Stored(ScheduleEvent.Firing(due, _)) ->
+                | Stored(ScheduleEvent.Firing(due, _, _)) ->
                     Expect.equal due.Kind DateTimeKind.Utc $"{kind}: the stored due time is UTC"
                     Expect.equal (due.ToString "O") "2026-11-01T09:00:00.0000000Z" $"{kind}: a run ID formats it with Z"
                 | other -> failtest $"{kind}: firing stored, got {other}"
@@ -421,7 +421,7 @@ let aggregateTests =
                            ScheduleEvent.Paused at
                            ScheduleEvent.Resumed at
                            ScheduleEvent.Deleted at
-                           ScheduleEvent.Firing(nine 1, hello)
+                           ScheduleEvent.Firing(nine 1, "remind", hello)
                            ScheduleEvent.Fired(nine 1)
                            ScheduleEvent.Refused "no" ] do
                 Expect.equal (roundTrip event) event $"{event}"

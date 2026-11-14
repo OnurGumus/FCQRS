@@ -162,8 +162,9 @@ type ScheduleEvent =
     | Resumed of at: DateTime
     /// The schedule ended.
     | Deleted of at: DateTime
-    /// A run for `due` was decided, with the input it gets. A later change does not alter it.
-    | Firing of due: DateTime * input: Payload
+    /// A run for `due` was decided, with the workflow it starts and the input it gets. A later
+    /// change does not alter either.
+    | Firing of due: DateTime * workflow: string * input: Payload
     /// The run for `due` has been started.
     | Fired of due: DateTime
     /// A command was refused. Never stored.
@@ -173,6 +174,8 @@ type ScheduleEvent =
 type AcceptedDue =
     { /// The due time, in UTC.
       Due: DateTime
+      /// The workflow its run starts.
+      Workflow: string
       /// The input its run gets.
       Input: Payload
       /// Whether the run's start is known to be stored.
@@ -285,7 +288,7 @@ module Schedule =
 
         // A run decided before a pause, a change or a delete still gets its answers.
         | ScheduleCommand.Fire due, _ when state.Last |> Option.exists (fun last -> last.Due = due) ->
-            DeferEvent(ScheduleEvent.Firing(due, state.Last.Value.Input))
+            DeferEvent(ScheduleEvent.Firing(due, state.Last.Value.Workflow, state.Last.Value.Input))
         | ScheduleCommand.Started due, _ ->
             match state.Last with
             | Some last when last.Due = due && last.Started -> DeferEvent(ScheduleEvent.Fired due)
@@ -324,7 +327,7 @@ module Schedule =
                 refuse $"The due time {due:O} has not come; it is {now:O}."
             // The allowed value is stored, not the one named: a run ID formats the due time, and a
             // due time named with another DateTimeKind would format differently.
-            | Some allowed when allowed = due -> PersistEvent(ScheduleEvent.Firing(DateTime.SpecifyKind(allowed, DateTimeKind.Utc), spec.Input))
+            | Some allowed when allowed = due -> PersistEvent(ScheduleEvent.Firing(DateTime.SpecifyKind(allowed, DateTimeKind.Utc), spec.Workflow, spec.Input))
             | Some allowed -> refuse $"{due:O} is not the due time to run; {allowed:O} is."
             | None -> refuse $"{due:O} is not the due time to run."
 
@@ -346,9 +349,15 @@ module Schedule =
         | ScheduleEvent.Resumed at -> { state with PausedAt = None; ResumedAt = Some at }
         | ScheduleEvent.Deleted _ when state.DeletedAt.IsSome -> state
         | ScheduleEvent.Deleted at -> { state with DeletedAt = Some at }
-        | ScheduleEvent.Firing(due, _) when state.Last |> Option.exists (fun last -> last.Due = due) -> state
-        | ScheduleEvent.Firing(due, input) ->
-            { state with Last = Some { Due = due; Input = input; Started = false } }
+        | ScheduleEvent.Firing(due, _, _) when state.Last |> Option.exists (fun last -> last.Due = due) -> state
+        | ScheduleEvent.Firing(due, workflow, input) ->
+            { state with
+                Last =
+                    Some
+                        { Due = due
+                          Workflow = workflow
+                          Input = input
+                          Started = false } }
         | ScheduleEvent.Fired due ->
             match state.Last with
             | Some last when last.Due = due -> { state with Last = Some { last with Started = true } }
@@ -415,7 +424,8 @@ type ScheduleView =
       Anchor: DateTime
       /// Whether the schedule is paused.
       Paused: bool
-      /// Whether the schedule was deleted.
+      /// Whether the schedule was deleted. A deleted schedule is in the index only while a run decided
+      /// before the delete waits to start.
       Deleted: bool
       /// The last due time the schedule accepted.
       LastDue: DateTime option
@@ -485,7 +495,9 @@ type internal Dispatcher
 
     // Folds one event into the index; true when the entry changed. The dispatcher folds the replies
     // to its own Fire and Started before the projection delivers them, and accepted due times only
-    // grow, so a Firing or a Fired older than the entry's last due time changes nothing.
+    // grow, so a Firing or a Fired older than the entry's last due time changes nothing. A deleted
+    // schedule leaves the index once no run waits to be started, so deleted schedules take no
+    // memory; an entry without a spec can only come from events that arrived after that.
     let apply (id: string) (event: Event<ScheduleEvent>) =
         let state =
             match index.TryGetValue id with
@@ -494,12 +506,19 @@ type internal Dispatcher
 
         let next =
             match event.EventDetails with
-            | ScheduleEvent.Firing(due, _) when state.Last |> Option.exists (fun last -> last.Due >= due) -> state
+            | ScheduleEvent.Firing(due, _, _) when state.Last |> Option.exists (fun last -> last.Due >= due) -> state
             | ScheduleEvent.Fired due when state.Last |> Option.exists (fun last -> last.Due > due) -> state
             | ScheduleEvent.Refused _ -> state
             | _ -> Schedule.fold event state |> strip
 
-        if next <> state then
+        let finished = next.DeletedAt.IsSome && next.Last |> Option.forall _.Started
+
+        if finished || next.Spec.IsNone then
+            upcoming.Remove id |> ignore
+            deferred.Remove id |> ignore
+            reported.Remove id |> ignore
+            index.Remove id
+        elif next <> state then
             index[id] <- next
             upcoming.Remove id |> ignore
             true
@@ -512,22 +531,30 @@ type internal Dispatcher
         if apply id event then
             deferred.Remove id |> ignore
 
-    let report (id: string) (spec: ScheduleSpec) (due: DateTime) =
+    // Logs once per due time of the rule that passes while `workflow` is not registered. `due` is
+    // the due time the schedule would accept, which does not move until a fire is accepted, so the
+    // log is keyed on the latest due time the rule has reached instead.
+    let report (id: string) (state: ScheduleState) (spec: ScheduleSpec) (workflow: string) (due: DateTime) (now: DateTime) =
+        let reached =
+            ScheduleRule.missed spec.Rule state.Anchor due now CatchUp.Latest
+            |> List.tryLast
+            |> Option.defaultValue due
+
         match reported.TryGetValue id with
-        | true, seen when seen = due -> ()
+        | true, seen when seen = reached -> ()
         | _ ->
-            reported[id] <- due
+            reported[id] <- reached
             logger.LogError(
                 "Schedule {Schedule} is due at {Due:O}, but its workflow {Workflow} is not registered with the schedule dispatcher. No run starts until it is.",
                 id,
-                due,
-                spec.Workflow
+                reached,
+                workflow
             )
 
     // What is due at `now`, and when to look again.
     let plan (now: DateTime) =
         lock gate (fun () ->
-            let due = ResizeArray<string * DateTime * ScheduledWorkflow>()
+            let due = ResizeArray<string * DateTime>()
             let mutable wakeAt = now + checkInterval
             let later (at: DateTime) = if at < wakeAt then wakeAt <- at
 
@@ -537,12 +564,18 @@ type internal Dispatcher
                     | None -> ()
                     | Some spec ->
                         // A Firing without its Fired: the run may not have started. Its start is
-                        // repeated whatever the schedule's state is now.
-                        let pending = state.Last |> Option.filter (fun last -> not last.Started) |> Option.map _.Due
+                        // repeated whatever the schedule's state is now, on the workflow the Firing
+                        // names.
+                        let pending = state.Last |> Option.filter (fun last -> not last.Started)
+
+                        let workflow =
+                            match pending with
+                            | Some last -> last.Workflow
+                            | None -> spec.Workflow
 
                         let next =
                             match pending with
-                            | Some _ -> pending
+                            | Some last -> Some last.Due
                             | None ->
                                 match upcoming.TryGetValue id with
                                 | true, cached when cached > now -> Some cached
@@ -562,13 +595,12 @@ type internal Dispatcher
                             | true, (refused, until) when refused = next && until > now -> later until
                             | _ when next > now -> later next
                             | _ ->
-                                match workflows.TryGetValue spec.Workflow with
-                                | true, workflow -> due.Add((id, next, workflow))
-                                | _ ->
-                                    report id spec next
+                                if workflows.ContainsKey workflow then
+                                    due.Add((id, next))
+                                else
+                                    report id state spec workflow next now
                                     // Report again at the next due time.
-                                    if pending.IsNone then
-                                        later (ScheduleRule.next spec.Rule state.Anchor now)
+                                    later (ScheduleRule.next spec.Rule state.Anchor now)
                 with error ->
                     logger.LogError(error, "The schedule dispatcher could not compute the next due time of schedule {Schedule}.", id)
 
@@ -577,19 +609,23 @@ type internal Dispatcher
     let deferTo (id: string) (due: DateTime) (until: DateTime) =
         lock gate (fun () -> deferred[id] <- (due, until))
 
-    // Asks the schedule to fire, starts the run with the input from its reply, and reports the start.
-    let fire (startedAt: DateTime) (id: string, due: DateTime, workflow: ScheduledWorkflow) =
+    // Asks the schedule to fire, starts the run on the workflow and with the input from its reply,
+    // and reports the start.
+    let fire (startedAt: DateTime) (id: string, due: DateTime) =
         async {
             try
                 let! reply = send id (cidOf (runIdOf id due)) (ScheduleCommand.Fire due)
 
                 match reply.EventDetails with
-                | ScheduleEvent.Firing(accepted, input) ->
+                | ScheduleEvent.Firing(accepted, name, input) ->
                     lock gate (fun () -> apply id reply |> ignore)
 
-                    if not (afterFiring id accepted) then
-                        lifetime.Cancel()
-                    else
+                    match workflows.TryGetValue name with
+                    | _ when not (afterFiring id accepted) -> lifetime.Cancel()
+                    // The index named another workflow. The Firing is folded, so the next pass
+                    // reports the one it names.
+                    | false, _ -> ()
+                    | true, workflow ->
                         let runId = runIdOf id accepted
                         do! workflow.Start runId id accepted input
                         let! started = send id (cidOf $"{runId}/started") (ScheduleCommand.Started accepted)
@@ -778,9 +814,19 @@ module Schedules =
     let private checkIntervalOf (config: Akka.Configuration.Config) : TimeSpan =
         if config.HasPath checkIntervalKey then
             // A bare number is seconds, as for `akka.fcqrs.command-timeout`.
-            match config.GetString checkIntervalKey |> Int32.TryParse with
-            | true, seconds -> TimeSpan.FromSeconds(float seconds)
-            | _ -> config.GetTimeSpan(checkIntervalKey, Nullable(TimeSpan.FromMinutes 1.0))
+            let interval =
+                match config.GetString checkIntervalKey |> Int32.TryParse with
+                | true, seconds -> TimeSpan.FromSeconds(float seconds)
+                | _ -> config.GetTimeSpan(checkIntervalKey, Nullable(TimeSpan.FromMinutes 1.0))
+
+            if interval <= TimeSpan.Zero then
+                raise (
+                    Akka.Configuration.ConfigurationException(
+                        $"{checkIntervalKey} must be positive; it is '{config.GetString checkIntervalKey}'."
+                    )
+                )
+
+            interval
         else
             TimeSpan.FromMinutes 1.0
 
@@ -804,10 +850,12 @@ module Schedules =
 
     /// Registers the schedule aggregate and starts this actor system's dispatcher, which may start
     /// the listed workflows. Register each workflow with `Workflows.register` first. Raises
-    /// `InvalidOperationException` when the actor system has a dispatcher already. A schedule whose
-    /// workflow is not listed starts no run, and the dispatcher logs an error at each of its due
-    /// times, until a later start lists the workflow again.
+    /// `InvalidOperationException` when the actor system has a dispatcher already, and
+    /// `Akka.Configuration.ConfigurationException` when `akka.fcqrs.schedule-check-interval` is not
+    /// positive. A schedule whose workflow is not listed starts no run, and the dispatcher logs an
+    /// error at each of its due times, until a later start lists the workflow again.
     let register (api: IActor) (runs: ScheduledWorkflow list) : ScheduleHandle =
+        let checkInterval = checkIntervalOf api.System.Settings.Config
         let workflows = Collections.Generic.Dictionary<string, ScheduledWorkflow>()
 
         for run in runs do
@@ -833,7 +881,7 @@ module Schedules =
             aggregate.Send cid (Fcqrs.aggregateId id) command (fun _ -> true)
 
         let logger = api.LoggerFactory.CreateLogger "FCQRS.Workflows.Schedules"
-        let dispatcher = Dispatcher(api, send, workflows, checkIntervalOf api.System.Settings.Config, logger)
+        let dispatcher = Dispatcher(api, send, workflows, checkInterval, logger)
 
         let projection =
             Fcqrs.projection api (Projection.multi FromStart dispatcher.Observe |> Projection.ofEntities [ Schedule.EntityName ])
@@ -874,8 +922,8 @@ module Schedules =
         }
 
     /// Replaces the schedule's workflow, input, rule and catch-up policy. An `Every` rule counts from
-    /// the change, and no due time at or before it runs. A run decided before the change keeps the
-    /// input it was decided with. Raises `InvalidOperationException` as `create` does, and when the
+    /// the change, and no due time at or before it runs. A run decided before the change starts the
+    /// workflow, with the input, it was decided with. Raises `InvalidOperationException` as `create` does, and when the
     /// schedule does not exist or was deleted.
     let change (handle: ScheduleHandle) (id: string) (workflow: string) (input: 'Input) (rule: ScheduleRule) (catchUp: CatchUp) : Async<unit> =
         async {
@@ -909,7 +957,8 @@ module Schedules =
             return! run handle id ScheduleCommand.Delete
         }
 
-    /// The schedule as the dispatcher's index knows it, or nothing when the index has not read it.
+    /// The schedule as the dispatcher's index knows it, or nothing when the index has not read it. A
+    /// deleted schedule leaves the index once no run decided before the delete waits to start.
     /// The index lags the schedule by one projection pass, so a change that just returned may not
     /// show yet.
     let state (handle: ScheduleHandle) (id: string) : ScheduleView option = handle.Dispatcher.View id

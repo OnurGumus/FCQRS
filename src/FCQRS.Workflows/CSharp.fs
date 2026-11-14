@@ -435,7 +435,8 @@ type ScheduleClient internal (handle: ScheduleHandle) =
         Schedules.create handle id workflow input rule catchUp |> Async.StartAsTask :> Task
 
     /// Replaces the schedule's workflow, input, rule and catch-up policy. An `Every` rule counts
-    /// from the change. A run decided before the change keeps the input it was decided with.
+    /// from the change. A run decided before the change starts the workflow, with the input, it was
+    /// decided with.
     /// Throws `InvalidOperationException` as `CreateAsync` does, and when the schedule does not
     /// exist or was deleted.
     member _.ChangeAsync<'TInput>(id: string, workflow: string, input: 'TInput, rule: ScheduleRule, catchUp: CatchUp) : Task =
@@ -453,8 +454,9 @@ type ScheduleClient internal (handle: ScheduleHandle) =
     /// a new schedule. Throws `InvalidOperationException` when the schedule does not exist.
     member _.DeleteAsync(id: string) : Task = Schedules.delete handle id |> Async.StartAsTask :> Task
 
-    /// The schedule as the dispatcher's index knows it, or null when the index has not read it.
-    /// The index lags the schedule by one projection pass.
+    /// The schedule as the dispatcher's index knows it, or null when the index has not read it. A
+    /// deleted schedule leaves the index once no run decided before the delete waits to start. The
+    /// index lags the schedule by one projection pass.
     member _.State(id: string) : ScheduleView | null =
         match Schedules.state handle id with
         | Some view -> view
@@ -485,7 +487,8 @@ type ScheduleHost =
 
     /// Registers the schedule aggregate and starts this actor system's dispatcher, which may start
     /// the listed workflows. Register each workflow with `WorkflowHost.Register` first. Throws
-    /// `InvalidOperationException` when the actor system has a dispatcher already.
+    /// `InvalidOperationException` when the actor system has a dispatcher already, and
+    /// `ConfigurationException` when `akka.fcqrs.schedule-check-interval` is not positive.
     static member Register(actor: IActor, [<ParamArray>] workflows: ScheduledWorkflow[]) : ScheduleClient =
         ScheduleClient(Schedules.register actor (List.ofArray workflows))
 
