@@ -1,5 +1,15 @@
 # Changelog
 
+## 7.2.1 (FCQRS core)
+
+- An unfiltered projection's query of recent writes on SQLite reads only the journal rows numbered
+  above its starting number, as a filtered one does since 7.2.0. It read the whole persistence-ID
+  index on every poll, so each poll cost as much as the journal was long: on a journal of one
+  million rows, a poll that found 100 new rows took 23 ms and now takes 0.05 ms. A query whose
+  starting number lies far behind the journal's end now costs more: 34 ms against 33 ms with
+  100,000 rows above it, and 364 ms against 98 ms when every row lies above it. The full scan and
+  PostgreSQL are unchanged, and the query finds the same rows as before.
+
 ## 7.6.0 (FCQRS.Workflows)
 
 - **Schedules start workflows at due times.** `Schedules.register api [ ScheduledWorkflow.ofHandle

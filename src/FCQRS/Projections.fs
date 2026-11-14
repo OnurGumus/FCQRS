@@ -649,6 +649,30 @@ type internal TrackedProgress =
     /// In the journal database under this name: a start resumes where the last one stopped.
     | Stored of string
 
+/// A projection store over the actor's SQL journal, with the read models and progress in the same
+/// database: the provider, connection string, table, schema, and columns Akka's journal reader uses
+/// from HOCON. The journal must be SQLite or PostgreSQL.
+let internal journalStore (actor: IActor) : SqlProjectionStore =
+    let settings = journalSettings actor true
+    let dialect =
+        if settings.Provider.StartsWith("SQLite", StringComparison.OrdinalIgnoreCase) then ProjectionSqlDialect.Sqlite
+        elif settings.Provider.StartsWith("PostgreSQL", StringComparison.OrdinalIgnoreCase) then ProjectionSqlDialect.PostgreSql
+        else invalidArg (nameof actor) $"Projections require a SQLite or PostgreSQL journal; this one uses '{settings.Provider}'."
+    // The connections Akka.Persistence.Sql makes: the same provider and connection string.
+    let provider =
+        match LinqToDB.Data.DataConnection.GetDataProvider(settings.Provider, settings.ConnectionString) with
+        | null -> invalidArg (nameof actor) $"No data provider is available for the journal provider '{settings.Provider}'."
+        | provider -> provider
+    let connect = Func<DbConnection>(fun () -> provider.CreateConnection settings.ConnectionString)
+    SqlProjectionStore(
+        dialect, connect, connect,
+        journalTable = settings.Table,
+        ?journalSchema = settings.Schema,
+        ?progressSchema = settings.Schema,
+        journalPersistenceIdColumn = settings.PersistenceIdColumn,
+        journalSequenceNumberColumn = settings.SequenceNumberColumn,
+        journalOrderingColumn = settings.OrderingColumn)
+
 /// Creates a projection that follows each persistence ID's own sequence numbers, so it never skips
 /// an event that commits after later-numbered ones, and hands each event to `handler`. Each pass
 /// hands over the events it found in journal order: per persistence ID in sequence order, and
@@ -670,25 +694,7 @@ let internal startTracked (actor: IActor) (progress: TrackedProgress) (entities:
     // An Akka event adapter must turn each journal row into exactly one event; the sequence
     // checks stop the projection when one returns several events or none.
     let settings = journalSettings actor true
-    let dialect =
-        if settings.Provider.StartsWith("SQLite", StringComparison.OrdinalIgnoreCase) then ProjectionSqlDialect.Sqlite
-        elif settings.Provider.StartsWith("PostgreSQL", StringComparison.OrdinalIgnoreCase) then ProjectionSqlDialect.PostgreSql
-        else invalidArg (nameof actor) $"Projections require a SQLite or PostgreSQL journal; this one uses '{settings.Provider}'."
-    // The connections Akka.Persistence.Sql makes: the same provider and connection string.
-    let provider =
-        match LinqToDB.Data.DataConnection.GetDataProvider(settings.Provider, settings.ConnectionString) with
-        | null -> invalidArg (nameof actor) $"No data provider is available for the journal provider '{settings.Provider}'."
-        | provider -> provider
-    let connect = Func<DbConnection>(fun () -> provider.CreateConnection settings.ConnectionString)
-    let store =
-        SqlProjectionStore(
-            dialect, connect, connect,
-            journalTable = settings.Table,
-            ?journalSchema = settings.Schema,
-            ?progressSchema = settings.Schema,
-            journalPersistenceIdColumn = settings.PersistenceIdColumn,
-            journalSequenceNumberColumn = settings.SequenceNumberColumn,
-            journalOrderingColumn = settings.OrderingColumn)
+    let store = journalStore actor
 
     let handle (envelope: EventEnvelope) =
         let envelope = upcastEnvelope actor envelope

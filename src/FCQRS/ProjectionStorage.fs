@@ -223,12 +223,15 @@ type SqlProjectionStore
                     else matches)
             Some("(" + String.concat " OR " conditions + ")")
 
-    // The journal in a filtered query bounded by the journal number. On SQLite, NOT INDEXED keeps the
-    // planner on the journal number, the table's rowid, so the query reads only rows above it.
-    // Without it SQLite reads the persistence-ID index from its start, to avoid sorting the groups.
-    let journalByNumber (entities: string list) =
-        if entities.IsEmpty || dialect <> ProjectionSqlDialect.Sqlite then journalSql
-        else journalSql + " NOT INDEXED"
+    // The journal in a query bounded by the journal number, filtered or not. On SQLite, NOT INDEXED
+    // keeps the planner on the journal number, the table's rowid, so the query reads only rows above
+    // it. Without it SQLite can read the whole persistence-ID index instead, which holds every
+    // column these queries read and lets a GROUP BY skip its sort, so each call costs as much as the
+    // journal is long. With NOT INDEXED, a query starting far behind the journal's end reads and
+    // sorts more rows than that index scan would; the projection starts these queries at recent
+    // writes.
+    let journalByNumber =
+        if dialect = ProjectionSqlDialect.Sqlite then journalSql + " NOT INDEXED" else journalSql
 
     let transactionCommand (connection: DbConnection) (transaction: DbTransaction) sql =
         if isNull (box transaction) || not (obj.ReferenceEquals(connection, transaction.Connection)) then
@@ -320,12 +323,13 @@ type SqlProjectionStore
 
     /// The main query of `CaptureSinceAsync` on an open journal connection: each persistence ID of
     /// the named entities with events numbered above `after`, its last sequence number, and its
-    /// highest number. On SQLite a filtered query reads only the rows numbered above `after`.
+    /// highest number. On SQLite it reads only the rows numbered above `after`, with or without a
+    /// filter.
     member internal _.CaptureSinceCommand(connection: DbConnection, after: int64, entities: string list) : DbCommand =
         let command = connection.CreateCommand()
         let selected = entityCondition command false entities |> Option.map ((+) " AND ") |> Option.defaultValue ""
         command.CommandText <-
-            $"SELECT {persistenceIdSql}, MAX({sequenceNumberSql}), MAX({orderingSql}) FROM {journalByNumber entities} WHERE {orderingSql} > @after{selected} GROUP BY {persistenceIdSql}"
+            $"SELECT {persistenceIdSql}, MAX({sequenceNumberSql}), MAX({orderingSql}) FROM {journalByNumber} WHERE {orderingSql} > @after{selected} GROUP BY {persistenceIdSql}"
         parameter command "@after" DbType.Int64 after
         command
 
@@ -335,7 +339,7 @@ type SqlProjectionStore
         let command = connection.CreateCommand()
         let selected = entityCondition command false entities |> Option.map ((+) " AND ") |> Option.defaultValue ""
         command.CommandText <-
-            $"SELECT {persistenceIdSql}, {sequenceNumberSql}, {orderingSql} FROM {journalByNumber entities} WHERE {orderingSql} > @after{selected} ORDER BY {orderingSql} LIMIT @count"
+            $"SELECT {persistenceIdSql}, {sequenceNumberSql}, {orderingSql} FROM {journalByNumber} WHERE {orderingSql} > @after{selected} ORDER BY {orderingSql} LIMIT @count"
         parameter command "@after" DbType.Int64 after
         parameter command "@count" DbType.Int64 count
         command
