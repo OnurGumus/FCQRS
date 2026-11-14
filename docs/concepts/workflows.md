@@ -666,7 +666,7 @@ let startReminders (api: IActor) =
         let reminders = Workflows.register api remind
         let schedules =
             Schedules.register api [ ScheduledWorkflow.ofHandle reminders ]
-        // The schedules are an aggregate, which stores nothing until this.
+        // Schedule commands raise until the starters are wired.
         Fcqrs.wireSagaStarters api []
         do!
             Schedules.create schedules "ada-daily" "remind" "Drink water"
@@ -695,7 +695,7 @@ public static class Reminders
         var reminders = WorkflowHost.Register(actor, new Remind());
         var schedules = ScheduleHost.Register(
             actor, ScheduleHost.Workflow(reminders));
-        // The schedules are an aggregate, which stores nothing until this.
+        // Schedule commands throw until the starters are wired.
         ActorWiring.InitSagaStarterEmpty(actor);
         await schedules.CreateAsync("ada-daily", "remind", "Drink water",
             ScheduleRule.NewDaily(new TimeOnly(9, 0), "Europe/Oslo"),
@@ -708,17 +708,51 @@ public static class Reminders
 `Schedules.register` registers the schedule aggregate and starts the actor system's one
 **dispatcher**, which may start only the workflows in its list. The list takes each workflow's
 handle, so the workflows are registered first. Each schedule is an instance of the aggregate
-`fcqrs-schedule`, and an aggregate stores no event until the actor system's saga starters are wired.
-Call `Fcqrs.wireSagaStarters` once, after every aggregate and saga is registered, as the
-[aggregate guide](../how-to/define-an-aggregate.html) describes; an application without sagas passes
-an empty list.
+`fcqrs-schedule`. Like every aggregate, it waits for the actor system's saga starters before it
+stores an event, and terminates the process when they are not wired within
+`akka.fcqrs.saga-start-timeout`. Call `Fcqrs.wireSagaStarters` once, after every aggregate and saga
+is registered, as the [aggregate guide](../how-to/define-an-aggregate.html) describes; an
+application without sagas passes an empty list. Until the starters are wired, `create`, `change`,
+`pause`, `resume`, and `delete` raise `InvalidOperationException` without sending anything, and the
+dispatcher fires nothing.
+
+A C# host built with `AddFcqrs` wires the saga starters when the host starts. Register the
+schedules after that, for example from a singleton resolved once the host has started:
+
+```csharp
+builder.Services.AddFcqrs(connectionString, "reminders");
+builder.Services.AddWorkflow<Remind, ScheduledRun<string>, string>();
+builder.Services.AddSingleton(services => ScheduleHost.Register(
+    services.GetRequiredService<IActor>(),
+    ScheduleHost.Workflow(services.GetRequiredService<
+        IWorkflowClient<ScheduledRun<string>, string>>())));
+
+using var host = builder.Build();
+await host.StartAsync();
+var schedules = host.Services.GetRequiredService<ScheduleClient>();
+await schedules.CreateAsync("ada-daily", "remind", "Drink water",
+    ScheduleRule.NewDaily(new TimeOnly(9, 0), "Europe/Oslo"),
+    CatchUp.Latest);
+```
 
 `Schedules.create` returns once the schedule is stored. A second `create` with the same content
-stores nothing. A different content for an existing ID raises `InvalidOperationException`, and so
-does a workflow the dispatcher does not list, an input whose type differs from the workflow's, an
-unknown time zone, a weekly rule without days, or an `Every` interval shorter than one second. A
-schedule ID that is blank, contains `~`, or is longer than 200 characters raises
-`ArgumentException`.
+stores nothing; the days of a weekly rule are sorted and their repeats removed first, so
+`[Thursday; Monday]` and `[Monday; Thursday]` are the same content. A different content for an
+existing ID raises `InvalidOperationException`, and so do a workflow the dispatcher does not list
+and an input whose type differs from the workflow's.
+
+`create` and `change` check their arguments before they send anything and raise
+`ArgumentException` for a rule that `ScheduleRule.validate` rejects: a time zone the system cannot
+read, a weekly rule without days or with a value that is not a day of the week, or an `Every`
+interval shorter than one second or longer than 366 days. A missing rule or policy raises
+`ArgumentNullException`. A schedule ID that is blank, contains `~`, or is longer than
+`Schedules.MaxIdLength` (200) characters raises `ArgumentException`. A run's persistence ID, the
+escaped workflow name, `/default-shard/`, and the escaped run ID, must fit in the journal's
+255-character column. Akka escapes both names as `Uri.EscapeDataString` does, and a run ID adds 35
+escaped characters to the schedule ID, so the escaped workflow name and the escaped schedule ID may
+take 205 characters together; more raises `ArgumentException`. A character outside ASCII escapes
+to 6 to 12 characters, so with the workflow `remind` an ID of 34 such characters is already too
+long.
 
 ### A run starts at least once per due time
 
@@ -764,7 +798,7 @@ goes on. A run that is still going at the next due time runs alongside the next 
 - A run decided before a change, pause, or delete still starts, on the workflow and with the input
   stored when it was decided.
 - A fire more than one second before its due time is refused, so a fault in the dispatcher cannot
-  start a run early.
+  start a run more than a second early.
 
 A deploy can stop listing a workflow that stored schedules name. The dispatcher then sends no fire
 for those schedules, logs an error at each due time, and waits. When a later start lists the
@@ -774,9 +808,21 @@ is not listed waits the same way.
 `Schedules.state` reads the dispatcher's index, not the aggregate. The index follows the schedule's
 events through a projection, so it lags by one projection pass: a `pause` that has just returned may
 not show yet. At startup the dispatcher reads every schedule event in the journal, two for each run,
-before it fires. It wakes at least every `akka.fcqrs.schedule-check-interval`, one minute by
-default, so a clock change or a missed timer delays a run by at most that long. The
-[configuration reference](../configuration.html) lists the setting.
+before it fires. It reads each schedule's events with a query of its own, once for every batch of
+500 schedule events in which that schedule has events. Runs of different schedules interleave, so
+a batch names many schedules, and the startup costs about one query for every one or two schedule
+events: about 500,000 queries for a journal that holds a million. It wakes at least every
+`akka.fcqrs.schedule-check-interval`, one minute by default, so a clock change or a missed timer
+delays a run by at most that long. A run whose start fails, or hangs until its ask times out, is
+tried again after the shorter of the check interval and five seconds, counted from the failure.
+The dispatcher does not wait for it, so it delays no other schedule while fewer than 16 starts
+hang at once. The [configuration reference](../configuration.html) lists the setting.
+
+A projection without entity names reads the schedule aggregate's events too, as
+`Event<ScheduleEvent>`. A handler given to `Fcqrs.projection` that raises for an event it does not
+know, such as a catch-all `failwith`, terminates the process. Let such a handler ignore other events,
+or name the entities it reads, as [Add a projection](../how-to/add-a-projection.html#Read-only-some-entities)
+shows.
 
 ### What a schedule does not guarantee
 
@@ -790,6 +836,9 @@ default, so a clock change or a missed timer delays a run by at most that long. 
 
 The application chooses each user's time zone, keeps run steps safe to repeat, and treats the
 workflow's name and the input's stored form as persistent contracts: every schedule stores both.
+FCQRS stores the schedule aggregate's name `fcqrs-schedule`, `ScheduleEvent`, `ScheduleRule`,
+`CatchUp`, `ScheduleSpec`, the snapshot state `ScheduleState` and `AcceptedDue`, run IDs, and every
+run's input, `ScheduledRun { Schedule; Due; Input }`, so these are persistent contracts too.
 
 ## Feed workflows from a stream
 

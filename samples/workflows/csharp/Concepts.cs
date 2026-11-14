@@ -95,7 +95,7 @@ public static class Reminders
         var reminders = WorkflowHost.Register(actor, new Remind());
         var schedules = ScheduleHost.Register(
             actor, ScheduleHost.Workflow(reminders));
-        // The schedules are an aggregate, which stores nothing until this.
+        // Schedule commands throw until the starters are wired.
         ActorWiring.InitSagaStarterEmpty(actor);
         await schedules.CreateAsync("ada-daily", "remind", "Drink water",
             ScheduleRule.NewDaily(new TimeOnly(9, 0), "Europe/Oslo"),

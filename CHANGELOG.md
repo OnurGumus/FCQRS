@@ -9,10 +9,21 @@
   C# has `ScheduleHost.Register(actor, ScheduleHost.Workflow(client))`, which returns a
   `ScheduleClient` with `CreateAsync`, `ChangeAsync`, `PauseAsync`, `ResumeAsync`, `DeleteAsync`, and
   `State`.
-- Rules are `ScheduleRule.Daily(time, zone)`, `Weekly(days, time, zone)`, and `Every(interval)`, at
-  least one second. Local times follow the time zone across daylight saving: a skipped time runs at
-  the next valid time, and a repeated time runs once, at the first occurrence. `CatchUp.Latest`,
-  `All` (at most the 1000 most recent), and `None` decide which missed due times run.
+- Rules are `ScheduleRule.Daily(time, zone)`, `Weekly(days, time, zone)`, and `Every(interval)`,
+  from one second to 366 days. Local times follow the time zone across daylight saving: a skipped
+  time runs at the next valid time, and a repeated time runs once, at the first occurrence.
+  `CatchUp.Latest`, `All` (at most the 1000 most recent), and `None` decide which missed due times
+  run. A weekly rule's days are sorted and their repeats removed, so a repeated `create` with the
+  days in another order is the same content.
+- `create` and `change` raise `ArgumentException` before sending anything for a rule that
+  `ScheduleRule.validate` rejects (a time zone the system cannot read, no days, a value that is not
+  a day, an interval out of range), and for an ID that is blank, contains `~`, is longer than 200
+  characters, or whose escaped form with the escaped workflow name exceeds 205 characters, so a
+  run's persistence ID fits in 255. A missing rule or policy raises `ArgumentNullException`. The
+  aggregate refuses, and never raises for, any rule or a due time it cannot compute.
+- Schedule commands raise `InvalidOperationException` until the actor system's saga starters are
+  wired, and the dispatcher fires nothing until then, because an aggregate that stores an event
+  without them terminates the process after `akka.fcqrs.saga-start-timeout`.
 - A run starts at least once per accepted due time. Its workflow ID is `<schedule ID>@<due time in
   UTC, ISO 8601>`, so a repeated start stores nothing, and its input is
   `ScheduledRun { Schedule; Due; Input }`. The schedule aggregate decides every run, so a stale
@@ -20,11 +31,15 @@
   removed. A run decided before a
   change, pause, or delete still starts, on the workflow and input it was decided with.
 - A schedule whose workflow the dispatcher does not list, because no `Schedules.register` call
-  passed it, logs an error at each due time and starts no run until a later start lists it. `akka.fcqrs.schedule-check-interval` (default one minute) is the
-  longest the dispatcher sleeps between reads of its index.
+  passed it, logs an error at each due time and starts no run until a later start lists it.
+  `akka.fcqrs.schedule-check-interval` (default one minute) is the longest the dispatcher sleeps
+  between reads of its index. A start that fails is tried again the shorter of the check interval
+  and five seconds after the failure, and the dispatcher does not wait for it: a start that hangs
+  delays only its own schedule, while fewer than 16 hang at once.
 - New persistent contracts: the aggregate `fcqrs-schedule`, its event cases, `ScheduleRule`,
-  `CatchUp`, `ScheduleSpec`, run IDs, and, because the aggregate takes snapshots, `ScheduleState`
-  and `AcceptedDue`. Commands are not journaled.
+  `CatchUp`, `ScheduleSpec`, run IDs, every run's input `ScheduledRun { Schedule; Due; Input }`,
+  and, because the aggregate takes snapshots, `ScheduleState` and `AcceptedDue`. Commands are not
+  journaled. Tests pin the JSON of each.
 - The documentation of `version` says what its name decides: when a name may repeat, and that a
   rename switches instances that ran it back to the old steps.
 - The schedule index reads only the schedule aggregate's events, through the entity filter of
@@ -42,13 +57,21 @@
   Without names, a projection reads every entity, as before.
 - The filter is applied in the SQL that captures journal heads, including the full scan, and that
   finds the next events, on SQLite and PostgreSQL. Other entities' events are not sent to the
-  process or deserialized. On SQLite a range on the persistence ID lets the journal's index skip
-  other entities' rows; on PostgreSQL the database still reads them. A filtered pass
-  reads each persistence ID's events with Akka's `CurrentEventsByPersistenceId`, whose envelopes
-  carry the global journal number, and applies them in journal order, as an unfiltered pass does.
-  Progress is stored only for the named entities.
+  process or deserialized. On SQLite the full scan reads only the names' range of the journal's
+  persistence-ID index; the queries bounded by a journal number read every row above it, so a
+  listing never reads and sorts the entity's whole history. On PostgreSQL the database reads other
+  entities' rows in every query. A filtered pass reads each persistence ID's events with Akka's
+  `CurrentEventsByPersistenceId`, one query per persistence ID with events among the next
+  `BatchSize` rows (500 by default), whose envelopes carry the global journal number, and applies
+  them in journal order, as an unfiltered pass does. Interleaved identities therefore cost about one query per one or two
+  events in a first pass. Progress is stored only for the named entities.
 - **Breaking for F# record construction:** `Projection` has a new `Entities` field. Code that builds
   the record directly adds `Entities = []`; `Projection.single`, `multi`, and `filtered` set it.
+- **Breaking for C# binaries:** the optional `entities` parameter changes the signatures of
+  `QueryApi.Init` and `AddProjection`. C# source compiles unchanged, but an assembly compiled
+  against 7.1 fails with `MissingMethodException` until it is rebuilt.
+- The package needs Akka.Persistence.Sql 1.5.59 or later, the version whose
+  `CurrentEventsByPersistenceId` envelopes were checked to carry the global journal number.
 - No stored event, progress row, or journal query of an unfiltered projection changes.
 
 ## 7.5.0 (FCQRS.Workflows)

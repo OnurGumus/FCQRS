@@ -143,14 +143,25 @@ Akka escapes an entity name in its persistence identities as `Uri.EscapeDataStri
 the same way. A name selects the persistence identities that start with the escaped name and `/`,
 which is how aggregates, sagas, and workflows are journaled. The projection's journal queries select
 those rows in SQL, so another aggregate's events or many workflow runs are not sent to the process
-or deserialized. On SQLite, the queries that capture each identity's head use the journal's
-persistence-identity index and skip other entities' rows. On PostgreSQL, the database still reads
-other entities' rows in those queries, when the projection starts and at each full scan.
-The handler receives the named entities' events in journal order, as without a filter, and a named
-projection stores progress only for them.
+or deserialized. They still cost the database a read. On SQLite, the full scan, which runs when the
+projection starts and then every five minutes by default, uses the journal's persistence-identity
+index and skips other entities' rows. The queries that find recent writes and list the next events read every
+row above their journal number, as without a filter: reading the index there would read the
+entity's whole history on each call. On PostgreSQL, the database reads other entities' rows in
+every query. The handler receives the named entities' events in journal order, as without a filter,
+and a named projection stores progress only for them.
+
+A filtered pass reads each persistence identity's events with a query of its own: one for every
+identity that has events among the next 500 rows it lists. When identities' events interleave, as
+the runs of many schedules do, that is about one query for every one or two events, so a first
+pass over a million such events runs about 500,000 small queries that the journal's index serves.
 
 Names are compared exactly, including case. An event of an entity the list leaves out never reaches
-the handler: a handler that also matches a saga's events must name the saga too. The entity name is
+the handler: a handler that also matches a saga's events must name the saga too. A projection
+without names reads every entity, including FCQRS's own: an application that registers workflow
+schedules also hands its handler `Event<ScheduleEvent>`. A handler given to `Fcqrs.projection` that
+raises for an event it does not know, such as a catch-all `failwith`, terminates the process, so
+let it ignore other events or name its entities. The entity name is
 part of each stored event's persistence identity, so renaming an aggregate also changes what this
 list must say. For a transactional projection, set `TransactionalProjectionOptions.Entities`, as
 [Catch up projections](catch-up-projections.html#Configure-discovery-and-waiting) shows.

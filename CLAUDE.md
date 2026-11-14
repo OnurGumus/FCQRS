@@ -97,9 +97,13 @@ Keep these distinctions intact in code comments and documentation.
   projection that stores progress after its handler returns can hand an event to it again.
 - A projection that names entities reads only their persistence IDs (`<escaped name>/...`, escaped
   as Akka escapes a sharding region's name): its SQL selects those rows, so other entities' events
-  are never fetched or deserialized. On SQLite the persistence-ID index skips other rows; on
-  PostgreSQL the database still reads them. A pass still applies the named entities' events in
-  journal order. An event of an entity it does not name never reaches it.
+  are never fetched or deserialized. On SQLite the full scan reads only the names' range of the
+  persistence-ID index; the queries bounded by a journal number read every row above it, because
+  the index range would make each call read the entity's whole history. PostgreSQL reads other
+  rows in every query. A filtered pass reads each persistence ID's events with its own query, so
+  interleaved identities cost about one query per one or two events at startup. A pass still
+  applies the named entities' events in journal order. An event of an entity it does not name never
+  reaches it, and an unnamed projection also receives `Event<ScheduleEvent>`.
 - Most projection queries read only recent writes. A write that commits more than
   `LateWriteWindow` after taking its journal number is handled at the next full scan, so
   `CatchUpAsync` can return before it.
@@ -174,7 +178,8 @@ Keep these distinctions intact in code comments and documentation.
   `ScheduleState` and `AcceptedDue` are persistent contracts. Commands are not journaled.
 - A schedule's run starts at least once per accepted due time. Its workflow ID is
   `<schedule ID>@<due time in UTC, "O" format>`, so a repeated start stores nothing. The run's input
-  is `ScheduledRun { Schedule; Due; Input }`. Run IDs are a contract.
+  is `ScheduledRun { Schedule; Due; Input }`. Run IDs and `ScheduledRun` are contracts. The escaped
+  workflow name and schedule ID must fit in 205 characters, so a run's persistence ID fits in 255.
 - A run decided before a change, pause, or delete still starts, on the workflow and input stored
   when it was decided. Due times inside a pause never run. A deleted schedule ID cannot be created
   again. A fire more than one second early is refused.
@@ -184,9 +189,12 @@ Keep these distinctions intact in code comments and documentation.
 - A schedule whose workflow the dispatcher does not list logs an error at each due time and fires
   nothing until a later start lists it.
 - `Schedules.state` reads the dispatcher's index, which lags the aggregate by one projection pass.
-- The schedule aggregate stores nothing until the actor system's saga starters are wired. One
-  dispatcher per actor system; schedules give no exactly-once side effect and no precision below a
-  second.
+- The schedule aggregate, like every aggregate, waits for the saga starters before it stores an
+  event and terminates the process if they are not wired within `saga-start-timeout`. Schedule
+  commands raise `InvalidOperationException` and the dispatcher fires nothing until they are wired.
+  `create` and `change` validate the rule before sending: `decide` must never raise, because the
+  actor treats that as fatal. One dispatcher per actor system; a hung start delays only its own
+  schedule. Schedules give no exactly-once side effect and no precision below a second.
 
 ### Deployment
 
