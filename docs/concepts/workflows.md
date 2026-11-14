@@ -811,9 +811,12 @@ not show yet. At startup the dispatcher reads every schedule event in the journa
 before it fires. It reads each schedule's events with a query of its own, once for every batch of
 500 schedule events in which that schedule has events. Runs of different schedules interleave, so
 a batch names many schedules, and the startup costs about one query for every one or two schedule
-events: about 500,000 queries for a journal that holds a million. It wakes at least every
-`akka.fcqrs.schedule-check-interval`, one minute by default, so a clock change or a missed timer
-delays a run by at most that long. A run whose start fails, or hangs until its ask times out, is
+events: about 500,000 queries for a journal that holds a million. While fewer than 16 starts are
+running, it wakes at least every `akka.fcqrs.schedule-check-interval`, one minute by default, so a
+clock change or a missed timer delays a run by at most that long. While 16 are running, it reads
+nothing and waits for one of them to end. No other run could start before then, but the error for
+a schedule whose workflow is not registered is logged when a start ends, not at its due time. A
+run whose start fails, or hangs until its ask times out, is
 tried again after the shorter of the check interval and five seconds, counted from the failure.
 The dispatcher does not wait for it, so it delays no other schedule while fewer than 16 starts
 hang at once. The [configuration reference](../configuration.html) lists the setting.

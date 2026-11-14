@@ -965,8 +965,8 @@ module Schedules =
 
     let private checkIntervalKey = "akka.fcqrs.schedule-check-interval"
 
-    /// The longest the dispatcher sleeps before it reads its index again: one minute unless the
-    /// configuration says otherwise.
+    /// The longest the dispatcher sleeps before it reads its index again while fewer than 16 starts
+    /// are running: one minute unless the configuration says otherwise.
     let private checkIntervalOf (config: Akka.Configuration.Config) : TimeSpan =
         if config.HasPath checkIntervalKey then
             // A bare number is seconds, as for `akka.fcqrs.command-timeout`.

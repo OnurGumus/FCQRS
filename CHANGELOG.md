@@ -33,7 +33,9 @@
 - A schedule whose workflow the dispatcher does not list, because no `Schedules.register` call
   passed it, logs an error at each due time and starts no run until a later start lists it.
   `akka.fcqrs.schedule-check-interval` (default one minute) is the longest the dispatcher sleeps
-  between reads of its index. A start that fails is tried again the shorter of the check interval
+  between reads of its index while fewer than 16 starts are running. While 16 are running, it waits
+  for one to end, so the error for an unlisted workflow's due time that passes meanwhile is logged
+  then. A start that fails is tried again the shorter of the check interval
   and five seconds after the failure, and the dispatcher does not wait for it: a start that hangs
   delays only its own schedule, while fewer than 16 hang at once.
 - New persistent contracts: the aggregate `fcqrs-schedule`, its event cases, `ScheduleRule`,

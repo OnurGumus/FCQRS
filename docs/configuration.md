@@ -70,7 +70,7 @@ The .NET configuration path uses colons. The equivalent HOCON path uses nested o
 | `config:akka:fcqrs:command-timeout` | `30s` | Deadline from command subscription setup to its matching aggregate reply; nonmatching events do not extend it |
 | `config:akka:fcqrs:notification-buffer` | `1024` | Maximum queued notifications per subscriber; a full subscriber queue drops its oldest notification |
 | `config:akka:fcqrs:workflow-idle-timeout` | `5s` | How long a workflow instance that is not running stays in memory after a request reached it; `0` makes it leave after every request |
-| `config:akka:fcqrs:schedule-check-interval` | `1m` | The longest the schedule dispatcher sleeps before it reads its index again, so a clock change or a missed wake delays a run by at most this long; `Schedules.register` throws `ConfigurationException` for a value that is not positive |
+| `config:akka:fcqrs:schedule-check-interval` | `1m` | The longest the schedule dispatcher sleeps before it reads its index again while fewer than 16 starts are running, so a clock change or a missed wake delays a run by at most this long; while 16 are running, it waits for one to end instead. `Schedules.register` throws `ConfigurationException` for a value that is not positive |
 | `config:akka:loglevel` | `OFF` | Akka.NET internal log level |
 | `config:akka:stdout-loglevel` | `OFF` | Akka.NET standard-output log level |
 
