@@ -679,7 +679,81 @@ let private versionInBranchTest =
         Expect.isFalse (upgraded.Begun |> Seq.exists (fun path -> path = "0/0/1")) "and does not run the new step"
         Expect.equal (finished (drive [] values (code true)) |> Option.map Payload.toValue<int>) (Some 113) "a new instance runs it"
 
+/// An order with no lines: the block stores nothing, so only the step after it shows that the
+/// instance went past the marker.
+let private versionBeforeEmptyBlockTest =
+    testCase "workflow machine: a version step before a block that stored nothing gives 1 to an instance that passed it" <| fun _ ->
+        let code (guarded: bool) = workflow {
+            let! change = workflow {
+                if guarded then
+                    return! version "notify" 2
+                else
+                    return 1
+            }
+            if change >= 2 then
+                let! (_: int) = activity "notify" (Retry.times 3) never
+                ()
+            let! (reserved: int list) = allAtMost 5 [] (fun (line: string) -> activity line (Retry.times 3) never)
+            let! (shipped: int) = activity "ship" (Retry.times 3) never
+            return change * 100 + List.sum reserved + shipped
+        }
+        let values name =
+            match name with
+            | "ship" -> Some(Ok(Payload.ofValue 10))
+            | "notify" -> Some(Ok(Payload.ofValue 1))
+            | _ -> None
+        let old = (drive [] values (code false)).Journal |> List.ofSeq
+        // The old instance had begun "ship", the step after the block.
+        let upgraded = drive (List.truncate 1 old) values (code true)
+        Expect.equal (finished upgraded |> Option.map Payload.toValue<int>) (Some 110) "the instance keeps the old steps"
+        Expect.equal (List.ofSeq upgraded.Begun) [ "1" ] "it resumes the stored step and begins no other"
+        Expect.equal (finished (drive [] values (code true)) |> Option.map Payload.toValue<int>) (Some 210) "a new instance takes the new step"
+
+let private versionTwiceTest =
+    testCase "workflow machine: two version steps at one point both give the latest to a new instance" <| fun _ ->
+        let body = workflow {
+            let! first = version "first-change" 2
+            let! second = version "second-change" 3
+            let! (value: int) = activity "next" Retry.none never
+            return first * 10 + second + value
+        }
+        let values _ = Some(Ok(Payload.ofValue 100))
+        let run = drive [] values body
+        Expect.equal (finished run |> Option.map Payload.toValue<int>) (Some 123) "neither marker counts as a step the instance passed"
+        replaysFromEveryPrefix (List.ofSeq run.Journal) values body 123
+
+let private blockSwapTest =
+    testCase "workflow machine: a step swapped for a parallel block, or a block for a step, diverges" <| fun _ ->
+        let single = workflow {
+            let! (charge: int) = activity "charge" (Retry.times 3) never
+            return charge
+        }
+        let split = workflow {
+            let! (charges: int list) =
+                all [ activity "charge-card" (Retry.times 3) never
+                      activity "charge-voucher" (Retry.times 3) never ]
+            return List.sum charges
+        }
+        let values _ = Some(Ok(Payload.ofValue 1))
+        // Each instance stopped while its first steps were running.
+        let stepJournal = (drive [] (fun _ -> None) single).Journal |> List.ofSeq
+        let blockJournal = (drive [] (fun _ -> None) split).Journal |> List.ofSeq
+        Expect.throwsT<WorkflowDivergedException> (fun () -> drive stepJournal values split |> ignore) "the journal holds a step where the body runs a block"
+        Expect.throwsT<WorkflowDivergedException> (fun () -> drive blockJournal values single |> ignore) "the journal holds a block's steps where the body runs a step"
+
+let private untilUtcTest =
+    testCase "workflow machine: until reads a time that names no zone as UTC" <| fun _ ->
+        let body = workflow {
+            do! until (DateTime(2026, 12, 1, 9, 0, 0))
+            return 1
+        }
+        let journal = (driveWith List.head [] (fun _ -> None) body).Journal
+        match Seq.head journal with
+        | WorkflowRecord.StepScheduled(_, "until", StepKind.Timer, _, Some due) ->
+            Expect.equal due "2026-12-01T09:00:00.0000000Z" "the stored due time is the given time, in UTC"
+        | other -> failtest $"expected a scheduled timer, found {other}"
+
 let tests =
     testList "workflow machine"
         [ payloadTest; recordTest; liveTest; prefixTest; failureTest; unhandledTest; divergedTest; longTest; storedValueTest
-          allTest; allFailureTest; raceTest; limitTest; andTest; andThreeTest; recursionTest; signalTest; liveSignalTest; unreadableTest; farTimerTest; versionTest; versionLoopTest; wrongSignalTest; versionInBranchTest ]
+          allTest; allFailureTest; raceTest; limitTest; andTest; andThreeTest; recursionTest; signalTest; liveSignalTest; unreadableTest; farTimerTest; versionTest; versionLoopTest; wrongSignalTest; versionInBranchTest; versionBeforeEmptyBlockTest; versionTwiceTest; blockSwapTest; untilUtcTest ]

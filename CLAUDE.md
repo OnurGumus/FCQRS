@@ -130,10 +130,15 @@ Keep these distinctions intact in code comments and documentation.
   I/O only in activities. FCQRS cannot detect a body that breaks this.
 - A workflow starts by ID, with no aggregate event. A second start with the same ID stores nothing.
 - A retry policy's deadline is measured from the stored start of the step. Attempt counts restart
-  with the process.
+  with the process. An activity whose deadline passed while the process was stopped fails without
+  another attempt.
 - A command step subscribes before it sends and resends with the same correlation ID after a
   restart. The aggregate must answer a repeat with its first verdict, checked before anything the
   first command changed. No reply by the deadline is `OutcomeUnknown`, not a rejection.
+- After a restart, a command step and a child start make whole attempts, because a repeat is safe
+  and the first outcome is unknown. The deadline ends them only when an attempt fails after it.
+- An activity result is read back before it is stored. One that cannot be read fails the step as
+  `NotRetryable` after the call was made.
 - A signal is stored before it is acknowledged. A race stores its winner.
 - A workflow has no snapshot. Recovery replays the whole journal, so a loop without a bound makes
   recovery slower with every round.
@@ -143,7 +148,13 @@ Keep these distinctions intact in code comments and documentation.
   a deliberate exception to the fail-fast rule: running instances restart with the process, so a
   crash would repeat at every start.
 - A faulted workflow is final. Nothing restarts it.
+- An instance leaves memory when it ends. A request to an instance that is not running recovers it
+  by replaying its journal, and it then stays in memory until it has had no request for
+  `akka.fcqrs.workflow-idle-timeout`.
 - Step names, step kinds, the workflow name, and stored payload types are persistent contracts.
+- A workflow record is journaled under the CLR name of its `WorkflowRecord` case, which a projection
+  can read before any workflow is registered. The type's name, namespace, and assembly are
+  persistent contracts too.
 
 ### Deployment
 

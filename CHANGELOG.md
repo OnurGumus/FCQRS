@@ -1,5 +1,40 @@
 # Changelog
 
+## 7.3.0 (FCQRS.Workflows)
+
+- **`version` gives 1 to an instance that passed a step which stored nothing.** FCQRS decided that
+  an instance had passed a `version` step only from a record at the path of the step right after
+  it. A block with no branches, such as `allAtMost` over an empty list, stores no record. An
+  instance past such a block got the latest version, ran the new steps, and ran its later steps
+  again at shifted paths with new idempotency keys. A step stored anywhere after the `version` step
+  now shows that the instance passed it.
+- **A command that was waiting for its reply is sent again after a restart, even past its deadline.**
+  A step whose deadline passed while the process was stopped failed without an attempt. An outage
+  longer than five minutes therefore failed every `send` in flight as `OutcomeUnknown`, and every
+  `startChild` as `DeadlineExceeded`. After a restart these two steps now run each attempt to its
+  end, and the deadline ends them only when an attempt fails after it. An activity keeps the old
+  rule: its deadline is the application's own limit.
+- **A parked instance that was already cancelling can be cancelled.** The request was accepted and
+  changed nothing, so the instance stayed parked until matching code was deployed.
+- **`awaitChild` fails once on a result it cannot read.** It asked again every second without end,
+  for example when C# `ctx.Child<TInput, TResult>` named a result type the child does not give. The
+  step now fails as `NotRetryable`.
+- **An activity result that cannot be read back fails the step as `NotRetryable`.** A result that
+  the serializer could write and not read was stored, and the instance was parked at every start
+  after the call had been made.
+- **Replacing a step with a parallel block, or a block with a step, parks the instance.** The
+  mismatch went unnoticed, and the instance ran the new steps beside the stored ones.
+- **`until` reads a `DateTime` that names no zone as UTC.** It was read as local time, so the timer
+  was due early or late by the server's offset from UTC.
+- **A burst of requests to an ended instance replays its journal once.** An instance that is not
+  running left memory after every status or result request, so each request replayed its journal.
+  It now stays for five seconds after a request, or for `akka.fcqrs.workflow-idle-timeout`. An
+  instance still leaves memory when it ends.
+- Workflow records keep their journal names, which are the CLR names of the `WorkflowRecord` cases.
+  The registration of a `fcqrs.workflow.record` name never took effect and is removed: a stable name
+  would have to be registered before any projection read a workflow row. A test now pins the names.
+- No stored record or step path changes. The package needs FCQRS core 7.0.1, released with it.
+
 ## 7.0.1 (FCQRS core)
 
 - **A correlation waiter is notified after a projection retries a failed read.** A projection holds

@@ -140,6 +140,12 @@ module internal Protocol =
 
         interface ISerializable
 
+    /// An instance that is not running got no request for its idle time.
+    type IdleElapsed =
+        { IdleEpoch: int64 }
+
+        interface ISerializable
+
     type AttemptDone =
         { AttemptPath: string
           Attempt: int

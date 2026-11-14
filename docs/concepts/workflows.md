@@ -118,12 +118,18 @@ timeout for one attempt, and a filter that decides which exceptions are worth an
 - `Retry.times 5` makes at most five, with backoff from one second to one minute.
 - `Retry.forever deadline` retries until the deadline.
 
-The deadline is measured from the stored start of the step, so a restart does not extend it.
-Attempts are not stored: after a restart the attempt count and the backoff begin again.
+The deadline is measured from the stored start of the step, so a restart does not extend it. An
+activity whose deadline passed while the process was stopped fails as `DeadlineExceeded` without
+another attempt. Attempts are not stored: after a restart the attempt count and the backoff begin
+again.
 
 When the policy runs out, the failure is stored and raised in the body as
 `WorkflowStepFailedException`. The body can catch it and continue. Replay raises the same exception,
 never the original one.
+
+An activity's result is stored as JSON and read back on replay. A result that the serializer can
+write and cannot read back, such as a record with an interface-typed field, fails the step as
+`NotRetryable` after the call was made.
 
 ## Wait for an answer that arrives later
 
@@ -334,7 +340,7 @@ public sealed class Parent() : Workflow<string, Summary>("parent")
 ```
 
 - `child` starts another workflow and waits for its result. A child that faults fails the step with
-  `ChildFaulted`.
+  `ChildFaulted`. A result that the step's type cannot read fails it with `NotRetryable`.
 - `startChild` gives a handle as soon as the child's start is stored. A child that is never awaited
   outlives its parent.
 - A child's ID is the parent's ID, a colon, and the step's position. A parent that restarts in the
@@ -382,6 +388,10 @@ took the money.
 
 With no reply before the step's deadline, the step fails as `OutcomeUnknown`. That does not mean the
 command was refused: it may have been applied.
+
+A restart can take longer than the deadline. The command is still sent again, because a repeat is
+safe and the first outcome is unknown. After a restart each attempt runs to its end, and the
+deadline ends the step only when an attempt has failed after it. `startChild` follows the same rule.
 
 ## Cancel a workflow
 
@@ -442,7 +452,8 @@ step at the same position.
 
 - **Safe:** changing an activity's implementation, changing steps no running instance has reached,
   and changing a workflow that has no running instances.
-- **Not safe:** adding, removing, reordering, or renaming steps that a running instance has passed.
+- **Not safe:** adding, removing, reordering, or renaming steps that a running instance has passed,
+  and replacing a step with a parallel block or a block with a step.
 
 `version` records which code an instance runs:
 

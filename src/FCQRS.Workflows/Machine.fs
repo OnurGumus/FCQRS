@@ -12,7 +12,10 @@ type internal StepState =
 /// The journal as the machine replays it: the state of every step, and the signals that were
 /// stored and not yet consumed by a wait.
 type internal History() =
-    /// The state of each step, by path.
+    /// The paths of the blocks that hold a stored step.
+    let blocks = HashSet<string>()
+
+    /// The state of each step, by path. `Record` adds to it.
     member val Steps = Dictionary<string, StepState>()
     /// Stored signals no wait has consumed, oldest first: name, payload, and the trace context
     /// of the caller that sent the signal.
@@ -20,10 +23,44 @@ type internal History() =
     /// Whether a cancel request is stored.
     member val CancelRequested = false with get, set
 
-    /// Whether the journal holds a step at this path or under it.
-    member this.Reached(path: string) : bool =
-        this.Steps.ContainsKey path
-        || this.Steps.Keys |> Seq.exists (fun stored -> stored.StartsWith(path + "/"))
+    /// Whether the journal shows that a fiber went past its step `next`, where the fiber's steps
+    /// have the paths `prefix` + index: it holds a step at that index or a later one, or under
+    /// one. A step that stored nothing, such as a block with no branches, leaves no record of its
+    /// own, so the steps after it count. A version marker at `next` sits beside the step sequence
+    /// and shows nothing.
+    member this.ReachedFrom(prefix: string, next: int) : bool =
+        let reaches (stored: string) =
+            stored.StartsWith(prefix, StringComparison.Ordinal)
+            && (let rest = stored.Substring prefix.Length
+                let ending = rest.IndexOfAny [| '/'; '@' |]
+                let digits = if ending < 0 then rest else rest.Substring(0, ending)
+
+                match Int32.TryParse digits with
+                | true, index -> index > next || (index = next && not (ending >= 0 && rest[ending] = '@'))
+                | _ -> false)
+
+        this.Steps.Keys |> Seq.exists reaches
+
+    /// Stores the state of the step at `path`.
+    member this.Record(path: string, state: StepState) =
+        this.Steps[path] <- state
+        // "2/0/1" is step 1 of branch 0 of the block at "2". A version marker ends in "@" and its
+        // change ID, and takes the place of the step it sits beside.
+        let steps =
+            match path.IndexOf '@' with
+            | -1 -> path
+            | marker -> path.Substring(0, marker)
+
+        let mutable slash = steps.IndexOf '/'
+
+        while slash >= 0 do
+            blocks.Add(steps.Substring(0, slash)) |> ignore
+            // After the block's path comes a branch index, then the next step's index.
+            let branch = steps.IndexOf('/', slash + 1)
+            slash <- if branch < 0 then -1 else steps.IndexOf('/', branch + 1)
+
+    /// Whether the journal holds a step in a branch of a block at `path`.
+    member _.HoldsBlock(path: string) : bool = blocks.Contains path
 
     /// Removes and returns the oldest stored signal with this name: its payload and its sender's
     /// trace context.
@@ -38,15 +75,15 @@ type internal History() =
     /// Applies a record read from the journal, in journal order.
     member this.Apply(record: WorkflowRecord) =
         match record with
-        | WorkflowRecord.StepScheduled(path, name, kind, at, detail) -> this.Steps[path] <- Scheduled(name, kind, at, detail)
+        | WorkflowRecord.StepScheduled(path, name, kind, at, detail) -> this.Record(path, Scheduled(name, kind, at, detail))
         | WorkflowRecord.StepCompleted(path, name, kind, result, _) ->
-            this.Steps[path] <- Completed(name, kind, result)
+            this.Record(path, Completed(name, kind, result))
 
             // A wait consumed the oldest signal with its name, unless its timeout passed first.
             if kind = StepKind.Signal && result <> Payload.timedOut then
                 this.TakeSignal name |> ignore
         | WorkflowRecord.StepFailed(path, name, kind, error, _) ->
-            this.Steps[path] <- Failed(name, kind, error)
+            this.Record(path, Failed(name, kind, error))
 
             // A wait that could not read its signal consumed it all the same.
             if kind = StepKind.Signal && error.Kind = ErrorKind.NotRetryable then
@@ -68,6 +105,12 @@ type internal Fiber(prefix: string, parent: Fiber option) =
 
     /// The path the fiber's next step will take.
     member _.PeekPath() = prefix + string next
+
+    /// What every path of the fiber's steps starts with.
+    member _.Prefix = prefix
+
+    /// The index the fiber's next step will take.
+    member _.Next = next
 
     /// The block this branch belongs to, if it is a branch.
     member _.Parent = parent
@@ -126,6 +169,12 @@ type internal Machine(history: History, encodeResult: objnull -> Payload, clock:
         if name <> expected || kind <> expectedKind then
             raise (WorkflowDivergedException(path, $"{expectedKind} '{expected}'", $"{kind} '{name}'"))
 
+    let describe (state: StepState) : string =
+        match state with
+        | Scheduled(name, kind, _, _)
+        | Completed(name, kind, _)
+        | Failed(name, kind, _) -> $"{kind} '{name}'"
+
     /// `at + span`, or the latest representable time when that overflows.
     let later (at: DateTime) (span: TimeSpan) : DateTime =
         if span >= DateTime.MaxValue - at then DateTime.MaxValue else at + span
@@ -173,9 +222,9 @@ type internal Machine(history: History, encodeResult: objnull -> Payload, clock:
             | _ -> signalWaits.Remove path |> ignore
 
     /// Whether the journal shows that the instance went past the fiber's next step: a step is
-    /// stored there, or the block the fiber is a branch of was itself passed.
+    /// stored there or later in the fiber, or the block the fiber is a branch of was itself passed.
     let rec passed (fiber: Fiber) : bool =
-        history.Reached(fiber.PeekPath())
+        history.ReachedFrom(fiber.Prefix, fiber.Next)
         || (match fiber.Parent with
             | Some parent -> passed parent
             | None -> false)
@@ -234,6 +283,11 @@ type internal Machine(history: History, encodeResult: objnull -> Payload, clock:
             if leaf.Kind = StepKind.Signal then
                 signalWaits.Add path
         | false, _ ->
+            // The journal holds a block here: a step in its place would run beside the block's
+            // stored steps and repeat their work.
+            if history.HoldsBlock path then
+                raise (WorkflowDivergedException(path, $"{leaf.Kind} '{leaf.Name}'", "the steps of a parallel block"))
+
             let time = clock ()
             wait None None |> ignore
 
@@ -259,6 +313,12 @@ type internal Machine(history: History, encodeResult: objnull -> Payload, clock:
         let mutable finished = 0
         let mutable started = 0
         let mutable failed = false
+
+        // A block stores nothing at its own path. A step stored there would be left unfinished
+        // while the block's branches run.
+        match history.Steps.TryGetValue path with
+        | true, stored -> raise (WorkflowDivergedException(path, "a parallel block", describe stored))
+        | _ -> ()
 
         let rec startNext () =
             if started < count && not failed then
@@ -370,7 +430,7 @@ type internal Machine(history: History, encodeResult: objnull -> Payload, clock:
     member _.Apply(record: WorkflowRecord) : Emit list =
         match record with
         | WorkflowRecord.StepScheduled(path, name, kind, at, detail) ->
-            history.Steps[path] <- Scheduled(name, kind, at, detail)
+            history.Record(path, Scheduled(name, kind, at, detail))
 
             match pending.TryGetValue path with
             | true, step ->
@@ -386,7 +446,7 @@ type internal Machine(history: History, encodeResult: objnull -> Payload, clock:
                     signalWaits.Add path
             | _ -> ()
         | WorkflowRecord.StepCompleted(path, name, kind, result, _) ->
-            history.Steps[path] <- Completed(name, kind, result)
+            history.Record(path, Completed(name, kind, result))
 
             match pending.TryGetValue path with
             | true, step ->
@@ -400,7 +460,7 @@ type internal Machine(history: History, encodeResult: objnull -> Payload, clock:
                     continueBody ()
                 | _ -> ()
         | WorkflowRecord.StepFailed(path, name, kind, error, _) ->
-            history.Steps[path] <- Failed(name, kind, error)
+            history.Record(path, Failed(name, kind, error))
 
             match pending.TryGetValue path with
             | true, step ->

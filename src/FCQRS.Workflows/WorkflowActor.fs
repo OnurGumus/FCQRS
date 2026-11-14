@@ -19,6 +19,8 @@ module internal WorkflowActor =
     /// A workflow with its types erased, as the actor runs it.
     type Definition =
         { Name: string
+          /// How long an instance that is not running stays in memory after a request reached it.
+          IdleTime: TimeSpan
           EncodeResult: objnull -> Payload
           Body: Payload -> Workflow<objnull> }
 
@@ -75,6 +77,9 @@ module internal WorkflowActor =
         // are ignored, so an attempt outcome or timer of the previous incarnation changes nothing.
         let epoch = Random.Shared.NextInt64()
         let mutable passivationRequested = false
+        let mutable idleTimer: ICancelable option = None
+        // Whether the steps being begun were pending when this instance recovered.
+        let mutable resuming = false
         let created = Stopwatch.StartNew()
         let mutable recovered = 0L
         let nameTag = KeyValuePair<string, objnull>("fcqrs.workflow.name", box definition.Name)
@@ -273,10 +278,23 @@ module internal WorkflowActor =
             for path in List.ofSeq timers.Keys do
                 forget path
 
-        /// Idle instances leave memory: one that was never started, and one that has ended.
+        /// Asks to leave memory. An instance does when it ends: until it has left, the shard
+        /// remembers it and would recover it at the next process start, ahead of new work.
         let passivate () =
             passivationRequested <- true
             mailbox.UntypedContext.Parent.Tell(Passivate(StopEntity), self)
+
+        /// Asks to leave memory once no request has arrived for the idle time. Each request to an
+        /// instance that is not running calls this, so a burst of them is answered from memory
+        /// instead of replaying the journal for every one.
+        let leaveWhenIdle () =
+            idleTimer |> Option.iter (fun timer -> timer.Cancel())
+
+            if definition.IdleTime <= TimeSpan.Zero then
+                idleTimer <- None
+                passivate ()
+            else
+                idleTimer <- Some(scheduler.ScheduleTellOnceCancelable(definition.IdleTime, self, { IdleEpoch = epoch }, self))
 
         let startAttempt (step: PendingStep) (policy: RetryPolicy) (run: AttemptEnv -> Task<objnull>) (attempt: int) =
             let path = step.Path
@@ -398,15 +416,25 @@ module internal WorkflowActor =
 
             match step.Leaf.Op with
             | ActivityOp(policy, run) ->
+                // A command and a child start repeat safely: the aggregate answers a repeated
+                // command with its first verdict, and a second start of a child stores nothing.
+                // The outcome of the one in flight when the process stopped is unknown, and a
+                // step that failed here on its deadline alone would leave it unknown. So after a
+                // recovery these steps make whole attempts: the deadline ends them only when an
+                // attempt fails after it, never before the first one or in the middle of one.
+                let finishesAttempts =
+                    resuming && (step.Leaf.Kind = StepKind.Command || step.Leaf.Kind = StepKind.Child)
+
                 match policy.Deadline with
-                | Some deadline when later scheduledAt deadline <= clock () ->
+                | Some deadline when not finishesAttempts && later scheduledAt deadline <= clock () ->
                     [ stepFailed step ErrorKind.DeadlineExceeded (TimeoutException $"The step's deadline of {deadline} passed.") ]
                 | deadline ->
-                    deadline
-                    |> Option.iter (fun deadline ->
-                        let remaining = later scheduledAt deadline - clock ()
-                        // A deadline further away than the longest timer is checked again when that fires.
-                        schedule step.Path (if remaining > longestTimer then longestTimer else remaining) { DeadlinePath = step.Path; DeadlineEpoch = epoch })
+                    if not finishesAttempts then
+                        deadline
+                        |> Option.iter (fun deadline ->
+                            let remaining = later scheduledAt deadline - clock ()
+                            // A deadline further away than the longest timer is checked again when that fires.
+                            schedule step.Path (if remaining > longestTimer then longestTimer else remaining) { DeadlinePath = step.Path; DeadlineEpoch = epoch })
 
                     startAttempt step policy run 1
                     []
@@ -637,9 +665,12 @@ module internal WorkflowActor =
                     | Ok value ->
                         try
                             let result = step.Leaf.Encode value
+                            // Replay reads the stored result back. One that cannot be read would
+                            // park the instance at every start, after the step's work was done.
+                            step.Leaf.Decode result |> ignore
                             [ WorkflowRecord.StepCompleted(step.Path, step.Leaf.Name, step.Leaf.Kind, result, clock ()) ]
                         with error ->
-                            // A result that cannot be stored cannot be replayed either.
+                            // A result that cannot be stored or read back cannot be replayed.
                             [ stepFailed step ErrorKind.NotRetryable error ]
                     | Error error ->
                         let retryable =
@@ -706,19 +737,30 @@ module internal WorkflowActor =
                     match started, final with
                     | Some(input, _), None ->
                         countRunning true
-                        return! store (runBody input) (loop ())
+                        resuming <- true
+                        let records = runBody input
+                        resuming <- false
+                        return! store records (loop ())
                     | Some _, Some _ ->
-                        // Remembered because the process stopped before its passivation finished.
-                        passivate ()
+                        // Recovered to answer a request, or remembered because the process stopped
+                        // before it had left memory.
+                        leaveWhenIdle ()
                         return! loop ()
-                    | None, _ -> return! loop ()
+                    | None, _ ->
+                        // Created for a request, or remembered from a request before the process
+                        // stopped. A start keeps it; otherwise it leaves when idle. With no idle
+                        // time it waits for its first request, which may be that start.
+                        if definition.IdleTime > TimeSpan.Zero then
+                            leaveWhenIdle ()
+
+                        return! loop ()
                 | :? StartWorkflow as start ->
                     match started with
                     | Some _ ->
                         mailbox.UntypedContext.Sender.Tell({ Created = false; Status = status () }, self)
 
                         if final.IsSome then
-                            passivate ()
+                            leaveWhenIdle ()
 
                         return! loop ()
                     | None ->
@@ -730,14 +772,14 @@ module internal WorkflowActor =
                     mailbox.UntypedContext.Sender.Tell(status (), self)
 
                     if started.IsNone || final.IsSome then
-                        passivate ()
+                        leaveWhenIdle ()
 
                     return! loop ()
                 | :? AwaitResult ->
                     match resultReply () with
                     | Some reply ->
                         mailbox.UntypedContext.Sender.Tell(reply, self)
-                        passivate ()
+                        leaveWhenIdle ()
                     | None -> waiters.Add mailbox.UntypedContext.Sender
 
                     return! loop ()
@@ -752,22 +794,23 @@ module internal WorkflowActor =
                                 (loop ())
                     | _ ->
                         mailbox.UntypedContext.Sender.Tell(SignalRefused(status ()), self)
-                        passivate ()
+                        leaveWhenIdle ()
                         return! loop ()
                 | :? CancelWorkflow ->
                     match started, final with
                     | None, _ ->
                         mailbox.UntypedContext.Sender.Tell(CancelRefused(status ()), self)
-                        passivate ()
+                        leaveWhenIdle ()
                         return! loop ()
                     | Some _, Some _ ->
                         // Already over: there is nothing to cancel.
                         mailbox.UntypedContext.Sender.Tell(CancelAccepted, self)
-                        passivate ()
+                        leaveWhenIdle ()
                         return! loop ()
-                    | Some _, None when history.CancelRequested ->
+                    | Some _, None when history.CancelRequested && machine.IsSome ->
                         // Already cancelling. A repeated request, such as a caller's retry, must not
-                        // fail the cleanup steps the body is running now.
+                        // fail the cleanup steps the body is running now. A parked instance runs
+                        // none, so a request to cancel it ends it below.
                         mailbox.UntypedContext.Sender.Tell(CancelAccepted, self)
                         return! loop ()
                     | Some _, None ->
@@ -831,8 +874,15 @@ module internal WorkflowActor =
                         | Some record -> return! store [ record ] (loop ())
                         | None -> return! loop ()
                     | _ -> return! loop ()
+                | :? IdleElapsed as elapsed ->
+                    // A start that arrived in the meantime keeps the instance in memory.
+                    if elapsed.IdleEpoch = epoch && (started.IsNone || final.IsSome) then
+                        passivate ()
+
+                    return! loop ()
                 | LifecycleEvent PostStop ->
                     cleanup ()
+                    idleTimer |> Option.iter (fun timer -> timer.Cancel())
                     countRunning false
                     countParked false
                     return! loop ()

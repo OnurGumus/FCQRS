@@ -69,11 +69,12 @@ The .NET configuration path uses colons. The equivalent HOCON path uses nested o
 | `config:akka:fcqrs:saga-start-timeout` | `30` | Maximum seconds allowed for the saga-start handshake before [fail-fast](concepts/process-termination.html) |
 | `config:akka:fcqrs:command-timeout` | `30s` | Deadline from command subscription setup to its matching aggregate reply; nonmatching events do not extend it |
 | `config:akka:fcqrs:notification-buffer` | `1024` | Maximum queued notifications per subscriber; a full subscriber queue drops its oldest notification |
+| `config:akka:fcqrs:workflow-idle-timeout` | `5s` | How long a workflow instance that is not running stays in memory after a request reached it; `0` makes it leave after every request |
 | `config:akka:loglevel` | `OFF` | Akka.NET internal log level |
 | `config:akka:stdout-loglevel` | `OFF` | Akka.NET standard-output log level |
 
-The two timeout keys share one unit rule: a **bare number means seconds**. `command-timeout` also
-accepts HOCON durations such as `500ms` or `1m`. HOCON's own duration parser would read a bare number
+The timeout keys share one unit rule: a **bare number means seconds**. `command-timeout` and
+`workflow-idle-timeout` also accept HOCON durations such as `500ms` or `1m`. HOCON's own duration parser would read a bare number
 as milliseconds; FCQRS reads it as seconds, matching `saga-start-timeout`. The command timeout is a deadline that starts when the command subscription
 accepts the command. Non-matching events on the same correlation topic do not restart it. The same
 key bounds the projection wait in the F# facade's `sendAwaiting`: a projection that suppresses the

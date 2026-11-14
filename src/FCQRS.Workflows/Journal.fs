@@ -44,7 +44,11 @@ type StepError =
       ExceptionType: string
       Message: string }
 
-/// The records a workflow instance stores. Their shape is a persistent contract.
+/// The records a workflow instance stores. Their shape is a persistent contract. A row is
+/// journaled under the CLR name of its case, such as
+/// `FCQRS.Workflows.WorkflowRecord+StepScheduled, FCQRS.Workflows`, which a reader resolves
+/// without any registration. This type's name, namespace, and assembly are therefore part of
+/// the contract too.
 [<RequireQualifiedAccess>]
 type WorkflowRecord =
     | Started of input: Payload * at: DateTime * traceparent: string option * parent: string option

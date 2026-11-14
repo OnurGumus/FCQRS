@@ -34,14 +34,19 @@ let private boot (db: string) (name: string) (settings: (string * string) list) 
 
 let private stop (api: IActor) = api.Stop().Wait(TimeSpan.FromSeconds 30.0) |> ignore
 
-let private withSystem name (run: IActor -> unit) =
+let private withSettings name (settings: (string * string) list) (run: IActor -> unit) =
     let db = newDb ()
-    let api = boot db name []
+    let api = boot db name settings
     try
         run api
     finally
         stop api
         deleteDb db
+
+let private withSystem name (run: IActor -> unit) = withSettings name [] run
+
+/// How long an instance that is not running stays in memory after its last request.
+let private idleTimeKey = "config:akka:fcqrs:workflow-idle-timeout"
 
 let private sync (work: Async<'T>) = Async.RunSynchronously(work, 30000)
 let private wait = TimeSpan.FromSeconds 20.0
@@ -307,7 +312,8 @@ let private tracingTest =
 
 let private startRaceTest =
     testCase "workflow: a status request that races a start does not put the started workflow to sleep" <| fun _ ->
-        withSystem "WorkflowStartRace" <| fun api ->
+        // With no idle time, an instance asks to leave memory as soon as it has answered.
+        withSettings "WorkflowStartRace" [ idleTimeKey, "0s" ] <| fun api ->
             let ran = ConcurrentDictionary<string, bool>()
             let flow =
                 Workflows.register api (Workflow.define "raced" (fun (key: string) -> workflow {
@@ -318,8 +324,8 @@ let private startRaceTest =
                     return key
                 }))
             let ids = [ for index in 1 .. 40 -> $"id{index}" ]
-            // An unknown instance leaves memory after it answers a status request. The start can
-            // arrive before that happens.
+            // An unknown instance asks to leave memory after it answers a status request. The start
+            // can arrive before the instance has stopped.
             for id in ids do
                 [ async { let! _ = flow.Status id in return () }
                   async { let! _ = flow.Start id id in return () } ]
@@ -876,10 +882,212 @@ let private metricsTest =
             Expect.equal measured["fcqrs.workflow.running"] 0.0 "none is running at the end"
             Expect.isGreaterThan measured["fcqrs.workflow.step.duration"] 0.0 "step durations were recorded"
 
+// ---------------------------------------------------------------------------
+// Edges: a command past its deadline, a parked instance that was cancelling, results that
+// cannot be read, idle instances, and the names records are stored under.
+// ---------------------------------------------------------------------------
+
+let private lateCommandTest =
+    testCase "workflow: a command that was waiting for its reply is sent again after a restart, even past its deadline" <| fun _ ->
+        let db = newDb ()
+        let gated (api: IActor) =
+            let handle =
+                Fcqrs.aggregate api
+                    { Name = "LateGated"
+                      Initial = 0
+                      Decide = fun (_: Command<GatedCommand>) _ -> if gatedReplies then PersistEvent Opened else IgnoreEvent
+                      Fold = fun _ state -> state + 1
+                      Snapshots = NoSnapshots
+                      Passivation = PassivationPolicy.Default }
+            Fcqrs.wireSagaStarters api []
+            handle
+        let deadline = TimeSpan.FromSeconds 5.0
+        let policy: RetryPolicy =
+            { Retry.none with
+                Schedule = FixedInterval(TimeSpan.FromMilliseconds 50.0)
+                MaxAttempts = None
+                Deadline = Some deadline
+                ShouldRetry = fun error -> error :? TimeoutException || error :? OperationCanceledException }
+        let definition door =
+            Workflow.define "late-knocker" (fun (_: unit) -> workflow {
+                try
+                    let! (_: GatedEvent) = sendWith policy door "door" Knock
+                    return "opened"
+                with :? WorkflowStepFailedException as failed ->
+                    return string failed.Error.Kind
+            })
+        try
+            gatedReplies <- false
+            let first = boot db "WorkflowLateCommand" []
+            let flow = Workflows.register first (definition (gated first))
+            let sinceStart = Diagnostics.Stopwatch.StartNew()
+            sync (flow.Start "k1" ()) |> ignore
+            eventually "the workflow is waiting for the reply" (fun () -> sync (flow.Status "k1") = WorkflowStatus.Running [ "0 send" ])
+            stop first
+            Expect.isLessThan sinceStart.Elapsed deadline "the process stopped before the deadline"
+            // The deadline passes while the process is stopped.
+            let remaining = deadline + TimeSpan.FromMilliseconds 500.0 - sinceStart.Elapsed
+            if remaining > TimeSpan.Zero then Thread.Sleep remaining
+            gatedReplies <- true
+            let second = boot db "WorkflowLateCommand" []
+            try
+                let flow = Workflows.register second (definition (gated second))
+                Expect.equal (sync (flow.Result "k1" wait)) (WorkflowOutcome.Finished "opened") "the command was sent again and answered"
+            finally
+                stop second
+        finally
+            deleteDb db
+
+let private cancelParkedTest =
+    testCase "workflow: a parked instance that was already cancelling can be cancelled" <| fun _ ->
+        let db = newDb ()
+        let outside = Outside()
+        let definition (cleanup: string) =
+            Workflow.define "undoing" (fun (_: unit) -> workflow {
+                try
+                    do! sleep (TimeSpan.FromHours 1.0)
+                    return "slept"
+                with :? WorkflowStepFailedException as failed when failed.Error.Kind = ErrorKind.Cancelled ->
+                    let! (_: int) = activity cleanup (Retry.forever (TimeSpan.FromMinutes 5.0)) (fun context -> task {
+                        outside.Count cleanup |> ignore
+                        do! Task.Run(fun () -> outside.Gate.Wait context.Cancellation)
+                        return 1 })
+                    return raise failed
+            })
+        let parked status = match status with WorkflowStatus.Parked _ -> true | _ -> false
+        try
+            let first = boot db "WorkflowCancelParked" []
+            let flow = Workflows.register first (definition "release")
+            sync (flow.Start "c1" ()) |> ignore
+            eventually "the workflow is sleeping" (fun () -> sync (flow.Status "c1") = WorkflowStatus.Running [ "0 sleep" ])
+            sync (flow.Cancel "c1")
+            eventually "the cleanup step is running" (fun () -> outside.Calls.ContainsKey "release")
+            stop first
+
+            // The cleanup step was renamed while the instance was in it.
+            let renamed = boot db "WorkflowCancelParked" []
+            try
+                let flow = Workflows.register renamed (definition "renamed")
+                eventually "the instance is parked" (fun () -> parked (sync (flow.Status "c1")))
+                sync (flow.Cancel "c1")
+                eventually "the parked instance ended as cancelled" (fun () -> sync (flow.Status "c1") = WorkflowStatus.Cancelled)
+            finally
+                stop renamed
+        finally
+            deleteDb db
+
+let private childResultTest =
+    testCase "workflow: a child result the parent cannot read fails the wait once" <| fun _ ->
+        withSystem "WorkflowChildResult" <| fun api ->
+            let doubling = Workflow.define "doubling" (fun (value: int) -> workflow { return value * 2 })
+            Workflows.register api doubling |> ignore
+            let parent =
+                Workflows.register api (Workflow.define "misreader" (fun (value: int) -> workflow {
+                    let! handle = startChild doubling value
+                    // The handle names a result type the child does not give.
+                    let mistyped: ChildHandle<string list> = { Workflow = handle.Workflow; Id = handle.Id }
+                    try
+                        let! (_: string list) = awaitChild mistyped
+                        return "read"
+                    with :? WorkflowStepFailedException as failed ->
+                        return string failed.Error.Kind
+                }))
+            sync (parent.Start "r1" 21) |> ignore
+            let outcome =
+                try
+                    Some(sync (parent.Result "r1" (TimeSpan.FromSeconds 8.0)))
+                with :? TimeoutException ->
+                    None
+            Expect.equal outcome (Some(WorkflowOutcome.Finished "NotRetryable")) "the wait fails with a failure the body can handle"
+
+/// The serializer writes an `Outline` and cannot read one back: an interface names no type to create.
+type Outline =
+    abstract Sides: int
+
+type Triangle() =
+    interface Outline with
+        member _.Sides = 3
+
+type Drawing = { Outline: Outline }
+
+let private unreadableResultTest =
+    testCase "workflow: an activity result that cannot be read back fails the step and does not park the instance" <| fun _ ->
+        withSystem "WorkflowUnreadableResult" <| fun api ->
+            let flow =
+                Workflows.register api (Workflow.define "drawer" (fun (_: unit) -> workflow {
+                    try
+                        let! (_: Drawing) = activity "draw" Retry.none (fun _ -> task { return { Outline = Triangle() } })
+                        return "drawn"
+                    with :? WorkflowStepFailedException as failed ->
+                        return string failed.Error.Kind
+                }))
+            sync (flow.Start "d1" ()) |> ignore
+            eventually "the instance stopped running" (fun () -> match sync (flow.Status "d1") with WorkflowStatus.Running _ -> false | _ -> true)
+            Expect.equal (sync (flow.Status "d1")) WorkflowStatus.Completed "the instance is not parked"
+            Expect.equal (sync (flow.Result "d1" wait)) (WorkflowOutcome.Finished "NotRetryable") "the step failed with a failure the body can handle"
+
+let private idleTest =
+    testCase "workflow: an ended instance that a request recovered answers a burst from memory, and leaves memory when idle" <| fun _ ->
+        let recoveries = ref 0
+        use listener = new Metrics.MeterListener()
+        listener.InstrumentPublished <- fun instrument listener ->
+            if instrument.Meter.Name = WorkflowTelemetry.MeterName && instrument.Name = "fcqrs.workflow.recovery.records" then
+                listener.EnableMeasurementEvents instrument
+        listener.SetMeasurementEventCallback<int64>(
+            Metrics.MeasurementCallback<int64>(fun _ _ tags _ ->
+                let mutable ours = false
+                for tag in tags do
+                    if tag.Key = "fcqrs.workflow.name" && string tag.Value = "idler" then ours <- true
+                if ours then Interlocked.Increment(&recoveries.contents) |> ignore))
+        listener.Start()
+        withSettings "WorkflowIdle" [ idleTimeKey, "1s" ] <| fun api ->
+            let flow =
+                Workflows.register api (Workflow.define "idler" (fun (value: int) -> workflow {
+                    let! (_: DateTime) = now
+                    return value
+                }))
+            sync (flow.Start "i1" 1) |> ignore
+            Expect.equal (sync (flow.Result "i1" wait)) (WorkflowOutcome.Finished 1) "the workflow ended"
+            // An instance leaves memory when it ends. Give that time to finish.
+            Thread.Sleep 300
+            Expect.equal (sync (flow.Status "i1")) WorkflowStatus.Completed "an ended instance reports its status"
+            let recovered = recoveries.Value
+            for _ in 1 .. 5 do
+                Expect.equal (sync (flow.Status "i1")) WorkflowStatus.Completed "and reports it again"
+            Expect.equal recoveries.Value recovered "the requests that followed did not replay the journal"
+            // Longer than the idle time.
+            Thread.Sleep 2500
+            Expect.equal (sync (flow.Status "i1")) WorkflowStatus.Completed "an instance that left memory still answers"
+            Expect.equal recoveries.Value (recovered + 1) "the idle instance had left memory, and the request recovered it"
+
+let private manifestTest =
+    testCase "workflow: each record is journaled under the name its stored rows carry" <| fun _ ->
+        use system = Akka.Actor.ActorSystem.Create "workflow-manifests"
+        let serializer = FCQRS.ActorSerialization.STJSerializer(system :?> Akka.Actor.ExtendedActorSystem)
+        let at = DateTime(2026, 11, 11, 10, 30, 0, DateTimeKind.Utc)
+        let payload = Payload.ofValue 1
+        let error = { Kind = ErrorKind.Exhausted; ExceptionType = "System.TimeoutException"; Message = "slow" }
+        let records =
+            [ "Started", WorkflowRecord.Started(payload, at, None, None)
+              "StepScheduled", WorkflowRecord.StepScheduled("0", "score", StepKind.Activity, at, None)
+              "StepCompleted", WorkflowRecord.StepCompleted("0", "score", StepKind.Activity, payload, at)
+              "StepFailed", WorkflowRecord.StepFailed("1", "ask", StepKind.Activity, error, at)
+              "SignalReceived", WorkflowRecord.SignalReceived("answer", payload, at, None)
+              "CancelRequested", WorkflowRecord.CancelRequested at
+              "Finished", WorkflowRecord.Finished(payload, at)
+              "Faulted", WorkflowRecord.Faulted(error, at)
+              "Cancelled", WorkflowRecord.Cancelled at ]
+        for case, record in records do
+            let manifest = serializer.Manifest record
+            // Journals written since 7.0.0 hold these names. Renaming or moving the type breaks them.
+            Expect.equal manifest $"FCQRS.Workflows.WorkflowRecord+{case}, FCQRS.Workflows" $"the name of a {case} row"
+            Expect.equal (serializer.FromBinary(serializer.ToBinary record, manifest)) (box record) $"a {case} row reads back"
+
 let tests =
     testSequenced (
         testList "workflow"
             [ startTest; faultTest; retryTest; shortTimerTest; restartTest; timerTest; tracingTest; startRaceTest; concurrentStartTest
               signalTest; signalRestartTest; commandTest; parallelCommandTest; commandRestartTest; commandRecoveryTest; unknownOutcomeTest
-              cancelTest; childTest; childRestartTest; parkingTest; streamTest; metricsTest ]
+              cancelTest; childTest; childRestartTest; parkingTest; streamTest; metricsTest
+              lateCommandTest; cancelParkedTest; childResultTest; unreadableResultTest; idleTest; manifestTest ]
     )

@@ -240,7 +240,8 @@ type WorkflowContext internal () =
     /// Waits for `duration`. The due time is stored, so a restart does not postpone it.
     member _.Sleep(duration: TimeSpan) : Step = Step(sleep duration)
 
-    /// Waits until `instant` (UTC).
+    /// Waits until `instant`. A time that names no zone (`DateTimeKind.Unspecified`) is read as
+    /// UTC, and a local time is converted to UTC.
     member _.Until(instant: DateTime) : Step = Step(until instant)
 
     /// The current UTC time, stored so that replay returns the same value.

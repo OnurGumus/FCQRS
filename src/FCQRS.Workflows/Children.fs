@@ -80,8 +80,9 @@ module ChildSteps =
         WorkflowCore.step<ChildHandle<'Result>> definition.Name StepKind.Child (ActivityOp(startPolicy, run))
 
     /// Waits for a child workflow to end and gives its result. A child that faulted or was
-    /// cancelled fails this step with `ChildFaulted`. If this workflow is cancelled while it
-    /// waits, the child is cancelled too.
+    /// cancelled fails this step with `ChildFaulted`, and a result this step's type cannot read
+    /// fails it with `NotRetryable`. If this workflow is cancelled while it waits, the child is
+    /// cancelled too.
     let awaitChild (handle: ChildHandle<'Result>) : Workflow<'Result> =
         let run (attempt: AttemptEnv) : Task<objnull> =
             task {
@@ -91,7 +92,18 @@ module ChildSteps =
                 match reply with
                 | :? ResultReply as reply ->
                     match reply with
-                    | ResultFinished result -> return box (Payload.toValue<'Result> result)
+                    | ResultFinished result ->
+                        try
+                            return box (Payload.toValue<'Result> result)
+                        with error ->
+                            // Asking again would give the same stored result, so this is not retried.
+                            return
+                                raise (
+                                    InvalidOperationException(
+                                        $"Child workflow {handle.Workflow} '{handle.Id}' gave a {result.Type}, which this step cannot read as {typeof<'Result>.Name}: {error.Message}",
+                                        error
+                                    )
+                                )
                     | ResultFaulted error ->
                         return raise (ChildEndedException $"Child workflow {handle.Workflow} '{handle.Id}' faulted ({error.Kind}): {error.Message}")
                     | ResultCancelled -> return raise (ChildEndedException $"Child workflow {handle.Workflow} '{handle.Id}' was cancelled.")

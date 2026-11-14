@@ -298,9 +298,15 @@ module WorkflowSteps =
     let sleep (duration: TimeSpan) : Workflow<unit> =
         WorkflowCore.step<unit> "sleep" StepKind.Timer (TimerOp(After duration))
 
-    /// Waits until `instant` (UTC).
+    /// Waits until `instant`. A time that names no zone (`DateTimeKind.Unspecified`) is read as
+    /// UTC, and a local time is converted to UTC.
     let until (instant: DateTime) : Workflow<unit> =
-        WorkflowCore.step<unit> "until" StepKind.Timer (TimerOp(At(instant.ToUniversalTime())))
+        let utc =
+            match instant.Kind with
+            | DateTimeKind.Unspecified -> DateTime.SpecifyKind(instant, DateTimeKind.Utc)
+            | _ -> instant.ToUniversalTime()
+
+        WorkflowCore.step<unit> "until" StepKind.Timer (TimerOp(At utc))
 
     /// The current UTC time, stored so that replay returns the same value.
     let now: Workflow<DateTime> =

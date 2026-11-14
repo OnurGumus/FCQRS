@@ -48,6 +48,19 @@ module Workflows =
 
     let private requestTimeout = TimeSpan.FromSeconds 30.0
 
+    let private idleTimeKey = "akka.fcqrs.workflow-idle-timeout"
+
+    /// How long an instance that is not running stays in memory after a request reached it. Five
+    /// seconds unless the configuration says otherwise.
+    let private idleTimeOf (config: Akka.Configuration.Config) : TimeSpan =
+        if config.HasPath idleTimeKey then
+            // A bare number is seconds, as for `akka.fcqrs.command-timeout`.
+            match config.GetString idleTimeKey |> Int32.TryParse with
+            | true, seconds -> TimeSpan.FromSeconds(float seconds)
+            | _ -> config.GetTimeSpan(idleTimeKey, Nullable(TimeSpan.FromSeconds 5.0))
+        else
+            TimeSpan.FromSeconds 5.0
+
     let private checkId (id: string) =
         if String.IsNullOrWhiteSpace id then
             invalidArg (nameof id) "A workflow ID must not be blank."
@@ -58,17 +71,16 @@ module Workflows =
     /// Registers the workflow and returns its handle. Instances that were running when the
     /// process last stopped resume as soon as this is called.
     let register (api: IActor) (definition: WorkflowDefinition<'Input, 'Result>) : WorkflowHandle<'Input, 'Result> =
-        JournalTypes.Map<WorkflowRecord> "fcqrs.workflow.record"
-
         let erased: WorkflowActor.Definition =
             { Name = definition.Name
+              IdleTime = idleTimeOf api.System.Settings.Config
               EncodeResult = Payload.encode typeof<'Result>
               Body =
                 fun input ->
                     WorkflowCore.bind (definition.Body(Payload.toValue<'Input> input)) (fun result -> Return(box result)) }
 
-        // Remembered, so a running instance restarts with the process. That also turns idle
-        // passivation off: an instance leaves memory when it ends.
+        // Remembered, so a running instance restarts with the process. That also turns Akka's idle
+        // passivation off: an instance asks to leave memory itself, when it ends.
         let factory =
             entityFactoryFor
                 api.System
