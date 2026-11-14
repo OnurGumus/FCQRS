@@ -647,6 +647,149 @@ FCQRS does not stop the process for this, because every running instance restart
 and one mismatched instance would stop all the others on every start. A parked instance can be
 cancelled; it then ends without cleanup.
 
+## Run workflows on a schedule
+
+A schedule starts a registered workflow at each of its due times. Ada wants a reminder every day at
+09:00, Oslo time. The reminder is a workflow whose input is a `ScheduledRun`, and a schedule starts
+it:
+
+```fsharp
+let remind =
+    Workflow.define "remind" (fun (run: ScheduledRun<string>) -> workflow {
+        return!
+            activity "send" (Retry.times 3) (fun attempt ->
+                sendReminder attempt.IdempotencyKey run.Input)
+    })
+
+let startReminders (api: IActor) =
+    async {
+        let reminders = Workflows.register api remind
+        let schedules =
+            Schedules.register api [ ScheduledWorkflow.ofHandle reminders ]
+        // The schedules are an aggregate, which stores nothing until this.
+        Fcqrs.wireSagaStarters api []
+        do!
+            Schedules.create schedules "ada-daily" "remind" "Drink water"
+                (ScheduleRule.Daily(TimeOnly(9, 0), "Europe/Oslo")) CatchUp.Latest
+        return schedules
+    }
+```
+
+<div class="cs-alt"></div>
+
+<!-- sample: workflows/csharp Concepts.cs schedule -->
+```csharp
+public sealed class Remind()
+    : Workflow<ScheduledRun<string>, string>("remind")
+{
+    public override async WorkflowTask<string> Run(
+        WorkflowContext ctx, ScheduledRun<string> run) =>
+        await ctx.Activity("send", Retry.times(3), attempt =>
+            SendReminder(attempt.IdempotencyKey, run.Input));
+}
+
+public static class Reminders
+{
+    public static async Task<ScheduleClient> Start(IActor actor)
+    {
+        var reminders = WorkflowHost.Register(actor, new Remind());
+        var schedules = ScheduleHost.Register(
+            actor, ScheduleHost.Workflow(reminders));
+        // The schedules are an aggregate, which stores nothing until this.
+        ActorWiring.InitSagaStarterEmpty(actor);
+        await schedules.CreateAsync("ada-daily", "remind", "Drink water",
+            ScheduleRule.NewDaily(new TimeOnly(9, 0), "Europe/Oslo"),
+            CatchUp.Latest);
+        return schedules;
+    }
+}
+```
+
+`Schedules.register` registers the schedule aggregate and starts the actor system's one
+**dispatcher**, which may start only the workflows in its list. The list takes each workflow's
+handle, so the workflows are registered first. Each schedule is an instance of the aggregate
+`fcqrs-schedule`, and an aggregate stores no event until the actor system's saga starters are wired.
+Call `Fcqrs.wireSagaStarters` once, after every aggregate and saga is registered, as the
+[aggregate guide](../how-to/define-an-aggregate.html) describes; an application without sagas passes
+an empty list.
+
+`Schedules.create` returns once the schedule is stored. A second `create` with the same content
+stores nothing. A different content for an existing ID raises `InvalidOperationException`, and so
+does a workflow the dispatcher does not list, an input whose type differs from the workflow's, an
+unknown time zone, a weekly rule without days, or an `Every` interval shorter than one second. A
+schedule ID must not be blank, contain `~`, or be longer than 200 characters.
+
+### A run starts at least once per due time
+
+The dispatcher keeps an index of every schedule and sleeps until the earliest due time. For each
+schedule that is due, it takes three steps:
+
+1. It asks the schedule to fire for the due time. The schedule aggregate decides whether that due
+   time runs and stores the workflow and the input the run gets. The index is only a hint. The
+   schedule decides from its own state, so an index that has not seen a pause, change, or delete
+   cannot start a run for a paused or deleted schedule, or for a due time that a change removed.
+2. It starts the run. Its workflow ID is the schedule's ID, `@`, and the due time in UTC in ISO 8601
+   form, such as `ada-daily@2026-11-15T08:00:00.0000000Z`. Its input is
+   `ScheduledRun { Schedule; Due; Input }`, because a workflow body cannot read its own ID.
+3. It reports the start, and the schedule stores it.
+
+The schedule decides before the run starts, so a pause stored before step 1 stops the run. A crash
+after step 1 leaves a decided run with no reported start. After the restart the dispatcher starts
+it again with the same ID, and a second start of an existing workflow stores nothing. A run
+therefore starts at least once per accepted due time, and one workflow instance serves it.
+
+A run is an ordinary workflow instance. A run that faults ends only that instance, and the schedule
+goes on. A run that is still going at the next due time runs alongside the next one.
+
+### Due times, downtime, and changes
+
+- `ScheduleRule.Daily(time, zone)` and `ScheduleRule.Weekly(days, time, zone)` take a local time
+  and a time-zone ID. Due times are stored in UTC, so Ada's reminder runs at 09:00 Oslo time in
+  winter (08:00 UTC) and in summer (07:00 UTC). A local time that does not exist on a day, because
+  clocks move forward, runs at the next local time that does. A local time that occurs twice,
+  because clocks move back, runs once, at the first occurrence.
+- `ScheduleRule.Every interval` counts from the creation or the last change.
+- `CatchUp` decides which missed due times run when the dispatcher could not fire on time, for
+  example while the process was stopped. `CatchUp.Latest` starts one run for the most recent one.
+  `CatchUp.All` starts one for each, oldest first, but at most for the 1000 most recent.
+  `CatchUp.None` starts none and waits for the next due time; a fire up to one minute late still
+  counts as on time.
+- `Schedules.pause` stops runs. `Schedules.resume` continues from the first due time after the
+  resume: a due time inside the pause never runs, whatever the catch-up policy.
+- `Schedules.change` replaces the workflow, input, rule, and catch-up policy. No due time at or
+  before the change runs.
+- `Schedules.delete` ends the schedule. Its ID cannot be used for a new schedule, so a run ID never
+  belongs to two schedules.
+- A run decided before a change, pause, or delete still starts, on the workflow and with the input
+  stored when it was decided.
+- A fire more than one second before its due time is refused, so a fault in the dispatcher cannot
+  start a run early.
+
+A deploy can stop listing a workflow that stored schedules name. The dispatcher then sends no fire
+for those schedules, logs an error at each due time, and waits. When a later start lists the
+workflow again, the catch-up policy decides which missed due times run. A decided run whose workflow
+is not listed waits the same way.
+
+`Schedules.state` reads the dispatcher's index, not the aggregate. The index follows the schedule's
+events through a projection, so it lags by one projection pass: a `pause` that has just returned may
+not show yet. At startup the dispatcher reads every schedule event in the journal, two for each run,
+before it fires. It wakes at least every `akka.fcqrs.schedule-check-interval`, one minute by
+default, so a clock change or a missed timer delays a run by at most that long. The
+[configuration reference](../configuration.html) lists the setting.
+
+### What a schedule does not guarantee
+
+- **Exactly-once side effects.** A run's steps follow the workflow rules on this page: an activity
+  runs at least once. Its idempotency key includes the run's ID, so it differs per due time and
+  stays the same across the attempts of one run. The external system must honour it.
+- **Precision below a second.** A run starts after its due time, once the dispatcher has woken, the
+  schedule has stored its decision, and the run's start is stored.
+- **More than one node.** The dispatcher assumes it is the only one, and FCQRS runs on one node. A
+  second `Schedules.register` on one actor system raises `InvalidOperationException`.
+
+The application chooses each user's time zone, keeps run steps safe to repeat, and treats the
+workflow's name and the input's stored form as persistent contracts: every schedule stores both.
+
 ## Feed workflows from a stream
 
 ```fsharp
@@ -720,6 +863,11 @@ A C# workflow derives from `Workflow<TInput, TResult>` and awaits steps from its
 | `try ... with` for cleanup | `try`/`catch`, or `await` in a `finally` block |
 | `WorkflowFlow.run` | `WorkflowFlow.Run(client, idOf, parallelism, timeout)` |
 | `WorkflowFlow.start` | `WorkflowFlow.Start(client, idOf, parallelism)` |
+| `Schedules.register api [ ScheduledWorkflow.ofHandle handle ]` | `ScheduleHost.Register(actor, ScheduleHost.Workflow(client))` |
+| `Schedules.create`, `Schedules.change` | `schedules.CreateAsync`, `schedules.ChangeAsync` |
+| `Schedules.pause`, `resume`, `delete` | `schedules.PauseAsync`, `ResumeAsync`, `DeleteAsync` |
+| `Schedules.state`, `None` when the index has not read it | `schedules.State(id)`, `null` when the index has not read it |
+| `ScheduleRule.Daily(time, zone)` | `ScheduleRule.NewDaily(time, zone)`, and `NewWeekly`, `NewEvery` |
 
 Inside a method that returns `WorkflowTask<T>`, `await` accepts workflow steps. Awaiting an
 unfinished `Task`, such as `Task.Delay` or an `HttpClient` call, throws and faults the instance,

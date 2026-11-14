@@ -1,5 +1,34 @@
 # Changelog
 
+## 7.6.0 (FCQRS.Workflows)
+
+- **Schedules start workflows at due times.** `Schedules.register api [ ScheduledWorkflow.ofHandle
+  handle ]` registers the schedule aggregate and starts the actor system's dispatcher, which may
+  start the listed workflows. `Schedules.create`, `change`, `pause`, `resume`, and `delete` manage a
+  schedule by ID while the application runs, and `Schedules.state` reads the dispatcher's index.
+  C# has `ScheduleHost.Register(actor, ScheduleHost.Workflow(client))`, which returns a
+  `ScheduleClient` with `CreateAsync`, `ChangeAsync`, `PauseAsync`, `ResumeAsync`, `DeleteAsync`, and
+  `State`.
+- Rules are `ScheduleRule.Daily(time, zone)`, `Weekly(days, time, zone)`, and `Every(interval)`, at
+  least one second. Local times follow the time zone across daylight saving: a skipped time runs at
+  the next valid time, and a repeated time runs once, at the first occurrence. `CatchUp.Latest`,
+  `All` (at most the 1000 most recent), and `None` decide which missed due times run.
+- A run starts at least once per accepted due time. Its workflow ID is `<schedule ID>@<due time in
+  UTC, ISO 8601>`, so a repeated start stores nothing, and its input is
+  `ScheduledRun { Schedule; Due; Input }`. The schedule aggregate decides every run, so a stale
+  index cannot start a run for a paused, changed, or deleted schedule. A run decided before a
+  change, pause, or delete still starts, on the workflow and input it was decided with.
+- A schedule whose workflow is not registered logs an error at each due time and starts no run
+  until a later start registers it. `akka.fcqrs.schedule-check-interval` (default one minute) is the
+  longest the dispatcher sleeps between reads of its index.
+- New persistent contracts: the aggregate `fcqrs-schedule`, its command and event cases,
+  `ScheduleRule`, `CatchUp`, `ScheduleSpec`, and run IDs.
+- The documentation of `version` says what its name decides: when a name may repeat, and that a
+  rename switches instances that ran it back to the old steps.
+- The schedule index reads only the schedule aggregate's events, through the entity filter of
+  FCQRS core 7.2.0. The package needs FCQRS core 7.2.0, released with it. No stored workflow record
+  or step path changes.
+
 ## 7.2.0 (FCQRS core)
 
 - **A projection can read only named entities.** `Projection.ofEntities ["Account"]` in F#,

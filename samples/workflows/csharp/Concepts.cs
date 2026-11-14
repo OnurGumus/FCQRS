@@ -6,6 +6,7 @@ using Akka;
 using Akka.Streams.Dsl;
 using FCQRS.Workflows;
 using FCQRS.Workflows.CSharp;
+using static FCQRS.Common;
 using static FCQRS.CSharp;
 using static Concepts.External;
 // Akka.Streams has a Retry of its own.
@@ -23,6 +24,9 @@ public static class External
 
     public static Task<bool> IsShipped(string key, string order) =>
         Task.FromResult(true);
+
+    public static Task<string> SendReminder(string key, string text) =>
+        Task.FromResult("sent");
 }
 
 public abstract record AccountCommand;
@@ -70,6 +74,33 @@ public sealed class Parent() : Workflow<string, Summary>("parent")
         var again = await ctx.Child<string, Enriched>(
             "enrich", order + "-again");
         return new Summary(detached.Id, again.Points, again.At);
+    }
+}
+// docs:end
+
+// docs:schedule
+public sealed class Remind()
+    : Workflow<ScheduledRun<string>, string>("remind")
+{
+    public override async WorkflowTask<string> Run(
+        WorkflowContext ctx, ScheduledRun<string> run) =>
+        await ctx.Activity("send", Retry.times(3), attempt =>
+            SendReminder(attempt.IdempotencyKey, run.Input));
+}
+
+public static class Reminders
+{
+    public static async Task<ScheduleClient> Start(IActor actor)
+    {
+        var reminders = WorkflowHost.Register(actor, new Remind());
+        var schedules = ScheduleHost.Register(
+            actor, ScheduleHost.Workflow(reminders));
+        // The schedules are an aggregate, which stores nothing until this.
+        ActorWiring.InitSagaStarterEmpty(actor);
+        await schedules.CreateAsync("ada-daily", "remind", "Drink water",
+            ScheduleRule.NewDaily(new TimeOnly(9, 0), "Europe/Oslo"),
+            CatchUp.Latest);
+        return schedules;
     }
 }
 // docs:end

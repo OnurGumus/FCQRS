@@ -8,6 +8,7 @@ open Account
 let score (key: string) (order: string) : Task<int> = Task.FromResult 42
 let charge (key: string) (amount: decimal) : Task<string> = Task.FromResult "paid"
 let isShipped (key: string) (order: string) : Task<bool> = Task.FromResult true
+let sendReminder (key: string) (text: string) : Task<string> = Task.FromResult "sent"
 type ReservationCommand = Reserve of id: string
 type ReservationEvent =
     | Reserved of id: string
@@ -24,3 +25,4 @@ type ReservationEvent =
 // snippet: 10
 // snippet: 11
 // snippet: 12
+// snippet: 13
