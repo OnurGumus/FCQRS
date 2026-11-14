@@ -136,8 +136,11 @@ module Projection =
           Handle = FCQRS.Query.filterPublish handle }
 
     /// Reads only the events of the named entities: an aggregate's, saga's, or workflow's name, as
-    /// registered. A name selects the persistence IDs that start with the name and "/". The journal
-    /// queries select those rows in SQL, so other entities' events are not fetched or deserialized.
+    /// registered. A name selects the persistence IDs that start with it, escaped as Akka escapes a
+    /// sharding region's name (Uri.EscapeDataString), and "/". The journal queries select those
+    /// rows in SQL, so other entities' events are not fetched or deserialized. On SQLite the
+    /// journal's persistence-ID index skips other entities' rows; on PostgreSQL the database still
+    /// reads them.
     /// A pass hands the named entities' events to the handler in journal order, as without a
     /// filter. An empty list reads every entity.
     let ofEntities (names: string list) (p: Projection) : Projection =

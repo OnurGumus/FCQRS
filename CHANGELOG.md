@@ -4,12 +4,15 @@
 
 - **A projection can read only named entities.** `Projection.ofEntities ["Account"]` in F#,
   `TransactionalProjectionOptions.Entities` for a transactional projection, and an optional
-  `entities` argument on every `AddProjection` and `QueryApi.Init` overload in C#. A name selects
-  the persistence IDs that start with the name and `/`: an aggregate's, saga's, or workflow's.
+  `entities` argument on every `AddProjection` and `QueryApi.Init` overload in C#. A name, as
+  registered, selects the persistence IDs that start with it and `/`: an aggregate's, saga's, or
+  workflow's. FCQRS escapes it as Akka escapes a sharding region's name, so `Order Line` selects
+  `Order%20Line/...`.
   Without names, a projection reads every entity, as before.
 - The filter is applied in the SQL that captures journal heads, including the full scan, and that
   finds the next events, on SQLite and PostgreSQL. Other entities' events are not sent to the
-  process or deserialized; the database still reads their rows during a full scan. A filtered pass
+  process or deserialized. On SQLite a range on the persistence ID lets the journal's index skip
+  other entities' rows; on PostgreSQL the database still reads them. A filtered pass
   reads each persistence ID's events with Akka's `CurrentEventsByPersistenceId`, whose envelopes
   carry the global journal number, and applies them in journal order, as an unfiltered pass does.
   Progress is stored only for the named entities.

@@ -1271,6 +1271,54 @@ let private entityFilterSkipsOtherRowsInSql =
             wait (api.Stop())
             deleteDatabases [ journalPath; projectionPath ]
 
+// Akka names a sharding region Uri.EscapeDataString(name), and the persistence ID starts with the
+// region's name. A projection names the entity as it was registered.
+let private entityFilterEscapedNames =
+    testCase "projection: an entity filter takes a registered name that persistence IDs escape"
+    <| fun _ ->
+        let suffix, journalPath, projectionPath = sqlitePaths ()
+        let api =
+            Fcqrs.actor (VerifySerialization.configuration().Build()) NullLoggerFactory.Instance
+                (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite (sqliteString journalPath))) ("EntityEscaped" + suffix)
+        try
+            let order, orderLine, siparis =
+                tallyAggregate api "Order", tallyAggregate api "Order Line", tallyAggregate api "Sipariş"
+            Fcqrs.wireSagaStarters api []
+            for amount in 1..4 do tallyOn order "o" amount
+            for amount in 1..2 do tallyOn orderLine "l" (10 + amount)
+            for amount in 1..3 do tallyOn siparis "s" (20 + amount)
+            let prefixes =
+                use connection = new SqliteConnection(sqliteString journalPath)
+                connection.Open()
+                use command = connection.CreateCommand()
+                command.CommandText <- "SELECT DISTINCT substr(persistence_id, 1, instr(persistence_id, '/') - 1) FROM journal ORDER BY 1"
+                use reader = command.ExecuteReader()
+                [ while reader.Read() do reader.GetString 0 ]
+            Expect.equal prefixes [ "Order"; "Order%20Line"; "Sipari%C5%9F" ] "persistence IDs start with the escaped names"
+            let seen (entities: string list) =
+                let amounts = Collections.Concurrent.ConcurrentQueue<int>()
+                use projection =
+                    Fcqrs.projection api
+                        (Projection.single FromStart (fun message -> tallied message |> Option.iter amounts.Enqueue)
+                         |> Projection.ofEntities entities)
+                wait (projection.CatchUpAsync())
+                List.ofSeq amounts
+            Expect.equal (seen [ "Sipariş" ]) [ 21; 22; 23 ] "a non-ASCII name selects its events"
+            Expect.equal (seen [ "Order Line" ]) [ 11; 12 ] "a name with a space selects its events"
+            Expect.equal (seen [ "Order" ]) [ 1; 2; 3; 4 ] "Order does not select Order Line"
+            let options = TransactionalProjectionOptions("escaped", sqliteStore journalPath projectionPath)
+            options.Entities <- [ "Sipariş" ]
+            let applied = Collections.Concurrent.ConcurrentQueue<int>()
+            use transactional =
+                Fcqrs.transactionalProjection api options (fun _ _ envelope ->
+                    tallied envelope.Event |> Option.iter applied.Enqueue
+                    Task.CompletedTask)
+            wait (transactional.CatchUpAsync())
+            Expect.equal (List.ofSeq applied) [ 21; 22; 23 ] "a transactional projection takes the registered name too"
+        finally
+            wait (api.Stop())
+            deleteDatabases [ journalPath; projectionPath ]
+
 // A FilterKeep event that takes its journal number before later-numbered events and commits after
 // them reaches a filtered projection in a later pass.
 let private postgresEntityFilterLateCommit connectionString =
@@ -1336,6 +1384,7 @@ let tests =
               entityFilterReadsOnlyItsTypes
               testCase "SQLite: a transactional projection with an entity filter applies and stores only its types" (fun _ -> entityFilterTransactional None)
               entityFilterSkipsOtherRowsInSql
+              entityFilterEscapedNames
               match postgres with
               | Some connection ->
                   testCase "PostgreSQL: a transactional projection with an entity filter applies and stores only its types" (fun _ -> entityFilterTransactional postgres)

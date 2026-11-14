@@ -307,13 +307,14 @@ var accountBalances = new TransactionalProjectionOptions("Balances", store)
 };
 ```
 
-A name selects the persistence identities that start with the name and `/`. Every query this
-projection runs, the full scan included, selects those rows in SQL. Other entities' events are not
-sent to the process or deserialized, although the database still reads their rows during a full
-scan. Each pass still applies the named entities' events in
-journal order, and the progress table holds rows only for their persistence identities. An event
-of an entity the list leaves out never reaches the handler. Names are compared exactly, including
-case.
+A name selects the persistence identities that start with the name, escaped as
+`Uri.EscapeDataString` escapes it, and `/`. Every query this projection runs, the full scan
+included, selects those rows in SQL, so other entities' events are not sent to the process or
+deserialized. On SQLite, those queries use the journal's persistence-identity index and skip other
+entities' rows. On PostgreSQL, the database still reads other entities' rows in them. Each pass
+still applies the named entities' events in journal order, and the progress table holds rows only
+for their persistence identities. An event of an entity the list leaves out never reaches the
+handler. Names are compared exactly, including case.
 
 The catch-up timeout belongs to `TransactionalProjectionOptions`, separately from
 `akka.fcqrs.command-timeout` used by [Read your writes](read-your-writes.html).

@@ -68,10 +68,13 @@ type TransactionalProjectionOptions(name: string, store: SqlProjectionStore) =
     /// full scan also finds a write that committed after LateWriteWindow. Default: five minutes.
     member val FullScanInterval = TimeSpan.FromMinutes 5.0 with get, set
     /// The entity names whose events this projection reads: an aggregate's, saga's, or workflow's
-    /// name. A name selects the persistence IDs that start with the name and "/". The journal
-    /// queries select those rows in SQL, so other entities' events are not fetched or deserialized,
-    /// and the projection stores progress only for the named entities. Empty, the default, reads every
-    /// entity. A pass applies the named entities' events in journal order, as without a filter.
+    /// name, as registered. A name selects the persistence IDs that start with it, escaped as Akka
+    /// escapes a sharding region's name (Uri.EscapeDataString), and "/". The journal queries select
+    /// those rows in SQL, so other entities' events are not fetched or deserialized, and the
+    /// projection stores progress only for the named entities. On SQLite the journal's
+    /// persistence-ID index skips other entities' rows; on PostgreSQL the database still reads
+    /// them. Empty, the default, reads every entity. A pass applies the named entities' events in
+    /// journal order, as without a filter.
     member val Entities: string seq = Seq.empty with get, set
 
 /// How much of the journal a projection has read, for tests.

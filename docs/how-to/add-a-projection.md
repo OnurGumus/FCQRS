@@ -138,10 +138,14 @@ builder.Services.AddFcqrs(connectionString, "accounts")
     .AddProjection(Handle, entities: ["Account"]);
 ```
 
-An entity name selects the persistence identities that start with the name and `/`, which is how
-aggregates, sagas, and workflows are journaled. The projection's journal queries select those rows
-in SQL, so another aggregate's events or many workflow runs are not sent to the process or
-deserialized. The database still reads their rows when the projection starts and at each full scan.
+Akka escapes an entity name in its persistence identities as `Uri.EscapeDataString` does, so
+`Order Line` is journaled as `Order%20Line/...`. Give the name as registered, and FCQRS escapes it
+the same way. A name selects the persistence identities that start with the escaped name and `/`,
+which is how aggregates, sagas, and workflows are journaled. The projection's journal queries select
+those rows in SQL, so another aggregate's events or many workflow runs are not sent to the process
+or deserialized. On SQLite, the queries that capture each identity's head use the journal's
+persistence-identity index and skip other entities' rows. On PostgreSQL, the database still reads
+other entities' rows in those queries, when the projection starts and at each full scan.
 The handler receives the named entities' events in journal order, as without a filter, and a named
 projection stores progress only for them.
 

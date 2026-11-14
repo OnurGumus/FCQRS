@@ -24,18 +24,21 @@ let internal isShardingBookkeeping (persistenceId: string) : bool =
     persistenceId.StartsWith("/sharding/", StringComparison.Ordinal)
     || persistenceId.StartsWith("/system/sharding/", StringComparison.Ordinal)
 
-/// Checks entity names for a projection filter and removes repeats. An empty list selects every
-/// entity.
+/// Checks entity names for a projection filter and returns them as they begin persistence IDs,
+/// without repeats. Akka names a sharding region `Uri.EscapeDataString(name)`, and FCQRS takes the
+/// first segment of a persistence ID from that region's name, so "Order Line" journals as
+/// "Order%20Line/...". An empty list selects every entity.
 let internal validateEntities (argument: string) (entities: string seq) : string list =
     if isNull (box entities) then []
     else
         let names = List.ofSeq entities
         if names |> List.exists String.IsNullOrWhiteSpace then
             invalidArg argument "An entity name must be nonempty."
-        List.distinct names
+        names |> List.map Uri.EscapeDataString |> List.distinct
 
-/// Whether a persistence ID belongs to one of the named entities: aggregates, sagas, and workflows
-/// journal under "<name>/<shard>/<id>". An empty list selects every persistence ID.
+/// Whether a persistence ID belongs to one of the named entities, given as `validateEntities`
+/// returns them: aggregates, sagas, and workflows journal under "<escaped name>/<shard>/<id>". An
+/// empty list selects every persistence ID.
 let internal selectsEntity (entities: string list) (persistenceId: string) : bool =
     entities.IsEmpty
     || entities |> List.exists (fun name -> persistenceId.StartsWith(name + "/", StringComparison.Ordinal))
@@ -192,9 +195,14 @@ type SqlProjectionStore
         parameter.Value <- value
         command.Parameters.Add parameter |> ignore
 
-    // A condition selecting the named entities' persistence IDs, with its parameters added to the
-    // command, or None for every entity. LIKE keeps other rows in the database. SQLite's LIKE ignores
-    // ASCII case, so callers also check each ID with selectsEntity.
+    // A condition selecting the named entities' persistence IDs (names as validateEntities returns
+    // them), with its parameters added to the command, or None for every entity. LIKE keeps other
+    // rows out of the result, but neither database can use an index for it. On SQLite, whose
+    // persistence-ID column compares bytes, a range [name + "/", name + "0") beside it lets the
+    // journal's persistence-ID index skip other entities' rows; '0' is the character after '/'.
+    // PostgreSQL's default collation need not order '/' by its code, so it keeps LIKE alone and
+    // reads other rows. SQLite's LIKE ignores ASCII case, so callers also check each ID with
+    // selectsEntity.
     let entityCondition (command: DbCommand) (entities: string list) =
         match entities with
         | [] -> None
@@ -203,9 +211,15 @@ type SqlProjectionStore
             let conditions =
                 entities
                 |> List.mapi (fun index name ->
-                    let parameterName = $"@entity{index}"
-                    parameter command parameterName DbType.String (escape name + "/%")
-                    $"{persistenceIdSql} LIKE {parameterName} ESCAPE '\\'")
+                    let pattern = $"@entity{index}"
+                    parameter command pattern DbType.String (escape name + "/%")
+                    let matches = $"{persistenceIdSql} LIKE {pattern} ESCAPE '\\'"
+                    if dialect = ProjectionSqlDialect.Sqlite then
+                        parameter command $"@entityFrom{index}" DbType.String (name + "/")
+                        parameter command $"@entityTo{index}" DbType.String (name + "0")
+                        $"({persistenceIdSql} >= @entityFrom{index} AND {persistenceIdSql} < @entityTo{index}"
+                        + $" AND {matches})"
+                    else matches)
             Some("(" + String.concat " OR " conditions + ")")
 
     let transactionCommand (connection: DbConnection) (transaction: DbTransaction) sql =
