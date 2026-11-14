@@ -502,7 +502,8 @@ type internal Dispatcher
     let ready = Collections.Generic.Queue<string>()
     let queued = Collections.Generic.HashSet<string>()
     // When the next pass over the index is due: the earliest time a schedule outside `ready` and
-    // `inFlight` needs looking at, and at most a check interval after the last pass.
+    // `inFlight` needs looking at, and at most a check interval (or a day) from now. A clock that
+    // steps back would leave it further away than that, so `plan` brings it back first.
     let mutable wakeAt = DateTime.MinValue
     let held = Collections.Generic.Queue<string * Event<ScheduleEvent>>()
     let mutable holding = false
@@ -672,6 +673,10 @@ type internal Dispatcher
     let plan (now: DateTime) =
         lock gate (fun () ->
             let due = ResizeArray<string * DateTime>()
+
+            // After the clock steps back, the next pass would wait as long as the step.
+            if wakeAt > now + min checkInterval longestWait then
+                wakeAt <- now
 
             if parallelFires > inFlight.Count && now >= wakeAt then
                 // The loop waits at most a day at a time, whatever the check interval.

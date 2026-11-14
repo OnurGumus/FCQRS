@@ -765,6 +765,25 @@ let private longCheckInterval =
             finally
                 node.Stop()
 
+let private clockStepsBack =
+    testCase "schedules: after the clock steps back and is corrected past a due time, the run starts within a few check intervals" <| fun _ ->
+        withDb <| fun db ->
+            let runs = Runs()
+            let node = boot db "ScheduleClockBack" TimeSpan.Zero runs
+            try
+                sync (Schedules.create node.Schedules "back" "remind" "x" (ScheduleRule.Every hour) CatchUp.Latest)
+                eventually "the index has the schedule" (fun () -> hasView node "back")
+                // Let the dispatcher plan on the true clock, then on a clock an hour behind.
+                Thread.Sleep 2500
+                shiftTo node (TimeSpan.FromHours -1.0)
+                Thread.Sleep 3000
+                // The correction lands two seconds past the first due time. The check interval is
+                // one second, so the dispatcher looks again within a second or two.
+                shiftTo node pastFirstHour
+                eventuallyWithin 10.0 "the run starts after the correction" (fun () -> runs.Count = 1)
+            finally
+                node.Stop()
+
 let private weeklyDaysNormalized =
     testCase "schedules: the days of a weekly rule are sorted and repeats removed, so a reordered create is the same content" <| fun _ ->
         withDb <| fun db ->
@@ -807,6 +826,7 @@ let tests =
             stuckStartAlone
             burstLinear
             longCheckInterval
+            clockStepsBack
             weeklyDaysNormalized
         ]
     )
