@@ -8,12 +8,14 @@ module ScheduleTests
 open System
 open System.Collections.Concurrent
 open System.Collections.Generic
+open System.Data.Common
 open System.IO
 open System.Threading
 open Expecto
 open Microsoft.Data.Sqlite
 open Microsoft.Extensions.Configuration
 open Microsoft.Extensions.Logging
+open Npgsql
 open FCQRS.Common
 open FCQRS.FSharp
 open FCQRS.Workflows
@@ -84,10 +86,10 @@ type private Node =
 
     member this.Stop() = this.Api.Stop().Wait(TimeSpan.FromSeconds 30.0) |> ignore
 
-/// Boots an actor system on `db`, moves its clock by `shift`, registers the workflows `register`
-/// returns, and the dispatcher.
-/// `bootWith`, with more settings, and the saga starters wired only when `wire` is true.
-let private bootConfigured (db: string) (name: string) (shift: TimeSpan) (loggers: ILoggerFactory) (extra: (string * string) list) (wire: bool) (register: IActor -> ScheduledWorkflow list * WorkflowHandle<ScheduledRun<string>, string> option) =
+/// Boots an actor system on `connection`, moves its clock by `shift`, registers the workflows
+/// `register` returns, and the dispatcher, with more settings, and the saga starters wired only
+/// when `wire` is true.
+let private bootOn (connection: FCQRS.Actor.Connection) (name: string) (shift: TimeSpan) (loggers: ILoggerFactory) (extra: (string * string) list) (wire: bool) (register: IActor -> ScheduledWorkflow list * WorkflowHandle<ScheduledRun<string>, string> option) =
     let settings =
         [ "config:akka:scheduler:implementation", "FCQRS.Scheduler+ShiftedScheduler, FCQRS"
           "config:akka:fcqrs:schedule-check-interval", "1" ]
@@ -97,13 +99,18 @@ let private bootConfigured (db: string) (name: string) (shift: TimeSpan) (logger
         VerifySerialization.configuration()
             .AddInMemoryCollection([ for key, value in settings -> KeyValuePair<string, string | null>(key, value) ])
             .Build()
-    let api = Fcqrs.actor configuration loggers (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite $"Data Source={db};")) name
+    let api = Fcqrs.actor configuration loggers (Some connection) name
     (api.System.Scheduler :?> FCQRS.Scheduler.ShiftedScheduler).Shift <- shift
     let runs, remind = register api
     let schedules = Schedules.register api runs
     if wire then Fcqrs.wireSagaStarters api []
     { Api = api; Remind = remind; Schedules = schedules }
 
+/// `bootOn` on the SQLite file `db`.
+let private bootConfigured (db: string) (name: string) (shift: TimeSpan) (loggers: ILoggerFactory) (extra: (string * string) list) (wire: bool) (register: IActor -> ScheduledWorkflow list * WorkflowHandle<ScheduledRun<string>, string> option) =
+    bootOn (Fcqrs.connect FCQRS.Actor.DBType.Sqlite $"Data Source={db};") name shift loggers extra wire register
+
+/// Boots an actor system on `db` with the saga starters wired.
 let private bootWith (db: string) (name: string) (shift: TimeSpan) (loggers: ILoggerFactory) (register: IActor -> ScheduledWorkflow list * WorkflowHandle<ScheduledRun<string>, string> option) =
     bootConfigured db name shift loggers [] true register
 
@@ -684,7 +691,7 @@ let private stuckStartAlone =
             finally
                 node.Stop()
 
-// A dispatcher fed thousands of schedules that are all due, through its own projection handler, with
+// A dispatcher fed thousands of schedules that are all due, through its in-memory index, with
 // a schedule aggregate that accepts every fire and a workflow that only counts its starts. Counting
 // the due times the dispatcher computes keeps the check independent of the machine's speed.
 let private burstLinear =
@@ -736,10 +743,8 @@ let private burstLinear =
                 let soon = DateTime.UtcNow - hour + TimeSpan.FromSeconds 3.0
                 for i in 1..count do
                     let anchor = if i % 2 = 0 then overdue else soon
-                    dispatcher.Observe(box (envelope $"s{i}" (ScheduleEvent.Created(spec, anchor)))) |> ignore
-                let projection =
-                    Fcqrs.projection api (Projection.multi FromStart dispatcher.Observe |> Projection.ofEntities [ Schedule.EntityName ])
-                dispatcher.Start projection
+                    dispatcher.Observe(box (envelope $"s{i}" (ScheduleEvent.Created(spec, anchor))))
+                dispatcher.Start()
                 eventuallyWithin 120.0 "every schedule started its run" (fun () -> started.Count = count)
                 Thread.Sleep 500
                 Expect.isTrue (started.Values |> Seq.forall (fun runs -> runs = 1)) "each schedule fired once"
@@ -798,6 +803,337 @@ let private weeklyDaysNormalized =
             finally
                 node.Stop()
 
+// The stored index. Its table name, row shape and projection name are persistent contracts, so
+// these tests spell them out instead of reading them from the code.
+
+/// Where a test's journal lives.
+type private Journal =
+    | SqliteFile of string
+    | Postgres of string
+
+let private connectionOf (journal: Journal) =
+    match journal with
+    | SqliteFile path -> Fcqrs.connect FCQRS.Actor.DBType.Sqlite $"Data Source={path};"
+    | Postgres text -> Fcqrs.connect FCQRS.Actor.DBType.PostgreSQL15 text
+
+/// Runs `test` on a new SQLite file, or on a new database of the PostgreSQL server `postgres` names.
+let private withJournal (postgres: string option) (test: Journal -> unit) =
+    match postgres with
+    | None -> withDb (SqliteFile >> test)
+    | Some root ->
+        let database = $"fcqrs_schedule_{Guid.NewGuid():N}"
+        let admin (sql: string) =
+            use connection = new NpgsqlConnection(root)
+            connection.Open()
+            use command = connection.CreateCommand()
+            command.CommandText <- sql
+            command.ExecuteNonQuery() |> ignore
+        admin $"CREATE DATABASE {database}"
+        try
+            let builder = NpgsqlConnectionStringBuilder(root)
+            builder.Database <- database
+            test (Postgres builder.ConnectionString)
+        finally
+            NpgsqlConnection.ClearAllPools()
+            admin $"DROP DATABASE IF EXISTS {database} WITH (FORCE)"
+
+let private openJournal (journal: Journal) : DbConnection =
+    let connection: DbConnection =
+        match journal with
+        | SqliteFile path -> new SqliteConnection($"Data Source={path}")
+        | Postgres text -> new NpgsqlConnection(text)
+    connection.Open()
+    connection
+
+let private command (connection: DbConnection) (sql: string) (parameters: (string * string) list) =
+    let command = connection.CreateCommand()
+    command.CommandText <- sql
+    for name, value in parameters do
+        let parameter = command.CreateParameter()
+        parameter.ParameterName <- name
+        parameter.Value <- value
+        command.Parameters.Add parameter |> ignore
+    command
+
+let private tableExists (journal: Journal) (table: string) =
+    use connection = openJournal journal
+    let sql =
+        match journal with
+        | SqliteFile _ -> "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = @name"
+        | Postgres _ -> "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_name = @name"
+    use count = command connection sql [ "@name", table ]
+    Convert.ToInt64(count.ExecuteScalar()) > 0L
+
+/// Every row of the index table: schedule ID and stored entry.
+let private indexRows (journal: Journal) : Map<string, string> =
+    use connection = openJournal journal
+    use select = command connection "SELECT schedule_id, entry FROM fcqrs_schedule_index" []
+    use reader = select.ExecuteReader()
+    [ while reader.Read() do
+          reader.GetString 0, reader.GetString 1 ]
+    |> Map.ofList
+
+/// Leaves the journal as FCQRS.Workflows 7.6.0 left it: no index table, and no progress or lock row
+/// for the index's projection.
+let private forgetIndex (journal: Journal) =
+    let exists = tableExists journal
+    use connection = openJournal journal
+    if exists "fcqrs_schedule_index" then
+        use drop = command connection "DROP TABLE fcqrs_schedule_index" []
+        drop.ExecuteNonQuery() |> ignore
+    for table in [ "fcqrs_projection_progress"; "fcqrs_projection_progress_lock" ] do
+        if exists table then
+            use delete = command connection $"DELETE FROM {table} WHERE projection_name = @name" [ "@name", "fcqrs-schedule-index" ]
+            delete.ExecuteNonQuery() |> ignore
+
+/// How many schedule events the journal holds.
+let private scheduleEvents (journal: Journal) =
+    use connection = openJournal journal
+    use count = command connection "SELECT COUNT(*) FROM journal WHERE persistence_id LIKE 'fcqrs-schedule/%'" []
+    Convert.ToInt64(count.ExecuteScalar())
+
+/// Waits until the node's index has caught up with the journal, before its first plan.
+let private ready (node: Node) =
+    Expect.isTrue (node.Schedules.Dispatcher.Ready.Wait(TimeSpan.FromSeconds 60.0)) "the index caught up within a minute"
+
+/// The journal events the node's index has read since it started.
+let private envelopesRead (node: Node) =
+    match node.Schedules.Dispatcher.Index with
+    | Some projection -> (projection :?> FCQRS.Projections.IJournalReadCount).EnvelopesRead
+    | None -> failtest "the index has no projection"
+
+/// Waits until the node's index has read every schedule event stored so far.
+let private indexCaughtUp (node: Node) =
+    match node.Schedules.Dispatcher.Index with
+    | Some projection -> projection.CatchUpAsync().Wait(TimeSpan.FromSeconds 60.0) |> fun caught -> Expect.isTrue caught "the index caught up"
+    | None -> failtest "the index has no projection"
+
+/// An actor system with the schedule aggregate and no dispatcher, so the schedule commands it sends
+/// are stored while no index reads them. Returns the system and a function that sends a command and
+/// returns the stored reply.
+let private bareSchedules (connection: FCQRS.Actor.Connection) (name: string) =
+    let configuration =
+        VerifySerialization.configuration()
+            .AddInMemoryCollection([ KeyValuePair<string, string | null>("config:akka:scheduler:implementation", "FCQRS.Scheduler+ShiftedScheduler, FCQRS") ])
+            .Build()
+    let api = Fcqrs.actor configuration nullLoggers (Some connection) name
+    let aggregate =
+        Fcqrs.aggregate
+            api
+            { Name = Schedule.EntityName
+              Initial = Schedule.initial
+              Decide = Schedule.decide
+              Fold = Schedule.fold
+              Snapshots = SnapshotPolicy.Default
+              Passivation = PassivationPolicy.Default }
+    Fcqrs.wireSagaStarters api []
+    let send (id: string) (command: ScheduleCommand) =
+        let reply = sync (aggregate.Send (Fcqrs.newCid ()) (Fcqrs.aggregateId id) command (fun _ -> true))
+        match reply.EventDetails with
+        | ScheduleEvent.Refused reason -> failtest $"{id}: {command} was refused: {reason}"
+        | event -> event
+    api, send
+
+let private stopApi (api: IActor) = api.Stop().Wait(TimeSpan.FromSeconds 30.0) |> ignore
+
+let private hourly (policy: CatchUp) : ScheduleSpec =
+    { Workflow = "remind"
+      Input = Payload.ofValue "x"
+      Rule = ScheduleRule.Every hour
+      CatchUp = policy }
+
+/// Stores an hourly schedule `id` under CatchUp.All and `runs` started runs, without a dispatcher.
+/// Returns the schedule's anchor.
+let private storeHistory (journal: Journal) (id: string) (runs: int) =
+    let api, send = bareSchedules (connectionOf journal) "ScheduleHistory"
+    try
+        let anchor =
+            match send id (ScheduleCommand.Create(hourly CatchUp.All)) with
+            | ScheduleEvent.Created(_, at) -> at
+            | other -> failtest $"created: {other}"
+        let clock = api.System.Scheduler :?> FCQRS.Scheduler.ShiftedScheduler
+        for k in 1..runs do
+            // Half an hour past each due time: CatchUp.All accepts only the most recent 1000.
+            clock.Shift <- TimeSpan.FromHours(float k + 0.5)
+            let due = anchor + TimeSpan.FromHours(float k)
+            send id (ScheduleCommand.Fire due) |> ignore
+            send id (ScheduleCommand.Started due) |> ignore
+        anchor
+    finally
+        stopApi api
+
+/// Sends one command to `id` without a dispatcher.
+let private storeWhileDown (journal: Journal) (id: string) (command: ScheduleCommand) =
+    let api, send = bareSchedules (connectionOf journal) "ScheduleWhileDown"
+    try send id command |> ignore finally stopApi api
+
+let private restartReadsNewEvents (postgres: string option) =
+    let database = if postgres.IsSome then "PostgreSQL" else "SQLite"
+    testCase $"schedules: a restart over 500 runs reads only the events stored since the index last read ({database})" <| fun _ ->
+        withJournal postgres <| fun journal ->
+            let runs = 500
+            let anchor = storeHistory journal "big" runs
+            let last = anchor + TimeSpan.FromHours(float runs)
+            Expect.isGreaterThan (scheduleEvents journal) (int64 (2 * runs)) "the journal holds the whole run history"
+
+            let first = bootOn (connectionOf journal) "ScheduleIndexRestart" TimeSpan.Zero nullLoggers [] true noWorkflows
+            try
+                ready first
+                Expect.equal (view first "big").LastDue (Some last) "the first start reads the history"
+                Expect.isTrue (view first "big").LastStarted "and the last run's start"
+            finally
+                first.Stop()
+
+            storeWhileDown journal "big" ScheduleCommand.Pause
+
+            let second = bootOn (connectionOf journal) "ScheduleIndexRestart" TimeSpan.Zero nullLoggers [] true noWorkflows
+            try
+                ready second
+                Expect.isTrue (view second "big").Paused "the restart reads the pause stored while it was down"
+                Expect.equal (view second "big").LastDue (Some last) "and keeps what it had read before"
+                Expect.equal (envelopesRead second) 1L "the restart reads one event, not the history"
+            finally
+                second.Stop()
+
+let private upgradeBuildsIndex (postgres: string option) =
+    let database = if postgres.IsSome then "PostgreSQL" else "SQLite"
+    testCase $"schedules: a journal without the index table fills it on the first start, fires the next due time once, and later starts read no old event ({database})" <| fun _ ->
+        withJournal postgres <| fun journal ->
+            let runs = Runs()
+            let connection = connectionOf journal
+            let anchor =
+                let first = bootOn connection "ScheduleIndexUpgrade" TimeSpan.Zero nullLoggers [] true (remindOnly runs)
+                try
+                    sync (Schedules.create first.Schedules "u" "remind" "x" (ScheduleRule.Every hour) CatchUp.Latest)
+                    eventually "the index has the schedule" (fun () -> hasView first "u")
+                    let anchor = (view first "u").Anchor
+                    shiftTo first pastFirstHour
+                    eventually "the first run started" (fun () -> (view first "u").LastStarted && (view first "u").LastDue = Some(anchor + hour))
+                    anchor
+                finally
+                    first.Stop()
+
+            forgetIndex journal
+
+            let shift = TimeSpan.FromHours 2.0 + TimeSpan.FromSeconds 2.0
+            let second = bootOn connection "ScheduleIndexUpgrade" shift nullLoggers [] true (remindOnly runs)
+            try
+                ready second
+                Expect.isTrue (indexRows journal |> Map.containsKey "u") "the first start fills the table"
+                Expect.equal (view second "u").LastDue (Some(anchor + hour)) "from the whole history"
+                eventually "the next due time runs" (fun () -> runs.Count >= 2)
+                eventually "its start is reported" (fun () -> (view second "u").LastStarted && (view second "u").LastDue = Some(anchor + 2.0 * hour))
+                Thread.Sleep 1500
+                Expect.equal (dues runs) [ anchor + hour; anchor + 2.0 * hour ] "each due time ran once"
+                indexCaughtUp second
+            finally
+                second.Stop()
+
+            let third = bootOn connection "ScheduleIndexUpgrade" shift nullLoggers [] true (remindOnly runs)
+            try
+                ready third
+                Expect.equal (view third "u").LastDue (Some(anchor + 2.0 * hour)) "the restart loads the stored row"
+                Expect.equal (envelopesRead third) 0L "a later start reads no event an earlier one read"
+                Thread.Sleep 1500
+                Expect.equal runs.Count 2 "no due time ran twice"
+            finally
+                third.Stop()
+
+let private deleteWhileDown =
+    testCase "schedules: a schedule deleted while the dispatcher is down loses its index row" <| fun _ ->
+        withJournal None <| fun journal ->
+            let connection = connectionOf journal
+            let first = bootOn connection "ScheduleIndexDelete" TimeSpan.Zero nullLoggers [] true (remindOnly (Runs()))
+            try
+                sync (Schedules.create first.Schedules "d" "remind" "x" (ScheduleRule.Every hour) CatchUp.Latest)
+                sync (Schedules.create first.Schedules "keep" "remind" "x" (ScheduleRule.Every hour) CatchUp.Latest)
+                indexCaughtUp first
+                Expect.equal (indexRows journal |> Map.keys |> List.ofSeq) [ "d"; "keep" ] "a row per schedule"
+            finally
+                first.Stop()
+
+            storeWhileDown journal "d" ScheduleCommand.Delete
+
+            let second = bootOn connection "ScheduleIndexDelete" TimeSpan.Zero nullLoggers [] true (remindOnly (Runs()))
+            try
+                ready second
+                Expect.equal (indexRows journal |> Map.keys |> List.ofSeq) [ "keep" ] "the deleted schedule's row is gone"
+                Expect.isFalse (hasView second "d") "the index does not hold it"
+                Expect.isTrue (hasView second "keep") "the other schedule stays"
+            finally
+                second.Stop()
+
+let private changedConnectionString =
+    testCase "schedules: the index resumes after the journal's connection string changes" <| fun _ ->
+        withDb <| fun db ->
+            let first = bootOn (Fcqrs.connect FCQRS.Actor.DBType.Sqlite $"Data Source={db};") "ScheduleIndexSource" TimeSpan.Zero nullLoggers [] true (remindOnly (Runs()))
+            try
+                sync (Schedules.create first.Schedules "s" "remind" "x" (ScheduleRule.Every hour) CatchUp.Latest)
+                indexCaughtUp first
+            finally
+                first.Stop()
+
+            let second = bootOn (Fcqrs.connect FCQRS.Actor.DBType.Sqlite $"Data Source={db};Default Timeout=31;") "ScheduleIndexSource" TimeSpan.Zero nullLoggers [] true (remindOnly (Runs()))
+            try
+                ready second
+                Expect.isTrue (hasView second "s") "the index holds the schedule"
+                sync (Schedules.pause second.Schedules "s")
+                eventually "the index follows new events" (fun () -> (view second "s").Paused)
+            finally
+                second.Stop()
+
+let private blank: Payload = { Type = ""; Json = "" }
+
+let private at (day: int) (hourOfDay: int) = DateTime(2026, 11, day, hourOfDay, 0, 0, DateTimeKind.Utc)
+
+let private rowGolden =
+    testCase "schedules: an index row's stored text is a persistent contract" <| fun _ ->
+        let full: ScheduleState =
+            { Created =
+                Some(
+                    { Workflow = "remind"
+                      Input = blank
+                      Rule = ScheduleRule.Daily(TimeOnly(9, 30), "Europe/Oslo")
+                      CatchUp = CatchUp.All },
+                    at 1 8
+                )
+              Spec =
+                Some
+                    { Workflow = "report"
+                      Input = blank
+                      Rule = ScheduleRule.Weekly([ DayOfWeek.Monday; DayOfWeek.Thursday ], TimeOnly(17, 0, 0, 250), "UTC")
+                      CatchUp = CatchUp.None }
+              Anchor = at 2 10
+              PausedAt = Some(at 3 11)
+              ResumedAt = Some(at 4 12)
+              DeletedAt = Some(at 5 13)
+              Last =
+                Some
+                    { Due = at 2 17
+                      Workflow = "remind"
+                      Input = blank
+                      Started = true } }
+        let fullText =
+            """{"format":1,"created":{"spec":{"workflow":"remind","rule":{"daily":{"time":"09:30:00.0000000","zone":"Europe/Oslo"}},"catchUp":"All"},"at":"2026-11-01T08:00:00.0000000Z"},"spec":{"workflow":"report","rule":{"weekly":{"days":["Monday","Thursday"],"time":"17:00:00.2500000","zone":"UTC"}},"catchUp":"None"},"anchor":"2026-11-02T10:00:00.0000000Z","pausedAt":"2026-11-03T11:00:00.0000000Z","resumedAt":"2026-11-04T12:00:00.0000000Z","deletedAt":"2026-11-05T13:00:00.0000000Z","last":{"due":"2026-11-02T17:00:00.0000000Z","workflow":"remind","started":true}}"""
+        Expect.equal (ScheduleIndex.encode full) fullText "a fully populated row"
+        Expect.equal (ScheduleIndex.decode fullText) full "the row reads back as the entry"
+
+        let spec =
+            { Workflow = "remind"
+              Input = blank
+              Rule = ScheduleRule.Every(TimeSpan.FromMinutes 90.0)
+              CatchUp = CatchUp.Latest }
+        let plain: ScheduleState =
+            { Schedule.initial with
+                Created = Some(spec, at 1 8)
+                Spec = Some spec
+                Anchor = at 1 8 }
+        let plainText =
+            """{"format":1,"created":{"spec":{"workflow":"remind","rule":{"every":"01:30:00"},"catchUp":"Latest"},"at":"2026-11-01T08:00:00.0000000Z"},"spec":{"workflow":"remind","rule":{"every":"01:30:00"},"catchUp":"Latest"},"anchor":"2026-11-01T08:00:00.0000000Z","pausedAt":null,"resumedAt":null,"deletedAt":null,"last":null}"""
+        Expect.equal (ScheduleIndex.encode plain) plainText "an every rule, with nothing paused, deleted or run"
+        Expect.equal (ScheduleIndex.decode plainText) plain "it reads back"
+        Expect.throws (fun () -> ScheduleIndex.decode (plainText.Replace("\"format\":1", "\"format\":2")) |> ignore) "a row of an unknown format is refused"
+
 let tests =
     testSequenced (
         testList "schedules" [
@@ -828,5 +1164,17 @@ let tests =
             longCheckInterval
             clockStepsBack
             weeklyDaysNormalized
+            rowGolden
+            restartReadsNewEvents None
+            upgradeBuildsIndex None
+            deleteWhileDown
+            changedConnectionString
+            match Environment.GetEnvironmentVariable "FCQRS_TEST_POSTGRES" with
+            | null | "" -> ptestCase "schedules: the stored index on PostgreSQL: set FCQRS_TEST_POSTGRES to run" ignore
+            | root ->
+                testList "schedules: the stored index on PostgreSQL" [
+                    restartReadsNewEvents (Some root)
+                    upgradeBuildsIndex (Some root)
+                ]
         ]
     )

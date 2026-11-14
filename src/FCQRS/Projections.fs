@@ -568,17 +568,9 @@ let private gap name (envelope: EventEnvelope) (position: int64) =
     if position = Int64.MaxValue || envelope.SequenceNr <> position + 1L then
         raise (JournalHistoryException $"Projection '{name}' found a journal gap for '{envelope.PersistenceId}' after sequence {position}. Retain or restore its journal history, and make every event adapter return exactly one event.")
 
-/// Creates an independently running projection. The handler must write exclusively
-/// through the supplied connection and transaction, and await all its database work.
-/// FCQRS commits the handler's updates and contiguous journal position together.
-/// Each pass applies the events it found in journal order: per persistence ID in sequence
-/// order, and across persistence IDs in write order on SQLite; on PostgreSQL an event that
-/// commits late is applied in a later pass. Retain journal history until it has been processed.
-/// With `options.Entities`, it reads and stores progress for only those entities' persistence IDs.
-/// Configured Akka event adapters are currently unsupported by this projection reader.
-/// Configure the SQL journal through HOCON; DataOptionsSetup overrides are rejected
-/// because capture and replay must be validated against the same database and mapping.
-let start
+// `start`, or with `owned` the projection of a read model FCQRS keeps: see `startOwned`.
+let private startWith
+    (owned: bool)
     (actor: IActor)
     (options: TransactionalProjectionOptions)
     (handler: DbConnection -> DbTransaction -> EventEnvelope -> Task)
@@ -599,7 +591,7 @@ let start
     let name, store = options.Name, options.Store
     let entities = validateEntities "Entities" options.Entities
     let logger = actor.LoggerFactory.CreateLogger "TransactionalProjection"
-    let settings = journalSettings actor false
+    let settings = journalSettings actor owned
     if (store.Dialect = ProjectionSqlDialect.Sqlite && not (settings.Provider.StartsWith("SQLite", StringComparison.OrdinalIgnoreCase)))
        || (store.Dialect = ProjectionSqlDialect.PostgreSql && not (settings.Provider.StartsWith("PostgreSQL", StringComparison.OrdinalIgnoreCase))) then
         invalidArg "options" "The projection store dialect must match the actor's SQL journal provider."
@@ -636,11 +628,39 @@ let start
 
     run actor logger settings options
         { Name = name
-          Resilient = false
+          Resilient = owned
           Initialize = store.InitializeAsync
           Journal = journalReads store entities
           ReadPositions = fun ids token -> store.ReadPositionsAsync(name, ids, token)
           Apply = apply }
+
+/// Creates an independently running projection. The handler must write exclusively
+/// through the supplied connection and transaction, and await all its database work.
+/// FCQRS commits the handler's updates and contiguous journal position together.
+/// Each pass applies the events it found in journal order: per persistence ID in sequence
+/// order, and across persistence IDs in write order on SQLite; on PostgreSQL an event that
+/// commits late is applied in a later pass. Retain journal history until it has been processed.
+/// With `options.Entities`, it reads and stores progress for only those entities' persistence IDs.
+/// Configured Akka event adapters are currently unsupported by this projection reader.
+/// Configure the SQL journal through HOCON; DataOptionsSetup overrides are rejected
+/// because capture and replay must be validated against the same database and mapping.
+let start
+    (actor: IActor)
+    (options: TransactionalProjectionOptions)
+    (handler: DbConnection -> DbTransaction -> EventEnvelope -> Task)
+    : IProjection =
+    startWith false actor options handler
+
+/// `start` for a read model FCQRS keeps for itself, such as the schedule dispatcher's index. Like a
+/// tracked projection, it retries a failed journal read, handler, or commit with backoff instead of
+/// stopping, terminates the process when journal history is missing, and accepts Akka event
+/// adapters that turn each journal row into exactly one event.
+let internal startOwned
+    (actor: IActor)
+    (options: TransactionalProjectionOptions)
+    (handler: DbConnection -> DbTransaction -> EventEnvelope -> Task)
+    : IProjection =
+    startWith true actor options handler
 
 /// Where a tracked projection keeps how far it has read.
 type internal TrackedProgress =

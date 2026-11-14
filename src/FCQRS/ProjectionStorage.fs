@@ -259,6 +259,17 @@ type SqlProjectionStore
             return positions
         }
 
+    // IF NOT EXISTS alone can still race on PostgreSQL catalog entries. This transaction-scoped,
+    // database-local lock only serializes FCQRS DDL.
+    let lockDefinitions (connection: DbConnection) (transaction: DbTransaction) (ct: CancellationToken) =
+        task {
+            if dialect = ProjectionSqlDialect.PostgreSql then
+                use initializeLock = transactionCommand connection transaction "SELECT pg_advisory_xact_lock(@lock)"
+                parameter initializeLock "@lock" DbType.Int64 0x464351525350524AL
+                let! _ = initializeLock.ExecuteScalarAsync(ct)
+                ()
+        }
+
     /// Uses one database for both the journal and the transactional read model.
     new(dialect: ProjectionSqlDialect, connectionFactory: Func<DbConnection>) =
         SqlProjectionStore(dialect, connectionFactory, connectionFactory)
@@ -296,19 +307,47 @@ type SqlProjectionStore
         task {
             use! connection = openConnection projectionConnectionFactory validateProjectionConnection ct
             use! transaction = connection.BeginTransactionAsync(ct)
-            if dialect = ProjectionSqlDialect.PostgreSql then
-                // IF NOT EXISTS alone can still race on PostgreSQL catalog entries.
-                // This transaction-scoped, database-local lock only serializes FCQRS DDL.
-                use initializeLock = transactionCommand connection transaction "SELECT pg_advisory_xact_lock(@lock)"
-                parameter initializeLock "@lock" DbType.Int64 0x464351525350524AL
-                let! _ = initializeLock.ExecuteScalarAsync(ct)
-                ()
+            do! lockDefinitions connection transaction ct
             use createProgress =
                 transactionCommand connection transaction ($"CREATE TABLE IF NOT EXISTS {progressSql} (projection_name TEXT NOT NULL, persistence_id TEXT NOT NULL, sequence_number BIGINT NOT NULL CHECK (sequence_number >= 0), PRIMARY KEY (projection_name, persistence_id))")
             let! _ = createProgress.ExecuteNonQueryAsync(ct)
             use createLock =
                 transactionCommand connection transaction ($"CREATE TABLE IF NOT EXISTS {lockSql} (projection_name TEXT NOT NULL PRIMARY KEY, source_fingerprint TEXT NOT NULL)")
             let! _ = createLock.ExecuteNonQueryAsync(ct)
+            do! transaction.CommitAsync(ct)
+        }
+
+    /// The SQL name of a table FCQRS owns: `name` in the progress table's schema, quoted as the
+    /// progress table is.
+    member internal _.OwnedTable(name: string) : string = qualified "ownedTable" progressSchema name
+
+    /// Creates a table FCQRS owns in the progress table's schema, unless it exists. `columns` is the
+    /// SQL between CREATE TABLE's parentheses. On PostgreSQL it runs under the lock that serializes
+    /// FCQRS's other table creation.
+    member internal this.CreateOwnedTableAsync(name: string, columns: string, ct: CancellationToken) : Task =
+        task {
+            use! connection = openConnection projectionConnectionFactory validateProjectionConnection ct
+            use! transaction = connection.BeginTransactionAsync(ct)
+            do! lockDefinitions connection transaction ct
+            use create = transactionCommand connection transaction ($"CREATE TABLE IF NOT EXISTS {this.OwnedTable name} ({columns})")
+            let! _ = create.ExecuteNonQueryAsync(ct)
+            do! transaction.CommitAsync(ct)
+        }
+
+    /// Binds a projection to this store's journal source, replacing the source it was bound to. Only
+    /// for a projection whose read model and progress live in the journal's own database: they move
+    /// with the journal, so a changed connection string still names their journal. Call
+    /// `InitializeAsync` first.
+    member internal _.RebindProjectionAsync(projectionName: string, ct: CancellationToken) : Task =
+        task {
+            validateName (nameof projectionName) projectionName
+            use! connection = openConnection projectionConnectionFactory validateProjectionConnection ct
+            use! transaction = connection.BeginTransactionAsync(ct)
+            use bind =
+                transactionCommand connection transaction ($"INSERT INTO {lockSql} (projection_name, source_fingerprint) VALUES (@projection, @source) ON CONFLICT (projection_name) DO UPDATE SET source_fingerprint = excluded.source_fingerprint")
+            parameter bind "@projection" DbType.String projectionName
+            parameter bind "@source" DbType.String sourceFingerprint.Value
+            let! _ = bind.ExecuteNonQueryAsync(ct)
             do! transaction.CommitAsync(ct)
         }
 

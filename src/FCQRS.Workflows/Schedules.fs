@@ -472,9 +472,186 @@ type ScheduleView =
       /// The due time the schedule accepts next, or nothing while it is paused or deleted.
       NextDue: DateTime option }
 
+/// The dispatcher's stored index: a table in the journal's database with one row per schedule, kept
+/// by a projection that writes each row in the transaction that stores its read position. The
+/// table's name and columns, the row text, and the projection's name are persistent contracts.
+module internal ScheduleIndex =
+
+    open System.Globalization
+    open System.Text.Json.Nodes
+
+    /// The table, in the journal's schema.
+    [<Literal>]
+    let Table = "fcqrs_schedule_index"
+
+    /// The table's columns: the schedule's ID, and its entry as `encode` writes it.
+    [<Literal>]
+    let Columns = "schedule_id TEXT NOT NULL PRIMARY KEY, entry TEXT NOT NULL"
+
+    /// The projection that keeps the table. Its read positions are stored under this name.
+    [<Literal>]
+    let ProjectionName = "fcqrs-schedule-index"
+
+    /// The version of the row text `encode` writes. `decode` refuses another.
+    [<Literal>]
+    let Format = 1
+
+    let private blank: Payload = { Type = ""; Json = "" }
+
+    /// The entry without inputs: a run's input comes from the schedule's reply to Fire.
+    let strip (state: ScheduleState) =
+        { state with
+            Created = state.Created |> Option.map (fun (spec, at) -> { spec with Input = blank }, at)
+            Spec = state.Spec |> Option.map (fun spec -> { spec with Input = blank })
+            Last = state.Last |> Option.map (fun last -> { last with Input = blank }) }
+
+    /// The entry after one event, or nothing when the schedule leaves the index. The dispatcher folds
+    /// the replies to its own Fire and Started before the projection delivers them, and accepted due
+    /// times only grow, so a Firing or a Fired older than the entry's last due time changes nothing.
+    /// A deleted schedule leaves the index once no run waits to be started, so deleted schedules take
+    /// no memory and no row; an entry without a spec can only come from events that arrived after
+    /// that.
+    let advance (state: ScheduleState) (event: Event<ScheduleEvent>) : ScheduleState option =
+        let next =
+            match event.EventDetails with
+            | ScheduleEvent.Firing(due, _, _) when state.Last |> Option.exists (fun last -> last.Due >= due) -> state
+            | ScheduleEvent.Fired due when state.Last |> Option.exists (fun last -> last.Due > due) -> state
+            | ScheduleEvent.Refused _ -> state
+            | _ -> Schedule.fold event state |> strip
+
+        let finished = next.DeletedAt.IsSome && next.Last |> Option.forall _.Started
+        if finished || next.Spec.IsNone then None else Some next
+
+    let private text (value: string) : JsonNode =
+        match JsonValue.Create value with
+        | null -> raise (ArgumentNullException(nameof value, "An index entry holds no null text."))
+        | node -> node
+
+    let private time (value: DateTime) = text (DateTime.SpecifyKind(value, DateTimeKind.Utc).ToString("O", CultureInfo.InvariantCulture))
+    let private optional (write: 'T -> JsonNode) (value: 'T option) : JsonNode | null = value |> Option.map write |> Option.toObj
+
+    let private objectOf (fields: (string * (JsonNode | null)) list) : JsonNode =
+        let node = JsonObject()
+        for name, value in fields do
+            node[name] <- value
+        node
+
+    let private rule (value: ScheduleRule) =
+        let timeOf (at: TimeOnly) = text (at.ToString("O", CultureInfo.InvariantCulture))
+        match value with
+        | ScheduleRule.Daily(at, zone) -> objectOf [ "daily", objectOf [ "time", timeOf at; "zone", text zone ] ]
+        | ScheduleRule.Weekly(days, at, zone) ->
+            let names = JsonArray([| for day in days -> text (string day) |])
+            objectOf [ "weekly", objectOf [ "days", names; "time", timeOf at; "zone", text zone ] ]
+        | ScheduleRule.Every interval -> objectOf [ "every", text (interval.ToString("c", CultureInfo.InvariantCulture)) ]
+
+    let private catchUp (value: CatchUp) =
+        text (
+            match value with
+            | CatchUp.Latest -> "Latest"
+            | CatchUp.All -> "All"
+            | CatchUp.None -> "None"
+        )
+
+    let private spec (value: ScheduleSpec) =
+        objectOf [ "workflow", text value.Workflow; "rule", rule value.Rule; "catchUp", catchUp value.CatchUp ]
+
+    /// The row text of an index entry. Inputs are not stored.
+    let encode (state: ScheduleState) : string =
+        objectOf
+            [ "format", JsonValue.Create Format
+              "created", state.Created |> optional (fun (created, at) -> objectOf [ "spec", spec created; "at", time at ])
+              "spec", state.Spec |> optional spec
+              "anchor", time state.Anchor
+              "pausedAt", state.PausedAt |> optional time
+              "resumedAt", state.ResumedAt |> optional time
+              "deletedAt", state.DeletedAt |> optional time
+              "last",
+              state.Last
+              |> optional (fun last -> objectOf [ "due", time last.Due; "workflow", text last.Workflow; "started", JsonValue.Create last.Started ]) ]
+        |> _.ToJsonString()
+
+    let private field (node: JsonNode) (name: string) : JsonNode =
+        match node[name] with
+        | null -> raise (FormatException $"The index row has no '{name}'.")
+        | value -> value
+
+    let private optionalField (node: JsonNode) (name: string) : JsonNode option =
+        let mutable value: JsonNode | null = null
+
+        if node.AsObject().TryGetPropertyValue(name, &value) then
+            Option.ofObj value
+        else
+            raise (FormatException $"The index row has no '{name}'.")
+
+    let private textOf (node: JsonNode) = node.GetValue<string>()
+    let private timeOf (node: JsonNode) = DateTime.ParseExact(textOf node, "O", CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind)
+    let private timeOnlyOf (node: JsonNode) = TimeOnly.ParseExact(textOf node, "O", CultureInfo.InvariantCulture)
+
+    let private ruleOf (node: JsonNode) =
+        let cases = node.AsObject()
+        if cases.Count <> 1 then
+            raise (FormatException "An index row's rule has one case.")
+
+        let case = Seq.head cases
+        let value = case.Value |> Option.ofObj |> Option.defaultWith (fun () -> raise (FormatException "An index row's rule is empty."))
+
+        match case.Key with
+        | "daily" -> ScheduleRule.Daily(timeOnlyOf (field value "time"), textOf (field value "zone"))
+        | "weekly" ->
+            let days =
+                [ for day in (field value "days").AsArray() ->
+                      match day with
+                      | null -> raise (FormatException "An index row's day is empty.")
+                      | day -> Enum.Parse<DayOfWeek>(textOf day) ]
+
+            ScheduleRule.Weekly(days, timeOnlyOf (field value "time"), textOf (field value "zone"))
+        | "every" -> ScheduleRule.Every(TimeSpan.ParseExact(textOf value, "c", CultureInfo.InvariantCulture))
+        | other -> raise (FormatException $"Unknown rule '{other}' in an index row.")
+
+    let private catchUpOf (node: JsonNode) =
+        match textOf node with
+        | "Latest" -> CatchUp.Latest
+        | "All" -> CatchUp.All
+        | "None" -> CatchUp.None
+        | other -> raise (FormatException $"Unknown catch-up policy '{other}' in an index row.")
+
+    let private specOf (node: JsonNode) : ScheduleSpec =
+        { Workflow = textOf (field node "workflow")
+          Input = blank
+          Rule = ruleOf (field node "rule")
+          CatchUp = catchUpOf (field node "catchUp") }
+
+    /// The index entry a row's text holds. Raises `FormatException` for text `encode` did not write.
+    let decode (row: string) : ScheduleState =
+        let node =
+            match JsonNode.Parse row with
+            | null -> raise (FormatException "The index row is empty.")
+            | node -> node
+
+        match (field node "format").GetValue<int>() with
+        | Format -> ()
+        | other -> raise (FormatException $"The index row has format {other}; this version reads format {Format}.")
+
+        { Created = optionalField node "created" |> Option.map (fun created -> specOf (field created "spec"), timeOf (field created "at"))
+          Spec = optionalField node "spec" |> Option.map specOf
+          Anchor = timeOf (field node "anchor")
+          PausedAt = optionalField node "pausedAt" |> Option.map timeOf
+          ResumedAt = optionalField node "resumedAt" |> Option.map timeOf
+          DeletedAt = optionalField node "deletedAt" |> Option.map timeOf
+          Last =
+            optionalField node "last"
+            |> Option.map (fun last ->
+                { Due = timeOf (field last "due")
+                  Workflow = textOf (field last "workflow")
+                  Input = blank
+                  Started = (field last "started").GetValue<bool>() }) }
+
 /// The one schedule dispatcher of an actor system. It keeps an index of every schedule from a
 /// projection over the schedule aggregate's events, sleeps until the earliest due time, and starts
-/// runs. The index is a hint: every run is decided by the schedule aggregate.
+/// runs. The index is a hint: every run is decided by the schedule aggregate. The projection stores
+/// the index in the journal's database (see `ScheduleIndex`), so a start reads one row per schedule
+/// and the events stored since, not the schedules' whole history.
 type internal Dispatcher
     (
         api: IActor,
@@ -512,6 +689,8 @@ type internal Dispatcher
     let mutable afterFiring: string -> DateTime -> bool = fun _ _ -> true
     let wake = new Threading.SemaphoreSlim(0, 1)
     let lifetime = new Threading.CancellationTokenSource()
+    let caughtUp = Threading.Tasks.TaskCompletionSource(Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously)
+    let mutable indexProjection: FCQRS.Projections.IProjection option = None
 
     // How many fires run at once when several schedules are due.
     let parallelFires = 16
@@ -520,14 +699,13 @@ type internal Dispatcher
     // The longest single wait; a semaphore wait takes at most Int32.MaxValue milliseconds.
     let longestWait = TimeSpan.FromDays 1.0
 
-    let blank: Payload = { Type = ""; Json = "" }
+    // The journal's database, which holds the stored index and its read positions. Built here, so
+    // a journal the index cannot use raises from Schedules.register.
+    let store = FCQRS.Projections.journalStore api
+    let table = store.OwnedTable ScheduleIndex.Table
 
-    // The index keeps no inputs: a run's input comes from the schedule's reply to Fire.
-    let strip (state: ScheduleState) =
-        { state with
-            Created = state.Created |> Option.map (fun (spec, at) -> { spec with Input = blank }, at)
-            Spec = state.Spec |> Option.map (fun spec -> { spec with Input = blank })
-            Last = state.Last |> Option.map (fun last -> { last with Input = blank }) }
+    // Upcasters are fixed when the dispatcher is registered, as when its projection started there.
+    do FCQRS.EventUpcasting.Internal.freeze api.System
 
     let signal () =
         try
@@ -544,37 +722,25 @@ type internal Dispatcher
     let cidOf (text: string) : FCQRS.Model.Data.CID =
         FCQRS.FSharp.Fcqrs.cid text
 
-    // Folds one event into the index; true when the entry changed. The dispatcher folds the replies
-    // to its own Fire and Started before the projection delivers them, and accepted due times only
-    // grow, so a Firing or a Fired older than the entry's last due time changes nothing. A deleted
-    // schedule leaves the index once no run waits to be started, so deleted schedules take no
-    // memory; an entry without a spec can only come from events that arrived after that.
+    // Folds one event into the index in memory, as `ScheduleIndex.advance` says; true when the
+    // entry changed.
     let apply (id: string) (event: Event<ScheduleEvent>) =
         let state =
             match index.TryGetValue id with
             | true, state -> state
             | _ -> Schedule.initial
 
-        let next =
-            match event.EventDetails with
-            | ScheduleEvent.Firing(due, _, _) when state.Last |> Option.exists (fun last -> last.Due >= due) -> state
-            | ScheduleEvent.Fired due when state.Last |> Option.exists (fun last -> last.Due > due) -> state
-            | ScheduleEvent.Refused _ -> state
-            | _ -> Schedule.fold event state |> strip
-
-        let finished = next.DeletedAt.IsSome && next.Last |> Option.forall _.Started
-
-        if finished || next.Spec.IsNone then
+        match ScheduleIndex.advance state event with
+        | None ->
             upcoming.Remove id |> ignore
             deferred.Remove id |> ignore
             reported.Remove id |> ignore
             index.Remove id
-        elif next <> state then
+        | Some next when next <> state ->
             index[id] <- next
             upcoming.Remove id |> ignore
             true
-        else
-            false
+        | Some _ -> false
 
     // Puts a schedule in `ready`, unless it is there already or its fire is running; the end of
     // that fire puts it there.
@@ -790,14 +956,165 @@ type internal Dispatcher
                     ()
         }
 
-    let loop (projection: FCQRS.Projections.IProjection) : Threading.Tasks.Task =
+    // An event the projection read, from the projection's handler or a test.
+    let observe (id: string) (event: Event<ScheduleEvent>) =
+        lock gate (fun () ->
+            if holding then
+                held.Enqueue(id, event)
+            else
+                observed id event)
+
+        signal ()
+
+    let parameter (command: Data.Common.DbCommand) (name: string) (value: string) =
+        let parameter = command.CreateParameter()
+        parameter.ParameterName <- name
+        parameter.DbType <- Data.DbType.String
+        parameter.Value <- value
+        command.Parameters.Add parameter |> ignore
+
+    let rowCommand (connection: Data.Common.DbConnection) (transaction: Data.Common.DbTransaction) (sql: string) (id: string) =
+        let command = connection.CreateCommand()
+        command.Transaction <- transaction
+        command.CommandText <- sql
+        parameter command "@id" id
+        command
+
+    let decodeRow (id: string) (entry: string) =
+        try
+            ScheduleIndex.decode entry
+        with error ->
+            raise (FormatException($"The row of schedule '{id}' in {ScheduleIndex.Table} cannot be read: {error.Message}", error))
+
+    // The projection's handler. It folds the event into the schedule's stored row, writes or deletes
+    // the row in the transaction that stores the read position, and folds the event into the index
+    // in memory. When the transaction then fails, the projection hands the event over again, and
+    // folding an event a second time changes nothing. The projection outlives the loop, which a test
+    // stops as a crash would, so its database work does not take the loop's cancellation.
+    let indexEvent (connection: Data.Common.DbConnection) (transaction: Data.Common.DbTransaction) (envelope: Akka.Persistence.Query.EventEnvelope) : Threading.Tasks.Task =
         task {
-            // A run decided before a restart is found once the index has read the whole journal.
+            match envelope.Event with
+            | :? Event<ScheduleEvent> as event ->
+                match event.Sender with
+                | Some sender ->
+                    let id = string sender
+                    let token = Threading.CancellationToken.None
+
+                    let! stored =
+                        task {
+                            use select = rowCommand connection transaction $"SELECT entry FROM {table} WHERE schedule_id = @id" id
+
+                            match! select.ExecuteScalarAsync token with
+                            | :? string as entry -> return Some(decodeRow id entry)
+                            | _ -> return None
+                        }
+
+                    match ScheduleIndex.advance (defaultArg stored Schedule.initial) event, stored with
+                    | Some next, Some state when next = state -> ()
+                    | Some next, _ ->
+                        use upsert =
+                            rowCommand
+                                connection
+                                transaction
+                                $"INSERT INTO {table} (schedule_id, entry) VALUES (@id, @entry) ON CONFLICT (schedule_id) DO UPDATE SET entry = excluded.entry"
+                                id
+
+                        parameter upsert "@entry" (ScheduleIndex.encode next)
+                        let! _ = upsert.ExecuteNonQueryAsync token
+                        ()
+                    | None, Some _ ->
+                        use delete = rowCommand connection transaction $"DELETE FROM {table} WHERE schedule_id = @id" id
+                        let! _ = delete.ExecuteNonQueryAsync token
+                        ()
+                    | None, None -> ()
+
+                    observe id event
+                | None -> ()
+            | _ -> ()
+        }
+
+    // Creates the table on first use, binds the projection's read positions to this journal, and
+    // reads every row into the index in memory.
+    let load (token: Threading.CancellationToken) =
+        task {
+            do! store.InitializeAsync token
+            do! store.CreateOwnedTableAsync(ScheduleIndex.Table, ScheduleIndex.Columns, token)
+            // The table and the read positions live in the journal's database and move with it, so a
+            // changed connection string still names the journal they were read from.
+            do! store.RebindProjectionAsync(ScheduleIndex.ProjectionName, token)
+            use! connection = store.OpenProjectionAsync token
+            use select = connection.CreateCommand()
+            select.CommandText <- $"SELECT schedule_id, entry FROM {table}"
+            use! reader = select.ExecuteReaderAsync token
+            let rows = ResizeArray<string * ScheduleState>()
+            let mutable reading = true
+
+            while reading do
+                let! available = reader.ReadAsync token
+
+                if available then
+                    let id = reader.GetString 0
+                    rows.Add((id, decodeRow id (reader.GetString 1)))
+                else
+                    reading <- false
+
+            lock gate (fun () ->
+                for id, state in rows do
+                    index[id] <- state)
+        }
+
+    // Waits a second, unless the dispatcher stops first.
+    let pause () =
+        task {
             try
-                do! projection.CatchUpAsync(lifetime.Token)
-            with error ->
-                if not lifetime.IsCancellationRequested then
-                    logger.LogWarning(error, "The schedule index did not catch up with the journal. The dispatcher starts from what it has read.")
+                do! Threading.Tasks.Task.Delay(1000, lifetime.Token)
+            with :? OperationCanceledException ->
+                ()
+        }
+
+    let loop () : Threading.Tasks.Task =
+        task {
+            let mutable loading = true
+
+            while loading && not lifetime.IsCancellationRequested do
+                try
+                    do! load lifetime.Token
+                    loading <- false
+                with
+                | _ when lifetime.IsCancellationRequested -> ()
+                | error ->
+                    logger.LogError(error, "The schedule dispatcher could not read its index from {Table}. No schedule fires until it has. It tries again in a second.", ScheduleIndex.Table)
+                    do! pause ()
+
+            if not lifetime.IsCancellationRequested then
+                // Started after the rows are in memory: the projection folds each event into the
+                // index from the read position stored with its row.
+                let options = FCQRS.Projections.TransactionalProjectionOptions(ScheduleIndex.ProjectionName, store)
+                options.Entities <- [ Schedule.EntityName ]
+                let projection = FCQRS.Projections.startOwned api options indexEvent
+                indexProjection <- Some projection
+
+                projection.Completion.ContinueWith(fun (completion: Threading.Tasks.Task) ->
+                    if completion.IsFaulted then
+                        logger.LogCritical(completion.Exception, "The schedule index stopped. Schedules fire from what it had read until the process restarts."))
+                |> ignore
+
+                // A run decided before a restart is found once the index has read the events stored
+                // since its rows were written. No schedule fires before that.
+                let mutable behind = true
+
+                while behind && not lifetime.IsCancellationRequested do
+                    try
+                        do! projection.CatchUpAsync(lifetime.Token)
+                        behind <- false
+                    with
+                    | _ when lifetime.IsCancellationRequested -> ()
+                    | _ when projection.Completion.IsCompleted -> behind <- false
+                    | error ->
+                        logger.LogWarning(error, "The schedule index has not caught up with the journal. No schedule fires until it has.")
+                        do! pause ()
+
+            caughtUp.TrySetResult() |> ignore
 
             let mutable waiting = true
 
@@ -844,28 +1161,18 @@ type internal Dispatcher
                         ()
         }
 
-    /// Handles an event the projection read.
-    member _.Observe(message: obj) : FCQRS.Model.Data.IMessageWithCID list =
+    /// Folds an event into the index in memory only, as the projection does after writing its row.
+    member _.Observe(message: obj) : unit =
         match message with
         | :? Event<ScheduleEvent> as event ->
             match event.Sender with
-            | Some sender ->
-                let id = string sender
-
-                lock gate (fun () ->
-                    if holding then
-                        held.Enqueue(id, event)
-                    else
-                        observed id event)
-
-                signal ()
+            | Some sender -> observe (string sender) event
             | None -> ()
         | _ -> ()
 
-        []
-
-    /// Starts the loop once the projection exists. It ends when the actor system shuts down.
-    member _.Start(projection: FCQRS.Projections.IProjection) =
+    /// Starts the loop, which reads the stored index, starts its projection, and waits for it to
+    /// catch up before it fires anything. It ends when the actor system shuts down.
+    member _.Start() =
         let stop () = lifetime.Cancel()
 
         Akka.Actor.CoordinatedShutdown
@@ -880,15 +1187,10 @@ type internal Dispatcher
 
         api.System.WhenTerminated.ContinueWith(fun (_: Threading.Tasks.Task) -> stop ()) |> ignore
 
-        projection.Completion.ContinueWith(fun (completion: Threading.Tasks.Task) ->
-            if completion.IsFaulted then
-                logger.LogCritical(completion.Exception, "The schedule index stopped. Schedules fire from what it had read until the process restarts."))
-        |> ignore
-
         // The loop logs and survives its own errors. Anything that still ends it is logged here, so
         // the dispatcher never stops without a word.
         Threading.Tasks.Task
-            .Run(fun () -> loop projection)
+            .Run(fun () -> loop ())
             .ContinueWith(fun (ended: Threading.Tasks.Task) ->
                 if ended.IsFaulted then
                     logger.LogCritical(ended.Exception, "The schedule dispatcher stopped. No schedule fires until the process restarts."))
@@ -943,6 +1245,12 @@ type internal Dispatcher
 
     /// Test hook: how many due times the dispatcher has computed with `Schedule.allowedDue`.
     member _.Computations = lock gate (fun () -> computations)
+
+    /// Test hook: completes once the index has caught up with the journal, before the first plan.
+    member _.Ready: Threading.Tasks.Task = caughtUp.Task
+
+    /// Test hook: the projection that keeps the index, once it runs.
+    member _.Index: FCQRS.Projections.IProjection option = indexProjection
 
 /// The registered schedule dispatcher. Pass it to the functions of `Schedules`.
 [<Sealed>]
@@ -1063,6 +1371,11 @@ module Schedules =
     /// every aggregate and saga, this one included. Until they are wired the dispatcher fires
     /// nothing, and every function of this module that sends a command raises
     /// `InvalidOperationException`.
+    ///
+    /// The dispatcher keeps its index in the table `fcqrs_schedule_index`, which it creates on first
+    /// use in the journal's database and schema, with one row per schedule. A start reads the rows
+    /// and the schedule events stored since, so it does not read the schedules' whole history again.
+    /// The first start on a journal without the table reads that history once and fills the table.
     let register (api: IActor) (runs: ScheduledWorkflow list) : ScheduleHandle =
         let checkInterval = checkIntervalOf api.System.Settings.Config
         let workflows = Collections.Generic.Dictionary<string, ScheduledWorkflow>()
@@ -1091,11 +1404,7 @@ module Schedules =
 
         let logger = api.LoggerFactory.CreateLogger "FCQRS.Workflows.Schedules"
         let dispatcher = Dispatcher(api, send, workflows, checkInterval, logger)
-
-        let projection =
-            Fcqrs.projection api (Projection.multi FromStart dispatcher.Observe |> Projection.ofEntities [ Schedule.EntityName ])
-
-        dispatcher.Start projection
+        dispatcher.Start()
         let rules = SagaStarter.Internal.startRulesOf api.System
         ScheduleHandle(send, workflows, dispatcher, fun () -> rules.Task.IsCompleted)
 

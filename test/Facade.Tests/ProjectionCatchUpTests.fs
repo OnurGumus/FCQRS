@@ -213,6 +213,26 @@ let private rollbackAndRecovery =
         wait (resumed.CatchUpAsync())
         Expect.equal (fixture.Scalar "SELECT COUNT(*) FROM applied_events") 1L "a committed checkpoint prevents replaying completed writes"
 
+// The schedule dispatcher keeps its index with startOwned. One failed transaction must not stop the
+// index until the process restarts, as it stops a projection made with `start`.
+let private ownedRetries =
+    testCase "catch-up: a projection FCQRS keeps for itself retries a failed transaction instead of stopping"
+    <| fun _ ->
+        use fixture = new Fixture(None)
+        fixture.Send("owned", 4)
+        let calls = ref 0
+        let flaky connection transaction envelope =
+            task {
+                do! fixture.Apply connection transaction envelope
+                if Interlocked.Increment(&calls.contents) = 1 then
+                    return raise (InvalidOperationException("deliberate transient failure"))
+            } :> Task
+        use owned = FCQRS.Projections.startOwned fixture.Api (fixture.Options "owned") flaky
+        try wait (owned.CatchUpAsync()) with :? InvalidOperationException -> ()
+        wait (owned.CatchUpAsync())
+        Expect.isFalse owned.Completion.IsCompleted "the projection keeps running after the failure"
+        Expect.equal (fixture.Scalar "SELECT SUM(amount) FROM applied_events") 4L "the retried transaction applies the event once"
+
 let private cancellationAndDispose =
     testCase "catch-up: caller cancellation and projection disposal release pending waits"
     <| fun _ ->
@@ -1419,6 +1439,7 @@ let tests =
         testList "transactional projection catch-up"
             [ testCase "SQLite: catch-up spans all aggregate histories" (fun _ -> allAggregates None)
               rollbackAndRecovery
+              ownedRetries
               cancellationAndDispose
               deletedHistory
               fixedBoundary
