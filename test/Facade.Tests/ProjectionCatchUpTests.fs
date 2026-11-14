@@ -1319,6 +1319,44 @@ let private entityFilterEscapedNames =
             wait (api.Stop())
             deleteDatabases [ journalPath; projectionPath ]
 
+// The listing and the incremental capture are bounded by the journal number, so they must read by
+// it. Reading the persistence-ID index's range instead reads, and for the listing sorts, the
+// entity's whole history on every call, which makes a first pass quadratic in that history.
+let private entityFilterSqlitePlans =
+    testCase "projection: an entity filter's SQLite listing and incremental capture read by journal number"
+    <| fun _ ->
+        let suffix, journalPath, projectionPath = sqlitePaths ()
+        let api =
+            Fcqrs.actor (VerifySerialization.configuration().Build()) NullLoggerFactory.Instance
+                (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite (sqliteString journalPath))) ("EntityPlans" + suffix)
+        try
+            let keep, skip = filterTallies api
+            Fcqrs.wireSagaStarters api []
+            // Akka creates the journal with its own schema and indexes.
+            interleavedFilterEvents keep skip
+            let store = sqliteStore journalPath projectionPath
+            use connection = new SqliteConnection(sqliteString journalPath)
+            connection.Open()
+            let plan (command: DbCommand) =
+                use command = command
+                command.CommandText <- "EXPLAIN QUERY PLAN " + command.CommandText
+                use reader = command.ExecuteReader()
+                [ while reader.Read() do reader.GetString 3 ] |> String.concat " | "
+            let entities = validateEntities "entities" [ "FilterKeep" ]
+            let byNumber = "USING INTEGER PRIMARY KEY (rowid>?)"
+            let listing = plan (store.ListCommand(connection, 0L, 500L, entities))
+            Expect.stringContains listing byNumber "the listing reads the rows above its journal number"
+            Expect.isFalse (listing.Contains "journal_uq") $"the listing does not read the persistence-ID index: {listing}"
+            Expect.isFalse (listing.Contains "TEMP B-TREE") $"the listing does not sort: {listing}"
+            let since = plan (store.CaptureSinceCommand(connection, 0L, entities))
+            Expect.stringContains since byNumber "the incremental capture reads the rows above its journal number"
+            Expect.isFalse (since.Contains "journal_uq") $"the incremental capture does not read the persistence-ID index: {since}"
+            let all = plan (store.CaptureAllCommand(connection, entities))
+            Expect.stringContains all "journal_uq (persistence_id>? AND persistence_id<?)" "the full scan reads only the entity's range of the index"
+        finally
+            wait (api.Stop())
+            deleteDatabases [ journalPath; projectionPath ]
+
 // A FilterKeep event that takes its journal number before later-numbered events and commits after
 // them reaches a filtered projection in a later pass.
 let private postgresEntityFilterLateCommit connectionString =
@@ -1385,6 +1423,7 @@ let tests =
               testCase "SQLite: a transactional projection with an entity filter applies and stores only its types" (fun _ -> entityFilterTransactional None)
               entityFilterSkipsOtherRowsInSql
               entityFilterEscapedNames
+              entityFilterSqlitePlans
               match postgres with
               | Some connection ->
                   testCase "PostgreSQL: a transactional projection with an entity filter applies and stores only its types" (fun _ -> entityFilterTransactional postgres)

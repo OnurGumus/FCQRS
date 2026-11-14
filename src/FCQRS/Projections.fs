@@ -71,9 +71,11 @@ type TransactionalProjectionOptions(name: string, store: SqlProjectionStore) =
     /// name, as registered. A name selects the persistence IDs that start with it, escaped as Akka
     /// escapes a sharding region's name (Uri.EscapeDataString), and "/". The journal queries select
     /// those rows in SQL, so other entities' events are not fetched or deserialized, and the
-    /// projection stores progress only for the named entities. On SQLite the journal's
-    /// persistence-ID index skips other entities' rows; on PostgreSQL the database still reads
-    /// them. Empty, the default, reads every entity. A pass applies the named entities' events in
+    /// projection stores progress only for the named entities. On SQLite the full scan reads only
+    /// the names' range of the journal's persistence-ID index, and the queries bounded by a journal
+    /// number read every row above it; PostgreSQL reads other entities' rows in every query. A pass
+    /// reads each persistence ID's events with a query of its own. Empty, the default, reads every
+    /// entity. A pass applies the named entities' events in
     /// journal order, as without a filter.
     member val Entities: string seq = Seq.empty with get, set
 

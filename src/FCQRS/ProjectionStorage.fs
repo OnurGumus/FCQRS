@@ -197,13 +197,14 @@ type SqlProjectionStore
 
     // A condition selecting the named entities' persistence IDs (names as validateEntities returns
     // them), with its parameters added to the command, or None for every entity. LIKE keeps other
-    // rows out of the result, but neither database can use an index for it. On SQLite, whose
-    // persistence-ID column compares bytes, a range [name + "/", name + "0") beside it lets the
-    // journal's persistence-ID index skip other entities' rows; '0' is the character after '/'.
-    // PostgreSQL's default collation need not order '/' by its code, so it keeps LIKE alone and
-    // reads other rows. SQLite's LIKE ignores ASCII case, so callers also check each ID with
-    // selectsEntity.
-    let entityCondition (command: DbCommand) (entities: string list) =
+    // rows out of the result, but neither database can use an index for it. With `range` on SQLite,
+    // whose persistence-ID column compares bytes, a range [name + "/", name + "0") beside it lets the
+    // journal's persistence-ID index skip other entities' rows; '0' is the character after '/'. Only
+    // the full scan takes the range: a query bounded by the journal number must read by that number,
+    // or each call reads the entity's whole history. PostgreSQL's default collation need not order
+    // '/' by its code, so it keeps LIKE alone. SQLite's LIKE ignores ASCII case, so callers also
+    // check each ID with selectsEntity.
+    let entityCondition (command: DbCommand) (range: bool) (entities: string list) =
         match entities with
         | [] -> None
         | entities ->
@@ -214,13 +215,20 @@ type SqlProjectionStore
                     let pattern = $"@entity{index}"
                     parameter command pattern DbType.String (escape name + "/%")
                     let matches = $"{persistenceIdSql} LIKE {pattern} ESCAPE '\\'"
-                    if dialect = ProjectionSqlDialect.Sqlite then
+                    if range && dialect = ProjectionSqlDialect.Sqlite then
                         parameter command $"@entityFrom{index}" DbType.String (name + "/")
                         parameter command $"@entityTo{index}" DbType.String (name + "0")
                         $"({persistenceIdSql} >= @entityFrom{index} AND {persistenceIdSql} < @entityTo{index}"
                         + $" AND {matches})"
                     else matches)
             Some("(" + String.concat " OR " conditions + ")")
+
+    // The journal in a filtered query bounded by the journal number. On SQLite, NOT INDEXED keeps the
+    // planner on the journal number, the table's rowid, so the query reads only rows above it.
+    // Without it SQLite reads the persistence-ID index from its start, to avoid sorting the groups.
+    let journalByNumber (entities: string list) =
+        if entities.IsEmpty || dialect <> ProjectionSqlDialect.Sqlite then journalSql
+        else journalSql + " NOT INDEXED"
 
     let transactionCommand (connection: DbConnection) (transaction: DbTransaction) sql =
         if isNull (box transaction) || not (obj.ReferenceEquals(connection, transaction.Connection)) then
@@ -301,21 +309,50 @@ type SqlProjectionStore
             do! transaction.CommitAsync(ct)
         }
 
+    /// The query of `CaptureAllAsync` on an open journal connection: each persistence ID of the named
+    /// entities with its last sequence number. On SQLite a filter reads the persistence-ID index's
+    /// range for each name.
+    member internal _.CaptureAllCommand(connection: DbConnection, entities: string list) : DbCommand =
+        let command = connection.CreateCommand()
+        let selected = entityCondition command true entities |> Option.map ((+) " WHERE ") |> Option.defaultValue ""
+        command.CommandText <- $"SELECT {persistenceIdSql}, MAX({sequenceNumberSql}) FROM {journalSql}{selected} GROUP BY {persistenceIdSql}"
+        command
+
+    /// The main query of `CaptureSinceAsync` on an open journal connection: each persistence ID of
+    /// the named entities with events numbered above `after`, its last sequence number, and its
+    /// highest number. On SQLite a filtered query reads only the rows numbered above `after`.
+    member internal _.CaptureSinceCommand(connection: DbConnection, after: int64, entities: string list) : DbCommand =
+        let command = connection.CreateCommand()
+        let selected = entityCondition command false entities |> Option.map ((+) " AND ") |> Option.defaultValue ""
+        command.CommandText <-
+            $"SELECT {persistenceIdSql}, MAX({sequenceNumberSql}), MAX({orderingSql}) FROM {journalByNumber entities} WHERE {orderingSql} > @after{selected} GROUP BY {persistenceIdSql}"
+        parameter command "@after" DbType.Int64 after
+        command
+
+    /// The query of `ListAsync` on an open journal connection. On SQLite it reads the rows numbered
+    /// above `after`, in that order, and stops after `count` of the named entities' rows.
+    member internal _.ListCommand(connection: DbConnection, after: int64, count: int64, entities: string list) : DbCommand =
+        let command = connection.CreateCommand()
+        let selected = entityCondition command false entities |> Option.map ((+) " AND ") |> Option.defaultValue ""
+        command.CommandText <-
+            $"SELECT {persistenceIdSql}, {sequenceNumberSql}, {orderingSql} FROM {journalByNumber entities} WHERE {orderingSql} > @after{selected} ORDER BY {orderingSql} LIMIT @count"
+        parameter command "@after" DbType.Int64 after
+        parameter command "@count" DbType.Int64 count
+        command
+
     /// Captures the last sequence number of every persistence ID of the named entities (every
     /// entity when `entities` is empty) in a committed snapshot, and the highest global journal
     /// number read before it. Reads the whole journal; other entities' rows stay in the database.
     /// Per-persistence-ID targets do not assume global journal ordering follows commit ordering.
     /// Akka cluster sharding's own bookkeeping is not application events and loses its early
     /// history, so the snapshot excludes it: see `isShardingBookkeeping`.
-    member internal _.CaptureAllAsync(entities: string list, ct: CancellationToken) : Task<Map<string, int64> * int64> =
+    member internal this.CaptureAllAsync(entities: string list, ct: CancellationToken) : Task<Map<string, int64> * int64> =
         task {
             use! connection = openConnection journalConnectionFactory validateJournalConnection ct
             use highest = connection.CreateCommand()
             highest.CommandText <- $"SELECT COALESCE(MAX({orderingSql}), 0) FROM {journalSql}"
             let! top = highest.ExecuteScalarAsync(ct)
-            use command = connection.CreateCommand()
-            let selected = entityCondition command entities |> Option.map ((+) " WHERE ") |> Option.defaultValue ""
-            command.CommandText <- $"SELECT {persistenceIdSql}, MAX({sequenceNumberSql}) FROM {journalSql}{selected} GROUP BY {persistenceIdSql}"
+            use command = this.CaptureAllCommand(connection, entities)
             let! positions = readPositions command ct
             return
                 positions |> Map.filter (fun persistenceId _ -> not (isShardingBookkeeping persistenceId) && selectsEntity entities persistenceId),
@@ -328,7 +365,7 @@ type SqlProjectionStore
     /// other entities' events too, so the next query starts above them. A write numbered at or
     /// below `after` that commits later is missed: the caller must choose `after` to allow for
     /// writes that take time to commit.
-    member internal _.CaptureSinceAsync(after: int64, entities: string list, ct: CancellationToken) : Task<Map<string, int64> * int64> =
+    member internal this.CaptureSinceAsync(after: int64, entities: string list, ct: CancellationToken) : Task<Map<string, int64> * int64> =
         task {
             use! connection = openConnection journalConnectionFactory validateJournalConnection ct
             // Taken first, so the query below sees every event numbered up to it that it saw.
@@ -341,11 +378,7 @@ type SqlProjectionStore
                     let! top = highest.ExecuteScalarAsync(ct)
                     return max after (Convert.ToInt64 top)
             }
-            use command = connection.CreateCommand()
-            let selected = entityCondition command entities |> Option.map ((+) " AND ") |> Option.defaultValue ""
-            command.CommandText <-
-                $"SELECT {persistenceIdSql}, MAX({sequenceNumberSql}), MAX({orderingSql}) FROM {journalSql} WHERE {orderingSql} > @after{selected} GROUP BY {persistenceIdSql}"
-            parameter command "@after" DbType.Int64 after
+            use command = this.CaptureSinceCommand(connection, after, entities)
             use! reader = command.ExecuteReaderAsync(ct)
             let mutable positions = Map.empty
             let mutable top = highest
@@ -369,16 +402,11 @@ type SqlProjectionStore
     /// Up to `count` events of the named entities numbered above `after`, in global journal order:
     /// each one's persistence ID, sequence number, and global number. Reads the journal rows only,
     /// not their payloads; other entities' rows stay in the database. `entities` must not be empty.
-    member internal _.ListAsync(after: int64, count: int64, entities: string list, ct: CancellationToken) : Task<(string * int64 * int64) list> =
+    member internal this.ListAsync(after: int64, count: int64, entities: string list, ct: CancellationToken) : Task<(string * int64 * int64) list> =
         task {
             if entities.IsEmpty then invalidArg (nameof entities) "Listing needs at least one entity name."
             use! connection = openConnection journalConnectionFactory validateJournalConnection ct
-            use command = connection.CreateCommand()
-            let selected = entityCondition command entities |> Option.map ((+) " AND ") |> Option.defaultValue ""
-            command.CommandText <-
-                $"SELECT {persistenceIdSql}, {sequenceNumberSql}, {orderingSql} FROM {journalSql} WHERE {orderingSql} > @after{selected} ORDER BY {orderingSql} LIMIT @count"
-            parameter command "@after" DbType.Int64 after
-            parameter command "@count" DbType.Int64 count
+            use command = this.ListCommand(connection, after, count, entities)
             use! reader = command.ExecuteReaderAsync(ct)
             let rows = ResizeArray<string * int64 * int64>()
             let mutable reading = true
