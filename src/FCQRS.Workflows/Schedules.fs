@@ -2,8 +2,9 @@ namespace FCQRS.Workflows
 
 open System
 
-/// When a schedule is due. A rule is stored in the schedule's journal, so its cases and fields are
-/// a persistent contract.
+/// When a schedule is due, written `ScheduleRule.Daily`, `ScheduleRule.Weekly` or `ScheduleRule.Every`.
+/// A rule is stored in the schedule's journal, so its cases and fields are a persistent contract.
+[<RequireQualifiedAccess>]
 type ScheduleRule =
     /// Every day at a local time in a time zone. The zone is a time-zone ID such as "Europe/Oslo".
     | Daily of time: TimeOnly * zone: string
@@ -55,9 +56,9 @@ module ScheduleRule =
     /// time, which `Every` counts from. All times are UTC.
     let next (rule: ScheduleRule) (anchor: DateTime) (after: DateTime) : DateTime =
         match rule with
-        | Daily(time, zone) -> nextLocal (zoneOf zone) time (fun _ -> true) after
-        | Weekly(days, time, zone) -> nextLocal (zoneOf zone) time (fun day -> List.contains day days) after
-        | Every interval ->
+        | ScheduleRule.Daily(time, zone) -> nextLocal (zoneOf zone) time (fun _ -> true) after
+        | ScheduleRule.Weekly(days, time, zone) -> nextLocal (zoneOf zone) time (fun day -> List.contains day days) after
+        | ScheduleRule.Every interval ->
             let elapsed = after - anchor
             let intervals = if elapsed < interval then 1L else elapsed.Ticks / interval.Ticks + 1L
             anchor + TimeSpan.FromTicks(interval.Ticks * intervals)
@@ -87,8 +88,8 @@ module ScheduleRule =
             | :? TimeZoneNotFoundException
             | :? InvalidTimeZoneException -> Error $"Unknown time zone '{zone}'."
         match rule with
-        | Daily(_, zone) -> checkZone zone
-        | Weekly([], _, _) -> Error "A weekly schedule needs at least one day."
-        | Weekly(_, _, zone) -> checkZone zone
-        | Every interval when interval <= TimeSpan.Zero -> Error "The interval must be positive."
-        | Every _ -> Ok()
+        | ScheduleRule.Daily(_, zone) -> checkZone zone
+        | ScheduleRule.Weekly([], _, _) -> Error "A weekly schedule needs at least one day."
+        | ScheduleRule.Weekly(_, _, zone) -> checkZone zone
+        | ScheduleRule.Every interval when interval <= TimeSpan.Zero -> Error "The interval must be positive."
+        | ScheduleRule.Every _ -> Ok()
