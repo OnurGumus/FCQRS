@@ -1,5 +1,5 @@
 // C# workflows compiled by the C# compiler: the WorkflowTask async builder, every kind of step,
-// recovery after the actor system stops, the foreign-await error, and host registration.
+// recovery after the actor system stops, the foreign-await error, streams, and host registration.
 // Exits with 0 when every check passes.
 
 using System.Collections.Concurrent;
@@ -12,6 +12,9 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging.Abstractions;
+// Aliases, because Akka.Streams.Dsl has a Retry of its own.
+using Sink = Akka.Streams.Dsl.Sink;
+using Source = Akka.Streams.Dsl.Source;
 
 var failures = new List<string>();
 var wait = TimeSpan.FromSeconds(30);
@@ -162,6 +165,56 @@ async Task Eventually(Func<bool> condition, string what)
         {
             Check(CatchingWorkflow.Cleaned, "a cancelled C# workflow ran the await in its catch block");
         }
+    }
+    finally
+    {
+        await actor.Stop();
+        DeleteDb(db);
+    }
+}
+
+// --- a C# stream ----------------------------------------------------------------------------
+{
+    var db = NewDb();
+    var actor = Boot(db, "CSharpStream");
+    try
+    {
+        var client = WorkflowHost.Register(actor, new StreamedWorkflow());
+        var inside = 0;
+        var widest = 0;
+        string IdOf(int value)
+        {
+            var now = Interlocked.Increment(ref inside);
+            lock (failures) widest = Math.Max(widest, now);
+            return $"s{value}";
+        }
+
+        // An element leaves the flow when the sink receives it.
+        var ended = new List<WorkflowEnded<int>>();
+        await Source.From(new[] { 1, 2, 3, 4, 5 })
+            .Via(WorkflowFlow.Run(client, IdOf, 2, TimeSpan.FromSeconds(20)))
+            .RunWith(Sink.ForEach<WorkflowEnded<int>>(element =>
+            {
+                Interlocked.Decrement(ref inside);
+                ended.Add(element);
+            }), actor.Materializer);
+
+        Check(ended.Select(e => e.Id).SequenceEqual(new[] { "s1", "s2", "s3", "s4", "s5" }),
+            $"a C# stream emits one element per input, in input order: {string.Join(", ", ended.Select(e => e.Id))}");
+        Check(ended.Where(e => e.Id != "s3").All(e => e.IsFinished)
+              && ended.Where(e => e.Id != "s3").Select(e => e.Result).SequenceEqual(new[] { 1, 4, 16, 25 }),
+            "each finished element carries its workflow's result");
+        var faulted = ended.Single(e => e.Id == "s3");
+        Check(faulted.IsFaulted && !faulted.IsFinished && !faulted.IsCancelled && faulted.Error is not null,
+            $"a faulted workflow is an element of the stream, not a failure of it: {faulted.Error?.Message}");
+        Check(widest <= 2, $"no more than two elements were in the flow at once: {widest}");
+
+        var starts = await Source.From(new[] { 1, 2, 3, 4, 5 })
+            .Via(WorkflowFlow.Start(client, (int value) => $"s{value}", 2))
+            .RunWith(Sink.Seq<(string, bool)>(), actor.Materializer);
+        Check(starts.Select(s => s.Item1).SequenceEqual(new[] { "s1", "s2", "s3", "s4", "s5" })
+              && starts.All(s => !s.Item2),
+            "a replayed stream starts no workflow again");
     }
     finally
     {
@@ -394,7 +447,17 @@ public sealed class WaitingWorkflow() : Workflow<int, int>("waiting")
     }
 }
 
-public sealed class ShoutWorkflow() : Workflow<string, string>("shout")
+public sealed class StreamedWorkflow() : Workflow<int, int>("streamed")
+{
+    public override async WorkflowTask<int> Run(WorkflowContext ctx, int input)
+    {
+        await ctx.Sleep(TimeSpan.FromMilliseconds(20));
+        if (input == 3) throw new InvalidOperationException("three is not streamed");
+        return input * input;
+    }
+}
+
+public sealed class ShoutWorkflow(): Workflow<string, string>("shout")
 {
     public override async WorkflowTask<string> Run(WorkflowContext ctx, string name)
     {

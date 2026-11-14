@@ -1,5 +1,21 @@
 # Changelog
 
+## 7.5.0 (FCQRS.Workflows)
+
+- **C# streams start workflows.** `WorkflowFlow.Run(client, idOf, parallelism, timeout)` takes an
+  `IWorkflowClient<TInput, TResult>` and gives a flow that starts one workflow per element and
+  emits a `WorkflowEnded<TResult>` in input order: the ID, and whether the workflow finished,
+  faulted, or was cancelled, with its `Result` or `Error`. A faulted or cancelled workflow is an
+  element, not a failure of the stream. A workflow that does not end within `timeout` fails the
+  stream, as in F#. `WorkflowFlow.Start(client, idOf, parallelism)` emits the ID with true when the
+  element started the workflow.
+- **`IWorkflowClient.OutcomeAsync(id, timeout)`** gives how a workflow ended without throwing for a
+  faulted or cancelled one. A class that implements `IWorkflowClient` itself must add it.
+- `WorkflowFlow` is now one static class in namespace `FCQRS.Workflows`, for F# and C#. F# calls
+  `WorkflowFlow.run` and `WorkflowFlow.start` as before. An F# program compiled against 7.4.0 may
+  need a rebuild.
+- No stored record or step path changes. The package still needs FCQRS core 7.1.0.
+
 ## 7.4.0 (FCQRS.Workflows)
 
 - **`send` gives only the reply to its own command.** A saga's commands carry the correlation ID of

@@ -209,15 +209,9 @@ public static class Steps
     // docs:end
 
     // docs:stream
-    static Flow<string, (string Id, Enriched Result), NotUsed> Outcomes(
+    static Flow<string, WorkflowEnded<Enriched>, NotUsed> Outcomes(
         IWorkflowClient<string, Enriched> client) =>
-        Flow.Create<string>().SelectAsync(8, async order =>
-        {
-            var id = $"enrich-{order}";
-            await client.StartAsync(id, order);
-            var result = await client.ResultAsync(
-                id, TimeSpan.FromMinutes(5));
-            return (id, result);
-        });
+        WorkflowFlow.Run(
+            client, order => $"enrich-{order}", 8, TimeSpan.FromMinutes(5));
     // docs:end
 }

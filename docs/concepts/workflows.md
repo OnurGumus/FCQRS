@@ -643,25 +643,17 @@ let outcomes (handle: WorkflowHandle<string, int * DateTime>) =
 
 <!-- sample: workflows/csharp Concepts.cs stream -->
 ```csharp
-static Flow<string, (string Id, Enriched Result), NotUsed> Outcomes(
+static Flow<string, WorkflowEnded<Enriched>, NotUsed> Outcomes(
     IWorkflowClient<string, Enriched> client) =>
-    Flow.Create<string>().SelectAsync(8, async order =>
-    {
-        var id = $"enrich-{order}";
-        await client.StartAsync(id, order);
-        var result = await client.ResultAsync(
-            id, TimeSpan.FromMinutes(5));
-        return (id, result);
-    });
+    WorkflowFlow.Run(
+        client, order => $"enrich-{order}", 8, TimeSpan.FromMinutes(5));
 ```
 
 `WorkflowFlow.run` is an Akka.Streams flow that starts one workflow per element and emits each
-outcome in input order, with at most eight workflows between start and outcome. `WorkflowFlow.start`
-emits as soon as each start is stored.
-
-`WorkflowFlow` takes an F# handle. A C# program builds the same flow from its client, as shown.
-`ResultAsync` throws for a faulted or cancelled workflow, so that element fails the C# stream, where
-the F# flow emits the outcome.
+outcome in input order, with at most eight workflows between start and outcome. A faulted or
+cancelled workflow is an element of the stream. A workflow that does not end within the timeout
+fails the stream with a `TimeoutException`, and the workflow carries on. `WorkflowFlow.start` emits
+as soon as each start is stored.
 
 The stream is not durable. If the process stops, the workflows resume and the stream does not. The
 source must replay from an offset of its own, and the workflow ID must be computed from the element,
@@ -711,6 +703,8 @@ A C# workflow derives from `Workflow<TInput, TResult>` and awaits steps from its
 | `sendWithFilter policy filter` | `ctx.Send<TCommand, TEvent>(policy, factory, id, command, filter)` |
 | `version` | `ctx.Version(changeId, latest)` |
 | `try ... with` for cleanup | `try`/`catch`, or `await` in a `finally` block |
+| `WorkflowFlow.run` | `WorkflowFlow.Run(client, idOf, parallelism, timeout)` |
+| `WorkflowFlow.start` | `WorkflowFlow.Start(client, idOf, parallelism)` |
 
 Inside a method that returns `WorkflowTask<T>`, `await` accepts workflow steps. Awaiting an
 unfinished `Task`, such as `Task.Delay` or an `HttpClient` call, throws and faults the instance,

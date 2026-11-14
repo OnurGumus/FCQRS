@@ -364,6 +364,10 @@ type IWorkflowClient<'TInput, 'TResult> =
     /// Waits up to `timeout` for the workflow to end and gives its result. Throws
     /// `WorkflowFaultedException`, `WorkflowCancelledException`, or `TimeoutException`.
     abstract ResultAsync: id: string * timeout: TimeSpan -> Task<'TResult>
+    /// Waits up to `timeout` for the workflow to end and gives how it ended: finished, faulted,
+    /// or cancelled. Throws `TimeoutException` when the time passes, and
+    /// `InvalidOperationException` when no workflow with this ID was started.
+    abstract OutcomeAsync: id: string * timeout: TimeSpan -> Task<WorkflowOutcome<'TResult>>
     /// Stores a signal for the instance. Returns once it is stored.
     abstract SignalAsync<'TSignal> : id: string * name: string * payload: 'TSignal -> Task
     /// Cancels the instance. Returns once the request is stored.
@@ -404,6 +408,8 @@ type WorkflowHost =
                     | WorkflowOutcome.Faulted error -> return raise (WorkflowFaultedException(handle.Name, id, error))
                     | WorkflowOutcome.Cancelled -> return raise (WorkflowCancelledException(handle.Name, id))
                 }
+
+            member _.OutcomeAsync(id, timeout) = handle.Result id timeout |> Async.StartAsTask
 
             member _.SignalAsync<'TSignal>(id, name, payload: 'TSignal) =
                 handle.Signal id name (Payload.ofValue payload) |> Async.StartAsTask :> Task
