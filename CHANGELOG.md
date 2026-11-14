@@ -75,6 +75,11 @@
 - The package needs Akka.Persistence.Sql 1.5.59 or later, the version whose
   `CurrentEventsByPersistenceId` envelopes were checked to carry the global journal number.
 - No stored event, progress row, or journal query of an unfiltered projection changes.
+- The actor system starts the Akka extensions FCQRS uses (Persistence, SQL persistence, cluster
+  sharding, distributed pub-sub, and the stream materializer) before it joins the cluster. Akka
+  rebuilds its settings without a lock when an extension starts. A projection created while a
+  shard coordinator started its journal store on another thread could make the Persistence
+  extension fail with "Couldn't find serializer id", and stay failed for every persistent actor.
 
 ## 7.5.0 (FCQRS.Workflows)
 

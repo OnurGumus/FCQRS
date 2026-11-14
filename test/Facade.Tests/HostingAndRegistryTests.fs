@@ -200,6 +200,58 @@ module private LongConnection =
                 for path in [ database; database + "-wal"; database + "-shm" ] do
                     if File.Exists path then File.Delete path
 
+// Akka rebuilds an actor system's settings without a lock whenever an extension adds its
+// configuration. Two threads doing so at once can leave one reading settings without its own
+// configuration; the Persistence extension then fails, and stays failed for every persistent
+// actor. Seen as "Couldn't find serializer id for PersistenceMessageSerializer" when a projection
+// was created while a shard coordinator started its store. An extension that adds nothing new
+// leaves the settings object as it is, so the check is that none of them replaces it after start.
+module private ExtensionsAtStart =
+    open FCQRS.FSharp
+    open FCQRS.Workflows
+
+    let test =
+        testCase "hosting: every Akka extension FCQRS uses has added its configuration before the actor system is returned"
+        <| fun _ ->
+            let database = Path.Combine(Path.GetTempPath(), $"fcqrs-extensions-{Guid.NewGuid():N}.db")
+            let configuration = VerifySerialization.configuration().Build()
+            let loggers = Microsoft.Extensions.Logging.Abstractions.NullLoggerFactory.Instance
+            let api =
+                Fcqrs.actor configuration loggers (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite $"Data Source={database};")) "ExtensionsAtStart"
+            try
+                let system = api.System
+                let started = system.Settings.Config
+                let unchanged what =
+                    Expect.isTrue (obj.ReferenceEquals(started, system.Settings.Config)) $"{what} did not rebuild the settings"
+                Akka.Persistence.Persistence.Instance.Apply(system) |> ignore
+                unchanged "the Persistence extension"
+                Akka.Persistence.Sql.SqlPersistence.Get(system) |> ignore
+                unchanged "the SQL persistence extension"
+                Akka.Cluster.Sharding.ClusterSharding.Get(system) |> ignore
+                unchanged "cluster sharding"
+                Akka.Cluster.Tools.Singleton.ClusterSingletonManagerSettings.Create(system) |> ignore
+                unchanged "a cluster singleton"
+                Akka.Cluster.Tools.PublishSubscribe.DistributedPubSub.Get(system) |> ignore
+                unchanged "distributed pub-sub"
+                Akka.Streams.ActorMaterializerSettings.Create(system) |> ignore
+                unchanged "a stream materializer"
+                // A remembered region starts its coordinator's journal store on another thread once
+                // the cluster is up, and a projection reads the SQL journal.
+                let greet =
+                    Workflows.register api (Workflow.define "extensions-greet" (fun (name: string) -> workflow { return $"hello {name}" }))
+                Fcqrs.wireSagaStarters api []
+                let projection = Fcqrs.projection api (Projection.multi FromStart (fun _ -> []))
+                Async.RunSynchronously(greet.Start "e1" "Ada", 30000) |> ignore
+                let outcome = Async.RunSynchronously(greet.Result "e1" (TimeSpan.FromSeconds 20.0), 30000)
+                Expect.equal outcome (WorkflowOutcome.Finished "hello Ada") "the run finished"
+                projection.CatchUpAsync().Wait(TimeSpan.FromSeconds 30.0) |> ignore
+                unchanged "a remembered region, a projection and a run"
+            finally
+                api.Stop().Wait(TimeSpan.FromSeconds 30.0) |> ignore
+                Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools()
+                for path in [ database; database + "-wal"; database + "-shm" ] do
+                    if File.Exists path then File.Delete path
+
 [<AbstractClass>]
 type UnconfiguredEvent() = class end
 type UnconfiguredCase() = inherit UnconfiguredEvent()
@@ -311,5 +363,5 @@ let tests =
     testSequenced (
         testList
             "hosting and registry"
-            [ hostedConstructorInjection; repeatedStart; LongConnection.test; StorableEvents.test; concurrentRegistry ]
+            [ hostedConstructorInjection; repeatedStart; LongConnection.test; ExtensionsAtStart.test; StorableEvents.test; concurrentRegistry ]
     )

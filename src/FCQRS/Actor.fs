@@ -1342,11 +1342,20 @@ let api (config: IConfiguration) (loggerFactory: ILoggerFactory) (connection: Co
     let clusterNameValue = clusterName |> ValueLens.Value
     let system = System.create clusterNameValue akkaConfiguration
 
-    Cluster.Get(system).SelfAddress |> Cluster.Get(system).Join
-
+    // An Akka extension adds its configuration to the system's settings when it starts, and Akka
+    // rebuilds the settings without a lock. Two threads that do so at once can leave one of them
+    // reading settings without its own configuration: a shard coordinator starting the Persistence
+    // extension while the application registers a projection made it fail with "Couldn't find
+    // serializer id", and a failed extension stays failed for every persistent actor. Every
+    // extension FCQRS uses starts here, on one thread, before the cluster joins and actors start
+    // on others, so a later start adds nothing and leaves the settings as they are.
+    Akka.Persistence.Persistence.Instance.Apply(system) |> ignore
+    Akka.Persistence.Sql.SqlPersistence.Get(system) |> ignore
+    Akka.Cluster.Sharding.ClusterSharding.Get(system) |> ignore
     let mediator = DistributedPubSub.Get(system).Mediator
-
     let mat = ActorMaterializer.Create system
+
+    Cluster.Get(system).SelfAddress |> Cluster.Get(system).Join
 
     let subscribeForCommand command =
         subscribeForCommand system (typed mediator) command
