@@ -86,7 +86,7 @@
 
 **Files:**
 - Modify: `src/FCQRS.Workflows/Schedules.fs`
-- Test: `test/Facade.Tests/ScheduleRuleTests.fs` (pure `decide`/`fold` tests) 
+- Test: `test/Facade.Tests/ScheduleRuleTests.fs` (pure `decide`/`fold` tests)
 
 **Interfaces:**
 - Produces (names are contracts; keep them):
