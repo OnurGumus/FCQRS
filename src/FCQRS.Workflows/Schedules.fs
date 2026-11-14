@@ -496,6 +496,24 @@ module internal ScheduleIndex =
     [<Literal>]
     let Format = 1
 
+    /// The store over the journal's database that holds the table and its read positions, after
+    /// checking that the query journal reads the journal the write journal writes. Raises
+    /// `ArgumentException` naming the index and both HOCON sections when they differ, with the
+    /// store's error as the inner exception.
+    let store (api: IActor) =
+        let store = FCQRS.Projections.journalStore api
+        try
+            FCQRS.Projections.checkOwnedStore api store
+        with :? ArgumentException as error ->
+            raise (
+                ArgumentException(
+                    "The schedule dispatcher keeps its index in the journal's database, so akka.persistence.journal.sql and akka.persistence.query.journal.sql must name the same connection string, schema, table and columns.",
+                    nameof api,
+                    error
+                )
+            )
+        store
+
     let private blank: Payload = { Type = ""; Json = "" }
 
     /// The entry without inputs: a run's input comes from the schedule's reply to Fire.
@@ -658,7 +676,8 @@ type internal Dispatcher
         send: string -> FCQRS.Model.Data.CID -> ScheduleCommand -> Async<Event<ScheduleEvent>>,
         workflows: Collections.Generic.IReadOnlyDictionary<string, ScheduledWorkflow>,
         checkInterval: TimeSpan,
-        logger: ILogger
+        logger: ILogger,
+        store: FCQRS.ProjectionStorage.SqlProjectionStore
     ) =
 
     let gate = obj ()
@@ -699,10 +718,8 @@ type internal Dispatcher
     // The longest single wait; a semaphore wait takes at most Int32.MaxValue milliseconds.
     let longestWait = TimeSpan.FromDays 1.0
 
-    // The journal's database, which holds the stored index and its read positions. Built and
-    // checked here, so a journal the index cannot use raises from Schedules.register.
-    let store = FCQRS.Projections.journalStore api
-    do FCQRS.Projections.checkOwnedStore api store
+    // `store` is the journal's database, which holds the stored index and its read positions:
+    // `ScheduleIndex.store`, which Schedules.register builds and checks before it registers anything.
     let table = store.OwnedTable ScheduleIndex.Table
 
     // Upcasters are fixed when the dispatcher is registered, as when its projection started there.
@@ -1437,6 +1454,10 @@ module Schedules =
             if not (workflows.TryAdd(run.Name, run)) then
                 invalidArg (nameof runs) $"Workflow '{run.Name}' is listed twice."
 
+        // Checked before the actor system is marked as having a dispatcher and before the aggregate
+        // is registered, so a register that raises for the configuration leaves nothing behind.
+        let store = ScheduleIndex.store api
+
         lock registered (fun () ->
             match registered.TryGetValue api.System with
             | true, _ -> invalidOp "This actor system has a schedule dispatcher already. Call Schedules.register once."
@@ -1456,7 +1477,7 @@ module Schedules =
             aggregate.Send cid (Fcqrs.aggregateId id) command (fun _ -> true)
 
         let logger = api.LoggerFactory.CreateLogger "FCQRS.Workflows.Schedules"
-        let dispatcher = Dispatcher(api, send, workflows, checkInterval, logger)
+        let dispatcher = Dispatcher(api, send, workflows, checkInterval, logger, store)
         dispatcher.Start()
         let rules = SagaStarter.Internal.startRulesOf api.System
         ScheduleHandle(send, workflows, dispatcher, fun () -> rules.Task.IsCompleted)

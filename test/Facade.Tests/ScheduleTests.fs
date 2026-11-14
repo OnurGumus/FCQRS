@@ -740,7 +740,7 @@ let private burstLinear =
                         })
                 let workflows = Dictionary<string, ScheduledWorkflow>()
                 workflows["burst"] <- burst
-                let dispatcher = Dispatcher(api, send, workflows, TimeSpan.FromMinutes 1.0, api.LoggerFactory.CreateLogger "burst")
+                let dispatcher = Dispatcher(api, send, workflows, TimeSpan.FromMinutes 1.0, api.LoggerFactory.CreateLogger "burst", ScheduleIndex.store api)
                 // Half of the schedules were due five seconds ago, and the dispatcher reads them from
                 // its projection. The other half fall due together three seconds from now, which a
                 // pass over the index finds. Each schedule's next due time is an hour later.
@@ -1109,20 +1109,46 @@ let private unreadableRow (postgres: string option) =
 let private droppedTable (postgres: string option) =
     indexRecovers postgres "after the index table was dropped and its read positions kept" (fun journal -> execute journal "DROP TABLE fcqrs_schedule_index") ignore
 
+// An actor system whose query journal reads the write journal's file through another connection
+// string, which the schedule index cannot use.
+let private withMismatchedReader name (test: IActor -> unit) =
+    withDb <| fun db ->
+        let configuration =
+            VerifySerialization.configuration()
+                .AddInMemoryCollection(
+                    [ KeyValuePair<string, string | null>("config:akka:persistence:query:journal:sql:connection-string", $"Data Source={db};Default Timeout=31;") ]
+                )
+                .Build()
+        let api = Fcqrs.actor configuration nullLoggers (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite $"Data Source={db};")) name
+        try
+            test api
+        finally
+            stopApi api
+
+// The error a register raises for the mismatched journals, which names the schedule index and both
+// HOCON sections, not the projection store a schedules user never made.
+let private expectJournalMismatch (api: IActor) =
+    let error =
+        try
+            Schedules.register api [] |> ignore
+            failtest "register raises"
+        with :? ArgumentException as error ->
+            error
+    Expect.stringContains error.Message "schedule dispatcher keeps its index in the journal's database" "the message names the schedule index"
+    Expect.stringContains error.Message "akka.persistence.journal.sql" "the message names the write journal"
+    Expect.stringContains error.Message "akka.persistence.query.journal.sql" "the message names the query journal"
+    Expect.isFalse (error.Message.Contains "projection store") "the message does not name a projection store"
+    Expect.isNotNull error.InnerException "the store's error is kept as the inner exception"
+
 let private mismatchedReader =
     testCase "schedules: a query journal on another connection string than the write journal raises from register" <| fun _ ->
-        withDb <| fun db ->
-            let configuration =
-                VerifySerialization.configuration()
-                    .AddInMemoryCollection(
-                        [ KeyValuePair<string, string | null>("config:akka:persistence:query:journal:sql:connection-string", $"Data Source={db};Default Timeout=31;") ]
-                    )
-                    .Build()
-            let api = Fcqrs.actor configuration nullLoggers (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite $"Data Source={db};")) "ScheduleIndexReader"
-            try
-                Expect.throwsT<ArgumentException> (fun () -> Schedules.register api [] |> ignore) "register raises"
-            finally
-                stopApi api
+        withMismatchedReader "ScheduleIndexReader" expectJournalMismatch
+
+let private mismatchedReaderAgain =
+    testCase "schedules: a register that raised for its journals raises the same error again, not that a dispatcher exists" <| fun _ ->
+        withMismatchedReader "ScheduleIndexReaderAgain" <| fun api ->
+            expectJournalMismatch api
+            expectJournalMismatch api
 
 let private deleteWhileDown =
     testCase "schedules: a schedule deleted while the dispatcher is down loses its index row" <| fun _ ->
@@ -1258,6 +1284,7 @@ let tests =
             unreadableRow None
             droppedTable None
             mismatchedReader
+            mismatchedReaderAgain
             match Environment.GetEnvironmentVariable "FCQRS_TEST_POSTGRES" with
             | null | "" -> ptestCase "schedules: the stored index on PostgreSQL: set FCQRS_TEST_POSTGRES to run" ignore
             | root ->
