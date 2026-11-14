@@ -30,8 +30,9 @@ These transactional projection APIs are available in FCQRS 6.4.0 and later.
 `CatchUpAsync` captures one **journal snapshot**: the highest committed sequence number for each
 persistence identity visible in one database read. A persistence identity identifies one actor's
 journal history. The call succeeds after this projection has committed every event through those
-captured sequence numbers. The snapshot includes aggregate events and saga journal records. It
-excludes Akka's cluster-sharding records, whose persistence identities start with `/sharding/` or
+captured sequence numbers. The snapshot includes aggregate events and saga journal records, or only
+those of the entities named in `Entities` when the options set it. It excludes Akka's
+cluster-sharding records, whose persistence identities start with `/sharding/` or
 `/system/sharding/`. Akka deletes their early history itself, and they are not application events.
 
 The order matters. Await the aggregate reply before calling `CatchUpAsync` so the snapshot includes
@@ -279,6 +280,7 @@ but have not yet been persisted, and it does not stop future writes.
 | `CatchUpTimeout` | 30 seconds | Time allowed for the entire catch-up call, including snapshot capture |
 | `LateWriteWindow` | 30 seconds | How long after taking its journal number a write may commit and still be found by a query of recent writes |
 | `FullScanInterval` | 5 minutes | How often a query reads every history's head, which also finds a write that committed after the window |
+| `Entities` | empty: every entity | Aggregate, saga, and workflow names whose events the projection reads |
 
 Background discovery follows new events as the application runs. Each `CatchUpAsync` call captures
 its own fixed target once; it does not repeatedly replace the target with a newer journal tail.
@@ -287,6 +289,31 @@ Most discovery queries read only the journal rows numbered after what the projec
 journal by `persistence_id`, runs when the projection starts, once more a window later, and every
 `FullScanInterval`. It costs more as the journal grows. An aggregate on this node that stores an
 event starts the next query at once.
+
+A projection that needs only some entities names them. The `Balances` handler reads only account
+events:
+
+```fsharp
+let accountBalances =
+    TransactionalProjectionOptions("Balances", store, Entities = [ "Account" ])
+```
+
+<div class="cs-alt"></div>
+
+```csharp
+var accountBalances = new TransactionalProjectionOptions("Balances", store)
+{
+    Entities = ["Account"],
+};
+```
+
+A name selects the persistence identities that start with the name and `/`. Every query this
+projection runs, the full scan included, selects those rows in SQL. Other entities' events are not
+sent to the process or deserialized, although the database still reads their rows during a full
+scan. Each pass still applies the named entities' events in
+journal order, and the progress table holds rows only for their persistence identities. An event
+of an entity the list leaves out never reaches the handler. Names are compared exactly, including
+case.
 
 The catch-up timeout belongs to `TransactionalProjectionOptions`, separately from
 `akka.fcqrs.command-timeout` used by [Read your writes](read-your-writes.html).

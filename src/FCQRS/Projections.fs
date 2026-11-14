@@ -14,9 +14,9 @@ open FCQRS.Model.Data
 open FCQRS.ProjectionStorage
 
 /// A running projection and its request-scoped notification subscriptions.
-/// Catch-up covers every application persistence ID in one committed journal snapshot.
-/// Akka's own cluster-sharding records (IDs starting with "/sharding/" or "/system/sharding/")
-/// are excluded.
+/// Catch-up covers every application persistence ID in one committed journal snapshot, or every
+/// persistence ID of the entities the projection names. Akka's own cluster-sharding records (IDs
+/// starting with "/sharding/" or "/system/sharding/") are excluded.
 /// It does not wait for other projections, later writes, or external effects.
 /// A correlation-ID subscription (`Subscribe(cid, ...)`, which `sendAwaiting` uses) receives
 /// its notifications after the whole snapshot containing them commits, so it can wait longer
@@ -67,6 +67,19 @@ type TransactionalProjectionOptions(name: string, store: SqlProjectionStore) =
     /// How often a query reads every persistence ID's position instead of only recent writes. The
     /// full scan also finds a write that committed after LateWriteWindow. Default: five minutes.
     member val FullScanInterval = TimeSpan.FromMinutes 5.0 with get, set
+    /// The entity names whose events this projection reads: an aggregate's, saga's, or workflow's
+    /// name. A name selects the persistence IDs that start with the name and "/". The journal
+    /// queries select those rows in SQL, so other entities' events are not fetched or deserialized,
+    /// and the projection stores progress only for the named entities. Empty, the default, reads every
+    /// entity. A pass applies the named entities' events in journal order, as without a filter.
+    member val Entities: string seq = Seq.empty with get, set
+
+/// How much of the journal a projection has read, for tests.
+type internal IJournalReadCount =
+    /// Events Akka's read journal handed over, payloads included.
+    abstract EnvelopesRead: int64
+    /// Journal rows an entity-filtered projection listed to find its next events.
+    abstract RowsListed: int64
 
 /// Journal history a projection needs is missing or out of order, for example after journal rows
 /// were deleted. Reading again cannot repair it: restore the history or rebuild the read model.
@@ -117,6 +130,28 @@ let private journalSettings (actor: IActor) (allowAdapters: bool) =
       WriteConfig = writeConfig
       WriteMapping = writeConfig.GetString("table-mapping", "default") }
 
+// The journal queries a projection runs, limited to the named entities when there are any.
+type private JournalReads =
+    { /// The entity names the projection reads, or empty for every entity.
+      Entities: string list
+      /// Each persistence ID's last sequence number in one committed journal snapshot, and the
+      /// highest global journal number read.
+      CaptureAll: CancellationToken -> Task<Map<string, int64> * int64>
+      /// The same for persistence IDs with events numbered above the given global number.
+      CaptureSince: int64 -> CancellationToken -> Task<Map<string, int64> * int64>
+      /// The lowest global journal number among the given (persistence ID, sequence number) events.
+      Earliest: (string * int64) list -> CancellationToken -> Task<int64 option>
+      /// Up to the given number of the named entities' events numbered above the given global
+      /// number, in global order: persistence ID, sequence number, global number.
+      List: int64 -> int64 -> CancellationToken -> Task<(string * int64 * int64) list> }
+
+let private journalReads (store: SqlProjectionStore) (entities: string list) =
+    { Entities = entities
+      CaptureAll = fun token -> store.CaptureAllAsync(entities, token)
+      CaptureSince = fun after token -> store.CaptureSinceAsync(after, entities, token)
+      Earliest = fun events token -> store.EarliestAsync(events, token)
+      List = fun after count token -> store.ListAsync(after, count, entities, token) }
+
 // What distinguishes the two projection kinds: where positions live, and what applying an event means.
 type private Tracking =
     { /// Names the projection in logs and errors.
@@ -125,15 +160,9 @@ type private Tracking =
       /// terminates the process on missing journal history. Otherwise any error stops the projection.
       Resilient: bool
       Initialize: CancellationToken -> Task
-      /// Each persistence ID's last sequence number in one committed journal snapshot, and the
-      /// highest global journal number read.
-      CaptureAll: CancellationToken -> Task<Map<string, int64> * int64>
-      /// The same for persistence IDs with events numbered above the given global number.
-      CaptureSince: int64 -> CancellationToken -> Task<Map<string, int64> * int64>
+      Journal: JournalReads
       /// Positions of every persistence ID, or of the ones given.
       ReadPositions: string list option -> CancellationToken -> Task<Map<string, int64>>
-      /// The lowest global journal number among the given (persistence ID, sequence number) events.
-      Earliest: (string * int64) list -> CancellationToken -> Task<int64 option>
       /// Applies an event that is next for its persistence ID, publishes its notifications
       /// through the function given, and returns the persistence ID's position afterwards.
       Apply: (IMessageWithCID -> unit) -> EventEnvelope -> CancellationToken -> Task<int64> }
@@ -148,7 +177,9 @@ type private Pass =
 
 // Captures each persistence ID's last sequence number and applies the events from each one's
 // position to that target, so a write that commits after later-numbered writes is applied on the
-// next pass instead of skipped. Within a pass, events are applied in global journal order.
+// next pass instead of skipped. Within a pass, events are applied in global journal order. Without
+// entity names, a pass reads every event with CurrentAllEvents; with them, it lists the named
+// entities' rows in SQL and reads only those events with CurrentEventsByPersistenceId.
 let private run (actor: IActor) (logger: ILogger) (settings: JournalSettings)
                 (options: TransactionalProjectionOptions) (tracking: Tracking) : IProjection =
     let name = tracking.Name
@@ -229,8 +260,8 @@ let private run (actor: IActor) (logger: ILogger) (settings: JournalSettings)
                     | None -> Some(snd handled[0]))
         let! targets, highest =
             match after with
-            | None -> tracking.CaptureAll token
-            | Some after -> tracking.CaptureSince after token
+            | None -> tracking.Journal.CaptureAll token
+            | Some after -> tracking.Journal.CaptureSince after token
         return { Targets = targets; Full = after.IsNone; Highest = highest; Read = DateTime.UtcNow }
     }
 
@@ -249,9 +280,11 @@ let private run (actor: IActor) (logger: ILogger) (settings: JournalSettings)
             let older = handled.FindLastIndex(fun (time, _) -> time <= DateTime.UtcNow - options.LateWriteWindow)
             if older > 0 then handled.RemoveRange(0, older))
 
-    // Up to `count` events numbered above `after`, in global journal order.
-    let readFrom (after: int64) (count: int64) = task {
-        let source = journal.CurrentAllEvents(Offset.Sequence after).Take(count)
+    let envelopesRead = ref 0L
+    let rowsListed = ref 0L
+
+    // Runs a finite journal query to its end, unless the projection stops first.
+    let collect (source: Source<EventEnvelope, Akka.NotUsed>) = task {
         let running =
             source
                 .ViaMaterialized(KillSwitches.Single<EventEnvelope>(), Func<_, _, _>(fun _ kill -> kill))
@@ -259,7 +292,52 @@ let private run (actor: IActor) (logger: ILogger) (settings: JournalSettings)
                 .Run(actor.Materializer)
         let killSwitch, result = running
         use registration = lifetime.Token.Register(fun () -> killSwitch.Abort(OperationCanceledException(lifetime.Token)))
-        return! result
+        let! events = result
+        Interlocked.Add(&envelopesRead.contents, int64 events.Count) |> ignore
+        return List.ofSeq events
+    }
+
+    // The global journal number of an event. Akka.Persistence.Sql gives every envelope, from
+    // CurrentAllEvents and from CurrentEventsByPersistenceId alike, its row's number as a Sequence.
+    let numberOf (envelope: EventEnvelope) =
+        match envelope.Offset with
+        | :? Sequence as sequence -> sequence.Value
+        | offset -> invalidOp $"Projection '{name}' read a journal event without a sequence offset ({offset})."
+
+    // Up to `count` events numbered above `after`, in global journal order, and the highest global
+    // number the read covered (`after` when it found none). With entity names, only the events of
+    // pending persistence IDs, up to their targets.
+    let readFrom (pending: Collections.Generic.Dictionary<string, int64>) (targets: Map<string, int64>) (after: int64) (count: int64) = task {
+        match tracking.Journal.Entities with
+        | [] ->
+            let! events = collect (journal.CurrentAllEvents(Offset.Sequence after).Take(count))
+            return events, events |> List.fold (fun highest envelope -> max highest (numberOf envelope)) after
+        | entities ->
+            // The journal rows say which events come next, without their payloads. Akka then reads
+            // each pending persistence ID's share of them, and sorting by number restores the
+            // journal order across persistence IDs.
+            let! rows = tracking.Journal.List after count lifetime.Token
+            Interlocked.Add(&rowsListed.contents, int64 rows.Length) |> ignore
+            let highest = rows |> List.fold (fun highest (_, _, number) -> max highest number) after
+            let ranges =
+                rows
+                |> List.filter (fun (persistenceId, _, _) ->
+                    selectsEntity entities persistenceId && not (isShardingBookkeeping persistenceId))
+                |> List.groupBy (fun (persistenceId, _, _) -> persistenceId)
+                |> List.choose (fun (persistenceId, events) ->
+                    match pending.TryGetValue persistenceId with
+                    | true, position ->
+                        let last = min targets[persistenceId] (events |> List.map (fun (_, sequenceNr, _) -> sequenceNr) |> List.max)
+                        if last > position then Some(persistenceId, position + 1L, last) else None
+                    | _ -> None)
+            if ranges.IsEmpty then
+                return [], highest
+            else
+                let reads =
+                    Source.From(ranges).MergeMany(4, fun (persistenceId, first, last) ->
+                        journal.CurrentEventsByPersistenceId(persistenceId, first, last))
+                let! events = collect reads
+                return List.sortBy numberOf events, highest
     }
 
     let missing persistenceId position =
@@ -295,7 +373,7 @@ let private run (actor: IActor) (logger: ILogger) (settings: JournalSettings)
             // written. Positions still decide what is applied, so an event that commits after
             // later-numbered ones is applied in a later pass instead of skipped.
             let! earliest =
-                tracking.Earliest [ for KeyValue(persistenceId, position) in pending -> persistenceId, position + 1L ] lifetime.Token
+                tracking.Journal.Earliest [ for KeyValue(persistenceId, position) in pending -> persistenceId, position + 1L ] lifetime.Token
             let mutable after =
                 match earliest with
                 | Some ordering -> ordering - 1L
@@ -304,12 +382,10 @@ let private run (actor: IActor) (logger: ILogger) (settings: JournalSettings)
                     raise (missing first.Key first.Value)
             while pending.Count > 0 do
                 lifetime.Token.ThrowIfCancellationRequested()
-                let! events = readFrom after batchSize
                 let start = after
+                let! events, highest = readFrom pending targets after batchSize
+                after <- highest
                 for envelope in events do
-                    match envelope.Offset with
-                    | :? Sequence as sequence -> after <- max after sequence.Value
-                    | offset -> invalidOp $"Projection '{name}' read a journal event without a sequence offset ({offset})."
                     match pending.TryGetValue envelope.PersistenceId with
                     | true, position when envelope.SequenceNr > position ->
                         if position = Int64.MaxValue || envelope.SequenceNr <> position + 1L then
@@ -472,7 +548,11 @@ let private run (actor: IActor) (logger: ILogger) (settings: JournalSettings)
         member _.Subscribe(cid: CID, filter: IMessageWithCID -> bool, take, ?callback, ?cancellationToken) = subscriptions.Subscribe(cid, filter, take, ?callback = callback, ?cancellationToken = cancellationToken)
 
       interface FCQRS.Query.IHasNotificationTimeout with
-        member _.Timeout = notificationTimeout }
+        member _.Timeout = notificationTimeout
+
+      interface IJournalReadCount with
+        member _.EnvelopesRead = Interlocked.Read(&envelopesRead.contents)
+        member _.RowsListed = Interlocked.Read(&rowsListed.contents) }
 
 let private upcastEnvelope (actor: IActor) (envelope: EventEnvelope) =
     let event = FCQRS.EventUpcasting.Internal.upcastEvent actor.System envelope.Event
@@ -489,6 +569,7 @@ let private gap name (envelope: EventEnvelope) (position: int64) =
 /// Each pass applies the events it found in journal order: per persistence ID in sequence
 /// order, and across persistence IDs in write order on SQLite; on PostgreSQL an event that
 /// commits late is applied in a later pass. Retain journal history until it has been processed.
+/// With `options.Entities`, it reads and stores progress for only those entities' persistence IDs.
 /// Configured Akka event adapters are currently unsupported by this projection reader.
 /// Configure the SQL journal through HOCON; DataOptionsSetup overrides are rejected
 /// because capture and replay must be validated against the same database and mapping.
@@ -511,6 +592,7 @@ let start
     FCQRS.EventUpcasting.Internal.freeze actor.System
 
     let name, store = options.Name, options.Store
+    let entities = validateEntities "Entities" options.Entities
     let logger = actor.LoggerFactory.CreateLogger "TransactionalProjection"
     let settings = journalSettings actor false
     if (store.Dialect = ProjectionSqlDialect.Sqlite && not (settings.Provider.StartsWith("SQLite", StringComparison.OrdinalIgnoreCase)))
@@ -551,9 +633,7 @@ let start
         { Name = name
           Resilient = false
           Initialize = store.InitializeAsync
-          CaptureAll = store.CaptureAllAsync
-          CaptureSince = fun after token -> store.CaptureSinceAsync(after, token)
-          Earliest = fun events token -> store.EarliestAsync(events, token)
+          Journal = journalReads store entities
           ReadPositions = fun ids token -> store.ReadPositionsAsync(name, ids, token)
           Apply = apply }
 
@@ -568,12 +648,15 @@ type internal TrackedProgress =
 /// an event that commits after later-numbered ones, and hands each event to `handler`. Each pass
 /// hands over the events it found in journal order: per persistence ID in sequence order, and
 /// across persistence IDs in write order on SQLite; on PostgreSQL an event that commits late
-/// arrives in a later pass.
+/// arrives in a later pass. With `entities`, it reads only those entities' events: the journal
+/// queries select their persistence IDs, so other entities' rows stay in the database. Empty reads
+/// every entity.
 /// With stored progress, a handler can see an event again after a crash: its position is stored
 /// after the handler returns. A handler that throws terminates the process. The journal must be
 /// SQLite or PostgreSQL, configured through HOCON.
-let internal startTracked (actor: IActor) (progress: TrackedProgress) (handler: obj -> IMessageWithCID list) : IProjection =
+let internal startTracked (actor: IActor) (progress: TrackedProgress) (entities: string list) (handler: obj -> IMessageWithCID list) : IProjection =
     if isNull (box handler) then nullArg (nameof handler)
+    let entities = validateEntities (nameof entities) entities
     match progress with
     | Stored name when String.IsNullOrWhiteSpace name -> invalidArg (nameof progress) "A stored projection needs a name."
     | _ -> ()
@@ -620,9 +703,7 @@ let internal startTracked (actor: IActor) (progress: TrackedProgress) (handler: 
             { Name = "in-memory"
               Resilient = true
               Initialize = fun _ -> Task.CompletedTask
-              CaptureAll = store.CaptureAllAsync
-              CaptureSince = fun after token -> store.CaptureSinceAsync(after, token)
-              Earliest = fun events token -> store.EarliestAsync(events, token)
+              Journal = journalReads store entities
               ReadPositions =
                 fun ids _ ->
                     match ids with
@@ -649,9 +730,7 @@ let internal startTracked (actor: IActor) (progress: TrackedProgress) (handler: 
             { Name = name
               Resilient = true
               Initialize = store.InitializeAsync
-              CaptureAll = store.CaptureAllAsync
-              CaptureSince = fun after token -> store.CaptureSinceAsync(after, token)
-              Earliest = fun events token -> store.EarliestAsync(events, token)
+              Journal = journalReads store entities
               ReadPositions = fun ids token -> store.ReadPositionsAsync(name, ids, token)
               Apply =
                 fun publish envelope token -> task {

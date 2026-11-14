@@ -95,6 +95,10 @@ Keep these distinctions intact in code comments and documentation.
   PostgreSQL, an event that commits after later-numbered ones is applied in a later pass, after them.
 - Commit a read-model update and its progress in the same transaction when they share a store. A
   projection that stores progress after its handler returns can hand an event to it again.
+- A projection that names entities reads only their persistence IDs (`<name>/...`): its SQL selects
+  those rows, so other entities' events are never fetched or deserialized, though a full scan still
+  reads their rows in the database. A pass still applies the named entities' events in journal
+  order. An event of an entity it does not name never reaches it.
 - Most projection queries read only recent writes. A write that commits more than
   `LateWriteWindow` after taking its journal number is handled at the next full scan, so
   `CatchUpAsync` can return before it.

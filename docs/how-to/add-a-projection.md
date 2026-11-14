@@ -118,6 +118,39 @@ handler that writes to several stores needs that for each of them.
 The name identifies the projection's stored progress. A new name reads the whole journal once. Reusing
 a name resumes that projection, so do not reuse one for a different read model.
 
+## Read only some entities
+
+The balance list needs only the account aggregate's events. Name its entity, the `Name` the
+aggregate was registered with, and the projection reads no other events:
+
+```fsharp
+let accountsOnly =
+    Projection.single FromStart handle
+    |> Projection.ofEntities [ "Account" ]
+    |> Fcqrs.projection api
+```
+
+<div class="cs-alt"></div>
+
+```csharp
+builder.Services.AddFcqrs(connectionString, "accounts")
+    .AddAggregate<Account>()
+    .AddProjection(Handle, entities: ["Account"]);
+```
+
+An entity name selects the persistence identities that start with the name and `/`, which is how
+aggregates, sagas, and workflows are journaled. The projection's journal queries select those rows
+in SQL, so another aggregate's events or many workflow runs are not sent to the process or
+deserialized. The database still reads their rows when the projection starts and at each full scan.
+The handler receives the named entities' events in journal order, as without a filter, and a named
+projection stores progress only for them.
+
+Names are compared exactly, including case. An event of an entity the list leaves out never reaches
+the handler: a handler that also matches a saga's events must name the saga too. The entity name is
+part of each stored event's persistence identity, so renaming an aggregate also changes what this
+list must say. For a transactional projection, set `TransactionalProjectionOptions.Entities`, as
+[Catch up projections](catch-up-projections.html#Configure-discovery-and-waiting) shows.
+
 ## Choose which events notify callers
 
 | F# helper | C# handler result | Subscription behaviour |

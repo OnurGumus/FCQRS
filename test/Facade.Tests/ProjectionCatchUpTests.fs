@@ -1146,6 +1146,166 @@ let private postgresVeryLateCommit connectionString =
         Thread.Sleep 200
     Expect.equal (fixture.Scalar "SELECT COUNT(*) FROM applied_events") 3L "the next full scan handles the write that committed after the window"
 
+// Two aggregate types whose events share a journal. A projection that names one type sees only
+// that type's events.
+let private filterTallies api =
+    tallyAggregate api "FilterKeep", tallyAggregate api "FilterSkip"
+
+let private tallyOn (aggregate: AggregateHandle<TallyCommand, TallyEvent>) (id: string) (amount: int) =
+    aggregate.Send (Fcqrs.newCid ()) (Fcqrs.aggregateId id) (Tally amount) (fun _ -> true)
+    |> fun work -> Async.RunSynchronously(work, 20000)
+    |> ignore
+
+// 20 events of each type, interleaved, over two IDs per type: FilterKeep holds 1..20, FilterSkip
+// 101..120. The FilterKeep events alternate between IDs "a" and "b", so grouping by ID would
+// reorder them.
+let private interleavedFilterEvents keep skip =
+    for amount in 1..20 do
+        let id = if amount % 2 = 0 then "a" else "b"
+        tallyOn keep id amount
+        tallyOn skip id (100 + amount)
+
+let private tallied (message: obj) =
+    match message with
+    | :? Event<TallyEvent> as event -> let (Tallied amount) = event.EventDetails in Some amount
+    | _ -> None
+
+let private envelopesRead (projection: IProjection) =
+    (projection :?> IJournalReadCount).EnvelopesRead
+
+let private entityFilterReadsOnlyItsTypes =
+    testCase "projection: an entity filter reads only its types"
+    <| fun _ ->
+        let suffix, journalPath, projectionPath = sqlitePaths ()
+        let api =
+            Fcqrs.actor (VerifySerialization.configuration().Build()) NullLoggerFactory.Instance
+                (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite (sqliteString journalPath))) ("EntityFilter" + suffix)
+        try
+            let keep, skip = filterTallies api
+            Fcqrs.wireSagaStarters api []
+            interleavedFilterEvents keep skip
+            let seen = Collections.Concurrent.ConcurrentQueue<int>()
+            use projection =
+                Fcqrs.projection api
+                    (Projection.single FromStart (fun message -> tallied message |> Option.iter seen.Enqueue)
+                     |> Projection.ofEntities [ "FilterKeep" ])
+            wait (projection.CatchUpAsync())
+            Expect.equal (List.ofSeq seen) [ 1..20 ] "the projection sees every FilterKeep event in journal order and no FilterSkip event"
+            Expect.equal (envelopesRead projection) 20L "the projection read no FilterSkip event"
+            tallyOn skip "a" 121
+            tallyOn keep "a" 21
+            wait (projection.CatchUpAsync())
+            Expect.equal (List.ofSeq seen) [ 1..21 ] "a later pass reads only FilterKeep events too"
+            Expect.equal (envelopesRead projection) 21L "a later pass read no FilterSkip event"
+        finally
+            wait (api.Stop())
+            deleteDatabases [ journalPath; projectionPath ]
+
+let private entityFilterTransactional postgres =
+    use fixture = new Fixture(postgres)
+    let keep, skip = filterTallies fixture.Api
+    interleavedFilterEvents keep skip
+    let options = fixture.Options "entity-filter"
+    options.Entities <- [ "FilterKeep" ]
+    let seen = Collections.Concurrent.ConcurrentQueue<string * int64 * int>()
+    use projection =
+        Fcqrs.transactionalProjection fixture.Api options (fun _ _ envelope ->
+            tallied envelope.Event |> Option.iter (fun amount -> seen.Enqueue(envelope.PersistenceId, envelope.SequenceNr, amount))
+            Task.CompletedTask)
+    wait (projection.CatchUpAsync())
+    let seen = List.ofSeq seen
+    Expect.equal (seen |> List.map (fun (_, _, amount) -> amount)) [ 1..20 ] "the projection applies every FilterKeep event in journal order and no FilterSkip event"
+    for persistenceId, events in seen |> List.groupBy (fun (persistenceId, _, _) -> persistenceId) do
+        Expect.isTrue (persistenceId.StartsWith("FilterKeep/", StringComparison.Ordinal)) "only FilterKeep IDs are applied"
+        Expect.equal (events |> List.map (fun (_, sequenceNr, _) -> sequenceNr)) [ 1L..10L ] "each ID's events arrive in sequence order"
+    Expect.equal (fixture.Scalar "SELECT COUNT(*) FROM fcqrs_projection_progress WHERE projection_name = 'entity-filter'") 2L
+        "progress is stored for the two FilterKeep IDs"
+    Expect.equal (fixture.Scalar "SELECT COUNT(*) FROM fcqrs_projection_progress WHERE projection_name = 'entity-filter' AND persistence_id NOT LIKE 'FilterKeep/%'") 0L
+        "no progress is stored for another type"
+
+let private entityFilterSkipsOtherRowsInSql =
+    testCase "projection: an entity filter keeps other types' rows in the database"
+    <| fun _ ->
+        let suffix, journalPath, projectionPath = sqlitePaths ()
+        let api =
+            Fcqrs.actor (VerifySerialization.configuration().Build()) NullLoggerFactory.Instance
+                (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite (sqliteString journalPath))) ("EntitySql" + suffix)
+        try
+            let keep, skip = filterTallies api
+            let other = tallyAggregate api "FilterOther"
+            Fcqrs.wireSagaStarters api []
+            // FilterKeep events before and after the FilterSkip rows, so a listing without the
+            // filter would read FilterSkip rows between them.
+            for amount in 1..5 do tallyOn keep "keep" amount
+            [ for worker in 1..20 ->
+                async {
+                    for amount in 1..100 do
+                        do! skip.Send (Fcqrs.newCid ()) (Fcqrs.aggregateId $"skip-{worker}") (Tally amount) (fun _ -> true) |> Async.Ignore
+                } ]
+            |> Async.Parallel
+            |> fun work -> Async.RunSynchronously(work, 120000)
+            |> ignore
+            for amount in 6..10 do tallyOn keep "keep" amount
+            for amount in 1..20 do tallyOn other "other" amount
+            let count (projection: Projection) =
+                let seen = ref 0
+                use started =
+                    Fcqrs.projection api
+                        { projection with Handle = fun message -> (if (tallied message).IsSome then Interlocked.Increment(&seen.contents) |> ignore); [] }
+                wait (started.CatchUpAsync())
+                seen.Value, envelopesRead started, (started :?> IJournalReadCount).RowsListed
+            let filtered entities = Projection.single FromStart ignore |> Projection.ofEntities entities
+            Expect.equal (count (filtered [ "FilterKeep" ])) (10, 10L, 10L) "a filtered projection reads and lists only the 10 FilterKeep events"
+            Expect.equal (count (filtered [ "FilterKeep"; "FilterOther" ])) (30, 30L, 30L) "two names read both types"
+            Expect.equal (count (filtered [ "FilterKee_" ])) (0, 0L, 0L) "an underscore in a name is not a LIKE wildcard"
+            Expect.equal (count (filtered [ "Filter" ])) (0, 0L, 0L) "a name selects whole entity names, not prefixes of them"
+            let all, read, _ = count (Projection.single FromStart ignore)
+            Expect.equal all 2030 "an unfiltered projection in the same journal still sees every event"
+            Expect.isGreaterThanOrEqual read 2030L "an unfiltered projection reads every event"
+            let seen = ref 0
+            use fromCSharp =
+                FCQRS.CSharp.QueryApi.Init(api, Action<obj>(fun message -> if (tallied message).IsSome then Interlocked.Increment(&seen.contents) |> ignore), null, [ "FilterKeep" ])
+            wait (fromCSharp.CatchUpAsync())
+            Expect.equal seen.Value 10 "QueryApi.Init takes the same entity filter"
+        finally
+            wait (api.Stop())
+            deleteDatabases [ journalPath; projectionPath ]
+
+// A FilterKeep event that takes its journal number before later-numbered events and commits after
+// them reaches a filtered projection in a later pass.
+let private postgresEntityFilterLateCommit connectionString =
+    use fixture = new Fixture(Some connectionString)
+    let keep, skip = filterTallies fixture.Api
+    let seen = Collections.Concurrent.ConcurrentQueue<int>()
+    use projection =
+        Fcqrs.projection fixture.Api
+            (Projection.single FromStart (fun message -> tallied message |> Option.iter seen.Enqueue)
+             |> Projection.ofEntities [ "FilterKeep" ])
+    tallyOn keep "template" 1
+    wait (projection.CatchUpAsync())
+    use delayed = fixture.OpenJournal()
+    use transaction = delayed.BeginTransaction()
+    use columnsCommand = delayed.CreateCommand()
+    columnsCommand.Transaction <- transaction
+    columnsCommand.CommandText <- "SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'journal' AND column_name <> 'ordering' ORDER BY ordinal_position"
+    let columns = ResizeArray<string>()
+    do
+        use reader = columnsCommand.ExecuteReader()
+        while reader.Read() do columns.Add(reader.GetString 0)
+    let quoted = columns |> Seq.map (fun name -> "\"" + name + "\"") |> String.concat ", "
+    let values = columns |> Seq.map (function "sequence_number" -> "2" | name -> "\"" + name + "\"") |> String.concat ", "
+    // Takes a journal number and holds its commit while later-numbered events commit.
+    execute delayed (Some transaction) $"INSERT INTO journal ({quoted}) SELECT {values} FROM journal WHERE persistence_id LIKE 'FilterKeep/%%' LIMIT 1" []
+    tallyOn skip "skip" 101
+    tallyOn keep "commits-first" 2
+    wait (projection.CatchUpAsync())
+    Thread.Sleep 3000
+    Expect.equal (List.ofSeq seen) [ 1; 2 ] "the uncommitted event is not delivered yet"
+    transaction.Commit()
+    wait (projection.CatchUpAsync())
+    Expect.equal (List.ofSeq seen) [ 1; 2; 1 ] "the FilterKeep event that committed late is delivered"
+    Expect.equal (envelopesRead projection) 3L "the projection read no FilterSkip event"
+
 let tests =
     let postgres =
         match Environment.GetEnvironmentVariable "FCQRS_TEST_POSTGRES" with
@@ -1173,8 +1333,13 @@ let tests =
               transientJournalFailure
               heldAcrossRetry
               testCase "SQLite: competing projection instances do not double-apply" (fun _ -> concurrentInstances None)
+              entityFilterReadsOnlyItsTypes
+              testCase "SQLite: a transactional projection with an entity filter applies and stores only its types" (fun _ -> entityFilterTransactional None)
+              entityFilterSkipsOtherRowsInSql
               match postgres with
               | Some connection ->
+                  testCase "PostgreSQL: a transactional projection with an entity filter applies and stores only its types" (fun _ -> entityFilterTransactional postgres)
+                  testCase "PostgreSQL: an entity filter receives its event that commits after later-numbered ones" (fun _ -> postgresEntityFilterLateCommit connection)
                   testCase "PostgreSQL: catch-up spans all aggregate histories" (fun _ -> allAggregates postgres)
                   testCase "PostgreSQL: competing projection instances do not double-apply" (fun _ -> concurrentInstances postgres)
                   testCase "PostgreSQL: a late commit below the previous global offset is processed" (fun _ -> postgresCommitInversion connection)

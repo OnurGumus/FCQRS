@@ -95,9 +95,13 @@ type ProjectionProgress =
     /// For a read model that outlives the process. A new name reads the whole journal once.
     | Named of string
 
-/// A projection: where it keeps its progress, and what it does with each stored event.
+/// A projection: where it keeps its progress, which entities it reads, and what it does with each
+/// stored event.
 type Projection =
     { Progress: ProjectionProgress
+      /// The entity names whose events the projection reads: an aggregate's, saga's, or workflow's
+      /// name. Empty reads every entity. See Projection.ofEntities.
+      Entities: string list
       /// Called per stored event; returns the read-model events to publish
       /// to subscribers (empty list = nothing to notify).
       Handle: obj -> IMessageWithCID list }
@@ -111,13 +115,14 @@ module Projection =
     /// or transformed, e.g. suppressing intermediate events so read-your-writes
     /// only wakes on the final one.
     let multi (progress: ProjectionProgress) (handle: obj -> IMessageWithCID list) : Projection =
-        { Progress = progress; Handle = handle }
+        { Progress = progress; Entities = []; Handle = handle }
 
     /// Single-event handler: just update the read model (returns unit); each
     /// aggregate event is then published to subscribers as-is. The common case
     /// when every event is worth notifying.
     let single (progress: ProjectionProgress) (handle: obj -> unit) : Projection =
         { Progress = progress
+          Entities = []
           Handle = FCQRS.Query.autoPublish handle }
 
     /// Filtered single-event handler: update the read model, then return
@@ -127,7 +132,16 @@ module Projection =
     /// event except the intermediate ones" case, without building a list.
     let filtered (progress: ProjectionProgress) (handle: obj -> Notify) : Projection =
         { Progress = progress
+          Entities = []
           Handle = FCQRS.Query.filterPublish handle }
+
+    /// Reads only the events of the named entities: an aggregate's, saga's, or workflow's name, as
+    /// registered. A name selects the persistence IDs that start with the name and "/". The journal
+    /// queries select those rows in SQL, so other entities' events are not fetched or deserialized.
+    /// A pass hands the named entities' events to the handler in journal order, as without a
+    /// filter. An empty list reads every entity.
+    let ofEntities (names: string list) (p: Projection) : Projection =
+        { p with Entities = names }
 
 // ---------------------------------------------------------------------------
 // Saga side-effect command builders (wrap ExecuteCommand / TargetActor).
@@ -399,7 +413,8 @@ module Fcqrs =
     /// skips a stored event. Each pass hands the events it found to the handler in journal order,
     /// so each aggregate's events arrive in sequence order; on SQLite, events of different
     /// aggregates arrive in the order they were written, and on PostgreSQL an event that commits
-    /// late arrives in a later pass. With `Named` progress, a handler can see an event again
+    /// late arrives in a later pass. With `Entities` (see Projection.ofEntities), it reads only
+    /// those entities' events. With `Named` progress, a handler can see an event again
     /// after a crash. A handler that throws terminates the process. Requires a SQLite or
     /// PostgreSQL journal; an Akka event adapter must turn each journal row into one event.
     let projection (api: IActor) (p: Projection) : FCQRS.Projections.IProjection =
@@ -407,14 +422,15 @@ module Fcqrs =
             match p.Progress with
             | FromStart -> FCQRS.Projections.InMemory
             | Named name -> FCQRS.Projections.Stored name
-        FCQRS.Projections.startTracked api progress p.Handle
+        FCQRS.Projections.startTracked api progress p.Entities p.Handle
 
     /// Starts a transactional projection with journal-wide CatchUpAsync support.
     /// Write the read model through the supplied connection and transaction; FCQRS
     /// commits those updates and contiguous per-persistence-ID progress together.
     /// Retain unprocessed journal history. Each pass applies events in journal order: per
     /// persistence ID in sequence order, and across persistence IDs in write order on SQLite; on
-    /// PostgreSQL an event that commits late is applied in a later pass. See TransactionalProjectionOptions.
+    /// PostgreSQL an event that commits late is applied in a later pass. Set
+    /// `options.Entities` to read only some entities' events. See TransactionalProjectionOptions.
     let transactionalProjection
         (api: IActor)
         (options: FCQRS.Projections.TransactionalProjectionOptions)

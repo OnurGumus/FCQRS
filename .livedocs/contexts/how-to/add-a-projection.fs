@@ -14,3 +14,6 @@ let register (api: IActor) =
 let registerNamed (api: IActor) (updateSearch: obj -> unit) =
     // snippet: 3
     search
+let registerAccountsOnly (api: IActor) =
+    // snippet: 4
+    accountsOnly

@@ -279,27 +279,36 @@ type ActorApi =
 /// numbers, so it never skips a stored event. Without a name, it keeps its progress in memory and
 /// reads the whole journal each time it starts. With a name, it stores its progress in the journal
 /// database under that name and resumes where it stopped; a handler can then see an event again
-/// after a crash. A handler that throws terminates the process.
+/// after a crash. A handler that throws terminates the process. With entity names (an aggregate's,
+/// saga's, or workflow's name), it reads only those entities' events, and other entities' rows stay
+/// in the database; without them, it reads every entity.
 type QueryApi =
     static member private Progress(name: string | null) =
         match name with
         | null -> Projections.InMemory
         | name -> Projections.Stored name
 
+    static member private Entities(entities: seq<string> | null) =
+        match entities with
+        | null -> []
+        | entities -> List.ofSeq entities
+
     /// Starts a projection whose handler returns the notifications to publish (F# list).
     static member Init(
         actorApi: IActor,
         eventHandler: Func<obj, IMessageWithCID list>,
-        [<Optional; DefaultParameterValue(null: string | null)>] name: string | null) : Projections.IProjection =
-        Projections.startTracked actorApi (QueryApi.Progress name) eventHandler.Invoke
+        [<Optional; DefaultParameterValue(null: string | null)>] name: string | null,
+        [<Optional; DefaultParameterValue(null: seq<string> | null)>] entities: seq<string> | null) : Projections.IProjection =
+        Projections.startTracked actorApi (QueryApi.Progress name) (QueryApi.Entities entities) eventHandler.Invoke
 
     /// Starts a projection whose handler returns the notifications to publish. An overload of
     /// Init, distinguished by the handler's return type.
     static member Init(
         actorApi: IActor,
         eventHandler: Func<obj, System.Collections.Generic.IList<IMessageWithCID>>,
-        [<Optional; DefaultParameterValue(null: string | null)>] name: string | null) : Projections.IProjection =
-        Projections.startTracked actorApi (QueryApi.Progress name) (fun evt -> eventHandler.Invoke evt |> List.ofSeq)
+        [<Optional; DefaultParameterValue(null: string | null)>] name: string | null,
+        [<Optional; DefaultParameterValue(null: seq<string> | null)>] entities: seq<string> | null) : Projections.IProjection =
+        Projections.startTracked actorApi (QueryApi.Progress name) (QueryApi.Entities entities) (fun evt -> eventHandler.Invoke evt |> List.ofSeq)
 
     /// Starts a projection with a single-event handler: the handler just updates the read model
     /// (returns void); each aggregate event is then published to subscribers as-is. Use a
@@ -307,16 +316,18 @@ type QueryApi =
     static member Init(
         actorApi: IActor,
         eventHandler: Action<obj>,
-        [<Optional; DefaultParameterValue(null: string | null)>] name: string | null) : Projections.IProjection =
-        Projections.startTracked actorApi (QueryApi.Progress name) (Query.autoPublish eventHandler.Invoke)
+        [<Optional; DefaultParameterValue(null: string | null)>] name: string | null,
+        [<Optional; DefaultParameterValue(null: seq<string> | null)>] entities: seq<string> | null) : Projections.IProjection =
+        Projections.startTracked actorApi (QueryApi.Progress name) (QueryApi.Entities entities) (Query.autoPublish eventHandler.Invoke)
 
     /// Starts a projection with a filtered single-event handler: the handler updates the read
     /// model and returns Publish/Suppress to say whether this event wakes subscribers.
     static member Init(
         actorApi: IActor,
         eventHandler: Func<obj, Notify>,
-        [<Optional; DefaultParameterValue(null: string | null)>] name: string | null) : Projections.IProjection =
-        Projections.startTracked actorApi (QueryApi.Progress name) (Query.filterPublish eventHandler.Invoke)
+        [<Optional; DefaultParameterValue(null: string | null)>] name: string | null,
+        [<Optional; DefaultParameterValue(null: seq<string> | null)>] entities: seq<string> | null) : Projections.IProjection =
+        Projections.startTracked actorApi (QueryApi.Progress name) (QueryApi.Entities entities) (Query.filterPublish eventHandler.Invoke)
 
 /// Low-level wiring over an IActor: register the saga-starter, aggregates and
 /// actors, and send commands. Most members are plain static helpers (you call

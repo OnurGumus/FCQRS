@@ -24,6 +24,22 @@ let internal isShardingBookkeeping (persistenceId: string) : bool =
     persistenceId.StartsWith("/sharding/", StringComparison.Ordinal)
     || persistenceId.StartsWith("/system/sharding/", StringComparison.Ordinal)
 
+/// Checks entity names for a projection filter and removes repeats. An empty list selects every
+/// entity.
+let internal validateEntities (argument: string) (entities: string seq) : string list =
+    if isNull (box entities) then []
+    else
+        let names = List.ofSeq entities
+        if names |> List.exists String.IsNullOrWhiteSpace then
+            invalidArg argument "An entity name must be nonempty."
+        List.distinct names
+
+/// Whether a persistence ID belongs to one of the named entities: aggregates, sagas, and workflows
+/// journal under "<name>/<shard>/<id>". An empty list selects every persistence ID.
+let internal selectsEntity (entities: string list) (persistenceId: string) : bool =
+    entities.IsEmpty
+    || entities |> List.exists (fun name -> persistenceId.StartsWith(name + "/", StringComparison.Ordinal))
+
 /// Stores one durable, contiguous sequence position per projection and persistence ID.
 /// Connection factories must return new, unopened connections. The journal factory must
 /// read the authoritative journal database, not a replica. Read-model writes must use the
@@ -176,6 +192,22 @@ type SqlProjectionStore
         parameter.Value <- value
         command.Parameters.Add parameter |> ignore
 
+    // A condition selecting the named entities' persistence IDs, with its parameters added to the
+    // command, or None for every entity. LIKE keeps other rows in the database. SQLite's LIKE ignores
+    // ASCII case, so callers also check each ID with selectsEntity.
+    let entityCondition (command: DbCommand) (entities: string list) =
+        match entities with
+        | [] -> None
+        | entities ->
+            let escape (name: string) = name.Replace("\\", "\\\\").Replace("%", "\\%").Replace("_", "\\_")
+            let conditions =
+                entities
+                |> List.mapi (fun index name ->
+                    let parameterName = $"@entity{index}"
+                    parameter command parameterName DbType.String (escape name + "/%")
+                    $"{persistenceIdSql} LIKE {parameterName} ESCAPE '\\'")
+            Some("(" + String.concat " OR " conditions + ")")
+
     let transactionCommand (connection: DbConnection) (transaction: DbTransaction) sql =
         if isNull (box transaction) || not (obj.ReferenceEquals(connection, transaction.Connection)) then
             invalidArg (nameof transaction) "An active transaction on the supplied connection is required."
@@ -255,39 +287,54 @@ type SqlProjectionStore
             do! transaction.CommitAsync(ct)
         }
 
-    /// Captures every persistence ID's last sequence number in a committed snapshot, and the highest
-    /// global journal number read before it. Reads the whole journal.
+    /// Captures the last sequence number of every persistence ID of the named entities (every
+    /// entity when `entities` is empty) in a committed snapshot, and the highest global journal
+    /// number read before it. Reads the whole journal; other entities' rows stay in the database.
     /// Per-persistence-ID targets do not assume global journal ordering follows commit ordering.
     /// Akka cluster sharding's own bookkeeping is not application events and loses its early
     /// history, so the snapshot excludes it: see `isShardingBookkeeping`.
-    member internal _.CaptureAllAsync(ct: CancellationToken) : Task<Map<string, int64> * int64> =
+    member internal _.CaptureAllAsync(entities: string list, ct: CancellationToken) : Task<Map<string, int64> * int64> =
         task {
             use! connection = openConnection journalConnectionFactory validateJournalConnection ct
             use highest = connection.CreateCommand()
             highest.CommandText <- $"SELECT COALESCE(MAX({orderingSql}), 0) FROM {journalSql}"
             let! top = highest.ExecuteScalarAsync(ct)
             use command = connection.CreateCommand()
-            command.CommandText <- $"SELECT {persistenceIdSql}, MAX({sequenceNumberSql}) FROM {journalSql} GROUP BY {persistenceIdSql}"
+            let selected = entityCondition command entities |> Option.map ((+) " WHERE ") |> Option.defaultValue ""
+            command.CommandText <- $"SELECT {persistenceIdSql}, MAX({sequenceNumberSql}) FROM {journalSql}{selected} GROUP BY {persistenceIdSql}"
             let! positions = readPositions command ct
             return
-                positions |> Map.filter (fun persistenceId _ -> not (isShardingBookkeeping persistenceId)),
+                positions |> Map.filter (fun persistenceId _ -> not (isShardingBookkeeping persistenceId) && selectsEntity entities persistenceId),
                 Convert.ToInt64 top
         }
 
-    /// Captures the last sequence number of each persistence ID with events numbered above `after`
-    /// in the global journal order, and the highest such number (`after` when there are none).
-    /// Reads only those events. A write numbered at or below `after` that commits later is missed:
-    /// the caller must choose `after` to allow for writes that take time to commit.
-    member internal _.CaptureSinceAsync(after: int64, ct: CancellationToken) : Task<Map<string, int64> * int64> =
+    /// Captures the last sequence number of each persistence ID of the named entities (every entity
+    /// when `entities` is empty) with events numbered above `after` in the global journal order,
+    /// and the highest number read (`after` when there are none). With entities, that number counts
+    /// other entities' events too, so the next query starts above them. A write numbered at or
+    /// below `after` that commits later is missed: the caller must choose `after` to allow for
+    /// writes that take time to commit.
+    member internal _.CaptureSinceAsync(after: int64, entities: string list, ct: CancellationToken) : Task<Map<string, int64> * int64> =
         task {
             use! connection = openConnection journalConnectionFactory validateJournalConnection ct
+            // Taken first, so the query below sees every event numbered up to it that it saw.
+            let! highest = task {
+                if entities.IsEmpty then return after
+                else
+                    use highest = connection.CreateCommand()
+                    highest.CommandText <- $"SELECT COALESCE(MAX({orderingSql}), 0) FROM {journalSql} WHERE {orderingSql} > @after"
+                    parameter highest "@after" DbType.Int64 after
+                    let! top = highest.ExecuteScalarAsync(ct)
+                    return max after (Convert.ToInt64 top)
+            }
             use command = connection.CreateCommand()
+            let selected = entityCondition command entities |> Option.map ((+) " AND ") |> Option.defaultValue ""
             command.CommandText <-
-                $"SELECT {persistenceIdSql}, MAX({sequenceNumberSql}), MAX({orderingSql}) FROM {journalSql} WHERE {orderingSql} > @after GROUP BY {persistenceIdSql}"
+                $"SELECT {persistenceIdSql}, MAX({sequenceNumberSql}), MAX({orderingSql}) FROM {journalSql} WHERE {orderingSql} > @after{selected} GROUP BY {persistenceIdSql}"
             parameter command "@after" DbType.Int64 after
             use! reader = command.ExecuteReaderAsync(ct)
             let mutable positions = Map.empty
-            let mutable top = after
+            let mutable top = highest
             let mutable reading = true
             while reading do
                 let! available = reader.ReadAsync(ct)
@@ -298,11 +345,40 @@ type SqlProjectionStore
                     if String.IsNullOrWhiteSpace persistenceId || sequenceNumber < 0L then
                         invalidOp "The journal contains an invalid persistence ID or sequence number."
                     top <- max top ordering
-                    if not (isShardingBookkeeping persistenceId) then
+                    if not (isShardingBookkeeping persistenceId) && selectsEntity entities persistenceId then
                         positions <- positions.Add(persistenceId, sequenceNumber)
                 else
                     reading <- false
             return positions, top
+        }
+
+    /// Up to `count` events of the named entities numbered above `after`, in global journal order:
+    /// each one's persistence ID, sequence number, and global number. Reads the journal rows only,
+    /// not their payloads; other entities' rows stay in the database. `entities` must not be empty.
+    member internal _.ListAsync(after: int64, count: int64, entities: string list, ct: CancellationToken) : Task<(string * int64 * int64) list> =
+        task {
+            if entities.IsEmpty then invalidArg (nameof entities) "Listing needs at least one entity name."
+            use! connection = openConnection journalConnectionFactory validateJournalConnection ct
+            use command = connection.CreateCommand()
+            let selected = entityCondition command entities |> Option.map ((+) " AND ") |> Option.defaultValue ""
+            command.CommandText <-
+                $"SELECT {persistenceIdSql}, {sequenceNumberSql}, {orderingSql} FROM {journalSql} WHERE {orderingSql} > @after{selected} ORDER BY {orderingSql} LIMIT @count"
+            parameter command "@after" DbType.Int64 after
+            parameter command "@count" DbType.Int64 count
+            use! reader = command.ExecuteReaderAsync(ct)
+            let rows = ResizeArray<string * int64 * int64>()
+            let mutable reading = true
+            while reading do
+                let! available = reader.ReadAsync(ct)
+                if available then
+                    let persistenceId = reader.GetString 0
+                    let sequenceNumber = reader.GetInt64 1
+                    if String.IsNullOrWhiteSpace persistenceId || sequenceNumber < 0L then
+                        invalidOp "The journal contains an invalid persistence ID or sequence number."
+                    rows.Add((persistenceId, sequenceNumber, reader.GetInt64 2))
+                else
+                    reading <- false
+            return List.ofSeq rows
         }
 
     /// The lowest global journal number among the given events, each named by its persistence ID

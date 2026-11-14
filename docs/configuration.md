@@ -89,8 +89,10 @@ Transactional projections use `TransactionalProjectionOptions` for background di
 (`PollInterval`, default 1s), per-identity batch size (`BatchSize`, default 500), the complete
 catch-up deadline (`CatchUpTimeout`, default 30s), how late a write may commit and still be found by
 a query of recent writes (`LateWriteWindow`, default 30s), and how often a query scans the whole
-journal (`FullScanInterval`, default 5 minutes). These are registration options rather than HOCON
-keys. Projections registered with `Fcqrs.projection` or `AddProjection` use the same defaults. An
+journal (`FullScanInterval`, default 5 minutes), and which aggregates, sagas, and workflows it reads
+(`Entities`, default every one). These are registration options rather than HOCON keys. Projections
+registered with `Fcqrs.projection` or `AddProjection` use the same defaults, and take entity names
+through `Projection.ofEntities` or the `entities` argument. An
 aggregate that stores an event wakes the projections on its node before the next poll. See
 [Catch up projections](how-to/catch-up-projections.html) for their transaction and snapshot
 boundaries.

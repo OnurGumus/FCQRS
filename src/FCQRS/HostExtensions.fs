@@ -335,11 +335,14 @@ type FcqrsBuilder internal (services: IServiceCollection, connectionString: stri
     /// and reads the whole journal at each start, for a read model kept in memory. With a name it
     /// stores its progress in the journal database and resumes, and a handler can see an event
     /// again after a crash. A handler that throws terminates the process. The handler returns the
-    /// notifications to publish. Resolve FCQRS.Projections.IProjection to wait for it.
+    /// notifications to publish. With entity names (an aggregate's, saga's, or workflow's name), it
+    /// reads only those entities' events, and other entities' rows stay in the database; without
+    /// them it reads every entity. Resolve FCQRS.Projections.IProjection to wait for it.
     member this.AddProjection(
             handler: Func<obj, IList<IMessageWithCID>>,
-            [<Optional; DefaultParameterValue(null: string | null)>] name: string | null) : FcqrsBuilder =
-        this.RegisterProjection(fun _ actor -> QueryApi.Init(actor, handler, name))
+            [<Optional; DefaultParameterValue(null: string | null)>] name: string | null,
+            [<Optional; DefaultParameterValue(null: seq<string> | null)>] entities: seq<string> | null) : FcqrsBuilder =
+        this.RegisterProjection(fun _ actor -> QueryApi.Init(actor, handler, name, entities))
 
     /// Register the read-model projection with a single-event handler: the handler just
     /// updates the read model (returns void); each aggregate event is then published to
@@ -347,35 +350,40 @@ type FcqrsBuilder internal (services: IServiceCollection, connectionString: stri
     /// filtered, e.g. suppressing intermediate events so read-your-writes only wakes on the final one.
     member this.AddProjection(
             handler: Action<obj>,
-            [<Optional; DefaultParameterValue(null: string | null)>] name: string | null) : FcqrsBuilder =
-        this.RegisterProjection(fun _ actor -> QueryApi.Init(actor, handler, name))
+            [<Optional; DefaultParameterValue(null: string | null)>] name: string | null,
+            [<Optional; DefaultParameterValue(null: seq<string> | null)>] entities: seq<string> | null) : FcqrsBuilder =
+        this.RegisterProjection(fun _ actor -> QueryApi.Init(actor, handler, name, entities))
 
     /// Register the read-model projection with a filtered single-event handler: the handler
     /// updates the read model and returns Publish/Suppress per event to control whether it
     /// wakes subscribers.
     member this.AddProjection(
             handler: Func<obj, Notify>,
-            [<Optional; DefaultParameterValue(null: string | null)>] name: string | null) : FcqrsBuilder =
-        this.RegisterProjection(fun _ actor -> QueryApi.Init(actor, handler, name))
+            [<Optional; DefaultParameterValue(null: string | null)>] name: string | null,
+            [<Optional; DefaultParameterValue(null: seq<string> | null)>] entities: seq<string> | null) : FcqrsBuilder =
+        this.RegisterProjection(fun _ actor -> QueryApi.Init(actor, handler, name, entities))
 
     /// Register the read-model projection, building the handler from DI. Use this overload
     /// when the projection needs services, e.g. an ILoggerFactory.
     member this.AddProjection(
             handler: Func<IServiceProvider, Func<obj, IList<IMessageWithCID>>>,
-            [<Optional; DefaultParameterValue(null: string | null)>] name: string | null) : FcqrsBuilder =
-        this.RegisterProjection(fun sp actor -> QueryApi.Init(actor, handler.Invoke sp, name))
+            [<Optional; DefaultParameterValue(null: string | null)>] name: string | null,
+            [<Optional; DefaultParameterValue(null: seq<string> | null)>] entities: seq<string> | null) : FcqrsBuilder =
+        this.RegisterProjection(fun sp actor -> QueryApi.Init(actor, handler.Invoke sp, name, entities))
 
     /// DI variant of the single-event handler overload.
     member this.AddProjection(
             handler: Func<IServiceProvider, Action<obj>>,
-            [<Optional; DefaultParameterValue(null: string | null)>] name: string | null) : FcqrsBuilder =
-        this.RegisterProjection(fun sp actor -> QueryApi.Init(actor, handler.Invoke sp, name))
+            [<Optional; DefaultParameterValue(null: string | null)>] name: string | null,
+            [<Optional; DefaultParameterValue(null: seq<string> | null)>] entities: seq<string> | null) : FcqrsBuilder =
+        this.RegisterProjection(fun sp actor -> QueryApi.Init(actor, handler.Invoke sp, name, entities))
 
     /// DI variant of the filtered single-event handler overload.
     member this.AddProjection(
             handler: Func<IServiceProvider, Func<obj, Notify>>,
-            [<Optional; DefaultParameterValue(null: string | null)>] name: string | null) : FcqrsBuilder =
-        this.RegisterProjection(fun sp actor -> QueryApi.Init(actor, handler.Invoke sp, name))
+            [<Optional; DefaultParameterValue(null: string | null)>] name: string | null,
+            [<Optional; DefaultParameterValue(null: seq<string> | null)>] entities: seq<string> | null) : FcqrsBuilder =
+        this.RegisterProjection(fun sp actor -> QueryApi.Init(actor, handler.Invoke sp, name, entities))
 
     /// Register a transactional projection with journal-wide CatchUpAsync support.
     /// The handler must write through the supplied connection and transaction and
@@ -383,7 +391,8 @@ type FcqrsBuilder internal (services: IServiceCollection, connectionString: stri
     /// Resolve FCQRS.Projections.IProjection from DI to wait after an aggregate reply.
     /// Each pass applies events in journal order: per persistence ID in sequence order, and across
     /// persistence IDs in write order on SQLite; on PostgreSQL an event that commits late is applied
-    /// in a later pass. Unprocessed journal history must be retained.
+    /// in a later pass. Set `options.Entities` to read only some entities' events. Unprocessed
+    /// journal history must be retained.
     member this.AddTransactionalProjection(
             options: FCQRS.Projections.TransactionalProjectionOptions,
             handler: Func<System.Data.Common.DbConnection, System.Data.Common.DbTransaction, Akka.Persistence.Query.EventEnvelope, Task>) : FcqrsBuilder =

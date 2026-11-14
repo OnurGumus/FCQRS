@@ -27,3 +27,6 @@ module Sqlite =
 module PostgreSql =
     let handle = Sqlite.handle
     // snippet: 3
+module Entities =
+    let store = Sqlite.store
+    // snippet: 4
