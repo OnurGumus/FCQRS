@@ -2708,6 +2708,7 @@ let main argv =
                 BankInvariantTests.tests
                 SagaStartOnceTests.tests
                 WorkflowMachineTests.tests
+                ScheduleRuleTests.tests
                 WorkflowTests.tests
                 WorkflowLoggingTests.tests
                 WorkflowBankInvariantTests.tests

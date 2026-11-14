@@ -146,7 +146,7 @@ let private start (journal: Journal) =
               Initial = initial
               Decide = decide
               Fold = fold
-              Snapshots = Every 3
+              Snapshots = SnapshotPolicy.Every 3
               Passivation = PassivationPolicy.Default }
     Fcqrs.wireSagaStarters api []
     // Registering the workflow resumes the transfers an earlier process left running.
