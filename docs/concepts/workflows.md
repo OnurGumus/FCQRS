@@ -829,8 +829,9 @@ shows.
 
 The dispatcher's projection, `fcqrs-schedule-index`, keeps the index in the table
 `fcqrs_schedule_index`, in the journal's database and schema. `Schedules.register` raises
-`ArgumentException` when Akka's query journal and write journal differ in connection string, schema,
-table, or columns. The table has one row per schedule. Each row is written in the transaction that
+`ArgumentException` when `akka.persistence.journal.sql` and `akka.persistence.query.journal.sql`
+differ in connection string, schema, table, or columns, and registers nothing then. The table has one
+row per schedule. Each row is written in the transaction that
 stores the projection's read position for that schedule, so a row never runs ahead of or behind its
 position. At startup the dispatcher reads every row, then the schedule events stored after those
 positions, and fires nothing until it has read both. A restart therefore reads one row per schedule
@@ -845,10 +846,21 @@ read positions, and does the same. After a rebuild the dispatcher can ask again 
 before the stop; the schedule answers with its first verdict, and a second start of the run stores
 nothing.
 
+The dispatcher creates three tables in the journal's schema on first use:
+`fcqrs_projection_progress` and `fcqrs_projection_progress_lock` for the read positions, and
+`fcqrs_schedule_index` for the rows. It then reads and writes them, so the journal's database user
+needs the right to create tables in that schema, and afterwards to read and write these three. To
+create the tables up front instead, match what FCQRS creates; the index table is
+`fcqrs_schedule_index (schedule_id TEXT NOT NULL PRIMARY KEY, entry TEXT NOT NULL)`. Without these
+rights the dispatcher cannot load the index: it logs an error every second and no schedule fires.
+FCQRS.Workflows 7.6.0 only read the journal.
+
 A journal written by FCQRS.Workflows 7.6.0 has no table, so the first start on it reads every
-schedule event once, two for each run, in one transaction per event. Later starts read only new
-events. On a large journal the first start can take longer than the projection's `CatchUpTimeout`
-of 30 seconds; the dispatcher then logs a warning and keeps waiting, and fires nothing meanwhile.
+schedule event once, two for each run, in one transaction per event, and no schedule fires until it
+has finished. On SQLite this took about 0.5 ms per schedule event, roughly 8 minutes per million
+events; PostgreSQL was not measured. Later starts read only new events. When the first start takes
+longer than the projection's `CatchUpTimeout` of 30 seconds, the dispatcher logs a warning and keeps
+waiting.
 
 The table's name, its columns `schedule_id` and `entry`, the text stored in `entry`, and the
 projection's name are persistent contracts. Nothing but the dispatcher should write to the table.

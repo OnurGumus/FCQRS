@@ -1,6 +1,6 @@
 # Changelog
 
-## 7.6.1 (FCQRS.Workflows)
+## 7.7.0 (FCQRS.Workflows)
 
 - **Restarts read one row per schedule, not the run history.** The schedule dispatcher keeps its
   index in the table `fcqrs_schedule_index` in the journal's database and schema, one row per
@@ -12,17 +12,29 @@
   dispatcher deletes the rows and the projection's read positions and reads the schedule history
   again; an unreadable row is logged as a warning naming the schedule. The first start on a journal
   written by 7.6.0 has no table, so it reads the whole schedule history once, in one transaction per
-  event (about 2 seconds for 4,001 events on SQLite). Every run now also costs two small
-  transactions on the journal's database, one for each of its two schedule events.
+  event, and no schedule fires until it has finished. On SQLite this took about 0.5 ms per schedule
+  event (2 seconds for 4,001 events), roughly 8 minutes per million events; PostgreSQL was not
+  measured. Every run now also costs two small transactions on the journal's database, one for each
+  of its two schedule events.
+- **New database rights.** 7.6.0 only read the journal. 7.7.0 creates the tables
+  `fcqrs_projection_progress`, `fcqrs_projection_progress_lock` and `fcqrs_schedule_index` in the
+  journal's schema on first use, then reads and writes them, so the journal's database user needs the
+  right to create tables there and then to read and write them. Tables created up front must match
+  what FCQRS creates; the index is `fcqrs_schedule_index (schedule_id TEXT NOT NULL PRIMARY KEY,
+  entry TEXT NOT NULL)`. Without these rights the dispatcher logs an error every second while it
+  tries to load the index, and no schedule fires.
 - New persistent contracts: the table's name, its columns `schedule_id` and `entry`, the text stored
   in `entry` (pinned by a test), and the projection's name.
 - `Schedules.createLatest` creates a schedule with `CatchUp.Latest`, the default policy, and C#'s
   `ScheduleClient.CreateAsync` has an overload without the policy that does the same.
   `Schedules.create` and the overload with a policy are unchanged; a null policy still raises
   `ArgumentNullException`.
-- `Schedules.register` raises `ArgumentException` when Akka's query journal and write journal differ
-  in connection string, schema, table, or columns, because the index and its read positions live in
-  the journal they read. 7.6.0 started with such a configuration; set both journals alike.
+- **Breaking for configurations whose query and write journals differ:** `Schedules.register`
+  raises `ArgumentException` when `akka.persistence.journal.sql` and
+  `akka.persistence.query.journal.sql` differ in connection string, schema, table, or columns,
+  because the index and its read positions live in the journal they read. 7.6.0 started with such a
+  configuration; set both journals alike. The check runs before `register` registers anything, so a
+  failed `register` does not leave the actor system marked as having a dispatcher.
 - The package needs FCQRS core 7.2.1, released with it. No stored schedule event, snapshot, workflow
   record, or run ID changes.
 
