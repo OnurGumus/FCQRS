@@ -32,6 +32,7 @@
     <Compile Include="WorkflowMachineTests.fs" />
     <Compile Include="ScheduleRuleTests.fs" />
     <Compile Include="WorkflowTests.fs" />
+    <Compile Include="ScheduleTests.fs" />
     <Compile Include="WorkflowLoggingTests.fs" />
     <Compile Include="WorkflowBankInvariantTests.fs" />
     <Compile Include="Tests.fs" />

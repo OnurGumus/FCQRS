@@ -419,6 +419,76 @@ type WorkflowHost =
 
             member _.CancelAsync(id) = handle.Cancel id |> Async.StartAsTask :> Task }
 
+/// The schedules of an actor system, from C#. Get it from `ScheduleHost.Register`.
+[<Sealed>]
+type ScheduleClient internal (handle: ScheduleHandle) =
+
+    /// The handle the F# functions of `Schedules` take.
+    member _.Handle = handle
+
+    /// Creates the schedule `id`, which starts the workflow named `workflow` with `input` at each
+    /// due time of `rule`. Completes once the schedule is stored. Throws
+    /// `InvalidOperationException` when the workflow is not registered with the dispatcher or takes
+    /// another input, and when the schedule refuses: a schedule with this ID exists with a different
+    /// content, or was deleted. A repeat with the same content is accepted and stores nothing.
+    member _.CreateAsync<'TInput>(id: string, workflow: string, input: 'TInput, rule: ScheduleRule, catchUp: CatchUp) : Task =
+        Schedules.create handle id workflow input rule catchUp |> Async.StartAsTask :> Task
+
+    /// Replaces the schedule's workflow, input, rule and catch-up policy. An `Every` rule counts
+    /// from the change. A run decided before the change keeps the input it was decided with.
+    /// Throws `InvalidOperationException` as `CreateAsync` does, and when the schedule does not
+    /// exist or was deleted.
+    member _.ChangeAsync<'TInput>(id: string, workflow: string, input: 'TInput, rule: ScheduleRule, catchUp: CatchUp) : Task =
+        Schedules.change handle id workflow input rule catchUp |> Async.StartAsTask :> Task
+
+    /// Stops the schedule from starting runs. A run decided before the pause still starts. Throws
+    /// `InvalidOperationException` when the schedule does not exist or was deleted.
+    member _.PauseAsync(id: string) : Task = Schedules.pause handle id |> Async.StartAsTask :> Task
+
+    /// Lets a paused schedule start runs again, from the first due time after the resume. Throws
+    /// `InvalidOperationException` when the schedule does not exist, was deleted, or is not paused.
+    member _.ResumeAsync(id: string) : Task = Schedules.resume handle id |> Async.StartAsTask :> Task
+
+    /// Ends the schedule. A run decided before the delete still starts. The ID cannot be used for
+    /// a new schedule. Throws `InvalidOperationException` when the schedule does not exist.
+    member _.DeleteAsync(id: string) : Task = Schedules.delete handle id |> Async.StartAsTask :> Task
+
+    /// The schedule as the dispatcher's index knows it, or null when the index has not read it.
+    /// The index lags the schedule by one projection pass.
+    member _.State(id: string) : ScheduleView | null =
+        match Schedules.state handle id with
+        | Some view -> view
+        | None -> null
+
+/// Starts the schedule dispatcher from C#.
+[<Sealed; AbstractClass>]
+type ScheduleHost =
+
+    /// A registered workflow whose input is a `ScheduledRun<TInput>`, for `Register`.
+    static member Workflow<'TInput, 'TResult>(client: IWorkflowClient<ScheduledRun<'TInput>, 'TResult>) : ScheduledWorkflow =
+        ArgumentNullException.ThrowIfNull client
+
+        ScheduledWorkflow(
+            client.Name,
+            typeof<'TInput>,
+            fun runId schedule due input ->
+                async {
+                    let run =
+                        { Schedule = schedule
+                          Due = due
+                          Input = Payload.toValue<'TInput> input }
+
+                    let! _ = client.StartAsync(runId, run) |> Async.AwaitTask
+                    return ()
+                }
+        )
+
+    /// Registers the schedule aggregate and starts this actor system's dispatcher, which may start
+    /// the listed workflows. Register each workflow with `WorkflowHost.Register` first. Throws
+    /// `InvalidOperationException` when the actor system has a dispatcher already.
+    static member Register(actor: IActor, [<ParamArray>] workflows: ScheduledWorkflow[]) : ScheduleClient =
+        ScheduleClient(Schedules.register actor (List.ofArray workflows))
+
 /// The client of one workflow class. Inject it when two workflows have the same input and result
 /// types, where `IWorkflowClient<TInput, TResult>` alone would not say which one is meant.
 [<Sealed>]

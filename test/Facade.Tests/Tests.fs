@@ -2711,6 +2711,7 @@ let main argv =
                 ScheduleRuleTests.tests
                 ScheduleRuleTests.aggregateTests
                 WorkflowTests.tests
+                ScheduleTests.tests
                 WorkflowLoggingTests.tests
                 WorkflowBankInvariantTests.tests
                 // Last: it checks the messages every earlier test sent.

@@ -252,6 +252,39 @@ async Task Eventually(Func<bool> condition, string what)
     }
 }
 
+// --- a schedule ----------------------------------------------------------------------------
+{
+    var db = NewDb();
+    var actor = Boot(db, "CSharpSchedule");
+    try
+    {
+        var reminders = WorkflowHost.Register(actor, new ReminderWorkflow());
+        var schedules = ScheduleHost.Register(actor, ScheduleHost.Workflow(reminders));
+        ActorWiring.InitSagaStarterEmpty(actor);
+
+        await schedules.CreateAsync("ada-daily", "reminder", "drink water", ScheduleRule.NewEvery(TimeSpan.FromSeconds(1)), CatchUp.Latest);
+        await Eventually(() => !ReminderWorkflow.Runs.IsEmpty, "a C# schedule starts a run");
+        var (runId, run) = ReminderWorkflow.Runs.First();
+        Check(run.Schedule == "ada-daily" && run.Input == "drink water", "the run gets the schedule's ID and input");
+        Check(runId == $"ada-daily@{run.Due:O}" && run.Due.Kind == DateTimeKind.Utc, $"the run ID is the schedule ID and the due time in UTC: {runId}");
+        Check(await reminders.ResultAsync(runId, wait) == "drink water", "the run's workflow has that ID");
+
+        await Eventually(() => schedules.State("ada-daily") is { LastStarted: true }, "the index shows the schedule");
+        await schedules.PauseAsync("ada-daily");
+        await Eventually(() => schedules.State("ada-daily") is { Paused: true }, "the index shows the pause");
+        var refused = false;
+        try { await schedules.CreateAsync("ada-daily", "reminder", "other", ScheduleRule.NewEvery(TimeSpan.FromSeconds(1)), CatchUp.Latest); }
+        catch (InvalidOperationException) { refused = true; }
+        Check(refused, "a create with a different content for the ID throws");
+        Check(schedules.State("nobody") is null, "a schedule the index has not read is null");
+    }
+    finally
+    {
+        await actor.Stop();
+        DeleteDb(db);
+    }
+}
+
 Console.WriteLine(failures.Count == 0 ? "All C# workflow checks passed." : $"{failures.Count} C# workflow check(s) failed.");
 return failures.Count == 0 ? 0 : 1;
 
@@ -471,5 +504,20 @@ public sealed class GreetWorkflow(Greeting greeting) : Workflow<string, string>(
     {
         var text = await ctx.Activity("greet", Retry.none, _ => Task.FromResult($"{greeting.Text} {name}"));
         return text;
+    }
+}
+
+public sealed class ReminderWorkflow() : Workflow<ScheduledRun<string>, string>("reminder")
+{
+    public static readonly ConcurrentDictionary<string, ScheduledRun<string>> Runs = new();
+
+    public override async WorkflowTask<string> Run(WorkflowContext ctx, ScheduledRun<string> run)
+    {
+        await ctx.Activity("record", Retry.none, _ =>
+        {
+            Runs[$"{run.Schedule}@{run.Due:O}"] = run;
+            return Task.FromResult(true);
+        });
+        return run.Input;
     }
 }
