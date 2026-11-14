@@ -185,11 +185,18 @@ Keep these distinctions intact in code comments and documentation.
   when it was decided. Due times inside a pause never run. A deleted schedule ID cannot be created
   again. A fire more than one second early is refused.
 - `CatchUp.Latest` runs the most recent missed due time, `All` each missed one up to the 1000 most
-  recent, and `None` none, with a one-minute window for a late fire. `create` takes the policy
-  explicitly.
+  recent, and `None` none, with a one-minute window for a late fire. `Latest` is the default:
+  `Schedules.createLatest` and C#'s `CreateAsync` without a policy use it; `create` takes one.
 - A schedule whose workflow the dispatcher does not list logs an error at each due time and fires
   nothing until a later start lists it.
 - `Schedules.state` reads the dispatcher's index, which lags the aggregate by one projection pass.
+- The index is stored in `fcqrs_schedule_index` in the journal's database, one row per schedule,
+  by the projection `fcqrs-schedule-index`, each row in the transaction that stores its read
+  position. A restart reads one row per schedule plus newer events; nothing fires before both are
+  read. The table is derived from the schedule events: a missing table or an unreadable row makes
+  the dispatcher delete the rows and positions and reread the history, as the first start on a
+  7.6.0 journal does once. The table, its row text, and the projection name are persistent
+  contracts.
 - The schedule aggregate, like every aggregate, waits for the saga starters before it stores an
   event and terminates the process if they are not wired within `saga-start-timeout`. Schedule
   commands raise `InvalidOperationException` and the dispatcher fires nothing until they are wired.
@@ -222,7 +229,8 @@ Keep these distinctions intact in code comments and documentation.
 - `src/FCQRS.Workflows/`: durable workflows. `Workflow.fs` holds the builder and the steps,
   `Machine.fs` the pure replay interpreter, `WorkflowActor.fs` the persistent actor, `CSharp.fs` the
   C# API with its async method builder, `Streams.fs` the Akka.Streams flows, and `Schedules.fs`
-  the schedule rules, the schedule aggregate, and the dispatcher that starts runs.
+  the schedule rules, the schedule aggregate, and the dispatcher that starts runs and keeps its
+  index in a table.
 - `samples/workflows/`: the quote workflow in F# and C# on .NET 10, with project references. The
   workflow task guide quotes it.
 - `samples/orders/`: the workflow tutorial's steps as equivalent F# and C# programs on .NET 11,

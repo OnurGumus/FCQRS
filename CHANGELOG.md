@@ -1,5 +1,31 @@
 # Changelog
 
+## 7.6.1 (FCQRS.Workflows)
+
+- **Restarts read one row per schedule, not the run history.** The schedule dispatcher keeps its
+  index in the table `fcqrs_schedule_index` in the journal's database and schema, one row per
+  schedule, written by the projection `fcqrs-schedule-index` in the transaction that stores its read
+  position. A start reads the rows and then only the schedule events stored since; 7.6.0 read every
+  schedule event, two per run, at each start. No schedule fires before both are read. With 2,000
+  hourly runs on SQLite, a restart read 4,001 events under 7.6.0 and reads none now.
+- The table is derived from the schedule events. When it is missing, or a row cannot be read, the
+  dispatcher deletes the rows and the projection's read positions and reads the schedule history
+  again; an unreadable row is logged as a warning naming the schedule. The first start on a journal
+  written by 7.6.0 has no table, so it reads the whole schedule history once, in one transaction per
+  event (about 2 seconds for 4,001 events on SQLite). Every run now also costs two small
+  transactions on the journal's database, one for each of its two schedule events.
+- New persistent contracts: the table's name, its columns `schedule_id` and `entry`, the text stored
+  in `entry` (pinned by a test), and the projection's name.
+- `Schedules.createLatest` creates a schedule with `CatchUp.Latest`, the default policy, and C#'s
+  `ScheduleClient.CreateAsync` has an overload without the policy that does the same.
+  `Schedules.create` and the overload with a policy are unchanged; a null policy still raises
+  `ArgumentNullException`.
+- `Schedules.register` raises `ArgumentException` when Akka's query journal and write journal differ
+  in connection string, schema, table, or columns, because the index and its read positions live in
+  the journal they read. 7.6.0 started with such a configuration; set both journals alike.
+- The package needs FCQRS core 7.2.1, released with it. No stored schedule event, snapshot, workflow
+  record, or run ID changes.
+
 ## 7.2.1 (FCQRS core)
 
 - An unfiltered projection's query of recent writes on SQLite reads only the journal rows numbered

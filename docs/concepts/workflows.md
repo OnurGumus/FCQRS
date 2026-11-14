@@ -669,8 +669,8 @@ let startReminders (api: IActor) =
         // Schedule commands raise until the starters are wired.
         Fcqrs.wireSagaStarters api []
         do!
-            Schedules.create schedules "ada-daily" "remind" "Drink water"
-                (ScheduleRule.Daily(TimeOnly(9, 0), "Europe/Oslo")) CatchUp.Latest
+            Schedules.createLatest schedules "ada-daily" "remind" "Drink water"
+                (ScheduleRule.Daily(TimeOnly(9, 0), "Europe/Oslo"))
         return schedules
     }
 ```
@@ -698,8 +698,7 @@ public static class Reminders
         // Schedule commands throw until the starters are wired.
         ActorWiring.InitSagaStarterEmpty(actor);
         await schedules.CreateAsync("ada-daily", "remind", "Drink water",
-            ScheduleRule.NewDaily(new TimeOnly(9, 0), "Europe/Oslo"),
-            CatchUp.Latest);
+            ScheduleRule.NewDaily(new TimeOnly(9, 0), "Europe/Oslo"));
         return schedules;
     }
 }
@@ -731,9 +730,13 @@ using var host = builder.Build();
 await host.StartAsync();
 var schedules = host.Services.GetRequiredService<ScheduleClient>();
 await schedules.CreateAsync("ada-daily", "remind", "Drink water",
-    ScheduleRule.NewDaily(new TimeOnly(9, 0), "Europe/Oslo"),
-    CatchUp.Latest);
+    ScheduleRule.NewDaily(new TimeOnly(9, 0), "Europe/Oslo"));
 ```
+
+`Schedules.createLatest` is `Schedules.create` with the catch-up policy `CatchUp.Latest`, the
+default, which [Due times, downtime, and changes](#Due-times-downtime-and-changes) explains.
+`Schedules.create` takes the policy as its last argument. In C#, `CreateAsync` without a policy uses
+`CatchUp.Latest`, and an overload takes the policy.
 
 `Schedules.create` returns once the schedule is stored. A second `create` with the same content
 stores nothing; the days of a weekly rule are sorted and their repeats removed first, so
@@ -785,8 +788,8 @@ goes on. A run that is still going at the next due time runs alongside the next 
   because clocks move back, runs once, at the first occurrence.
 - `ScheduleRule.Every interval` counts from the creation or the last change.
 - `CatchUp` decides which missed due times run when the dispatcher could not fire on time, for
-  example while the process was stopped. `CatchUp.Latest` starts one run for the most recent one.
-  `CatchUp.All` starts one for each, oldest first, but at most for the 1000 most recent.
+  example while the process was stopped. `CatchUp.Latest`, the default, starts one run for the most
+  recent one. `CatchUp.All` starts one for each, oldest first, but at most for the 1000 most recent.
   `CatchUp.None` starts none and waits for the next due time; a fire up to one minute late still
   counts as on time.
 - `Schedules.pause` stops runs. `Schedules.resume` continues from the first due time after the
@@ -807,25 +810,48 @@ is not listed waits the same way.
 
 `Schedules.state` reads the dispatcher's index, not the aggregate. The index follows the schedule's
 events through a projection, so it lags by one projection pass: a `pause` that has just returned may
-not show yet. At startup the dispatcher reads every schedule event in the journal, two for each run,
-before it fires. It reads each schedule's events with a query of its own, once for every batch of
-500 schedule events in which that schedule has events. Runs of different schedules interleave, so
-a batch names many schedules, and the startup costs about one query for every one or two schedule
-events: about 500,000 queries for a journal that holds a million. While fewer than 16 starts are
-running, it wakes at least every `akka.fcqrs.schedule-check-interval`, one minute by default, so a
-clock change or a missed timer delays a run by at most that long. While 16 are running, it reads
-nothing and waits for one of them to end. No other run could start before then, but the error for
-a schedule whose workflow is not registered is logged when a start ends, not at its due time. A
-run whose start fails, or hangs until its ask times out, is
-tried again after the shorter of the check interval and five seconds, counted from the failure.
-The dispatcher does not wait for it, so it delays no other schedule while fewer than 16 starts
-hang at once. The [configuration reference](../configuration.html) lists the setting.
+not show yet. While fewer than 16 starts are running, the dispatcher wakes at least every
+`akka.fcqrs.schedule-check-interval`, one minute by default, so a clock change or a missed timer
+delays a run by at most that long. While 16 are running, it reads nothing and waits for one of them
+to end. No other run could start before then, but the error for a schedule whose workflow is not
+registered is logged when a start ends, not at its due time. A run whose start fails, or hangs until
+its ask times out, is tried again after the shorter of the check interval and five seconds, counted
+from the failure. The dispatcher does not wait for it, so it delays no other schedule while fewer
+than 16 starts hang at once. The [configuration reference](../configuration.html) lists the setting.
 
 A projection without entity names reads the schedule aggregate's events too, as
 `Event<ScheduleEvent>`. A handler given to `Fcqrs.projection` that raises for an event it does not
 know, such as a catch-all `failwith`, terminates the process. Let such a handler ignore other events,
 or name the entities it reads, as [Add a projection](../how-to/add-a-projection.html#Read-only-some-entities)
 shows.
+
+### The index is stored in the journal's database
+
+The dispatcher's projection, `fcqrs-schedule-index`, keeps the index in the table
+`fcqrs_schedule_index`, in the journal's database and schema. `Schedules.register` raises
+`ArgumentException` when Akka's query journal and write journal differ in connection string, schema,
+table, or columns. The table has one row per schedule. Each row is written in the transaction that
+stores the projection's read position for that schedule, so a row never runs ahead of or behind its
+position. At startup the dispatcher reads every row, then the schedule events stored after those
+positions, and fires nothing until it has read both. A restart therefore reads one row per schedule
+and the events written since the last stop, however many runs the schedules have had. A deleted
+schedule's row is removed once no run decided before the delete waits to start.
+
+The schedule events are the source of the index, and the table is derived data. When the table is
+missing, the dispatcher creates it, deletes the projection's read positions, and reads the whole
+schedule history to fill it. When a row cannot be read, for example a row written by a newer version
+of FCQRS.Workflows, the dispatcher logs a warning that names the schedule, deletes every row and the
+read positions, and does the same. After a rebuild the dispatcher can ask again for a run decided
+before the stop; the schedule answers with its first verdict, and a second start of the run stores
+nothing.
+
+A journal written by FCQRS.Workflows 7.6.0 has no table, so the first start on it reads every
+schedule event once, two for each run, in one transaction per event. Later starts read only new
+events. On a large journal the first start can take longer than the projection's `CatchUpTimeout`
+of 30 seconds; the dispatcher then logs a warning and keeps waiting, and fires nothing meanwhile.
+
+The table's name, its columns `schedule_id` and `entry`, the text stored in `entry`, and the
+projection's name are persistent contracts. Nothing but the dispatcher should write to the table.
 
 ### What a schedule does not guarantee
 
@@ -840,8 +866,9 @@ shows.
 The application chooses each user's time zone, keeps run steps safe to repeat, and treats the
 workflow's name and the input's stored form as persistent contracts: every schedule stores both.
 FCQRS stores the schedule aggregate's name `fcqrs-schedule`, `ScheduleEvent`, `ScheduleRule`,
-`CatchUp`, `ScheduleSpec`, the snapshot state `ScheduleState` and `AcceptedDue`, run IDs, and every
-run's input, `ScheduledRun { Schedule; Due; Input }`, so these are persistent contracts too.
+`CatchUp`, `ScheduleSpec`, the snapshot state `ScheduleState` and `AcceptedDue`, run IDs, every
+run's input, `ScheduledRun { Schedule; Due; Input }`, and the index table `fcqrs_schedule_index`
+with its rows, so these are persistent contracts too.
 
 ## Feed workflows from a stream
 
@@ -917,7 +944,8 @@ A C# workflow derives from `Workflow<TInput, TResult>` and awaits steps from its
 | `WorkflowFlow.run` | `WorkflowFlow.Run(client, idOf, parallelism, timeout)` |
 | `WorkflowFlow.start` | `WorkflowFlow.Start(client, idOf, parallelism)` |
 | `Schedules.register api [ ScheduledWorkflow.ofHandle handle ]` | `ScheduleHost.Register(actor, ScheduleHost.Workflow(client))` |
-| `Schedules.create`, `Schedules.change` | `schedules.CreateAsync`, `schedules.ChangeAsync` |
+| `Schedules.createLatest`, with the default `CatchUp.Latest` | `schedules.CreateAsync(id, workflow, input, rule)` |
+| `Schedules.create`, `Schedules.change` | `schedules.CreateAsync`, `schedules.ChangeAsync`, with a `CatchUp` |
 | `Schedules.pause`, `resume`, `delete` | `schedules.PauseAsync`, `ResumeAsync`, `DeleteAsync` |
 | `Schedules.state`, `None` when the index has not read it | `schedules.State(id)`, `null` when the index has not read it |
 | `ScheduleRule.Daily(time, zone)` | `ScheduleRule.NewDaily(time, zone)`, and `NewWeekly`, `NewEvery` |

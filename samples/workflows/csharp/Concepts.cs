@@ -98,8 +98,7 @@ public static class Reminders
         // Schedule commands throw until the starters are wired.
         ActorWiring.InitSagaStarterEmpty(actor);
         await schedules.CreateAsync("ada-daily", "remind", "Drink water",
-            ScheduleRule.NewDaily(new TimeOnly(9, 0), "Europe/Oslo"),
-            CatchUp.Latest);
+            ScheduleRule.NewDaily(new TimeOnly(9, 0), "Europe/Oslo"));
         return schedules;
     }
 }

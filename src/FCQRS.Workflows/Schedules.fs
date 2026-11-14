@@ -1427,6 +1427,8 @@ module Schedules =
     /// use in the journal's database and schema, with one row per schedule. A start reads the rows
     /// and the schedule events stored since, so it does not read the schedules' whole history again.
     /// The first start on a journal without the table reads that history once and fills the table.
+    /// Raises `ArgumentException` when Akka's query journal and write journal differ in connection
+    /// string, schema, table, or columns, because the table must live in the journal it reads.
     let register (api: IActor) (runs: ScheduledWorkflow list) : ScheduleHandle =
         let checkInterval = checkIntervalOf api.System.Settings.Config
         let workflows = Collections.Generic.Dictionary<string, ScheduledWorkflow>()

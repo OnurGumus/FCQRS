@@ -496,8 +496,11 @@ type ScheduleHost =
 
     /// Registers the schedule aggregate and starts this actor system's dispatcher, which may start
     /// the listed workflows. Register each workflow with `WorkflowHost.Register` first. Throws
-    /// `InvalidOperationException` when the actor system has a dispatcher already, and
-    /// `ConfigurationException` when `akka.fcqrs.schedule-check-interval` is not positive. The
+    /// `InvalidOperationException` when the actor system has a dispatcher already,
+    /// `ConfigurationException` when `akka.fcqrs.schedule-check-interval` is not positive, and
+    /// `ArgumentException` when Akka's query journal and write journal differ in connection string,
+    /// schema, table, or columns. The dispatcher keeps its index in the table
+    /// `fcqrs_schedule_index` in the journal's database, as `Schedules.register` describes. The
     /// schedule aggregate stores no event until the actor system's saga starters are wired, and
     /// terminates the process when they are not wired within `akka.fcqrs.saga-start-timeout`: call
     /// `ActorWiring.InitSagaStarterEmpty` (or `InitSagaStarter` with the sagas) after registering
