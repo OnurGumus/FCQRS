@@ -19,7 +19,8 @@ type ScheduleRule =
 type CatchUp =
     /// Start one run for the most recent missed due time.
     | Latest
-    /// Start one run for every missed due time, oldest first.
+    /// Start one run for every missed due time, oldest first. At most the 1000 most recent are
+    /// started; older ones are dropped.
     | All
     /// Start no run for a missed due time and wait for the next one in the future.
     | None
@@ -63,22 +64,42 @@ module ScheduleRule =
             let intervals = if elapsed < interval then 1L else elapsed.Ticks / interval.Ticks + 1L
             anchor + TimeSpan.FromTicks(interval.Ticks * intervals)
 
-    /// The due times in `(lastDue, now]` that the policy runs, oldest first. All times are UTC.
-    let missed (rule: ScheduleRule) (anchor: DateTime) (lastDue: DateTime) (now: DateTime) (policy: CatchUp) : DateTime list =
-        match policy with
-        | CatchUp.None -> []
-        | _ ->
-            let all =
-                lastDue
-                |> List.unfold (fun after ->
-                    let due = next rule anchor after
-                    if due <= now then Some(due, due) else None)
-            match policy with
-            | CatchUp.All -> all
-            | _ -> all |> List.tryLast |> Option.toList
+    /// The most due times `missed` returns under `CatchUp.All`.
+    [<Literal>]
+    let MaxMissed = 1000
 
-    /// Checks that a rule can produce due times: a known time zone, at least one day, and a positive
-    /// interval.
+    // The indexes of the due times of an `Every` rule inside (lastDue, now], first and last. The
+    // range is empty when the first exceeds the last. Ticks keep the arithmetic exact.
+    let private everyRange (interval: TimeSpan) (anchor: DateTime) (lastDue: DateTime) (now: DateTime) =
+        let first =
+            let elapsed = lastDue - anchor
+            if elapsed < interval then 1L else elapsed.Ticks / interval.Ticks + 1L
+        let last = if now < anchor then 0L else (now - anchor).Ticks / interval.Ticks
+        first, last
+
+    /// The due times in `(lastDue, now]` that the policy runs, oldest first. All times are UTC.
+    /// `CatchUp.All` returns at most the `MaxMissed` (1000) most recent of them. `CatchUp.Latest`
+    /// returns at most one.
+    let missed (rule: ScheduleRule) (anchor: DateTime) (lastDue: DateTime) (now: DateTime) (policy: CatchUp) : DateTime list =
+        let keep = match policy with CatchUp.All -> MaxMissed | _ -> 1
+        match policy, rule with
+        | CatchUp.None, _ -> []
+        | _, ScheduleRule.Every interval ->
+            let first, last = everyRange interval anchor lastDue now
+            let start = max first (last - int64 keep + 1L)
+            [ for k in start..last -> anchor + TimeSpan.FromTicks(interval.Ticks * k) ]
+        | _ ->
+            // A window of the most recent due times: the whole list is never held.
+            let window = System.Collections.Generic.Queue<DateTime>()
+            let mutable due = next rule anchor lastDue
+            while due <= now do
+                window.Enqueue due
+                if window.Count > keep then window.Dequeue() |> ignore
+                due <- next rule anchor due
+            List.ofSeq window
+
+    /// Checks that a rule can produce due times: a known time zone, at least one day, and an interval of at
+    /// least one second.
     let validate (rule: ScheduleRule) : Result<unit, string> =
         let checkZone (zone: string) =
             try
@@ -91,5 +112,5 @@ module ScheduleRule =
         | ScheduleRule.Daily(_, zone) -> checkZone zone
         | ScheduleRule.Weekly([], _, _) -> Error "A weekly schedule needs at least one day."
         | ScheduleRule.Weekly(_, _, zone) -> checkZone zone
-        | ScheduleRule.Every interval when interval <= TimeSpan.Zero -> Error "The interval must be positive."
+        | ScheduleRule.Every interval when interval < TimeSpan.FromSeconds 1.0 -> Error "The interval must be at least 1 second."
         | ScheduleRule.Every _ -> Ok()

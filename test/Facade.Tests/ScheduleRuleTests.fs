@@ -61,11 +61,38 @@ let tests =
             Expect.equal (ScheduleRule.missed rule anchor lastDue now CatchUp.None) [] "none"
             Expect.equal (ScheduleRule.missed rule anchor lastDue (utc 2026 11 10 12 0) CatchUp.Latest) [] "nothing missed"
 
+        testCase "schedule rule: Latest over a long gap of a short interval returns one due time quickly" <| fun _ ->
+            let rule = ScheduleRule.Every(TimeSpan.FromSeconds 1.0)
+            let anchor = utc 2026 10 1 0 0
+            let now = utc 2026 11 14 0 0
+            let sw = Diagnostics.Stopwatch.StartNew()
+            let result = ScheduleRule.missed rule anchor (utc 2026 10 15 0 0) now CatchUp.Latest
+            Expect.equal result [ now ] "the latest due time"
+            Expect.isLessThan sw.ElapsedMilliseconds 1000L "fast"
+
+        testCase "schedule rule: All over a long gap returns the 1000 most recent, oldest first" <| fun _ ->
+            let rule = ScheduleRule.Every(TimeSpan.FromSeconds 1.0)
+            let anchor = utc 2026 10 1 0 0
+            let now = utc 2026 11 14 0 0
+            let result = ScheduleRule.missed rule anchor (utc 2026 10 15 0 0) now CatchUp.All
+            Expect.hasLength result 1000 "bounded"
+            Expect.equal (List.last result) now "ends at the latest"
+            Expect.equal result.Head (now.AddSeconds -999.0) "oldest of the window"
+            Expect.equal result (List.sort result) "ascending"
+
+        testCase "schedule rule: All over a long gap of a daily rule is bounded too" <| fun _ ->
+            let rule = ScheduleRule.Daily(TimeOnly(9, 0), "UTC")
+            let result = ScheduleRule.missed rule (utc 2020 1 1 0 0) (utc 2020 1 1 9 0) (utc 2026 11 14 12 0) CatchUp.All
+            Expect.hasLength result 1000 "bounded"
+            Expect.equal (List.last result) (utc 2026 11 14 9 0) "ends at the latest"
+
         testCase "schedule rule: validate rejects an unknown zone, no days and a non-positive interval" <| fun _ ->
             Expect.isError (ScheduleRule.validate (ScheduleRule.Daily(TimeOnly(9, 0), "Mars/Base"))) "zone"
             Expect.isError (ScheduleRule.validate (ScheduleRule.Weekly([], TimeOnly(9, 0), "UTC"))) "days"
             Expect.isError (ScheduleRule.validate (ScheduleRule.Every TimeSpan.Zero)) "zero"
             Expect.isError (ScheduleRule.validate (ScheduleRule.Every(TimeSpan.FromMinutes -1.0))) "negative"
+            Expect.isError (ScheduleRule.validate (ScheduleRule.Every(TimeSpan.FromMilliseconds 500.0))) "below one second"
+            Expect.isOk (ScheduleRule.validate (ScheduleRule.Every(TimeSpan.FromSeconds 1.0))) "one second"
             Expect.isOk (ScheduleRule.validate (ScheduleRule.Daily(TimeOnly(9, 0), oslo))) "valid"
 
         testCase "schedule rule: rules and policies survive the journal serializer" <| fun _ ->
