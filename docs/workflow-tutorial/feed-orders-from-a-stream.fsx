@@ -20,6 +20,8 @@ through an Akka.Streams flow that starts one workflow per element, two at a time
 process while two orders are shipping and runs the batch again, to show what resumes and what does
 not.
 
+Step 10 needs FCQRS.Workflows 7.5.0 or later.
+
 This page changes the program from [step 9](guard-the-change.html). The workflow does not change:
 `Order.fs` (`Order.cs`) and `Account.fs` (`Account.cs`) stay as they are. The journal starts empty.
 
@@ -125,8 +127,9 @@ var actor = ActorApi.Create(
 ```
 
 After the batch, replace the functions and the lines that placed orders with the stream. The
-stream starts the orders and waits for their outcomes, so `start` and `place` (`Start` and `Place`)
-go. `deposit` moves to the registration, shown below:
+stream starts the orders and waits for their outcomes, so `start` and `place` (`Start` and `Place`),
+the wait for `o-7`, and the order `o-9` go. Step 10 starts from an empty journal, so nothing waits
+for `o-7`. `deposit` moves to the registration, shown below:
 
 <!-- sample: orders/10-feed-orders-from-a-stream/fsharp Program.fs start -->
 ```fsharp
@@ -146,8 +149,9 @@ let print (struct (id: string, outcome: WorkflowOutcome<OrderResult>)) =
     | WorkflowOutcome.Faulted error -> printfn $"{id} faulted: {error.Message}"
     | WorkflowOutcome.Cancelled -> printfn $"{id} was cancelled"
 
-// Counts the orders between entering the flow and leaving it. The stages
-// of one stream run one at a time, so plain counters are enough.
+// Counts the orders between entering the flow and leaving it. This
+// stream has no async boundary, so its stages run one at a time and
+// plain counters are enough.
 let mutable inFlow = 0
 let mutable most = 0
 
@@ -195,8 +199,9 @@ void Print(WorkflowEnded<OrderResult> ended)
         Console.WriteLine($"{ended.Id} was cancelled");
 }
 
-// Counts the orders between entering the flow and leaving it. The stages
-// of one stream run one at a time, so plain counters are enough.
+// Counts the orders between entering the flow and leaving it. This
+// stream has no async boundary, so its stages run one at a time and
+// plain counters are enough.
 var inFlow = 0;
 var most = 0;
 
@@ -229,8 +234,8 @@ run nothing has started yet, so it prints nothing.
 flow from `OrderRequest` to an outcome. For each element it computes the ID, starts the order, and
 waits until the order ends:
 
-- At most two elements are between their start and their outcome, so at most two orders run at
-  once. The third element enters when an earlier one leaves.
+- At most two elements are between their start and their outcome, so the stream keeps at most
+  two orders between start and outcome. The third element enters when an earlier one leaves.
 - Outcomes leave in the batch's order, even when a later order ends first.
 - A faulted order is an element like a finished one: `WorkflowOutcome.Faulted` in F#, `IsFaulted`
   in C#. It does not fail the stream.
@@ -626,10 +631,10 @@ When the source needs only the start stored, not the outcome, `WorkflowFlow.star
 ## What you built
 
 The order workflow now reserves stock with retries, takes its time and confirmation number from
-steps, waits for an approval signal, charges an aggregate, compensates when it cannot ship, catches
-the failure it has an answer for, and survives a process that stops in the middle of a step and a
-change to its own code. A stream feeds it orders, two at a time, and an element that arrives again
-reaches the order it started.
+steps, waits for an approval signal, charges an aggregate, releases the stock when the order is
+not approved or not paid, catches the failure it has an answer for, and survives a process that
+stops in the middle of a step and a change to its own code. A stream feeds it orders, two at a
+time, and an element that arrives again reaches the order it started.
 
 The [workflow concept page](../concepts/workflows.html) covers what the tutorial left out: running
 steps together, repeating steps, child workflows, cancellation, and the C# API in full.

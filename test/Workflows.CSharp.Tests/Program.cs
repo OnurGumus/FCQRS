@@ -457,7 +457,7 @@ public sealed class StreamedWorkflow() : Workflow<int, int>("streamed")
     }
 }
 
-public sealed class ShoutWorkflow(): Workflow<string, string>("shout")
+public sealed class ShoutWorkflow() : Workflow<string, string>("shout")
 {
     public override async WorkflowTask<string> Run(WorkflowContext ctx, string name)
     {

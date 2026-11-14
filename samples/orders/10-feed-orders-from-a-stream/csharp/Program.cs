@@ -80,8 +80,9 @@ void Print(WorkflowEnded<OrderResult> ended)
         Console.WriteLine($"{ended.Id} was cancelled");
 }
 
-// Counts the orders between entering the flow and leaving it. The stages
-// of one stream run one at a time, so plain counters are enough.
+// Counts the orders between entering the flow and leaving it. This
+// stream has no async boundary, so its stages run one at a time and
+// plain counters are enough.
 var inFlow = 0;
 var most = 0;
 

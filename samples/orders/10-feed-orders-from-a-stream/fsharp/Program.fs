@@ -156,8 +156,9 @@ let print (struct (id: string, outcome: WorkflowOutcome<OrderResult>)) =
     | WorkflowOutcome.Faulted error -> printfn $"{id} faulted: {error.Message}"
     | WorkflowOutcome.Cancelled -> printfn $"{id} was cancelled"
 
-// Counts the orders between entering the flow and leaving it. The stages
-// of one stream run one at a time, so plain counters are enough.
+// Counts the orders between entering the flow and leaving it. This
+// stream has no async boundary, so its stages run one at a time and
+// plain counters are enough.
 let mutable inFlow = 0
 let mutable most = 0
 

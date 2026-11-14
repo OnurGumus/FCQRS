@@ -51,9 +51,9 @@ Good prose makes the example easier to reason about. It does not narrate the tea
   activity to changing a workflow while orders run. Step 10, "Feed orders from a stream", starts
   orders from an Akka.Streams flow and stops the process while two of them ship. Each step has an F#
   and C# program under `samples/orders/`, and its page shows every line that is new or changed since
-  the previous step: `scripts/check-learning-snippets.py` fails otherwise. Steps 8 and 9 continue from the previous
-  step's database. `scripts/check-orders.py` runs every step and checks the output its page shows.
-  The track does not require the CQRS tutorial.
+  the previous step: `scripts/check-learning-snippets.py` fails otherwise. Steps 8 and 9 continue
+  from the previous step's database. `scripts/check-orders.py` runs every step and checks the
+  output its page shows. The track does not require the CQRS tutorial.
 - `docs/concepts/` explains the underlying models and boundaries.
 - `docs/how-to/` provides focused task instructions.
 - `docs/configuration.md` is the runtime configuration reference.
