@@ -22,6 +22,7 @@ Choose the task you need. For a first working application, start with [the tutor
 | Coordinate several aggregate owners | [Write a saga](write-a-saga.html) |
 | Run durable steps that call external systems | [Write a workflow](write-a-workflow.html) |
 | Run jobs nightly, weekly, or at an interval | [Run scheduled jobs](run-scheduled-jobs.html) |
+| Add a circuit breaker or a concurrency limit to an external call | [Use Polly inside an activity](use-polly-in-an-activity.html) |
 | Test decisions, replay, and retries | [Test your domain](test-your-domain.html) |
 | Change stored event contracts safely | [Evolve persisted events](evolve-events.html) |
 | Rebuild derived query data | [Rebuild a read model](rebuild-a-read-model.html) |

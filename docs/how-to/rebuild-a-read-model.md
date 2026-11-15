@@ -2,7 +2,7 @@
 title: Rebuild a read model
 category: Apply
 categoryindex: 5
-index: 12
+index: 13
 ---
 
 # Rebuild a read model

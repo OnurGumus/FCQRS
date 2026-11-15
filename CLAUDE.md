@@ -263,6 +263,8 @@ Keep these distinctions intact in code comments and documentation.
   index in a table.
 - `samples/workflows/`: the quote workflow in F# and C# on .NET 10, with project references. The
   workflow task guide quotes it.
+- `samples/resilience/`: a price workflow whose activity runs a Polly circuit breaker and
+  concurrency limiter, in F# and C# with project references. The Polly guide quotes it.
 - `samples/orders/`: the workflow tutorial's steps as equivalent F# and C# programs on .NET 11,
   with the published packages. Its `Directory.Build.props` keeps the repository's settings out.
 - `samples/accounts/`: the tutorial's steps as equivalent F# and C# programs on .NET 11. The C#

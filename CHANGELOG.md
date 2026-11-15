@@ -12,6 +12,9 @@
   ignores the token; the call keeps running and its result is ignored. A command step is
   unchanged: without `AttemptTimeout` one send waits for the command timeout. Policies are not
   stored, so running instances and their journals are unaffected.
+- **Use Polly inside an activity.** A new task guide and `samples/resilience` put a circuit
+  breaker and a concurrency limiter inside an activity and leave retries to the step's policy.
+  FCQRS takes no Polly dependency.
 
 - **Monthly schedules.** `ScheduleRule.Monthly(days, times, zone)` is due on days of the month,
   written as `MonthDay` values: `Day n` from 1 to 31, `LastDay`, `Nth(n, weekday)` with `n` from 1
