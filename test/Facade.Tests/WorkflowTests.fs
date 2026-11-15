@@ -750,6 +750,81 @@ let private childRestartTest =
         finally
             deleteDb db
 
+let private cancelChildStartTest =
+    testCase "workflow: a parent cancelled while it starts a child cancels that child too" <| fun _ ->
+        withSystem "WorkflowCancelChildStart" <| fun api ->
+            let waiter = Workflow.define "waiter" (fun (value: int) -> workflow {
+                let! (answer: int) = waitSignal "go"
+                return value + answer })
+            let starter = Workflow.define "starter" (fun (value: int) -> workflow {
+                let! handle = startChild waiter value
+                let! (_: int) = waitSignal "never"
+                return handle.Id })
+            let waiters = Workflows.register api waiter
+            let flow = Workflows.register api starter
+            for index in 1 .. 5 do
+                let id = $"c{index}"
+                // Both requests leave this thread in order. The cancel waits in the parent's stash
+                // while it stores its start and the child start's StepScheduled, so the parent
+                // handles it while the child's start is in flight.
+                let started = Async.StartImmediateAsTask(flow.Start id index)
+                let cancelled = Async.StartImmediateAsTask(flow.Cancel id)
+                started.Wait wait |> ignore
+                cancelled.Wait wait |> ignore
+                Expect.equal (sync (flow.Result id wait)) WorkflowOutcome.Cancelled $"{id}: the parent ended as cancelled"
+                let ended (status: WorkflowStatus) =
+                    match status with
+                    | WorkflowStatus.Cancelled
+                    | WorkflowStatus.NotStarted -> true
+                    | _ -> false
+                eventually $"{id}: the child is cancelled or was never started" (fun () -> ended (sync (waiters.Status $"{id}:0")))
+                // A start that reached the child after the cancel would leave it running now.
+                Thread.Sleep 300
+                let status = sync (waiters.Status $"{id}:0")
+                Expect.isTrue (ended status) $"{id}: the child is not running afterwards, found {status}"
+
+let private cancelChildStartRestartTest =
+    testCase "workflow: a parent cancelled after a restart, while it starts a child again, cancels that child too" <| fun _ ->
+        let db = newDb ()
+        let waiter = Workflow.define "waiter" (fun (value: int) -> workflow {
+            let! (answer: int) = waitSignal "go"
+            return value + answer })
+        let starter = Workflow.define "starter" (fun (value: int) -> workflow {
+            let! handle = startChild waiter value
+            let! (_: int) = waitSignal "never"
+            return handle.Id })
+        try
+            // The child's workflow is not registered yet, so the start is stored and keeps failing.
+            let first = boot db "WorkflowCancelChildRestart" []
+            let flow = Workflows.register first starter
+            sync (flow.Start "r1" 1) |> ignore
+            eventually "the child start is in flight" (fun () ->
+                match sync (flow.Status "r1") with
+                | WorkflowStatus.Running pending -> pending = [ "0 waiter" ]
+                | _ -> false)
+            stop first
+            let second = boot db "WorkflowCancelChildRestart" []
+            try
+                let waiters = Workflows.register second waiter
+                let flow = Workflows.register second starter
+                // The parent resumes its child start on recovery; the cancel reaches it during or
+                // right after recovery, while that start is in flight.
+                sync (flow.Cancel "r1")
+                Expect.equal (sync (flow.Result "r1" wait)) WorkflowOutcome.Cancelled "the parent ended as cancelled"
+                let ended (status: WorkflowStatus) =
+                    match status with
+                    | WorkflowStatus.Cancelled
+                    | WorkflowStatus.NotStarted -> true
+                    | _ -> false
+                eventually "the child is cancelled or was never started" (fun () -> ended (sync (waiters.Status "r1:0")))
+                Thread.Sleep 300
+                let status = sync (waiters.Status "r1:0")
+                Expect.isTrue (ended status) $"the child is not running afterwards, found {status}"
+            finally
+                stop second
+        finally
+            deleteDb db
+
 let private parkingTest =
     testCase "workflow: an instance whose journal does not match its code is parked, and resumes with code that matches" <| fun _ ->
         let db = newDb ()
@@ -1571,7 +1646,7 @@ let tests =
         testList "workflow"
             [ startTest; faultTest; retryTest; shortTimerTest; restartTest; timerTest; tracingTest; startRaceTest; concurrentStartTest
               signalTest; signalRestartTest; commandTest; parallelCommandTest; commandRestartTest; commandRecoveryTest; unknownOutcomeTest
-              cancelTest; childTest; childRestartTest; parkingTest; removedStepsParkTest; streamTest; metricsTest
+              cancelTest; childTest; childRestartTest; cancelChildStartTest; cancelChildStartRestartTest; parkingTest; removedStepsParkTest; streamTest; metricsTest
               lateCommandTest; cancelParkedTest; childResultTest; unreadableResultTest; idleTest; manifestTest
               sagaStartTest; sagaRepeatTest; sagaRepeatStoredTest; sagaSignalTest; sagaEventReplyTest
               sagaFilterTest; sagaFilterMissedTest; sagaFilterOutcomeTest; effectReplyTest; lateReplyTest

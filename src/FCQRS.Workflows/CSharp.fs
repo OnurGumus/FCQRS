@@ -295,7 +295,8 @@ type WorkflowContext internal () =
         Step<'TEvent>(sendTo policy (Some(fun event -> filter.Invoke event)) aggregate.Invoke aggregateId command)
 
     /// Starts the registered workflow named `workflow` as a child and gives its handle once the
-    /// child's start is stored. A child that is never awaited outlives this workflow.
+    /// child's start is stored. A child that is never awaited outlives this workflow. If this
+    /// workflow is cancelled while the start is in flight, the child is cancelled too.
     member _.StartChild<'TInput, 'TResult>(workflow: string, input: 'TInput) : Step<ChildHandle<'TResult>> =
         Step<ChildHandle<'TResult>>(startChild (Workflow.define workflow (fun (_: 'TInput) -> Fail(InvalidOperationException "A child is run by its own definition."): Workflow<'TResult>)) input)
 

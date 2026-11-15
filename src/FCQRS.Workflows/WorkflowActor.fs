@@ -27,6 +27,9 @@ module internal WorkflowActor =
     /// An activity step that is running in this process.
     type private RunningStep =
         { Cancellation: CancellationTokenSource
+          /// Cancelled only when the workflow is cancelled while the step runs. It is not
+          /// disposed: an attempt may still register on its token after the step is released.
+          Cancelled: CancellationTokenSource
           Attempt: int
           Policy: RetryPolicy
           Span: Activity | null }
@@ -300,23 +303,25 @@ module internal WorkflowActor =
             let path = step.Path
             let previous = Activity.Current
 
-            let cancellation, stepSpan =
+            let cancellation, cancelled, stepSpan =
                 match running.TryGetValue path with
                 | true, current ->
                     running[path] <- { current with Attempt = attempt }
-                    current.Cancellation, current.Span
+                    current.Cancellation, current.Cancelled, current.Span
                 | _ ->
                     let span = startSpan $"Step:{step.Leaf.Name}" (traceParent ())
                     tag span (Some path) (Some step.Leaf.Name)
                     let cancellation = new CancellationTokenSource()
+                    let cancelled = new CancellationTokenSource()
 
                     running[path] <-
                         { Cancellation = cancellation
+                          Cancelled = cancelled
                           Attempt = attempt
                           Policy = policy
                           Span = span }
 
-                    cancellation, span
+                    cancellation, cancelled, span
 
             Activity.Current <- previous
 
@@ -355,7 +360,8 @@ module internal WorkflowActor =
                                           Context = context
                                           WorkflowName = definition.Name
                                           WorkflowId = id
-                                          Path = path }
+                                          Path = path
+                                          StepCancelled = cancelled.Token }
 
                                 match policy.AttemptTimeout with
                                 | Some timeout ->
@@ -829,10 +835,16 @@ module internal WorkflowActor =
                             | Some machine ->
                                 [ for KeyValue(path, step) in machine.Pending do
                                       if step.ScheduledAt.IsSome then
+                                          // Before the step's own cleanup, so an attempt that sends
+                                          // after this sees the cancel and follows up behind it.
+                                          match running.TryGetValue path with
+                                          | true, current -> current.Cancelled.Cancel()
+                                          | _ -> ()
+
                                           step.Leaf.OnCancel
                                           |> Option.iter (fun onCancel ->
                                               try
-                                                  onCancel api
+                                                  onCancel api id path
                                               with error ->
                                                   log.LogWarning(error, "Workflow {Workflow} {Id}: cancelling step {Step} failed.", definition.Name, id, step.Leaf.Name))
 

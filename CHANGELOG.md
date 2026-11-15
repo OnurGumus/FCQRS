@@ -11,6 +11,14 @@
   Stored signals that no wait consumed and version markers do not count, nor do the stored steps of
   a race's losing branches or of the branches a failed `all` or `allAtMost` abandoned. An instance
   that has ended does not replay its body and is unaffected.
+- Cancelling a parent while a `startChild` step is in flight cancels the child too. Before, the
+  parent failed the step and ended, and a child that the start had created kept running with no
+  parent to cancel it. The parent now sends a cancel to the child's ID, which it knows before the
+  start is stored. Because that cancel can reach the child before the start does, the start also
+  sends a cancel behind itself when the parent was cancelled while it was on its way. A child that
+  was never created refuses the cancel, which changes nothing. This holds for a start that recovery
+  re-ran after a restart. `awaitChild` keeps its behaviour, and a child that a parent started and
+  does not await still runs on after the parent ends.
 - The package needs FCQRS core 7.2.3. No stored record, step path, or child ID changes.
 
 ## 7.2.3 (FCQRS core)

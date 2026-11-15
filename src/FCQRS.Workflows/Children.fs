@@ -53,7 +53,8 @@ module ChildSteps =
     /// Starts another workflow and gives its handle once the child's start is stored.
     /// The child's ID is this workflow's ID, a colon, and this step's path, so a repeated start
     /// after a crash reaches the same child and does not start a second one.
-    /// A child that is never awaited runs on by itself and outlives this workflow.
+    /// A child that is never awaited runs on by itself and outlives this workflow. If this
+    /// workflow is cancelled while the start is in flight, the child is cancelled too.
     /// The child's workflow must be registered with `Workflows.register` in the same process.
     let startChild (definition: WorkflowDefinition<'Input, 'Result>) (input: 'Input) : Workflow<ChildHandle<'Result>> =
         let run (attempt: AttemptEnv) : Task<objnull> =
@@ -65,7 +66,19 @@ module ChildSteps =
                       Traceparent = currentTraceparent ()
                       Parent = Some $"{attempt.WorkflowName}/{attempt.WorkflowId}" }
 
-                let! reply = (regionOf attempt.Api definition.Name attempt.Context.Attempt).Ask<obj>(envelope childId start, requestTimeout, attempt.Context.Cancellation)
+                // A cancelled parent starts no child.
+                attempt.StepCancelled.ThrowIfCancellationRequested()
+                let region = regionOf attempt.Api definition.Name attempt.Context.Attempt
+                // Ask sends the start before it returns.
+                let asked = region.Ask<obj>(envelope childId start, requestTimeout, attempt.Context.Cancellation)
+
+                // The parent sends the child a cancel when it is cancelled, but that cancel can
+                // reach the child before this start does. Registered after the start was sent, this
+                // sends another one behind it, at once if the parent was already cancelled.
+                use _ =
+                    attempt.StepCancelled.Register(fun () -> region.Tell(envelope childId CancelWorkflow, ActorRefs.NoSender))
+
+                let! reply = asked
 
                 match reply with
                 | :? StartReply ->
@@ -77,7 +90,21 @@ module ChildSteps =
                 | other -> return invalidOp $"Unexpected reply to a child workflow start: {other}"
             }
 
-        WorkflowCore.step<ChildHandle<'Result>> definition.Name StepKind.Child (ActivityOp(startPolicy, run))
+        // The child's ID is known before its start is stored, so a cancel reaches a child that
+        // the start created even if the parent never stored the handle.
+        let cancel (api: IActor) (workflowId: string) (path: string) =
+            (regionOf api definition.Name Int32.MaxValue).Tell(envelope $"{workflowId}:{path}" CancelWorkflow, ActorRefs.NoSender)
+
+        Step(
+            Leaf
+                { Name = definition.Name
+                  Kind = StepKind.Child
+                  Encode = Payload.encode typeof<ChildHandle<'Result>>
+                  Decode = Payload.decode typeof<ChildHandle<'Result>>
+                  Op = ActivityOp(startPolicy, run)
+                  OnCancel = Some cancel },
+            WorkflowCore.unboxed<ChildHandle<'Result>>
+        )
 
     /// Waits for a child workflow to end and gives its result. A child that faulted or was
     /// cancelled fails this step with `ChildFaulted`, and a result this step's type cannot read
@@ -118,7 +145,7 @@ module ChildSteps =
                   Encode = Payload.encode typeof<'Result>
                   Decode = Payload.decode typeof<'Result>
                   Op = ActivityOp(awaitPolicy, run)
-                  OnCancel = Some(fun api -> (regionOf api handle.Workflow Int32.MaxValue).Tell(envelope handle.Id CancelWorkflow, ActorRefs.NoSender)) },
+                  OnCancel = Some(fun api _ _ -> (regionOf api handle.Workflow Int32.MaxValue).Tell(envelope handle.Id CancelWorkflow, ActorRefs.NoSender)) },
             WorkflowCore.unboxed<'Result>
         )
 

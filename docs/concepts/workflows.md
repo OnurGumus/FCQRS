@@ -578,7 +578,8 @@ ends as finished. A child the body was waiting for is cancelled with it.
 - Put cleanup around a parallel block, not inside one branch. When one branch of `all` fails, the
   other branches are abandoned, and a cleanup step a branch had begun is abandoned with it.
 - A second cancel request while cleanup runs changes nothing.
-- A child that was started with `startChild` and is not being awaited keeps running.
+- A child that was started with `startChild` and is not being awaited keeps running. A child whose
+  start was still in flight when the parent was cancelled is cancelled too.
 
 ## Change a workflow while instances are running
 

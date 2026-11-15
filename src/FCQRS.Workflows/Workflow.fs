@@ -84,7 +84,10 @@ module internal Steps =
           Context: AttemptContext
           WorkflowName: string
           WorkflowId: string
-          Path: string }
+          Path: string
+          /// Cancelled when the workflow is cancelled while this step is pending. A stop, a
+          /// restart, a timeout or an abandoned branch does not cancel it.
+          StepCancelled: CancellationToken }
 
     type LeafOp =
         /// An external call or an aggregate command, attempted under a retry policy.
@@ -101,8 +104,9 @@ module internal Steps =
           Encode: objnull -> Payload
           Decode: Payload -> objnull
           Op: LeafOp
-          /// Runs when the workflow is cancelled while this step is pending.
-          OnCancel: (IActor -> unit) option }
+          /// Runs when the workflow is cancelled while this step is pending, with the workflow's
+          /// ID and the step's path.
+          OnCancel: (IActor -> string -> string -> unit) option }
 
 /// A workflow that produces a `'T`. It is a description: a workflow instance interprets it,
 /// stores each step's result, and on recovery feeds the stored results back in.
