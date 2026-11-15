@@ -1,5 +1,15 @@
 # Changelog
 
+## 7.2.2 (FCQRS core)
+
+- A Debug build of FCQRS no longer fails with `InvalidProgramException` when it sends a command.
+  The F# compiler in .NET SDK 10.0.4xx emits a stack underflow in Debug IL when the argument of a
+  `raise` whose value is used contains a let binding (dotnet/fsharp#20564), and the command
+  subscription's `SagaStartRefused` case had one. It now binds the correlation ID before raising.
+  The published packages are built in Release and were not affected; a Debug build from source, as
+  the samples under `samples/workflows` and `samples/schedules` make through project references,
+  crashed at its first command. Release behaviour, wire formats, and stored data are unchanged.
+
 ## 7.7.0 (FCQRS.Workflows)
 
 - **Restarts read one row per schedule, not the run history.** The schedule dispatcher keeps its

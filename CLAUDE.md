@@ -260,8 +260,10 @@ Restore and build:
 dotnet build FCQRS.sln
 ```
 
-Run the Expecto facade and behaviour tests in Release, as CI does. A Debug build fails with
-`InvalidProgramException` in core's command subscription:
+Run the Expecto facade and behaviour tests in Release, as CI does. Debug builds work too. CI runs
+the F# schedule sample in Debug, because the F# compiler in SDK 10.0.4xx can emit invalid Debug IL
+for a `raise` whose argument contains a `let` or `|>` (dotnet/fsharp#20564). Bind such an argument
+before `raise`:
 
 ```bash
 dotnet run -c Release --project test/Facade.Tests/Facade.Tests.fsproj

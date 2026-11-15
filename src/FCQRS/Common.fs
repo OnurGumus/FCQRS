@@ -1616,14 +1616,11 @@ module CommandHandler =
                             )
                         )
                 | :? SagaStartRefused as refused ->
-                    return
-                        raise (
-                            SagaAlreadyStartedException(
-                                refused.AggregateId,
-                                refused.CorrelationId |> ValueLens.Value |> ValueLens.Value,
-                                refused.Saga
-                            )
-                        )
+                    // Bind before `raise`. The F# compiler in SDK 10.0.4xx emits invalid Debug IL
+                    // (a stack underflow) when the argument of a `raise` whose value is used
+                    // contains a let binding, and each `|>` inlines to one (dotnet/fsharp#20564).
+                    let cid = refused.CorrelationId |> ValueLens.Value |> ValueLens.Value
+                    return raise (SagaAlreadyStartedException(refused.AggregateId, cid, refused.Saga))
                 | :? ConditionalCommandConflict as conflict ->
                     return raise (AggregateVersionConflictException(
                         conflict.AggregateId, conflict.ExpectedVersion, conflict.ActualVersion))

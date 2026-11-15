@@ -48,6 +48,11 @@ jobs:
           dotnet run --project samples/workflows/csharp -c Release
           dotnet run --project samples/schedules/fsharp -c Release
           dotnet run --project samples/schedules/csharp -c Release
+      # Debug IL differs from Release IL, and the F# compiler in SDK 10.0.4xx emitted invalid Debug IL
+      # in core's command subscription (dotnet/fsharp#20564). This program sends commands from a
+      # Debug build of core and Workflows; the JIT rejects an invalid method when it first runs.
+      - name: Debug build sends commands
+        run: dotnet run --project samples/schedules/fsharp -c Debug
       - name: Samples build
         run: |
           dotnet build samples/getting-started-fsharp -c Release

@@ -430,8 +430,7 @@ dotnet run --project samples/schedules/fsharp -c Release
 dotnet run --project samples/schedules/csharp -c Release
 ```
 
-Both programs print the same lines. Run them in Release: a Debug build of FCQRS fails with
-`InvalidProgramException` at the first create.
+Both programs print the same lines.
 
 ```text
 nightly-backup: next run at 02:00 Europe/Oslo time
