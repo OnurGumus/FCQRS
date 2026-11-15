@@ -545,11 +545,13 @@ let private run (actor: IActor) (logger: ILogger) (settings: JournalSettings)
                 checkRunning ()
             with
             | :? OperationCanceledException as error ->
-                match lock errorGate (fun () -> failure) with
-                | Some cause -> return raise (InvalidOperationException($"Projection '{name}' has stopped after an error.", cause))
-                | None when not ct.IsCancellationRequested && not lifetime.IsCancellationRequested ->
-                    return raise (TimeoutException($"Projection '{name}' did not catch up within {timeout}.", error :> exn | null))
-                | None -> return raise error
+                let reported: exn =
+                    match lock errorGate (fun () -> failure) with
+                    | Some cause -> InvalidOperationException($"Projection '{name}' has stopped after an error.", cause)
+                    | None when not ct.IsCancellationRequested && not lifetime.IsCancellationRequested ->
+                        TimeoutException($"Projection '{name}' did not catch up within {timeout}.", error :> exn | null)
+                    | None -> error
+                return raise reported
         } :> Task
 
     background.ContinueWith((fun (t: Task) ->

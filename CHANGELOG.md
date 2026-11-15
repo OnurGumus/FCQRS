@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased (FCQRS core)
+
+- The Release IL of `CatchUpAsync` passes IL verification. Its `with` handler raised from each of
+  its branches, and the F# compiler then pushed a placeholder of the wrong type after a call that
+  always throws. The JIT accepted the method, because that path never runs. The handler now
+  chooses the exception and raises it once; the exceptions it raises are unchanged. CI verifies the
+  IL of the Release assemblies as well as the Debug ones.
+
 ## 7.7.1 (FCQRS.Workflows)
 
 - A decided schedule run whose stored input its workflow cannot read no longer retries forever. When
