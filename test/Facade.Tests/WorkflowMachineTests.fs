@@ -853,8 +853,9 @@ let private failedBlockTest =
             Expect.equal (finished run |> Option.map Payload.toValue<string>) (Some "x") $"a restart after {length} records finishes"
 
 let private manyRacesTest =
-    testCase "workflow machine: the check for steps the body did not reach stays fast after tens of thousands of races" <| fun _ ->
-        let rounds = 80000
+    testCase "workflow machine: the check for steps the body did not reach stays fast after more than a hundred thousand races" <| fun _ ->
+        // The quadratic check took about 6 s at 80,000 races, so about 25 s here; the linear one takes about 2.
+        let rounds = 160000
         let code (withLast: bool) = workflow {
             let mutable total = 0
             for _ in 1 .. rounds do
@@ -880,7 +881,7 @@ let private manyRacesTest =
         let replayed = drive journal (fun _ -> None) (code true)
         watch.Stop()
         Expect.equal (finished replayed |> Option.map Payload.toValue<int>) (Some(rounds + 5)) "the replay finishes"
-        Expect.isLessThan watch.Elapsed.TotalSeconds 3.0 $"the replay of {rounds} races took {watch.Elapsed}"
+        Expect.isLessThan watch.Elapsed.TotalSeconds 15.0 $"the replay of {rounds} races took {watch.Elapsed}"
         divergedAt (string rounds) "a completed Activity 'last'" (fun () -> drive journal (fun _ -> None) (code false))
 
 let tests =
