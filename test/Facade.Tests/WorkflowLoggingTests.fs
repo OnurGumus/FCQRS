@@ -313,7 +313,57 @@ let private signalLinkTest =
                 [ sender.TraceId, sender.SpanId ]
                 "and links to the span that sent the signal"
 
+let private detachedChildTest =
+    testCase "workflow log: a child started on its own begins its own trace, linked to the parent's step" <| fun _ ->
+        let spans = ConcurrentBag<Activity>()
+        use listener = new ActivityListener()
+        listener.ShouldListenTo <- fun source -> source.Name = Telemetry.WorkflowActivitySourceName || source.Name = "workflow-child-test"
+        listener.Sample <- SampleActivity<ActivityContext>(fun _ -> ActivitySamplingResult.AllDataAndRecorded)
+        listener.ActivityStopped <- fun span -> if span.Source.Name = Telemetry.WorkflowActivitySourceName then spans.Add span
+        ActivitySource.AddActivityListener listener
+        use caller = new ActivitySource("workflow-child-test")
+        withSystem "WorkflowLogDetachedChild" <| fun api _ ->
+            let worker = Workflow.define "worker" (fun (value: int) -> workflow {
+                let! (_: DateTime) = now
+                return value + 1 })
+            let workers = Workflows.register api worker
+            let flow =
+                Workflows.register api (Workflow.define "spawner" (fun (value: int) -> workflow {
+                    let! detached = startChild worker value
+                    let! joined = child worker (value + 10)
+                    return detached.Id, joined
+                }))
+            let started =
+                use request = caller.StartActivity "start request"
+                sync (flow.Start "d1" 1) |> ignore
+                (Unchecked.nonNull request).Context
+            Expect.equal (sync (flow.Result "d1" wait)) (WorkflowOutcome.Finished("d1:0", 12)) "the parent finished"
+            Expect.equal (sync (workers.Result "d1:0" wait)) (WorkflowOutcome.Finished 2) "the detached child finished"
+            let ofInstance (id: string) = spans |> Seq.filter (fun span -> span.GetTagItem "fcqrs.workflow.id" = box id) |> List.ofSeq
+            let ended (id: string) = ofInstance id |> List.exists (fun span -> span.OperationName = "Workflow.End:worker")
+            eventually "both children emitted their end spans" (fun () -> ended "d1:0" && ended "d1:1")
+            let parentStep =
+                spans |> Seq.find (fun span ->
+                    span.OperationName = "Step:worker"
+                    && span.GetTagItem "fcqrs.workflow.id" = box "d1"
+                    && span.GetTagItem "fcqrs.workflow.step.path" = box "0")
+            let detached = ofInstance "d1:0"
+            let root = detached |> List.find (fun span -> span.OperationName = "Workflow.Start:worker")
+            Expect.notEqual root.TraceId started.TraceId "the detached child runs in a trace of its own"
+            Expect.equal root.ParentSpanId (ActivitySpanId()) "its start span has no parent"
+            Expect.equal
+                [ for link in root.Links -> link.Context.TraceId, link.Context.SpanId ]
+                [ parentStep.TraceId, parentStep.SpanId ]
+                "and links to the parent's step that started it"
+            Expect.isTrue (detached |> List.forall (fun span -> span.TraceId = root.TraceId)) "every span of the detached child is in its trace"
+            Expect.isTrue
+                (detached |> List.forall (fun span -> span.SpanId = root.SpanId || span.ParentSpanId = root.SpanId))
+                "under its start span"
+            let joined = ofInstance "d1:1"
+            Expect.isNonEmpty joined "the awaited child emitted spans"
+            Expect.isTrue (joined |> List.forall (fun span -> span.TraceId = started.TraceId)) "an awaited child joins the parent's trace"
+
 let tests =
     testSequenced (
-        testList "workflow log" [ stepFailureTest; faultTest; progressTest; cancelTest; replayTest; correlationTest; signalLinkTest ]
+        testList "workflow log" [ stepFailureTest; faultTest; progressTest; cancelTest; replayTest; correlationTest; signalLinkTest; detachedChildTest ]
     )

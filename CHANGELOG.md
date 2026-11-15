@@ -25,6 +25,13 @@
   waits: the child drops a request whose wait has ended when the next one arrives, and does not
   answer it when it ends. A caller that polls `handle.Result` with a short timeout leaves no requests
   behind either. A step keeps at most one timer of each kind.
+- A child started with `startChild` begins a trace of its own, as the workflow design specified.
+  Before, every child joined its parent's trace, so a detached child that ran for days kept adding
+  spans to the trace of the request that started its parent. Its `Workflow.Start` span now has no
+  parent and links to the parent's `Step` span, and its other spans, also after a restart, are
+  children of that start span. A child started with `child` (C#: `ctx.Child`) still joins the
+  parent's trace. The trace is chosen when the child starts, so a `startChild` handle that the
+  parent awaits later still has its own trace.
 - The package needs FCQRS core 7.2.3.
 
 ## 7.7.2 (FCQRS.Workflows)

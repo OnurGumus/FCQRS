@@ -87,7 +87,9 @@ module internal Steps =
           Path: string
           /// Cancelled when the workflow is cancelled while this step is pending. A stop, a
           /// restart, a timeout or an abandoned branch does not cancel it.
-          StepCancelled: CancellationToken }
+          StepCancelled: CancellationToken
+          /// The trace context of the step's span, when it has one.
+          StepTrace: string option }
 
     type LeafOp =
         /// An external call or an aggregate command, attempted under a retry policy.

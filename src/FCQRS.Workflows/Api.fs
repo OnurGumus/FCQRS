@@ -115,6 +115,7 @@ module Workflows =
                     let start =
                         { Input = Payload.ofValue input
                           Traceparent = currentTraceparent ()
+                          Link = None
                           Parent = None }
 
                     let! reply = ask id start requestTimeout

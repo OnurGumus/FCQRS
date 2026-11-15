@@ -207,6 +207,13 @@ module internal WorkflowActor =
             else
                 ValueNone
 
+        let traceparentOf (context: ActivityContext) : string =
+            $"00-{context.TraceId.ToHexString()}-{context.SpanId.ToHexString()}-01"
+
+        /// The start span of a detached child, which begins the child's own trace. It ends once
+        /// the start is stored.
+        let mutable rootSpan: Activity | null = null
+
         let traceParent () : ActivityContext voption =
             match started with
             | Some(_, Some traceparent) -> contextOf traceparent
@@ -453,7 +460,11 @@ module internal WorkflowActor =
                                           WorkflowName = definition.Name
                                           WorkflowId = id
                                           Path = path
-                                          StepCancelled = cancelled.Token }
+                                          StepCancelled = cancelled.Token
+                                          StepTrace =
+                                            match stepSpan with
+                                            | null -> None
+                                            | span -> Some(traceparentOf span.Context) }
 
                                 match policy.AttemptTimeout with
                                 | Some timeout ->
@@ -598,14 +609,17 @@ module internal WorkflowActor =
                 started <- Some(input, traceparent)
                 startedCount.Add(1L, nameTag)
                 countRunning true
-                mark
-                    $"Workflow.Start:{definition.Name}"
-                    None
-                    None
-                    None
-                    None
-                    ValueNone
-                    (told (fun () -> flow.LogInformation("Workflow {Workflow} {Id} started", definition.Name, id)))
+                let line = told (fun () -> flow.LogInformation("Workflow {Workflow} {Id} started", definition.Name, id))
+
+                match rootSpan with
+                | null -> mark $"Workflow.Start:{definition.Name}" None None None None ValueNone line
+                | span ->
+                    rootSpan <- null
+                    tag span None None
+                    line |> Option.iter (fun (logger, write) -> report logger span None None write)
+                    let previous = Activity.Current
+                    span.Dispose()
+                    Activity.Current <- previous
 
                 startSender
                 |> Option.iter (fun sender -> sender.Tell({ Created = true; Status = WorkflowStatus.Running [] }, self))
@@ -891,8 +905,39 @@ module internal WorkflowActor =
                     | None ->
                         startSender <- Some mailbox.UntypedContext.Sender
 
+                        let link =
+                            match start.Traceparent, start.Link with
+                            | None, Some link -> contextOf link
+                            | _ -> ValueNone
+
+                        let traceparent =
+                            match link with
+                            | ValueSome link ->
+                                // A detached child begins a trace of its own. Its start span has no
+                                // parent and links to the step that started it, and the instance's
+                                // later spans, also after a restart, are children of it.
+                                let previous = Activity.Current
+                                // With no parent context, the current span would become the parent.
+                                Activity.Current <- null
+
+                                let span =
+                                    source.StartActivity(
+                                        $"Workflow.Start:{definition.Name}",
+                                        ActivityKind.Internal,
+                                        ActivityContext(),
+                                        links = [| ActivityLink link |]
+                                    )
+
+                                Activity.Current <- previous
+                                rootSpan <- span
+
+                                match span with
+                                | null -> None
+                                | span -> Some(traceparentOf span.Context)
+                            | ValueNone -> start.Traceparent
+
                         return!
-                            store [ WorkflowRecord.Started(start.Input, clock (), start.Traceparent, start.Parent) ] (loop ())
+                            store [ WorkflowRecord.Started(start.Input, clock (), traceparent, start.Parent) ] (loop ())
                 | :? GetStatus ->
                     mailbox.UntypedContext.Sender.Tell(status (), self)
 

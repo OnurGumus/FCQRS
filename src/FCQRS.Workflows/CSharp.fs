@@ -296,16 +296,22 @@ type WorkflowContext internal () =
 
     /// Starts the registered workflow named `workflow` as a child and gives its handle once the
     /// child's start is stored. A child that is never awaited outlives this workflow. If this
-    /// workflow is cancelled while the start is in flight, the child is cancelled too.
+    /// workflow is cancelled while the start is in flight, the child is cancelled too. The child
+    /// runs in a trace of its own, whose first span links to this step's span.
     member _.StartChild<'TInput, 'TResult>(workflow: string, input: 'TInput) : Step<ChildHandle<'TResult>> =
-        Step<ChildHandle<'TResult>>(startChild (Workflow.define workflow (fun (_: 'TInput) -> Fail(InvalidOperationException "A child is run by its own definition."): Workflow<'TResult>)) input)
+        Step<ChildHandle<'TResult>>(startChildWith false (WorkflowContext.ChildDefinition<'TInput, 'TResult> workflow) input)
 
     /// Waits for a child workflow to end and gives its result.
     member _.AwaitChild<'TResult>(handle: ChildHandle<'TResult>) : Step<'TResult> = Step<'TResult>(awaitChild handle)
 
-    /// Starts the registered workflow named `workflow` as a child and waits for its result.
-    member this.Child<'TInput, 'TResult>(workflow: string, input: 'TInput) : Step<'TResult> =
-        Step<'TResult>(WorkflowCore.bind (this.StartChild<'TInput, 'TResult>(workflow, input)).Workflow awaitChild)
+    /// Starts the registered workflow named `workflow` as a child and waits for its result. The
+    /// child joins this workflow's trace.
+    member _.Child<'TInput, 'TResult>(workflow: string, input: 'TInput) : Step<'TResult> =
+        Step<'TResult>(WorkflowCore.bind (startChildWith true (WorkflowContext.ChildDefinition<'TInput, 'TResult> workflow) input) awaitChild)
+
+    /// A child is run by the definition registered under its name; this one only names it.
+    static member private ChildDefinition<'TInput, 'TResult>(workflow: string) : WorkflowDefinition<'TInput, 'TResult> =
+        Workflow.define workflow (fun (_: 'TInput) -> Fail(InvalidOperationException "A child is run by its own definition."): Workflow<'TResult>)
 
     /// Turns a workflow method into a step, for `All` and `Race`: `ctx.Run(() => Reserve(ctx, order))`.
     member _.Run<'T>(method: Func<WorkflowTask<'T>>) : Step<'T> =

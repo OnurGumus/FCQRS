@@ -62,7 +62,11 @@ module internal Protocol =
 
     type StartWorkflow =
         { Input: Payload
+          /// The trace the instance joins.
           Traceparent: string option
+          /// With no `Traceparent`, the span that the first span of the instance's own trace
+          /// links to: the step of a parent that started it as a detached child.
+          Link: string option
           Parent: string option }
 
         interface ISerializable

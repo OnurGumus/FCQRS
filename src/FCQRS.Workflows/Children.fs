@@ -51,20 +51,17 @@ module ChildSteps =
           AttemptTimeout = None
           ShouldRetry = fun error -> not (error :? ChildEndedException || error :? InvalidOperationException) }
 
-    /// Starts another workflow and gives its handle once the child's start is stored.
-    /// The child's ID is this workflow's ID, a colon, and this step's path, so a repeated start
-    /// after a crash reaches the same child and does not start a second one.
-    /// A child that is never awaited runs on by itself and outlives this workflow. If this
-    /// workflow is cancelled while the start is in flight, the child is cancelled too.
-    /// The child's workflow must be registered with `Workflows.register` in the same process.
-    let startChild (definition: WorkflowDefinition<'Input, 'Result>) (input: 'Input) : Workflow<ChildHandle<'Result>> =
+    /// Starts a child. An awaited child joins this workflow's trace, under the attempt that
+    /// starts it. Any other child starts a trace of its own, whose first span links to this step.
+    let internal startChildWith (awaited: bool) (definition: WorkflowDefinition<'Input, 'Result>) (input: 'Input) : Workflow<ChildHandle<'Result>> =
         let run (attempt: AttemptEnv) : Task<objnull> =
             task {
                 let childId = $"{attempt.WorkflowId}:{attempt.Path}"
 
                 let start =
                     { Input = Payload.ofValue input
-                      Traceparent = currentTraceparent ()
+                      Traceparent = if awaited then currentTraceparent () else None
+                      Link = if awaited then None else attempt.StepTrace
                       Parent = Some $"{attempt.WorkflowName}/{attempt.WorkflowId}" }
 
                 // A cancelled parent starts no child.
@@ -103,6 +100,16 @@ module ChildSteps =
                   Child = Some(fun workflowId path -> struct (definition.Name, $"{workflowId}:{path}")) },
             WorkflowCore.unboxed<ChildHandle<'Result>>
         )
+
+    /// Starts another workflow and gives its handle once the child's start is stored.
+    /// The child's ID is this workflow's ID, a colon, and this step's path, so a repeated start
+    /// after a crash reaches the same child and does not start a second one.
+    /// A child that is never awaited runs on by itself and outlives this workflow. If this
+    /// workflow is cancelled while the start is in flight, the child is cancelled too.
+    /// The child runs in a trace of its own, whose first span links to this step's span.
+    /// The child's workflow must be registered with `Workflows.register` in the same process.
+    let startChild (definition: WorkflowDefinition<'Input, 'Result>) (input: 'Input) : Workflow<ChildHandle<'Result>> =
+        startChildWith false definition input
 
     /// Waits for a child workflow to end and gives its result. A child that faulted or was
     /// cancelled fails this step with `ChildFaulted`, and a result this step's type cannot read
@@ -149,6 +156,6 @@ module ChildSteps =
             WorkflowCore.unboxed<'Result>
         )
 
-    /// Starts a child workflow and waits for its result.
+    /// Starts a child workflow and waits for its result. The child joins this workflow's trace.
     let child (definition: WorkflowDefinition<'Input, 'Result>) (input: 'Input) : Workflow<'Result> =
-        WorkflowCore.bind (startChild definition input) awaitChild
+        WorkflowCore.bind (startChildWith true definition input) awaitChild

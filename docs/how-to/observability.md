@@ -110,6 +110,10 @@ use that context as their parent, so a resumed workflow continues the same trace
   `fcqrs.workflow.waited_ms`. No span stays open across a wait.
 - The span of a signal wait has a link to the span of the caller that sent the signal. The wait
   itself stays in the trace of the caller that started the workflow.
+- A child started with `child` joins its parent's trace, under the attempt that started it. A child
+  started with `startChild` begins a trace of its own: its `Workflow.Start` span has no parent and
+  links to the parent's `Step` span, and its other spans are children of that start span. This holds
+  also when the parent awaits the handle later.
 - An attempt span is `Activity.Current` inside the activity, so `HttpClient` and database
   instrumentation attach to it. A command sent by a workflow carries it in `traceparent`.
 - Spans carry `fcqrs.workflow.name`, `fcqrs.workflow.id`, `fcqrs.workflow.step.path`,
