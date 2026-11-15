@@ -7,7 +7,7 @@ index: 10
 ---
 *)
 (*** hide ***)
-#r "nuget: FCQRS.Workflows, 7.5.0"
+#r "nuget: FCQRS.Workflows, 7.7.0"
 #load "../../samples/orders/10-feed-orders-from-a-stream/fsharp/Account.fs"
 #load "../../samples/orders/10-feed-orders-from-a-stream/fsharp/Order.fs"
 
@@ -20,7 +20,7 @@ through an Akka.Streams flow that starts one workflow per element, two at a time
 process while two orders are shipping and runs the batch again, to show what resumes and what does
 not.
 
-Step 10 needs FCQRS.Workflows 7.5.0 or later.
+Step 10 needs FCQRS.Workflows 7.7.0 or later.
 
 This page changes the program from [step 9](guard-the-change.html). The workflow does not change:
 `Order.fs` (`Order.cs`) and `Account.fs` (`Account.cs`) stay as they are. The journal starts empty.
