@@ -145,8 +145,10 @@ module internal WorkflowActor =
         let running = Dictionary<string, RunningStep>()
         /// The timers armed for each step, by step path and by the kind of message they send.
         let timers = Dictionary<string, Dictionary<Type, ICancelable>>()
-        /// The askers waiting for this instance's result, each with the time its wait ends.
-        let waiters = ResizeArray<struct (IActorRef * DateTime)>()
+        /// The askers waiting for this instance's result, each with the time its wait ends, in
+        /// `Environment.TickCount64` milliseconds. An ask times out in real time, which the
+        /// workflow clock need not follow.
+        let waiters = ResizeArray<struct (IActorRef * int64)>()
         let mutable started: (Payload * string option) option = None
         let mutable final: WorkflowRecord option = None
         let mutable parked: string option = None
@@ -741,7 +743,7 @@ module internal WorkflowActor =
 
                 match resultReply () with
                 | Some reply ->
-                    let now = clock ()
+                    let now = Environment.TickCount64
 
                     // An asker whose wait has ended no longer listens.
                     for struct (waiter, until) in waiters do
@@ -952,12 +954,19 @@ module internal WorkflowActor =
                         leaveWhenIdle ()
                     | None ->
                         let (AwaitResult wait) = request
-                        let now = clock ()
+                        let now = Environment.TickCount64
                         // A parent that waits for this child asks again after each wait ends, and
                         // a caller may poll. An asker whose wait has ended no longer listens, so
                         // it is dropped here instead of piling up until this instance ends.
                         waiters.RemoveAll(fun (struct (_, until)) -> until <= now) |> ignore
-                        let until = if wait < TimeSpan.Zero then DateTime.MaxValue else later now wait
+
+                        // An ask with a zero or negative timeout waits without end.
+                        let until =
+                            if wait <= TimeSpan.Zero || wait.TotalMilliseconds >= float (Int64.MaxValue - now) then
+                                Int64.MaxValue
+                            else
+                                now + int64 (Math.Ceiling wait.TotalMilliseconds)
+
                         waiters.Add(struct (mailbox.UntypedContext.Sender, until))
 
                     return! loop ()

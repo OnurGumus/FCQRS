@@ -998,6 +998,23 @@ let private awaitRoundsTest =
             finally
                 ChildSteps.resultTimeout <- previous
 
+let private zeroWaitResultTest =
+    testCase "workflow: a result request without a timeout gets the result, however many requests come after it" <| fun _ ->
+        withSystem "WorkflowZeroWaitResult" <| fun api ->
+            let flow =
+                Workflows.register api (Workflow.define "patient" (fun (value: int) -> workflow {
+                    let! (answer: int) = waitSignal "go"
+                    return value + answer }))
+            sync (flow.Start "z1" 1) |> ignore
+            let pending = Async.StartAsTask(flow.Result "z1" TimeSpan.Zero)
+            Thread.Sleep 200
+            // Each request drops the requests whose wait has ended.
+            for _ in 1 .. 3 do
+                Expect.throwsT<TimeoutException> (fun () -> sync (flow.Result "z1" (TimeSpan.FromMilliseconds 50.0)) |> ignore) "no result yet"
+            sync (Workflows.signal flow "z1" "go" 2)
+            Expect.isTrue (pending.Wait wait) "the request without a timeout got an answer"
+            Expect.equal pending.Result (WorkflowOutcome.Finished 3) "and it is the result"
+
 let private parkingTest =
     testCase "workflow: an instance whose journal does not match its code is parked, and resumes with code that matches" <| fun _ ->
         let db = newDb ()
@@ -1820,7 +1837,7 @@ let tests =
             [ startTest; faultTest; retryTest; shortTimerTest; restartTest; timerTest; tracingTest; startRaceTest; concurrentStartTest
               signalTest; signalRestartTest; commandTest; parallelCommandTest; commandRestartTest; commandRecoveryTest; unknownOutcomeTest
               cancelTest; childTest; childRestartTest; cancelChildStartTest; cancelChildStartRestartTest; cancelChildRecoveryTest
-              cancelParkedChildTest; awaitRoundsTest; parkingTest; removedStepsParkTest; streamTest; metricsTest
+              cancelParkedChildTest; awaitRoundsTest; zeroWaitResultTest; parkingTest; removedStepsParkTest; streamTest; metricsTest
               lateCommandTest; cancelParkedTest; childResultTest; unreadableResultTest; idleTest; manifestTest
               sagaStartTest; sagaRepeatTest; sagaRepeatStoredTest; sagaSignalTest; sagaEventReplyTest
               sagaFilterTest; sagaFilterMissedTest; sagaFilterOutcomeTest; effectReplyTest; lateReplyTest

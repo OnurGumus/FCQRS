@@ -24,7 +24,8 @@
   letters, and the parent kept one timer for each retry. A request now holds how long its asker
   waits: the child drops a request whose wait has ended when the next one arrives, and does not
   answer it when it ends. A caller that polls `handle.Result` with a short timeout leaves no requests
-  behind either. A step keeps at most one timer of each kind.
+  behind either, and a request with a zero timeout still waits without end. A step keeps at most one
+  timer of each kind.
 - A child started with `startChild` begins a trace of its own, as the workflow design specified.
   Before, every child joined its parent's trace, so a detached child that ran for days kept adding
   spans to the trace of the request that started its parent. Its `Workflow.Start` span now has no
