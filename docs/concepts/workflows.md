@@ -131,6 +131,12 @@ activity whose deadline passed while the process was stopped fails as `DeadlineE
 another attempt. Attempts are not stored: after a restart the attempt count and the backoff begin
 again.
 
+An attempt has no time limit unless the policy sets one, and `Retry.none` and `Retry.times` set
+none. An activity that never returns, for example one that ignores its cancellation token, keeps its
+step waiting until the workflow is cancelled. With `AttemptTimeout`, the attempt fails when the time
+is up even if the activity ignores its token. The call itself keeps running, and its result is
+ignored.
+
 When the policy runs out, the failure is stored and raised in the body as
 `WorkflowStepFailedException`. The body can catch it and continue. Replay raises the same exception,
 never the original one.
