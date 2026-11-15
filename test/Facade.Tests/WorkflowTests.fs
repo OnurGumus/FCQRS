@@ -794,8 +794,22 @@ let private cancelChildStartRestartTest =
             let! (_: int) = waitSignal "never"
             return handle.Id })
         try
-            // The child's workflow is not registered yet, so the start is stored and keeps failing.
             let first = boot db "WorkflowCancelChildRestart" []
+            // A region with the child workflow's name whose entities never answer: the child start
+            // is stored and stays in flight, far from its retry deadline, until the system stops.
+            let silent =
+                Akkling.Props.props (fun (mailbox: Akkling.Actors.Actor<obj>) ->
+                    let rec receive () =
+                        Akkling.ComputationExpressions.actor {
+                            let! (message: obj) = mailbox.Receive()
+                            // The region's hand-off message at shutdown.
+                            if message :? StopEntity then
+                                mailbox.UntypedContext.Stop mailbox.UntypedContext.Self
+                            return! receive ()
+                        }
+                    receive ())
+            FCQRS.AkklingHelpers.Internal.entityFactoryFor first.System FCQRS.Common.Internal.shardResolver "waiter" silent PassivationPolicy.Default false
+            |> ignore
             let flow = Workflows.register first starter
             sync (flow.Start "r1" 1) |> ignore
             eventually "the child start is in flight" (fun () ->

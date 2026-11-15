@@ -169,12 +169,30 @@ type internal Machine(history: History, encodeResult: objnull -> Payload, clock:
     let visited = HashSet<string>()
     /// The path prefixes of the branches a block abandoned: the losers of a race and the siblings
     /// of a failed branch. Their stored steps need not be reached again.
-    let abandoned = ResizeArray<string>()
+    let abandoned = HashSet<string>()
 
     /// Cancels a branch whose block no longer needs it.
     let abandon (branch: Fiber) =
         branch.Cancel()
-        abandoned.Add branch.Prefix
+        abandoned.Add branch.Prefix |> ignore
+
+    /// Whether the step at `path` lies in an abandoned branch. "2/0/5/1/0" lies in the branches
+    /// "2/0/" and "2/0/5/1/", so the cost follows the path's depth, not the number of branches.
+    let inAbandoned (path: string) : bool =
+        let mutable found = false
+        let mutable slash = path.IndexOf '/'
+
+        while not found && slash >= 0 do
+            // After a block's path comes a branch index, then the next step's index.
+            let branch = path.IndexOf('/', slash + 1)
+
+            if branch < 0 then
+                slash <- -1
+            else
+                found <- abandoned.Contains(path.Substring(0, branch + 1))
+                slash <- path.IndexOf('/', branch + 1)
+
+        found
 
     let check (path: string) (expected: string) (expectedKind: StepKind) (name: string) (kind: StepKind) =
         if name <> expected || kind <> expectedKind then
@@ -195,7 +213,7 @@ type internal Machine(history: History, encodeResult: objnull -> Payload, clock:
             |> Seq.tryFind (fun (KeyValue(path, _)) ->
                 path.IndexOf '@' < 0
                 && not (visited.Contains path)
-                && not (abandoned.Exists(fun prefix -> path.StartsWith(prefix, StringComparison.Ordinal))))
+                && not (inAbandoned path))
 
         match unreached with
         | Some(KeyValue(path, state)) ->

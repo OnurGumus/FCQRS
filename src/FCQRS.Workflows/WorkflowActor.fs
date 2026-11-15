@@ -835,18 +835,20 @@ module internal WorkflowActor =
                             | Some machine ->
                                 [ for KeyValue(path, step) in machine.Pending do
                                       if step.ScheduledAt.IsSome then
+                                          let guard (work: unit -> unit) =
+                                              try
+                                                  work ()
+                                              with error ->
+                                                  log.LogWarning(error, "Workflow {Workflow} {Id}: cancelling step {Step} failed.", definition.Name, id, step.Leaf.Name)
+
                                           // Before the step's own cleanup, so an attempt that sends
                                           // after this sees the cancel and follows up behind it.
+                                          // Cancel runs the attempt's callbacks on this thread.
                                           match running.TryGetValue path with
-                                          | true, current -> current.Cancelled.Cancel()
+                                          | true, current -> guard current.Cancelled.Cancel
                                           | _ -> ()
 
-                                          step.Leaf.OnCancel
-                                          |> Option.iter (fun onCancel ->
-                                              try
-                                                  onCancel api id path
-                                              with error ->
-                                                  log.LogWarning(error, "Workflow {Workflow} {Id}: cancelling step {Step} failed.", definition.Name, id, step.Leaf.Name))
+                                          step.Leaf.OnCancel |> Option.iter (fun onCancel -> guard (fun () -> onCancel api id path))
 
                                           WorkflowRecord.StepFailed(path, step.Leaf.Name, step.Leaf.Kind, cancelled, time) ]
                             // A parked instance cannot run its cleanup: it ends.

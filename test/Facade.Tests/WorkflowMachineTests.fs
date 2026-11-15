@@ -852,8 +852,39 @@ let private failedBlockTest =
             let run = driveWith choose (List.truncate length journal) (byName complete) body
             Expect.equal (finished run |> Option.map Payload.toValue<string>) (Some "x") $"a restart after {length} records finishes"
 
+let private manyRacesTest =
+    testCase "workflow machine: the check for steps the body did not reach stays fast after tens of thousands of races" <| fun _ ->
+        let rounds = 80000
+        let code (withLast: bool) = workflow {
+            let mutable total = 0
+            for _ in 1 .. rounds do
+                let! (winner: int) = race [ activity "win" Retry.none never; activity "lose" Retry.none never ]
+                total <- total + winner
+            if withLast then
+                let! (last: int) = activity "last" Retry.none never
+                return total + last
+            else
+                return total
+        }
+        let complete name =
+            match name with
+            | "win" -> Some(Ok(Payload.ofValue 1))
+            | "last" -> Some(Ok(Payload.ofValue 5))
+            | _ -> None
+        let journal =
+            (drive [] complete (code true)).Journal |> Seq.filter (function WorkflowRecord.Finished _ -> false | _ -> true) |> List.ofSeq
+        // Every race left a scheduled step in its losing branch that replay does not reach.
+        let losers = journal |> List.filter (function WorkflowRecord.StepScheduled(_, "lose", _, _, _) -> true | _ -> false)
+        Expect.equal losers.Length rounds "each race stored its loser's step"
+        let watch = Diagnostics.Stopwatch.StartNew()
+        let replayed = drive journal (fun _ -> None) (code true)
+        watch.Stop()
+        Expect.equal (finished replayed |> Option.map Payload.toValue<int>) (Some(rounds + 5)) "the replay finishes"
+        Expect.isLessThan watch.Elapsed.TotalSeconds 3.0 $"the replay of {rounds} races took {watch.Elapsed}"
+        divergedAt (string rounds) "a completed Activity 'last'" (fun () -> drive journal (fun _ -> None) (code false))
+
 let tests =
     testList "workflow machine"
         [ payloadTest; recordTest; liveTest; prefixTest; failureTest; unhandledTest; divergedTest; longTest; storedValueTest
           allTest; allFailureTest; raceTest; limitTest; andTest; andThreeTest; recursionTest; signalTest; liveSignalTest; unreadableTest; farTimerTest; versionTest; versionLoopTest; wrongSignalTest; versionInBranchTest; versionBeforeEmptyBlockTest; versionTwiceTest; blockSwapTest; untilUtcTest
-          removedStepsTest; consumedJournalTest; raceLoserTest; failedBlockTest ]
+          removedStepsTest; consumedJournalTest; raceLoserTest; failedBlockTest; manyRacesTest ]
