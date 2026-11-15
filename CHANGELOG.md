@@ -2,21 +2,22 @@
 
 ## 7.7.1 (FCQRS.Workflows)
 
-- A decided schedule run whose stored input its workflow cannot read no longer retries forever.
-  When the input stored with a `Firing` does not read as the workflow's input type, for example
-  after a deploy changed that type, 7.7.0 tried the start again every few seconds, logged an error
-  each time, and kept the schedule from firing again; neither `delete` nor `change` stopped it. The
+- A decided schedule run whose stored input its workflow cannot read no longer retries forever. When
+  the input stored with a `Firing` does not read as the workflow's input type, for example after a
+  deploy changed that type, 7.7.0 tried the start again every few seconds, logged an error each
+  time, and kept the schedule from firing again; neither `delete` nor `change` stopped it. The
   dispatcher now logs one error that names the schedule, the due time, the workflow, and the
   exception, and reports the run's start, so the schedule goes on to its next due time. The run for
   that due time is lost, and the error is the only signal. A later due time stores the schedule's
   current input, so it fails the same way until `Schedules.change` gives the schedule an input the
-  workflow reads. A schedule whose workflow is not registered at all still logs at each due time and
-  waits, because a later deploy can register it.
-- The XML comments of `WorkflowFlow.run` and `Run` state the parallelism limit at its boundary: the
-  stream keeps at most `parallelism` workflows between start and outcome. Workflows that resumed
-  after a restart, or whose timeout failed the stream, run regardless.
-- The package needs FCQRS core 7.2.2, released with it. No stored schedule event, snapshot, workflow
-  record, run ID, or index row changes.
+  workflow reads. Rolling the deploy back afterwards does not bring the lost run back. A schedule
+  whose workflow is not registered at all still logs at each due time and waits, because a later
+  deploy can register it.
+- The XML comments of `WorkflowFlow.run`, `Run`, `start`, and `Start` state the parallelism limit at
+  its boundary: the stream keeps at most `parallelism` workflows between start and outcome.
+  Workflows that resumed after a restart, or whose timeout failed the stream, run regardless.
+- The package needs FCQRS core 7.2.2, released with it, including its reserved `fcqrs-` projection
+  names. No stored schedule event, snapshot, workflow record, run ID, or index row changes.
 
 ## 7.2.2 (FCQRS core)
 

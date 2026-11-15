@@ -266,10 +266,11 @@ Restore and build:
 dotnet build FCQRS.sln
 ```
 
-Run the Expecto facade and behaviour tests in Release, as CI does. Debug builds work too. CI runs
-the F# schedule sample in Debug, because the F# compiler in SDK 10.0.4xx can emit invalid Debug IL
-for a `raise` whose argument contains a `let` or `|>` (dotnet/fsharp#20564). Bind such an argument
-before `raise`:
+Debug builds work. CI runs the F# schedule sample in Debug, because the F# compiler in SDK 10.0.4xx
+can emit invalid Debug IL for a `raise` used as a value whose argument contains a `let`, `|>`, `if`,
+or `match` (dotnet/fsharp#20564). Bind such an argument before `raise`.
+
+Run the Expecto facade and behaviour tests in Release, as CI does:
 
 ```bash
 dotnet run -c Release --project test/Facade.Tests/Facade.Tests.fsproj

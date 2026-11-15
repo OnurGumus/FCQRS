@@ -820,8 +820,8 @@ is not listed waits the same way.
 
 A deploy can also change the input type of a listed workflow, so that the input a decided run
 stored no longer reads as the workflow's input: the stored JSON is a string and the workflow now
-takes an `int`, for example. Reading it again would fail the same way, so the dispatcher does not
-try again. It logs one error that names the schedule, the due time, the workflow, and the
+takes an `int`, for example. With this code, reading it again would fail the same way, so the
+dispatcher does not try again; rolling the deploy back afterwards does not bring the run back. It logs one error that names the schedule, the due time, the workflow, and the
 exception, reports the run's start to the schedule, and the schedule goes on to its next due time.
 The run for that due time is lost, and the error is the only signal. Later due times store the
 schedule's current input, so they fail the same way until `Schedules.change` gives the schedule an
