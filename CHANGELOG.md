@@ -18,7 +18,10 @@
   sends a cancel behind itself when the parent was cancelled while it was on its way. A child that
   was never created refuses the cancel, which changes nothing. This holds for a start that recovery
   re-ran after a restart. `awaitChild` keeps its behaviour, and a child that a parent started and
-  does not await still runs on after the parent ends.
+  does not await still runs on after the parent ends. The parent sends the cancel once and does not
+  send it again on recovery: if the process stops after the child stored its start and before it
+  stored the cancel, the child keeps running. A parked parent that is cancelled ends without
+  running any step, so it cancels no child.
 - The package needs FCQRS core 7.2.3. No stored record, step path, or child ID changes.
 
 ## 7.2.3 (FCQRS core)

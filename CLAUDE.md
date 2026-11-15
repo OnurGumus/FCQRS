@@ -161,7 +161,9 @@ Keep these distinctions intact in code comments and documentation.
 - After a restart, a command step and a child start make whole attempts, because a repeat is safe
   and the first outcome is unknown. The deadline ends them only when an attempt fails after it.
 - Cancelling a parent cancels the child it waits for and a child whose start is in flight, including
-  a start re-run after a restart. A child it started and does not wait for keeps running.
+  a start re-run after a restart. A child it started and does not wait for keeps running. The parent
+  sends the cancel once: a process stop after the child stored its start and before it stored the
+  cancel leaves the child running. A parked parent that is cancelled cancels no child.
 - An activity result is read back before it is stored. One that cannot be read fails the step as
   `NotRetryable` after the call was made.
 - A signal is stored before it is acknowledged. A race stores its winner.
