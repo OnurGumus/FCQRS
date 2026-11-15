@@ -1,6 +1,7 @@
 // docs:messages
 module Order
 
+open System
 open System.Threading.Tasks
 open FCQRS.Workflows
 
@@ -32,8 +33,11 @@ let definition (warehouse: IWarehouse) =
             // An activity is the only place the body calls another system.
             // FCQRS stores its result. "reserve-stock" is stored too and
             // must not change while orders are running.
+            // One attempt. It fails if the warehouse has not answered within
+            // ten seconds.
+            let policy = Retry.once (TimeSpan.FromSeconds 10.0)
             let! reservation =
-                activity "reserve-stock" Retry.none (fun attempt ->
+                activity "reserve-stock" policy (fun attempt ->
                     warehouse.Reserve(
                         attempt.IdempotencyKey, request.Item, request.Quantity))
             return { Reservation = reservation }

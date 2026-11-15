@@ -3,7 +3,8 @@
 // snippet: 3 module
     // snippet: 4
     // Unchanged from step 2.
-    let reserveRetry = Retry.times 5
+    let reserveRetry = Retry.times 5 (System.TimeSpan.FromSeconds 10.0)
+    let callRetry = Retry.times 3 (System.TimeSpan.FromSeconds 10.0)
     // snippet: 5
 // snippet: 6
 // snippet: 7

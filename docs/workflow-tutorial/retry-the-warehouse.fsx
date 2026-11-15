@@ -7,7 +7,7 @@ index: 2
 ---
 *)
 (*** hide ***)
-#r "nuget: FCQRS.Workflows, 7.7.0"
+#r "nuget: FCQRS.Workflows, 7.8.0"
 #load "../../samples/orders/2-retry-the-warehouse/fsharp/Order.fs"
 
 (**
@@ -67,9 +67,9 @@ class, which now holds the policy:
 
 <!-- sample: orders/2-retry-the-warehouse/fsharp Order.fs retry -->
 ```fsharp
-// Up to five attempts, 200 ms apart.
+// Up to five attempts, 200 ms apart, each allowed ten seconds.
 let reserveRetry = {
-    Retry.times 5 with
+    Retry.times 5 (TimeSpan.FromSeconds 10.0) with
         Schedule = FixedInterval(TimeSpan.FromMilliseconds 200.0)
 }
 ```
@@ -98,9 +98,10 @@ let definition (warehouse: IWarehouse) =
 public sealed class OrderWorkflow(IWarehouse warehouse)
     : Workflow<OrderRequest, OrderResult>("order")
 {
-    // Up to five attempts, 200 ms apart.
-    private static readonly RetryPolicy ReserveRetry = Retry.times(5)
-        .WithSchedule(RetrySchedules.Fixed(TimeSpan.FromMilliseconds(200)));
+    // Up to five attempts, 200 ms apart, each allowed ten seconds.
+    private static readonly RetryPolicy ReserveRetry =
+        Retry.times(5, TimeSpan.FromSeconds(10))
+            .WithSchedule(RetrySchedules.Fixed(TimeSpan.FromMilliseconds(200)));
 
     public override async WorkflowTask<OrderResult> Run(
         WorkflowContext ctx, OrderRequest request)
@@ -115,7 +116,8 @@ public sealed class OrderWorkflow(IWarehouse warehouse)
 }
 ```
 
-A **retry policy** belongs to one step. `Retry.times 5` allows five attempts. Its default schedule
+A **retry policy** belongs to one step. `Retry.times 5` allows five attempts, and each attempt
+fails if it has not finished within the ten seconds the policy names. Its default schedule
 waits longer after each failure, from one second up to one minute; this program waits a fixed
 200 ms so that it finishes quickly. A policy can also set a deadline for the whole step, which is
 measured from the step's stored start, so a restart does not extend it.
@@ -178,7 +180,7 @@ public sealed class Warehouse : IWarehouse
 }
 ```
 
-With step 1's `Retry.none`, the first failure would end the step. The policy above retries it.
+With step 1's `Retry.once`, the first failure would end the step. The policy above retries it.
 [Step 7](when-a-step-fails.html) shows what a workflow does when a step fails for good.
 
 ## Run it

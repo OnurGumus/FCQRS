@@ -7,7 +7,7 @@ index: 6
 ---
 *)
 (*** hide ***)
-#r "nuget: FCQRS.Workflows, 7.7.0"
+#r "nuget: FCQRS.Workflows, 7.8.0"
 #load "../../samples/orders/6-charge-the-customer/fsharp/Account.fs"
 #load "../../samples/orders/6-charge-the-customer/fsharp/Order.fs"
 
@@ -191,7 +191,7 @@ file in the folder, so `Orders.csproj` does not change:
     <Compile Include="Account.fs" />
     <Compile Include="Order.fs" />
     <Compile Include="Program.fs" />
-    <PackageReference Include="FCQRS.Workflows" Version="7.7.0" />
+    <PackageReference Include="FCQRS.Workflows" Version="7.8.0" />
     <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3"
                       Version="3.0.2" />
     <PackageReference Include="SourceGear.sqlite3" Version="3.50.4.5" />
@@ -334,7 +334,7 @@ let definition
                     // stored, so a restart does not start the wait again.
                     do! sleep (TimeSpan.FromSeconds 2.0)
                     let! shipment =
-                        activity "ship" (Retry.times 3) (fun attempt ->
+                        activity "ship" callRetry (fun attempt ->
                             carrier.Ship(attempt.IdempotencyKey, reservation))
                     return finish "shipped" shipment
         })
@@ -349,9 +349,14 @@ public sealed class OrderWorkflow(
     IWarehouse warehouse, ICarrier carrier, AggregateFactory accounts)
     : Workflow<OrderRequest, OrderResult>("order")
 {
-    // Up to five attempts, 200 ms apart.
-    private static readonly RetryPolicy ReserveRetry = Retry.times(5)
-        .WithSchedule(RetrySchedules.Fixed(TimeSpan.FromMilliseconds(200)));
+    // Up to five attempts, 200 ms apart, each allowed ten seconds.
+    private static readonly RetryPolicy ReserveRetry =
+        Retry.times(5, TimeSpan.FromSeconds(10))
+            .WithSchedule(RetrySchedules.Fixed(TimeSpan.FromMilliseconds(200)));
+
+    // Up to three attempts, each allowed ten seconds.
+    private static readonly RetryPolicy CallRetry =
+        Retry.times(3, TimeSpan.FromSeconds(10));
 
     public override async WorkflowTask<OrderResult> Run(
         WorkflowContext ctx, OrderRequest request)
@@ -399,7 +404,7 @@ public sealed class OrderWorkflow(
         // Packing takes two seconds. The timer's due time is stored, so
         // a restart does not start the wait again.
         await ctx.Sleep(TimeSpan.FromSeconds(2));
-        var shipment = await ctx.Activity("ship", Retry.times(3),
+        var shipment = await ctx.Activity("ship", CallRetry,
             attempt => carrier.Ship(attempt.IdempotencyKey, reservation));
         return Finish("shipped", shipment);
     }

@@ -7,7 +7,7 @@ index: 7
 ---
 *)
 (*** hide ***)
-#r "nuget: FCQRS.Workflows, 7.7.0"
+#r "nuget: FCQRS.Workflows, 7.8.0"
 #load "../../samples/orders/7-when-a-step-fails/fsharp/Account.fs"
 #load "../../samples/orders/7-when-a-step-fails/fsharp/Order.fs"
 
@@ -132,7 +132,7 @@ let definition
                         // is stored, so a restart does not start the wait.
                         do! sleep (TimeSpan.FromSeconds 2.0)
                         let! shipment =
-                            activity "ship" (Retry.times 3) (fun attempt ->
+                            activity "ship" callRetry (fun attempt ->
                                 carrier.Ship(
                                     attempt.IdempotencyKey,
                                     reservation,
@@ -162,9 +162,14 @@ public sealed class OrderWorkflow(
     IWarehouse warehouse, ICarrier carrier, AggregateFactory accounts)
     : Workflow<OrderRequest, OrderResult>("order")
 {
-    // Up to five attempts, 200 ms apart.
-    private static readonly RetryPolicy ReserveRetry = Retry.times(5)
-        .WithSchedule(RetrySchedules.Fixed(TimeSpan.FromMilliseconds(200)));
+    // Up to five attempts, 200 ms apart, each allowed ten seconds.
+    private static readonly RetryPolicy ReserveRetry =
+        Retry.times(5, TimeSpan.FromSeconds(10))
+            .WithSchedule(RetrySchedules.Fixed(TimeSpan.FromMilliseconds(200)));
+
+    // Up to three attempts, each allowed ten seconds.
+    private static readonly RetryPolicy CallRetry =
+        Retry.times(3, TimeSpan.FromSeconds(10));
 
     public override async WorkflowTask<OrderResult> Run(
         WorkflowContext ctx, OrderRequest request)
@@ -229,7 +234,7 @@ public sealed class OrderWorkflow(
         // Packing takes two seconds. The timer's due time is stored, so
         // a restart does not start the wait again.
         await ctx.Sleep(TimeSpan.FromSeconds(2));
-        var shipment = await ctx.Activity("ship", Retry.times(3),
+        var shipment = await ctx.Activity("ship", CallRetry,
             attempt => carrier.Ship(
                 attempt.IdempotencyKey, reservation, request.Item));
         return Finish("shipped", shipment);

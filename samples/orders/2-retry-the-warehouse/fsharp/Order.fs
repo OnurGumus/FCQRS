@@ -27,9 +27,9 @@ type IWarehouse =
 // docs:end
 
 // docs:retry
-// Up to five attempts, 200 ms apart.
+// Up to five attempts, 200 ms apart, each allowed ten seconds.
 let reserveRetry = {
-    Retry.times 5 with
+    Retry.times 5 (TimeSpan.FromSeconds 10.0) with
         Schedule = FixedInterval(TimeSpan.FromMilliseconds 200.0)
 }
 // docs:end

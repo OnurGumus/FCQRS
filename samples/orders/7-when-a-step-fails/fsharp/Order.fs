@@ -41,11 +41,14 @@ type ICarrier =
 // docs:end
 
 // docs:retry
-// Up to five attempts, 200 ms apart.
+// Up to five attempts, 200 ms apart, each allowed ten seconds.
 let reserveRetry = {
-    Retry.times 5 with
+    Retry.times 5 (TimeSpan.FromSeconds 10.0) with
         Schedule = FixedInterval(TimeSpan.FromMilliseconds 200.0)
 }
+
+// Up to three attempts, each allowed ten seconds.
+let callRetry = Retry.times 3 (TimeSpan.FromSeconds 10.0)
 // docs:end
 
 // docs:workflow
@@ -113,7 +116,7 @@ let definition
                         // is stored, so a restart does not start the wait.
                         do! sleep (TimeSpan.FromSeconds 2.0)
                         let! shipment =
-                            activity "ship" (Retry.times 3) (fun attempt ->
+                            activity "ship" callRetry (fun attempt ->
                                 carrier.Ship(
                                     attempt.IdempotencyKey,
                                     reservation,

@@ -30,7 +30,10 @@ public sealed class OrderWorkflow(IWarehouse warehouse)
         // An activity is the only place the body calls another system.
         // FCQRS stores its result. "reserve-stock" is stored too and
         // must not change while orders are running.
-        var reservation = await ctx.Activity("reserve-stock", Retry.none,
+        // One attempt. It fails if the warehouse has not answered within
+        // ten seconds.
+        var policy = Retry.once(TimeSpan.FromSeconds(10));
+        var reservation = await ctx.Activity("reserve-stock", policy,
             attempt => warehouse.Reserve(
                 attempt.IdempotencyKey, request.Item, request.Quantity));
         return new OrderResult(reservation);

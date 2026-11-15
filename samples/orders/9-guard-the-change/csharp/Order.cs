@@ -43,9 +43,14 @@ public sealed class OrderWorkflow(
     IFraudCheck fraud)
     : Workflow<OrderRequest, OrderResult>("order")
 {
-    // Up to five attempts, 200 ms apart.
-    private static readonly RetryPolicy ReserveRetry = Retry.times(5)
-        .WithSchedule(RetrySchedules.Fixed(TimeSpan.FromMilliseconds(200)));
+    // Up to five attempts, 200 ms apart, each allowed ten seconds.
+    private static readonly RetryPolicy ReserveRetry =
+        Retry.times(5, TimeSpan.FromSeconds(10))
+            .WithSchedule(RetrySchedules.Fixed(TimeSpan.FromMilliseconds(200)));
+
+    // Up to three attempts, each allowed ten seconds.
+    private static readonly RetryPolicy CallRetry =
+        Retry.times(3, TimeSpan.FromSeconds(10));
 
     public override async WorkflowTask<OrderResult> Run(
         WorkflowContext ctx, OrderRequest request)
@@ -90,7 +95,7 @@ public sealed class OrderWorkflow(
         // fails the fraud check is not approved.
         var change = await ctx.Version("fraud-check", 2);
         var passed = change < 2
-            || await ctx.Activity("check-fraud", Retry.times(3),
+            || await ctx.Activity("check-fraud", CallRetry,
                 attempt => fraud.Check(
                     attempt.IdempotencyKey, request.Customer, total));
         // An order over 1000 waits for a person to approve it, for at
@@ -120,7 +125,7 @@ public sealed class OrderWorkflow(
         // Packing takes two seconds. The timer's due time is stored, so
         // a restart does not start the wait again.
         await ctx.Sleep(TimeSpan.FromSeconds(2));
-        var shipment = await ctx.Activity("ship", Retry.times(3),
+        var shipment = await ctx.Activity("ship", CallRetry,
             attempt => carrier.Ship(
                 attempt.IdempotencyKey, reservation, request.Item));
         return Finish("shipped", shipment);

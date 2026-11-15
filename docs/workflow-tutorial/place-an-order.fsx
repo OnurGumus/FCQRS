@@ -7,7 +7,7 @@ index: 1
 ---
 *)
 (*** hide ***)
-#r "nuget: FCQRS.Workflows, 7.7.0"
+#r "nuget: FCQRS.Workflows, 7.8.0"
 #load "../../samples/orders/1-place-an-order/fsharp/Order.fs"
 
 (**
@@ -46,7 +46,7 @@ FCQRS.Workflows, which brings in FCQRS, and SQLite, where the journal is stored.
   <ItemGroup>
     <Compile Include="Order.fs" />
     <Compile Include="Program.fs" />
-    <PackageReference Include="FCQRS.Workflows" Version="7.7.0" />
+    <PackageReference Include="FCQRS.Workflows" Version="7.8.0" />
     <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3"
                       Version="3.0.2" />
     <PackageReference Include="SourceGear.sqlite3" Version="3.50.4.5" />
@@ -66,7 +66,7 @@ FCQRS.Workflows, which brings in FCQRS, and SQLite, where the journal is stored.
     <Nullable>enable</Nullable>
   </PropertyGroup>
   <ItemGroup>
-    <PackageReference Include="FCQRS.Workflows" Version="7.7.0" />
+    <PackageReference Include="FCQRS.Workflows" Version="7.8.0" />
     <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3"
                       Version="3.0.2" />
     <PackageReference Include="SourceGear.sqlite3" Version="3.50.4.5" />
@@ -97,6 +97,7 @@ The program's code goes in two files: `Order.fs` (`Order.cs` in C#) for the work
 ```fsharp
 module Order
 
+open System
 open System.Threading.Tasks
 open FCQRS.Workflows
 
@@ -168,8 +169,11 @@ let definition (warehouse: IWarehouse) =
             // An activity is the only place the body calls another system.
             // FCQRS stores its result. "reserve-stock" is stored too and
             // must not change while orders are running.
+            // One attempt. It fails if the warehouse has not answered within
+            // ten seconds.
+            let policy = Retry.once (TimeSpan.FromSeconds 10.0)
             let! reservation =
-                activity "reserve-stock" Retry.none (fun attempt ->
+                activity "reserve-stock" policy (fun attempt ->
                     warehouse.Reserve(
                         attempt.IdempotencyKey, request.Item, request.Quantity))
             return { Reservation = reservation }
@@ -190,7 +194,10 @@ public sealed class OrderWorkflow(IWarehouse warehouse)
         // An activity is the only place the body calls another system.
         // FCQRS stores its result. "reserve-stock" is stored too and
         // must not change while orders are running.
-        var reservation = await ctx.Activity("reserve-stock", Retry.none,
+        // One attempt. It fails if the warehouse has not answered within
+        // ten seconds.
+        var policy = Retry.once(TimeSpan.FromSeconds(10));
+        var reservation = await ctx.Activity("reserve-stock", policy,
             attempt => warehouse.Reserve(
                 attempt.IdempotencyKey, request.Item, request.Quantity));
         return new OrderResult(reservation);
@@ -199,8 +206,9 @@ public sealed class OrderWorkflow(IWarehouse warehouse)
 ```
 
 The function that receives the request is the workflow's **body**. Its one step is an
-**activity**: a call to another system, named `reserve-stock`. `Retry.none` makes one attempt; step
-2 adds retries.
+**activity**: a call to another system, named `reserve-stock`. `Retry.once` makes one attempt and
+fails it if the warehouse has not answered within ten seconds. Every activity names such a
+limit, so a call that never returns cannot hold the order forever. Step 2 adds retries.
 
 In F#, the body is a `workflow { }` block, and `let!` waits for a step. In C#, the body is the
 `Run` method, and `await` on a `ctx` method waits for a step.

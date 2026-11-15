@@ -37,7 +37,8 @@ module Order =
     type IFraudCheck =
         abstract Check:
             key: string * customer: string * total: decimal -> Task<bool>
-    let reserveRetry = Retry.times 5
+    let reserveRetry = Retry.times 5 (System.TimeSpan.FromSeconds 10.0)
+    let callRetry = Retry.times 3 (System.TimeSpan.FromSeconds 10.0)
     // snippet: 1
 open System
 open System.Collections.Generic

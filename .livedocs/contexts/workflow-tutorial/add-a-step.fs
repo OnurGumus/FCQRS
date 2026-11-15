@@ -21,7 +21,8 @@ module Order =
         PlacedAt: DateTime
     }
     // snippet: 1
-    let reserveRetry = Retry.times 5
+    let reserveRetry = Retry.times 5 (System.TimeSpan.FromSeconds 10.0)
+    let callRetry = Retry.times 3 (System.TimeSpan.FromSeconds 10.0)
     // snippet: 2
 open System
 open System.Collections.Generic
