@@ -53,7 +53,8 @@ type WorkflowFlow =
 
     /// Starts one workflow per element and emits the ID with the start's answer. An element is
     /// emitted once its start is stored, and at most `parallelism` starts are in flight, so a
-    /// slow journal slows the source down. Output keeps the input's order.
+    /// slow journal slows the source down. Output keeps the input's order. The started workflows
+    /// run on after their element is emitted, so `parallelism` does not limit how many run.
     static member start
         (handle: WorkflowHandle<'Input, 'Result>)
         (idOf: 'Input -> string)
@@ -73,9 +74,11 @@ type WorkflowFlow =
 
     /// Starts one workflow per element and emits the ID with the workflow's outcome, in the
     /// input's order. A faulted or cancelled workflow is an element like a finished one. At most
-    /// `parallelism` elements are between their start and their outcome, so that many workflows
-    /// run at once. An element whose workflow does not end within `timeout` fails the stream with
-    /// a `TimeoutException`; the workflow itself carries on.
+    /// `parallelism` elements are between their start and their outcome, so the stream keeps at
+    /// most that many workflows between start and outcome. It does not limit other workflows of
+    /// the same definition: those that resumed after a restart, and those whose timeout failed the
+    /// stream, run regardless. An element whose workflow does not end within `timeout` fails the
+    /// stream with a `TimeoutException`; the workflow itself carries on.
     static member run
         (handle: WorkflowHandle<'Input, 'Result>)
         (idOf: 'Input -> string)
@@ -98,7 +101,8 @@ type WorkflowFlow =
     /// Starts one workflow per element and emits the ID with true when this element started the
     /// workflow, and false when a workflow with this ID already existed. An element is emitted
     /// once its start is stored, and at most `parallelism` starts are in flight, so a slow journal
-    /// slows the source down. Output keeps the input's order.
+    /// slows the source down. Output keeps the input's order. The started workflows run on after
+    /// their element is emitted, so `parallelism` does not limit how many run.
     static member Start
         (client: IWorkflowClient<'Input, 'Result>, idOf: Func<'Input, string>, parallelism: int)
         : Flow<'Input, struct (string * bool), NotUsed> =
@@ -116,8 +120,10 @@ type WorkflowFlow =
 
     /// Starts one workflow per element and emits how it ended, in the input's order. A faulted
     /// or cancelled workflow is an element like a finished one, not a failure of the stream. At
-    /// most `parallelism` elements are between their start and their outcome, so that many
-    /// workflows run at once. An element whose workflow does not end within `timeout` fails the
+    /// most `parallelism` elements are between their start and their outcome, so the stream keeps
+    /// at most that many workflows between start and outcome. It does not limit other workflows of
+    /// the same definition: those that resumed after a restart, and those whose timeout failed the
+    /// stream, run regardless. An element whose workflow does not end within `timeout` fails the
     /// stream with a `TimeoutException`; the workflow itself carries on.
     static member Run
         (client: IWorkflowClient<'Input, 'Result>, idOf: Func<'Input, string>, parallelism: int, timeout: TimeSpan)

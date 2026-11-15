@@ -57,6 +57,14 @@ and `handle.Start "order-17" "ABC"` starts the instance with the ID `order-17`. 
 `WorkflowHost.Register(actor, new Enrich())` returns a client with
 `client.StartAsync("order-17", "ABC")`. No aggregate has to store an event first.
 
+`handle.Result "order-17" timeout` waits for the instance to end and returns a `WorkflowOutcome`:
+`Finished` with the body's value, `Faulted` with the stored failure, or `Cancelled`. The C# client
+has two ways to wait. `client.ResultAsync("order-17", timeout)` returns the body's value and throws
+`WorkflowFaultedException` or `WorkflowCancelledException` when the workflow faulted or was
+cancelled. `client.OutcomeAsync("order-17", timeout)` returns the `WorkflowOutcome` instead and
+throws neither. All three throw `TimeoutException` when the timeout passes first, and
+`InvalidOperationException` when no workflow with that ID was started.
+
 Most of the later examples are parts of a workflow. In F# each is a `workflow { }` value, and in C# a method
 that returns `WorkflowTask<T>`. The prose names the F# steps; the
 [table at the end](#C-equivalents) gives each one's C# name.
@@ -956,6 +964,7 @@ A C# workflow derives from `Workflow<TInput, TResult>` and awaits steps from its
 | `sendWithFilter policy filter` | `ctx.Send<TCommand, TEvent>(policy, factory, id, command, filter)` |
 | `version` | `ctx.Version(changeId, latest)` |
 | `try ... with` for cleanup | `try`/`catch`, or `await` in a `finally` block |
+| `handle.Result id timeout` | `client.OutcomeAsync(id, timeout)`, or `client.ResultAsync(id, timeout)`, which throws for a faulted or cancelled workflow |
 | `WorkflowFlow.run` | `WorkflowFlow.Run(client, idOf, parallelism, timeout)` |
 | `WorkflowFlow.start` | `WorkflowFlow.Start(client, idOf, parallelism)` |
 | `Schedules.register api [ ScheduledWorkflow.ofHandle handle ]` | `ScheduleHost.Register(actor, ScheduleHost.Workflow(client))` |
