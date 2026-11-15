@@ -1028,12 +1028,31 @@ let private indexCaughtUp (node: Node) =
 /// An actor system with the schedule aggregate and no dispatcher, so the schedule commands it sends
 /// are stored while no index reads them. Returns the system and a function that sends a command and
 /// returns the stored reply.
+type private WarningLogger(category: string, sink: ConcurrentQueue<string>) =
+    interface ILogger with
+        member _.BeginScope<'TState when 'TState: not null>(_state: 'TState) : IDisposable | null = null
+        member _.IsEnabled(level) = level >= LogLevel.Warning
+        member _.Log<'TState>(level, _eventId, state: 'TState, error: exn | null, formatter: Func<'TState, exn | null, string>) =
+            if level >= LogLevel.Warning then
+                let time = DateTime.UtcNow.ToString("HH:mm:ss.fff")
+                let cause = match error with | null -> "" | e -> $" ({e.GetType().Name}: {e.Message})"
+                sink.Enqueue($"{time} {level} {category} | {formatter.Invoke(state, error)}{cause}")
+
+type private WarningLoggerFactory(sink: ConcurrentQueue<string>) =
+    interface ILoggerFactory with
+        member _.CreateLogger(category: string) = WarningLogger(category, sink) :> ILogger
+        member _.AddProvider(_provider) = ()
+        member _.Dispose() = ()
+
 let private bareSchedules (connection: FCQRS.Actor.Connection) (name: string) =
     let configuration =
         VerifySerialization.configuration()
             .AddInMemoryCollection([ KeyValuePair<string, string | null>("config:akka:scheduler:implementation", "FCQRS.Scheduler+ShiftedScheduler, FCQRS") ])
             .Build()
-    let api = Fcqrs.actor configuration nullLoggers (Some connection) name
+    // Warnings and errors only. A send that gets no reply reports them: one did so once on CI, in
+    // storeHistory, and nothing else said why.
+    let warnings = ConcurrentQueue<string>()
+    let api = Fcqrs.actor configuration (new WarningLoggerFactory(warnings)) (Some connection) name
     let aggregate =
         Fcqrs.aggregate
             api
@@ -1044,8 +1063,18 @@ let private bareSchedules (connection: FCQRS.Actor.Connection) (name: string) =
               Snapshots = SnapshotPolicy.Default
               Passivation = PassivationPolicy.Default }
     Fcqrs.wireSagaStarters api []
+    let mutable sent = 0
     let send (id: string) (command: ScheduleCommand) =
-        let reply = sync (aggregate.Send (Fcqrs.newCid ()) (Fcqrs.aggregateId id) command (fun _ -> true))
+        sent <- sent + 1
+        let started = Diagnostics.Stopwatch.StartNew()
+        let reply =
+            try
+                // Longer than the 30-second command timeout, so the subscription's own timeout and
+                // its warning come first.
+                Async.RunSynchronously(aggregate.Send (Fcqrs.newCid ()) (Fcqrs.aggregateId id) command (fun _ -> true), 40000)
+            with error ->
+                let logged = String.Join("\n", warnings)
+                failtest $"{id}: send {sent}, {command}, failed after {started.Elapsed} with {error.GetType().Name}: {error.Message}\nWarnings and errors logged:\n{logged}"
         match reply.EventDetails with
         | ScheduleEvent.Refused reason -> failtest $"{id}: {command} was refused: {reason}"
         | event -> event
