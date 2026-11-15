@@ -143,8 +143,10 @@ module internal WorkflowActor =
 
         let history = History()
         let running = Dictionary<string, RunningStep>()
-        let timers = Dictionary<string, ResizeArray<ICancelable>>()
-        let waiters = ResizeArray<IActorRef>()
+        /// The timers armed for each step, by step path and by the kind of message they send.
+        let timers = Dictionary<string, Dictionary<Type, ICancelable>>()
+        /// The askers waiting for this instance's result, each with the time its wait ends.
+        let waiters = ResizeArray<struct (IActorRef * DateTime)>()
         let mutable started: (Payload * string option) option = None
         let mutable final: WorkflowRecord option = None
         let mutable parked: string option = None
@@ -319,11 +321,20 @@ module internal WorkflowActor =
                 match timers.TryGetValue path with
                 | true, ofStep -> ofStep
                 | _ ->
-                    let ofStep = ResizeArray<ICancelable>()
+                    let ofStep = Dictionary<Type, ICancelable>()
                     timers[path] <- ofStep
                     ofStep
 
-            ofStep.Add(scheduler.ScheduleTellOnceCancelable(delay, self, message, self))
+            // A step arms a timer of a kind again only after the one before it fired, so the new
+            // one replaces it. A step that retries for hours, such as a child wait that asks
+            // again each minute, then keeps one retry timer and not one per retry.
+            let kind = message.GetType()
+
+            match ofStep.TryGetValue kind with
+            | true, previous -> previous.Cancel()
+            | _ -> ()
+
+            ofStep[kind] <- scheduler.ScheduleTellOnceCancelable(delay, self, message, self)
 
         /// Cancels the timers of a step that is over.
         let forget (path: string) =
@@ -331,7 +342,7 @@ module internal WorkflowActor =
             | true, ofStep ->
                 timers.Remove path |> ignore
 
-                for timer in ofStep do
+                for timer in ofStep.Values do
                     timer.Cancel()
             | _ -> ()
 
@@ -716,8 +727,12 @@ module internal WorkflowActor =
 
                 match resultReply () with
                 | Some reply ->
-                    for waiter in waiters do
-                        waiter.Tell(reply, self)
+                    let now = clock ()
+
+                    // An asker whose wait has ended no longer listens.
+                    for struct (waiter, until) in waiters do
+                        if until > now then
+                            waiter.Tell(reply, self)
                 | None -> ()
 
                 waiters.Clear()
@@ -885,12 +900,28 @@ module internal WorkflowActor =
                         leaveWhenIdle ()
 
                     return! loop ()
-                | :? AwaitResult ->
+                | :? AwaitResult as request ->
                     match resultReply () with
                     | Some reply ->
                         mailbox.UntypedContext.Sender.Tell(reply, self)
                         leaveWhenIdle ()
-                    | None -> waiters.Add mailbox.UntypedContext.Sender
+                    | None ->
+                        let (AwaitResult wait) = request
+                        let now = clock ()
+                        // A parent that waits for this child asks again after each wait ends, and
+                        // a caller may poll. An asker whose wait has ended no longer listens, so
+                        // it is dropped here instead of piling up until this instance ends.
+                        waiters.RemoveAll(fun (struct (_, until)) -> until <= now) |> ignore
+                        let until = if wait < TimeSpan.Zero then DateTime.MaxValue else later now wait
+                        waiters.Add(struct (mailbox.UntypedContext.Sender, until))
+
+                    return! loop ()
+                | :? Inspect ->
+                    mailbox.UntypedContext.Sender.Tell(
+                        { Waiters = waiters.Count
+                          Timers = timers.Values |> Seq.sumBy (fun ofStep -> ofStep.Count) },
+                        self
+                    )
 
                     return! loop ()
                 | :? SendSignal as signal ->

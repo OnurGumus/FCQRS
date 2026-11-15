@@ -958,6 +958,46 @@ let private cancelParkedChildTest =
         finally
             deleteDb db
 
+/// What a workflow instance holds in memory.
+let private inspect (api: IActor) (workflow: string) (id: string) : Protocol.Inspection =
+    let envelope: Akkling.Cluster.Sharding.ShardEnvelope =
+        { ShardId = FCQRS.Common.DEFAULT_SHARD
+          EntityId = id
+          Message = Protocol.Inspect }
+    let region = Akka.Cluster.Sharding.ClusterSharding.Get(api.System).ShardRegion workflow
+    Akka.Actor.Futures.Ask<Protocol.Inspection>(region, box envelope, Nullable wait).Result
+
+let private awaitRoundsTest =
+    testCase "workflow: requests for a running child's result do not pile up on the child or the parent" <| fun _ ->
+        withSystem "WorkflowAwaitRounds" <| fun api ->
+            let waiter = Workflow.define "waiter" (fun (value: int) -> workflow {
+                let! (answer: int) = waitSignal "go"
+                return value + answer })
+            let boss = Workflow.define "boss" (fun (value: int) -> workflow {
+                let! result = child waiter value
+                return result * 10 })
+            let waiters = Workflows.register api waiter
+            let flow = Workflows.register api boss
+            let previous = ChildSteps.resultTimeout
+            // Each request for the child's result waits 100 ms, and the parent asks again a second
+            // after one expires.
+            ChildSteps.resultTimeout <- TimeSpan.FromMilliseconds 100.0
+            try
+                sync (flow.Start "a1" 1) |> ignore
+                eventually "the parent waits for its child" (fun () -> sync (flow.Status "a1") = WorkflowStatus.Running [ "1 waiter" ])
+                // A caller that polls for the result with a short wait asks the same way.
+                for _ in 1 .. 5 do
+                    Expect.throwsT<TimeoutException> (fun () -> sync (waiters.Result "a1:0" (TimeSpan.FromMilliseconds 100.0)) |> ignore) "the child has no result yet"
+                Thread.Sleep 6000
+                let child = inspect api "waiter" "a1:0"
+                Expect.isLessThanOrEqual child.Waiters 2 $"the child keeps only the requests that still wait, found {child.Waiters}"
+                let parent = inspect api "boss" "a1"
+                Expect.isLessThanOrEqual parent.Timers 2 $"the parent keeps only the timers it has armed, found {parent.Timers}"
+                sync (Workflows.signal waiters "a1:0" "go" 3)
+                Expect.equal (sync (flow.Result "a1" wait)) (WorkflowOutcome.Finished 40) "the parent got the child's result"
+            finally
+                ChildSteps.resultTimeout <- previous
+
 let private parkingTest =
     testCase "workflow: an instance whose journal does not match its code is parked, and resumes with code that matches" <| fun _ ->
         let db = newDb ()
@@ -1780,7 +1820,7 @@ let tests =
             [ startTest; faultTest; retryTest; shortTimerTest; restartTest; timerTest; tracingTest; startRaceTest; concurrentStartTest
               signalTest; signalRestartTest; commandTest; parallelCommandTest; commandRestartTest; commandRecoveryTest; unknownOutcomeTest
               cancelTest; childTest; childRestartTest; cancelChildStartTest; cancelChildStartRestartTest; cancelChildRecoveryTest
-              cancelParkedChildTest; parkingTest; removedStepsParkTest; streamTest; metricsTest
+              cancelParkedChildTest; awaitRoundsTest; parkingTest; removedStepsParkTest; streamTest; metricsTest
               lateCommandTest; cancelParkedTest; childResultTest; unreadableResultTest; idleTest; manifestTest
               sagaStartTest; sagaRepeatTest; sagaRepeatStoredTest; sagaSignalTest; sagaEventReplyTest
               sagaFilterTest; sagaFilterMissedTest; sagaFilterOutcomeTest; effectReplyTest; lateReplyTest

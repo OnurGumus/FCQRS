@@ -78,8 +78,10 @@ module internal Protocol =
 
         interface ISerializable
 
+    /// Asks for the instance's result, given once it ends. The asker waits for the reply at most
+    /// `wait`, and the instance drops the request after that.
     type AwaitResult =
-        | AwaitResult
+        | AwaitResult of wait: System.TimeSpan
 
         interface ISerializable
 
@@ -112,6 +114,20 @@ module internal Protocol =
     type CancelReply =
         | CancelAccepted
         | CancelRefused of WorkflowStatus
+
+        interface ISerializable
+
+    /// Asks an instance what it holds in memory. Tests use it.
+    type Inspect =
+        | Inspect
+
+        interface ISerializable
+
+    type Inspection =
+        { /// Result requests that wait for the instance to end.
+          Waiters: int
+          /// Timers armed for the instance's steps.
+          Timers: int }
 
         interface ISerializable
 

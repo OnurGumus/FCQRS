@@ -18,6 +18,13 @@
   field for these steps, so a rollback reads the new records. A step stored before 7.7.3 holds no
   ID: recovery then cancels the child that a start at that step would have made, which is right for
   a start and reaches no child for an `awaitChild`.
+- Waiting for a child no longer leaves a request on the child each minute. `awaitChild` asks the
+  child for its result, waits a minute, and asks again. The child kept every request until it
+  ended, so a child awaited for a day held about 1,400 of them and then answered each one into dead
+  letters, and the parent kept one timer for each retry. A request now holds how long its asker
+  waits: the child drops a request whose wait has ended when the next one arrives, and does not
+  answer it when it ends. A caller that polls `handle.Result` with a short timeout leaves no requests
+  behind either. A step keeps at most one timer of each kind.
 - The package needs FCQRS core 7.2.3.
 
 ## 7.7.2 (FCQRS.Workflows)

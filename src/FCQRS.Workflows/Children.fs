@@ -12,8 +12,9 @@ open FCQRS.Workflows.Protocol
 module ChildSteps =
 
     let private requestTimeout = TimeSpan.FromSeconds 30.0
-    /// How long one request for a child's result waits before the parent asks again.
-    let private resultTimeout = TimeSpan.FromMinutes 1.0
+    /// How long one request for a child's result waits before the parent asks again. Tests
+    /// shorten it.
+    let mutable internal resultTimeout = TimeSpan.FromMinutes 1.0
 
     /// How many attempts wait for the child's workflow to be registered. A parent's running
     /// instances resume as soon as the parent is registered, which can be before its children are.
@@ -110,8 +111,10 @@ module ChildSteps =
     let awaitChild (handle: ChildHandle<'Result>) : Workflow<'Result> =
         let run (attempt: AttemptEnv) : Task<objnull> =
             task {
+                let timeout = resultTimeout
+
                 let! reply =
-                    (regionOf attempt.Api handle.Workflow attempt.Context.Attempt).Ask<obj>(envelope handle.Id AwaitResult, resultTimeout, attempt.Context.Cancellation)
+                    (regionOf attempt.Api handle.Workflow attempt.Context.Attempt).Ask<obj>(envelope handle.Id (AwaitResult timeout), timeout, attempt.Context.Cancellation)
 
                 match reply with
                 | :? ResultReply as reply ->

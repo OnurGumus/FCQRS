@@ -133,7 +133,7 @@ module Workflows =
           Result =
             fun id timeout ->
                 async {
-                    let! reply = ask id AwaitResult timeout
+                    let! reply = ask id (AwaitResult timeout) timeout
 
                     match reply with
                     | :? ResultReply as reply ->
