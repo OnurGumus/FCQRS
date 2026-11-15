@@ -57,6 +57,10 @@ Good prose makes the example easier to reason about. It does not narrate the tea
 - `docs/concepts/` explains the underlying models and boundaries.
 - `docs/how-to/` provides focused task instructions.
 - `docs/configuration.md` is the runtime configuration reference.
+- `docs/schedules-reference.md` is the schedules reference: the exceptions each call raises, ID
+  limits, dispatcher timing, the index table and its database rights, deploy cases, and persistent
+  contracts. The concept page's schedule section keeps the example, the guarantee, and the
+  behaviour rules, and links there for the rest.
 - XML comments in `src/FCQRS/` feed the generated API reference.
 
 Do not duplicate a full tutorial in the README or a concept page. Link readers to the canonical next

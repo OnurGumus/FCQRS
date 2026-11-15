@@ -622,32 +622,26 @@ static async WorkflowTask<int> Evolving(WorkflowContext ctx)
 }
 ```
 
-A new instance stores 2 and takes the new branch. An instance that had already passed this point
-gets 1 and keeps its old steps.
+A new instance stores the latest number, 2, and takes the new branch. An instance that had already
+passed this point gets 1 and keeps its old steps. "Had passed" means the journal stores a step after
+the `version` step, so put a `version` step before the steps it guards and before at least one step
+the old code already had: as the last step of a workflow, it gives 2 to every running instance.
 
-FCQRS decides "had passed" from the journal: a step after the `version` step is stored. Two cases
-follow from that:
+In a loop, an instance that is part-way through gets 1 for the iterations it has done and 2 for the
+ones it has not. For a large change, register the new code under a new workflow name and keep the
+old definition until its instances have ended.
 
-- Put a `version` step before the steps it guards and before at least one step the old code already
-  had. A `version` step added as the last step of a workflow gives 2 to every running instance.
-- In a loop, an instance that is part-way through gets 1 for the iterations it has done and 2 for
-  the ones it has not. For a large change, register the new code under a new workflow name
-  and keep the old definition until its instances have ended.
+The first argument, `"add-charge"`, names the change. FCQRS stores the number an instance got under
+that name and the step's position, so the name is a persistent contract:
 
-The first argument, `"add-charge"`, names the change. FCQRS stores the number an instance got
-under the step's position and that name, so the name decides which stored number a `version` step
-reads back:
-
-- One name can be used at different positions. A `version` step inside a loop or a recursive
-  workflow stores one marker per round, each at its own position.
-- Different names can share a position. Two `version` steps in a row, for two changes, keep two
-  markers.
-- The same name twice at one position is not allowed: both steps would read and write one marker.
-- A later change at the same point keeps the name and raises the number, for example
+- Use one name per position. A `version` step in a loop or a recursive workflow stores one marker
+  per round, each at its own position. Two `version` steps in a row, for two changes, need two
+  names: with one name, both would read and write one marker.
+- For a later change at the same point, keep the name and raise the number:
   `version "add-charge" 3`. An instance that stored 2 keeps 2.
-- The name must not change while instances that ran it exist. After a rename, an instance that
-  stored 2 finds no marker under the new name, has later steps stored, and so gets 1: it switches
-  to the old steps on its next replay.
+- Do not rename the change while instances that ran it exist. An instance that stored 2 finds no
+  marker under the new name, has later steps stored, and so gets 1: it switches to the old steps on
+  its next replay.
 
 An instance whose journal does not match its code is **parked**. It runs nothing, logs an error,
 reports `Parked` from `handle.Status`, and resumes when code that matches its journal is deployed.
@@ -712,19 +706,20 @@ public static class Reminders
 }
 ```
 
-`Schedules.register` registers the schedule aggregate and starts the actor system's one
-**dispatcher**, which may start only the workflows in its list. The list takes each workflow's
-handle, so the workflows are registered first. Each schedule is an instance of the aggregate
-`fcqrs-schedule`. Like every aggregate, it waits for the actor system's saga starters before it
-stores an event, and terminates the process when they are not wired within
-`akka.fcqrs.saga-start-timeout`. Call `Fcqrs.wireSagaStarters` once, after every aggregate and saga
-is registered, as the [aggregate guide](../how-to/define-an-aggregate.html) describes; an
-application without sagas passes an empty list. Until the starters are wired, `create`, `change`,
-`pause`, `resume`, and `delete` raise `InvalidOperationException` without sending anything, and the
-dispatcher fires nothing.
+`Schedules.register` registers the schedule aggregate, `fcqrs-schedule`, and starts the actor
+system's one **dispatcher**, which starts runs of the listed workflows only. The list takes each
+workflow's handle, so the workflows are registered first. Like every aggregate, a schedule stores no
+event until the saga starters are wired, so call `Fcqrs.wireSagaStarters` once, after every aggregate
+and saga is registered, as the [aggregate guide](../how-to/define-an-aggregate.html) describes.
 
-A C# host built with `AddFcqrs` wires the saga starters when the host starts. Register the
-schedules after that, for example from a singleton resolved once the host has started:
+`Schedules.createLatest` creates the schedule with the default catch-up policy, `CatchUp.Latest`.
+`Schedules.create` takes the policy as its last argument. In C#, `CreateAsync` without a policy uses
+`CatchUp.Latest`, and an overload takes one. A create returns once the schedule is stored, and a
+second create with the same content stores nothing, so a program can create its schedules at every
+start.
+
+A C# host built with `AddFcqrs` wires the saga starters when the host starts, so register the
+schedules from a singleton resolved after the host has started:
 
 ```csharp
 builder.Services.AddFcqrs(connectionString, "reminders");
@@ -741,148 +736,49 @@ await schedules.CreateAsync("ada-daily", "remind", "Drink water",
     ScheduleRule.NewDaily(new TimeOnly(9, 0), "Europe/Oslo"));
 ```
 
-`Schedules.createLatest` is `Schedules.create` with the catch-up policy `CatchUp.Latest`, the
-default, which [Due times, downtime, and changes](#Due-times-downtime-and-changes) explains.
-`Schedules.create` takes the policy as its last argument. In C#, `CreateAsync` without a policy uses
-`CatchUp.Latest`, and an overload takes the policy.
-
-`Schedules.create` returns once the schedule is stored. A second `create` with the same content
-stores nothing; the days of a weekly rule are sorted and their repeats removed first, so
-`[Thursday; Monday]` and `[Monday; Thursday]` are the same content. A different content for an
-existing ID raises `InvalidOperationException`, and so do a workflow the dispatcher does not list
-and an input whose type differs from the workflow's.
-
-`create` and `change` check their arguments before they send anything and raise
-`ArgumentException` for a rule that `ScheduleRule.validate` rejects: a time zone the system cannot
-read, a weekly rule without days or with a value that is not a day of the week, or an `Every`
-interval shorter than one second or longer than 366 days. A missing rule or policy raises
-`ArgumentNullException`. A schedule ID that is blank, contains `~`, or is longer than
-`Schedules.MaxIdLength` (200) characters raises `ArgumentException`. A run's persistence ID, the
-escaped workflow name, `/default-shard/`, and the escaped run ID, must fit in the journal's
-255-character column. Akka escapes both names as `Uri.EscapeDataString` does, and a run ID adds 35
-escaped characters to the schedule ID, so the escaped workflow name and the escaped schedule ID may
-take 205 characters together; more raises `ArgumentException`. A character outside ASCII escapes
-to 6 to 12 characters, so with the workflow `remind` an ID of 34 such characters is already too
-long.
-
 ### A run starts at least once per due time
 
-The dispatcher keeps an index of every schedule and sleeps until the earliest due time. For each
-schedule that is due, it takes three steps:
+The schedule aggregate decides each run, and the dispatcher starts it:
 
-1. It asks the schedule to fire for the due time. The schedule aggregate decides whether that due
-   time runs and stores the workflow and the input the run gets. The index is only a hint. The
-   schedule decides from its own state, so an index that has not seen a pause, change, or delete
-   cannot start a run for a paused or deleted schedule, or for a due time that a change removed.
-2. It starts the run. Its workflow ID is the schedule's ID, `@`, and the due time in UTC in ISO 8601
-   form, such as `ada-daily@2026-11-15T08:00:00.0000000Z`. Its input is
-   `ScheduledRun { Schedule; Due; Input }`, because a workflow body cannot read its own ID.
-3. It reports the start, and the schedule stores it.
+1. The dispatcher asks the schedule to fire for a due time. The schedule decides from its own state
+   whether that due time runs, and stores the workflow and the input the run gets. The dispatcher's
+   index of schedules is only a hint: an index that has not seen a pause, change, or delete cannot
+   start a run for a paused or deleted schedule, or for a due time that a change removed.
+2. The dispatcher starts the run. Its workflow ID is `<schedule>@<due UTC>`: the schedule's ID, `@`,
+   and the due time in UTC in ISO 8601 form, such as `ada-daily@2026-11-15T08:00:00.0000000Z`. Its
+   input is `ScheduledRun { Schedule; Due; Input }`, because a workflow body cannot read its own ID.
+3. The dispatcher reports the start, and the schedule stores it.
 
-The schedule decides before the run starts, so a pause stored before step 1 stops the run. A crash
-after step 1 leaves a decided run with no reported start. After the restart the dispatcher starts
-it again with the same ID, and a second start of an existing workflow stores nothing. A run
-therefore starts at least once per accepted due time, and one workflow instance serves it. A run
-whose stored input its workflow cannot read never starts, as
-[Due times, downtime, and changes](#Due-times-downtime-and-changes) describes.
-
-A run is an ordinary workflow instance. A run that faults ends only that instance, and the schedule
-goes on. A run that is still going at the next due time runs alongside the next one.
+A pause stored before step 1 stops the run. A crash after step 1 leaves a decided run with no
+reported start. After the restart the dispatcher starts it again with the same ID, and a second
+start of an existing workflow stores nothing. A run therefore starts at least once for each due time
+the schedule accepts, and one workflow instance serves it. A run is an ordinary workflow instance:
+one that faults ends only that instance, and one still going at the next due time runs alongside
+the next run.
 
 ### Due times, downtime, and changes
 
-- `ScheduleRule.Daily(time, zone)` and `ScheduleRule.Weekly(days, time, zone)` take a local time
-  and a time-zone ID. Due times are computed in the schedule's zone and stored in UTC, so Ada's
-  reminder runs at 09:00 Oslo time in winter (08:00 UTC) and in summer (07:00 UTC). A local time that does not exist on a day, because
-  clocks move forward, runs at the next local time that does. A local time that occurs twice,
-  because clocks move back, runs once, at the first occurrence.
-- `ScheduleRule.Every interval` counts from the creation or the last change.
-- `CatchUp` decides which missed due times run when the dispatcher could not fire on time, for
-  example while the process was stopped. `CatchUp.Latest`, the default, starts one run for the most
-  recent one. `CatchUp.All` starts one for each, oldest first, but at most for the 1000 most recent.
-  `CatchUp.None` starts none and waits for the next due time; a fire up to one minute late still
-  counts as on time.
-- `Schedules.pause` stops runs. `Schedules.resume` continues from the first due time after the
-  resume: a due time inside the pause never runs, whatever the catch-up policy.
-- `Schedules.change` replaces the workflow, input, rule, and catch-up policy. No due time at or
-  before the change runs.
-- `Schedules.delete` ends the schedule. Its ID cannot be used for a new schedule, so a run ID never
-  belongs to two schedules.
-- A run decided before a change, pause, or delete still starts, on the workflow and with the input
-  stored when it was decided.
-- A fire more than one second before its due time is refused, so a fault in the dispatcher cannot
-  start a run more than a second early.
+`ScheduleRule.Daily(time, zone)` and `ScheduleRule.Weekly(days, time, zone)` take a local time and a
+time-zone ID. Due times are computed in the zone and stored in UTC, so Ada's reminder runs at 09:00
+Oslo time in winter (08:00 UTC) and in summer (07:00 UTC). A local time that a clock change skips
+runs at the next local time that exists, and one that occurs twice runs once, at the first
+occurrence. `ScheduleRule.Every interval` counts from the creation or the last change.
 
-A deploy can stop listing a workflow that stored schedules name. The dispatcher then sends no fire
-for those schedules, logs an error at each due time, and waits. When a later start lists the
-workflow again, the catch-up policy decides which missed due times run. A decided run whose workflow
-is not listed waits the same way.
+A due time is missed when the dispatcher could not fire on time, for example while the process was
+stopped. The catch-up policy decides which missed due times run:
 
-A deploy can also change the input type of a listed workflow, so that the input a decided run
-stored no longer reads as the workflow's input: the stored JSON is a string and the workflow now
-takes an `int`, for example. With this code, reading it again would fail the same way, so the
-dispatcher does not try again; rolling the deploy back afterwards does not bring the run back. It logs one error that names the schedule, the due time, the workflow, and the
-exception, reports the run's start to the schedule, and the schedule goes on to its next due time.
-The run for that due time is lost, and the error is the only signal. Later due times store the
-schedule's current input, so they fail the same way until `Schedules.change` gives the schedule an
-input the workflow reads. Keep the input's stored form readable, as for any persistent contract.
+| Case | What runs |
+| --- | --- |
+| Missed due times, `CatchUp.Latest` (the default) | One run, for the most recent |
+| Missed due times, `CatchUp.All` | One run for each, oldest first, at most for the 1000 most recent |
+| Missed due times, `CatchUp.None` | None; the schedule waits for the next due time. A fire up to one minute late still counts as on time |
+| `Schedules.pause`, then `Schedules.resume` | Nothing during the pause. Runs continue from the first due time after the resume: a due time inside the pause never runs, whatever the policy |
+| `Schedules.change` | The new workflow, input, rule, and policy. No due time at or before the change runs |
+| `Schedules.delete` | Nothing more. The ID cannot be used for a new schedule, so a run ID never belongs to two schedules |
+| A run decided before a change, pause, or delete | The run still starts, on the workflow and with the input stored when it was decided |
 
-`Schedules.state` reads the dispatcher's index, not the aggregate. The index follows the schedule's
-events through a projection, so it lags by one projection pass: a `pause` that has just returned may
-not show yet. While fewer than 16 starts are running, the dispatcher wakes at least every
-`akka.fcqrs.schedule-check-interval`, one minute by default, so a clock change or a missed timer
-delays a run by at most that long. While 16 are running, it reads nothing and waits for one of them
-to end. No other run could start before then, but the error for a schedule whose workflow is not
-registered is logged when a start ends, not at its due time. A run whose start fails, or hangs until
-its ask times out, is tried again after the shorter of the check interval and five seconds, counted
-from the failure. The dispatcher does not wait for it, so it delays no other schedule while fewer
-than 16 starts hang at once. The [configuration reference](../configuration.html) lists the setting.
-
-A projection without entity names reads the schedule aggregate's events too, as
-`Event<ScheduleEvent>`. A handler given to `Fcqrs.projection` that raises for an event it does not
-know, such as a catch-all `failwith`, terminates the process. Let such a handler ignore other events,
-or name the entities it reads, as [Add a projection](../how-to/add-a-projection.html#Read-only-some-entities)
-shows.
-
-### The index is stored in the journal's database
-
-The dispatcher's projection, `fcqrs-schedule-index`, keeps the index in the table
-`fcqrs_schedule_index`, in the journal's database and schema. `Schedules.register` raises
-`ArgumentException` when `akka.persistence.journal.sql` and `akka.persistence.query.journal.sql`
-differ in connection string, schema, table, or columns, and registers nothing then. The table has one
-row per schedule. Each row is written in the transaction that
-stores the projection's read position for that schedule, so a row never runs ahead of or behind its
-position. At startup the dispatcher reads every row, then the schedule events stored after those
-positions, and fires nothing until it has read both. A restart therefore reads one row per schedule
-and the events written since the last stop, however many runs the schedules have had. A deleted
-schedule's row is removed once no run decided before the delete waits to start.
-
-The schedule events are the source of the index, and the table is derived data. When the table is
-missing, the dispatcher creates it, deletes the projection's read positions, and reads the whole
-schedule history to fill it. When a row cannot be read, for example a row written by a newer version
-of FCQRS.Workflows, the dispatcher logs a warning that names the schedule, deletes every row and the
-read positions, and does the same. After a rebuild the dispatcher can ask again for a run decided
-before the stop; the schedule answers with its first verdict, and a second start of the run stores
-nothing.
-
-The dispatcher creates three tables in the journal's schema on first use:
-`fcqrs_projection_progress` and `fcqrs_projection_progress_lock` for the read positions, and
-`fcqrs_schedule_index` for the rows. It then reads and writes them, so the journal's database user
-needs the right to create tables in that schema, and afterwards to read and write these three. To
-create the tables up front instead, match what FCQRS creates; the index table is
-`fcqrs_schedule_index (schedule_id TEXT NOT NULL PRIMARY KEY, entry TEXT NOT NULL)`. Without these
-rights the dispatcher cannot load the index: it logs an error every second and no schedule fires.
-FCQRS.Workflows 7.6.0 only read the journal.
-
-A journal written by FCQRS.Workflows 7.6.0 has no table, so the first start on it reads every
-schedule event once, two for each run, in one transaction per event, and no schedule fires until it
-has finished. On SQLite this took about 0.5 ms per schedule event, roughly 8 minutes per million
-events; PostgreSQL was not measured. Later starts read only new events. When the first start takes
-longer than the projection's `CatchUpTimeout` of 30 seconds, the dispatcher logs a warning and keeps
-waiting.
-
-The table's name, its columns `schedule_id` and `entry`, the text stored in `entry`, and the
-projection's name are persistent contracts. Nothing but the dispatcher should write to the table.
+A fire more than one second before its due time is refused, so a fault in the dispatcher cannot
+start a run more than a second early.
 
 ### What a schedule does not guarantee
 
@@ -891,18 +787,18 @@ projection's name are persistent contracts. Nothing but the dispatcher should wr
   stays the same across the attempts of one run. The external system must honour it.
 - **Precision below a second.** A run starts after its due time, once the dispatcher has woken, the
   schedule has stored its decision, and the run's start is stored.
-- **More than one node.** The dispatcher assumes it is the only one, and FCQRS runs on one node. A
-  second `Schedules.register` on one actor system raises `InvalidOperationException`.
+- **More than one node.** The dispatcher assumes it is the only one, and FCQRS runs on one node.
+- **A run whose stored input no longer reads.** After a deploy that changes a workflow's input type,
+  a decided run whose stored input the workflow cannot read is lost, and one logged error is the
+  only signal.
 
 The application chooses each user's time zone, keeps run steps safe to repeat, and treats the
 workflow's name and the input's stored form as persistent contracts: every schedule stores both.
-FCQRS stores the schedule aggregate's name `fcqrs-schedule`, `ScheduleEvent`, `ScheduleRule`,
-`CatchUp`, `ScheduleSpec`, the snapshot state `ScheduleState` and `AcceptedDue`, run IDs, every
-run's input, `ScheduledRun { Schedule; Due; Input }`, and the index table `fcqrs_schedule_index`
-with its rows, so these are persistent contracts too.
 
-[Run scheduled jobs](../how-to/run-scheduled-jobs.html) builds a nightly backup and a weekly invoice
-as runnable F# and C# programs.
+[Schedules reference](../schedules-reference.html) lists the exceptions each call raises, the ID
+limits, the dispatcher's timing, the index table and the database rights it needs, what a deploy
+can break, and every persistent contract. [Run scheduled jobs](../how-to/run-scheduled-jobs.html)
+builds a nightly backup and a weekly invoice as runnable F# and C# programs.
 
 ## Feed workflows from a stream
 

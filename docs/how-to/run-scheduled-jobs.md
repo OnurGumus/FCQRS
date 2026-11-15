@@ -496,7 +496,8 @@ store is in `jobs.db`:
 - `fcqrs_projection_progress` and `fcqrs_projection_progress_lock` hold that projection's read
   positions.
 
-The dispatcher creates the last three tables on first use. A start reads one row per schedule and
+The dispatcher creates the last three tables on first use, so the database user needs the rights
+that the [Schedules reference](../schedules-reference.html#Database-rights) lists. A start reads one row per schedule and
 the schedule events stored since the last stop, not the history of every run. Between due times the
 dispatcher sleeps until the earliest one. While fewer than 16 starts are running, it wakes at least
 every `akka.fcqrs.schedule-check-interval`, one minute by default, so a changed clock delays a run
@@ -524,7 +525,9 @@ with the machine. The catch-up policy decides what runs for the time it was off.
 - **A quick first start after upgrading from FCQRS.Workflows 7.6.0.** A journal written by 7.6.0 has
   no `fcqrs_schedule_index`. The first start on 7.7.0 reads every stored schedule event once to
   build it, two events per run, and starts no run until it has finished. On SQLite this took about
-  0.5 ms per event. Later starts read only the new events.
+  0.5 ms per event. Later starts read only the new events. The
+  [Schedules reference](../schedules-reference.html#First-start-after-FCQRS-Workflows-7-6-0) has
+  the details.
 
 ## What this recipe leaves to you
 
@@ -545,4 +548,6 @@ with the machine. The catch-up policy decides what runs for the time it was off.
 - A run that is still going at the next due time runs alongside the next one.
 
 Next: [Run workflows on a schedule](../concepts/workflows.html#Run-workflows-on-a-schedule) covers
-pausing, resuming, and changing schedules, and what the dispatcher's index guarantees.
+pausing, resuming, and changing schedules, and what the dispatcher's index guarantees. The
+[Schedules reference](../schedules-reference.html) lists the exceptions each call raises, the ID
+limits, the dispatcher's timing, and the index table.
