@@ -104,7 +104,7 @@ Each run is a workflow instance whose ID is the schedule's ID, `@`, and the due 
 position, so the backup due at 02:00 Oslo time on 16 November 2026 gets the key
 `backup/nightly-backup@2026-11-16T01:00:00.0000000Z/0`. The key differs every night. It stays the
 same for every attempt of one run and after a restart, so a store that honours it copies the folder
-once per night.
+once per run.
 
 The invoice uses a key of its own:
 
@@ -164,9 +164,9 @@ public sealed class InvoiceWorkflow(IBilling billing)
 }
 ```
 
-One due time has one run, and a second start of a run stores nothing, so a key built from the run
-would already stop a second invoice for the same due time. The week also covers two runs in one
-week. Changing the rule from Monday to Wednesday after Monday's run lets Wednesday's run start,
+A due time that runs has one run, and a second start of a run stores nothing, so a key built from
+the run would already stop a second invoice for the same due time. The week also covers two runs in
+one week. Changing the rule from Monday to Wednesday after Monday's run lets Wednesday's run start,
 because a change only stops the due times at or before it. With the week in the key, the billing
 system finds the invoice issued. The number is computed from `run.Due`, the due time the run serves,
 not the time it starts.
@@ -233,12 +233,16 @@ register the schedules there.
 ```fsharp
 // A create with the content of the stored schedule stores nothing, so the
 // program creates its schedules at every start.
+
+// After downtime, only the latest backup matters: CatchUp.Latest.
 Schedules.createLatest schedules "nightly-backup" "backup" "/srv/app/data"
     (ScheduleRule.Daily(TimeOnly(2, 0), zone))
 |> Async.RunSynchronously
 
-Schedules.createLatest schedules "weekly-invoice" "invoice" "Ada"
+// Every week must be invoiced: CatchUp.All runs each missed Monday.
+Schedules.create schedules "weekly-invoice" "invoice" "Ada"
     (ScheduleRule.Weekly([ DayOfWeek.Monday ], TimeOnly(8, 0), zone))
+    CatchUp.All
 |> Async.RunSynchronously
 ```
 
@@ -248,11 +252,15 @@ Schedules.createLatest schedules "weekly-invoice" "invoice" "Ada"
 ```csharp
 // A create with the content of the stored schedule stores nothing, so the
 // program creates its schedules at every start.
+
+// After downtime, only the latest backup matters: CatchUp.Latest.
 await schedules.CreateAsync("nightly-backup", "backup", "/srv/app/data",
     ScheduleRule.NewDaily(new TimeOnly(2, 0), Zone));
 
+// Every week must be invoiced: CatchUp.All runs each missed Monday.
 await schedules.CreateAsync("weekly-invoice", "invoice", "Ada",
-    ScheduleRule.NewWeekly([DayOfWeek.Monday], new TimeOnly(8, 0), Zone));
+    ScheduleRule.NewWeekly([DayOfWeek.Monday], new TimeOnly(8, 0), Zone),
+    CatchUp.All);
 ```
 
 `ScheduleRule.Daily(TimeOnly(2, 0), zone)` is due every day at 02:00 local time in the zone
@@ -267,12 +275,24 @@ does. On 25 October 2026 the clocks move back from 03:00 to 02:00, so 02:00 occu
 backup runs once, at the first occurrence. A time outside the hour from 02:00 to 03:00 avoids both
 cases in this zone.
 
-`Schedules.createLatest` returns once the schedule is stored. A second create with the same ID and
-the same content stores nothing, so the program creates both schedules at every start. A create
-with the same ID and a different content raises `InvalidOperationException`; `Schedules.change`
-replaces a stored schedule's rule, input, workflow, and catch-up policy. A create also raises
-`InvalidOperationException` when the workflow is not in the dispatcher's list or takes another input
-type.
+The two schedules differ in their catch-up policy, which decides what runs for the due times that
+passed while the service was stopped. A missed backup is replaced by the next one, so the backup
+uses `Schedules.createLatest`, whose policy `CatchUp.Latest` runs only the most recent. Every week
+must be invoiced, so the invoice uses `Schedules.create` with `CatchUp.All` (in C#, the
+`CreateAsync` overload that takes a policy), which runs each missed Monday, oldest first. [After the
+machine was off](#After-the-machine-was-off) shows both.
+
+A create returns once the schedule is stored. A second create with the same ID and the same content
+stores nothing, so the program creates both schedules at every start. A create with the same ID and
+a different content raises `InvalidOperationException`, and so does a create whose workflow is not
+in the dispatcher's list or takes another input type.
+
+A create is compared with the content the schedule was first created with, also after a change. So
+editing the rule in the create call, for example to move the backup to 03:00, makes the next
+start's create raise. Move a stored schedule with `Schedules.change` (`ChangeAsync` in C#), which
+replaces its rule, input, workflow, and catch-up policy. A change to the content the schedule
+already has stores nothing, so the program can keep the create as it was and call change with the
+new rule at every start.
 
 ## Read the next due time
 
@@ -406,8 +426,12 @@ await WaitFor("the demo schedule to leave the index",
 Run it:
 
 ```bash
-dotnet run --project samples/schedules/fsharp
+dotnet run --project samples/schedules/fsharp -c Release
+dotnet run --project samples/schedules/csharp -c Release
 ```
+
+Both programs print the same lines. Run them in Release: a Debug build of FCQRS fails with
+`InvalidProgramException` at the first create.
 
 ```text
 nightly-backup: next run at 02:00 Europe/Oslo time
@@ -433,8 +457,11 @@ demo: no run is waiting
   starts, and the schedule leaves the index once no such run waits. A deleted schedule's ID cannot
   be used for a new schedule, so the program gives its demo schedule a new ID at each start.
 
-Run the program again. It starts on the first run's journal and prints the same lines: both creates
-find the same content and store nothing, and the next due times are unchanged.
+Run the program again. It starts on the first run's journal: both creates find the same content and
+store nothing, and the next due times are unchanged. It prints the same lines unless 02:00 Oslo
+time or Monday 08:00 passed between the two runs. Then the run for that due time starts when the
+program starts, and its line appears too, as [After the machine was
+off](#After-the-machine-was-off) describes.
 
 ## After the machine was off
 
@@ -443,16 +470,20 @@ index and the schedule events stored since the last stop, and starts no run befo
 both. Then the catch-up policy decides which of the due times that passed get a run:
 
 - `CatchUp.Latest`, which `createLatest` uses, starts one run, for the most recent. A machine that
-  was off for three nights makes one backup, for the last night's 02:00. An invoice due on Monday
-  that starts on Tuesday has Monday 08:00 as its `run.Due`, so its number is still Monday's week.
-- `CatchUp.All` starts one run for each, oldest first, but at most for the 1000 most recent.
+  was off for three nights makes one backup, for the last night's 02:00. The earlier nights get no
+  backup, which is what a backup needs: the latest copy replaces them.
+- `CatchUp.All`, which the invoice uses, starts one run for each, oldest first, but at most for the
+  1000 most recent. A machine that was off across two Mondays starts two invoice runs when it comes
+  back. Each run's `run.Due` is its own Monday 08:00, so each gets that week's invoice number, and
+  the billing system issues one invoice per week. With `CatchUp.Latest`, the earlier week would
+  never be invoiced.
 - `CatchUp.None` starts none and waits for the next due time. A run asked for up to one minute after
   its due time still counts as on time.
 
 The schedule decides each run, and stores the decision, before the run starts. A crash between the
 decision and the start leaves a decided run, which the dispatcher starts after the restart with the
-same ID; a second start of a run stores nothing. A run therefore starts at least once per due time,
-and one workflow instance serves it.
+same ID; a second start of a run stores nothing. A run therefore starts at least once for each due
+time the schedule accepts, and one workflow instance serves it.
 
 ## What replaces the workflow server
 
@@ -468,9 +499,9 @@ store is in `jobs.db`:
 
 The dispatcher creates the last three tables on first use. A start reads one row per schedule and
 the schedule events stored since the last stop, not the history of every run. Between due times the
-dispatcher sleeps until the earliest one, and wakes at least every
-`akka.fcqrs.schedule-check-interval`, one minute by default, so a changed clock delays a run by at
-most that long. [Configure the database](configure-the-database.html) moves the journal to
+dispatcher sleeps until the earliest one. While fewer than 16 starts are running, it wakes at least
+every `akka.fcqrs.schedule-check-interval`, one minute by default, so a changed clock delays a run
+by at most that long. [Configure the database](configure-the-database.html) moves the journal to
 PostgreSQL.
 
 The service now takes over what the server did: it must be running for anything to start. Run it
@@ -486,9 +517,9 @@ with the machine. The catch-up policy decides what runs for the time it was off.
   weekly rule instead.
 - **More than one node.** The dispatcher assumes it is the only one, and FCQRS runs on one node.
   Run one copy of the service.
-- **Exactly-once work.** A run starts at least once per due time, and its activities run at least
-  once: a step that was running when the process stopped runs again, with the same key. The backup
-  store and the billing system must honour their keys.
+- **Exactly-once work.** A run starts at least once for each due time the schedule accepts, and its
+  activities run at least once: a step that was running when the process stopped runs again, with
+  the same key. The backup store and the billing system must honour their keys.
 - **Precision below a second.** A run starts after its due time, once the dispatcher has woken, the
   schedule has stored its decision, and the run's start is stored.
 - **A quick first start after upgrading from FCQRS.Workflows 7.6.0.** A journal written by 7.6.0 has
@@ -499,8 +530,15 @@ with the machine. The catch-up policy decides what runs for the time it was off.
 ## What this recipe leaves to you
 
 - The stand-in services keep their keys in memory. Real ones must store them.
-- Every schedule stores its workflow's name and its input, so both are persistent contracts, like
-  the schedule IDs and run IDs.
+- Treat these as persistent contracts, which a refactoring must not change:
+  - the workflow names `backup` and `invoice`, which every schedule stores and which the backup key
+    begins with, so a renamed workflow gives every run a new key;
+  - the step names `copy` and `issue`, which each run's journal stores;
+  - the input type `ScheduledRun<string>` and the schedule inputs, which every schedule and run
+    stores;
+  - the invoice-number format and its zone `Europe/Oslo`, because the billing system recognises a
+    repeated invoice by that number: a new format issues a second invoice for a week already billed;
+  - the schedule IDs and the run IDs built from them.
 - A run whose activity fails three times faults and stays faulted. The schedule goes on with the
   next due time. Watch for faulted runs, and decide whether a missed backup or invoice needs a
   person.

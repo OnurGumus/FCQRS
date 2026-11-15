@@ -69,12 +69,16 @@ Fcqrs.wireSagaStarters api []
 // docs:create
 // A create with the content of the stored schedule stores nothing, so the
 // program creates its schedules at every start.
+
+// After downtime, only the latest backup matters: CatchUp.Latest.
 Schedules.createLatest schedules "nightly-backup" "backup" "/srv/app/data"
     (ScheduleRule.Daily(TimeOnly(2, 0), zone))
 |> Async.RunSynchronously
 
-Schedules.createLatest schedules "weekly-invoice" "invoice" "Ada"
+// Every week must be invoiced: CatchUp.All runs each missed Monday.
+Schedules.create schedules "weekly-invoice" "invoice" "Ada"
     (ScheduleRule.Weekly([ DayOfWeek.Monday ], TimeOnly(8, 0), zone))
+    CatchUp.All
 |> Async.RunSynchronously
 // docs:end
 

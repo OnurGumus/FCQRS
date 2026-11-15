@@ -6,8 +6,8 @@ waits for an approval signal, and sends the quote.
 Run it, stop it in the middle of a step, and run it again:
 
 ```bash
-dotnet run --project samples/workflows/fsharp -- --crash
-dotnet run --project samples/workflows/fsharp
+dotnet run --project samples/workflows/fsharp -c Release -- --crash
+dotnet run --project samples/workflows/fsharp -c Release
 ```
 
 The first run stops the process inside the `send-quote` step. The second run finds the workflow in

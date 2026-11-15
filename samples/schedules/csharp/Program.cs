@@ -34,11 +34,15 @@ ActorWiring.InitSagaStarterEmpty(actor);
 // docs:create
 // A create with the content of the stored schedule stores nothing, so the
 // program creates its schedules at every start.
+
+// After downtime, only the latest backup matters: CatchUp.Latest.
 await schedules.CreateAsync("nightly-backup", "backup", "/srv/app/data",
     ScheduleRule.NewDaily(new TimeOnly(2, 0), Zone));
 
+// Every week must be invoiced: CatchUp.All runs each missed Monday.
 await schedules.CreateAsync("weekly-invoice", "invoice", "Ada",
-    ScheduleRule.NewWeekly([DayOfWeek.Monday], new TimeOnly(8, 0), Zone));
+    ScheduleRule.NewWeekly([DayOfWeek.Monday], new TimeOnly(8, 0), Zone),
+    CatchUp.All);
 // docs:end
 
 // docs:state
