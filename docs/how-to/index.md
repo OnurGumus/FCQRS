@@ -21,6 +21,7 @@ Choose the task you need. For a first working application, start with [the tutor
 | Wait until a projection has processed a journal snapshot | [Catch up projections](catch-up-projections.html) |
 | Coordinate several aggregate owners | [Write a saga](write-a-saga.html) |
 | Run durable steps that call external systems | [Write a workflow](write-a-workflow.html) |
+| Run jobs nightly, weekly, or at an interval | [Run scheduled jobs](run-scheduled-jobs.html) |
 | Test decisions, replay, and retries | [Test your domain](test-your-domain.html) |
 | Change stored event contracts safely | [Evolve persisted events](evolve-events.html) |
 | Rebuild derived query data | [Rebuild a read model](rebuild-a-read-model.html) |

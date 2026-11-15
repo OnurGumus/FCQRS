@@ -882,6 +882,9 @@ FCQRS stores the schedule aggregate's name `fcqrs-schedule`, `ScheduleEvent`, `S
 run's input, `ScheduledRun { Schedule; Due; Input }`, and the index table `fcqrs_schedule_index`
 with its rows, so these are persistent contracts too.
 
+[Run scheduled jobs](../how-to/run-scheduled-jobs.html) builds a nightly backup and a weekly invoice
+as runnable F# and C# programs.
+
 ## Feed workflows from a stream
 
 ```fsharp

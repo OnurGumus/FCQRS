@@ -46,6 +46,8 @@ jobs:
         run: |
           dotnet run --project samples/workflows/fsharp -c Release
           dotnet run --project samples/workflows/csharp -c Release
+          dotnet run --project samples/schedules/fsharp -c Release
+          dotnet run --project samples/schedules/csharp -c Release
       - name: Samples build
         run: |
           dotnet build samples/getting-started-fsharp -c Release
