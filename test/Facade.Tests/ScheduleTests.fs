@@ -1166,7 +1166,10 @@ let private upgradeBuildsIndex (postgres: string option) =
             try
                 ready second
                 Expect.isTrue (indexRows journal |> Map.containsKey "u") "the first start fills the table"
-                Expect.equal (view second "u").LastDue (Some(anchor + hour)) "from the whole history"
+                // The clock is past the next due time, so the dispatcher can fire it as soon as
+                // the index is ready: the view holds the first run read from the history, or
+                // already the second. The assertions below check that each ran once.
+                Expect.contains [ Some(anchor + hour); Some(anchor + 2.0 * hour) ] (view second "u").LastDue "from the whole history"
                 eventually "the next due time runs" (fun () -> runs.Count >= 2)
                 eventually "its start is reported" (fun () -> (view second "u").LastStarted && (view second "u").LastDue = Some(anchor + 2.0 * hour))
                 Thread.Sleep 1500
