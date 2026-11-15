@@ -12,7 +12,8 @@
 - A rule's days and times form one set of local date-times, so a date-time that two entries name,
   such as `Day 31` and `LastDay` in a 31-day month, is due once. Daylight saving works as for
   `Daily`: a skipped local time is due at the next valid time, and a repeated one once, at its first
-  occurrence. Two times inside a skipped hour are one due time.
+  occurrence. Two whole-minute times inside a skipped hour are one due time. A skipped time keeps
+  its seconds, so 02:15:30 and 02:45:10 are due at 03:00:30 and 03:00:10, in that instant order.
 - `ScheduleRule.validate`, and so `create` and `change`, reject an empty or missing day or time list,
   a `Day` outside 1 to 31, an `Nth` outside 1 to 4, a value that is not a day of the week, and an
   unknown zone, with an error and never an exception.

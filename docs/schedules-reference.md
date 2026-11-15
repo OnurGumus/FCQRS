@@ -63,7 +63,8 @@ A monthly rule's days are `MonthDay` values:
 - A local time that a clock change skips is due at the next local time that exists. In Oslo,
   `ScheduleRule.Monthly([ MonthDay.Last DayOfWeek.Sunday ], [ TimeOnly(2, 30) ], "Europe/Oslo")` is
   due on 28 March 2027 at 03:00 local time, 01:00 UTC. Two times inside the skipped hour, such as
-  02:15 and 02:45, are one due time, at 03:00.
+  02:15 and 02:45, are one due time, at 03:00. A skipped time moves forward in whole minutes and
+  keeps its seconds: 02:15:30 is due at 03:00:30, and 02:45:10 at 03:00:10, before it.
 - A local time that occurs twice is due once, at the first occurrence. The same rule is due on
   25 October 2026 at the first 02:30, 00:30 UTC, and not at the second, 01:30 UTC.
 - The catch-up policies, the 1000 limit of `CatchUp.All`, and the dispatcher treat every rule the

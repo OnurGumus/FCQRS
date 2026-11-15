@@ -212,6 +212,18 @@ let tests =
             Expect.equal first (utc 2027 3 28 1 0) "both are 03:00 CEST"
             Expect.equal (ScheduleRule.next rule anchor first) (utc 2027 3 29 0 15) "then 02:15 CEST the next day"
 
+        // A skipped time keeps its seconds, so 02:45:10 becomes an earlier instant than 02:15:30.
+        testCase "schedule rule: next and missed agree on times with seconds inside the skipped hour" <| fun _ ->
+            let rule = ScheduleRule.DailyAt([ TimeOnly(2, 15, 30); TimeOnly(2, 45, 10) ], oslo)
+            let anchor = utc 2027 3 1 0 0
+            let at h mi s = DateTime(2027, 3, 28, h, mi, s, DateTimeKind.Utc)
+            let before = utc 2027 3 27 12 0
+            Expect.equal (ScheduleRule.next rule anchor before) (at 1 0 10) "03:00:10 CEST comes first"
+            Expect.equal (ScheduleRule.next rule anchor (at 1 0 10)) (at 1 0 30) "then 03:00:30 CEST"
+            Expect.equal (ScheduleRule.missed rule anchor before (at 1 0 30) CatchUp.All) [ at 1 0 10; at 1 0 30 ] "missed lists both, oldest first"
+            Expect.equal (ScheduleRule.missed rule anchor before (at 1 0 30) CatchUp.Latest) [ at 1 0 30 ] "Latest is the later one"
+            Expect.equal (ScheduleRule.missed rule anchor before (at 1 0 20) CatchUp.All) [ at 1 0 10 ] "only the one that has passed"
+
         testCase "schedule rule: daily at two times" <| fun _ ->
             let rule = ScheduleRule.DailyAt([ TimeOnly(18, 0); TimeOnly(8, 0) ], oslo)
             let anchor = utc 2026 11 1 0 0

@@ -97,16 +97,23 @@ module ScheduleRule =
 
     let private localDate (zone: TimeZoneInfo) (at: DateTime) = DateOnly.FromDateTime(TimeZoneInfo.ConvertTimeFromUtc(at, zone))
 
+    // The due times of one local date, in order without repeats. Ordering the instants rather than
+    // the times matters: a skipped time keeps its seconds, so inside the skipped hour 02:45:10 becomes
+    // 03:00:10, earlier than 03:00:30 from 02:15:30. Two times that become one instant are one due
+    // time. `nextLocal` and `recentLocal` must see the same list, or a Fire is refused.
+    let private dayDues (zone: TimeZoneInfo) (times: TimeOnly[]) (day: DateOnly) =
+        times |> Array.map (toUtc zone day) |> Array.distinct |> Array.sort
+
     // The first due time strictly after `after`, on an accepted local date at one of the times. The
-    // times are in order, and a later local date-time is a later instant, so the first one found is
-    // the earliest.
+    // dates are in order, and a later local date's due times are later instants, so the first one
+    // found is the earliest.
     let private nextLocal (zone: TimeZoneInfo, accepts: DateOnly -> bool, times: TimeOnly[]) (after: DateTime) =
         let startDay = (localDate zone after).AddDays -1
         // A weekly rule finds its day within a week and a monthly rule within two months; a year
         // bounds a rule that never matches.
         Seq.init 400 startDay.AddDays
         |> Seq.filter accepts
-        |> Seq.collect (fun day -> times |> Seq.map (toUtc zone day))
+        |> Seq.collect (dayDues zone times)
         |> Seq.tryFind (fun due -> due > after)
         |> Option.defaultWith (fun () -> failwith "No due time within a year of the given time.")
 
@@ -135,8 +142,8 @@ module ScheduleRule =
 
     // The `keep` most recent due times of a local rule in (lastDue, now], oldest first. It reads the
     // local dates backwards from `now` and stops once it has them, so its cost depends on `keep` and
-    // the number of times a day, not on the length of the gap. Two times that become the same instant,
-    // such as two times inside the hour that a clock change skips, are one due time.
+    // the number of times a day, not on the length of the gap. It reads each date's due times from
+    // `dayDues`, as `nextLocal` does.
     let private recentLocal (zone: TimeZoneInfo, accepts: DateOnly -> bool, times: TimeOnly[]) (lastDue: DateTime) (now: DateTime) (keep: int) =
         let found = ResizeArray<DateTime>()
 
@@ -149,8 +156,9 @@ module ScheduleRule =
 
             while reading && found.Count < keep do
                 if accepts day then
-                    for index in times.Length - 1 .. -1 .. 0 do
-                        let due = toUtc zone day times[index]
+                    let dues = dayDues zone times day
+                    for index in dues.Length - 1 .. -1 .. 0 do
+                        let due = dues[index]
                         let earlier = found.Count = 0 || due < found[found.Count - 1]
                         if found.Count < keep && due <= now && due > lastDue && earlier then
                             found.Add due

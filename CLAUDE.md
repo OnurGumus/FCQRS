@@ -193,8 +193,9 @@ Keep these distinctions intact in code comments and documentation.
 - Schedule rules are `Daily`, `Weekly`, `Every`, and since 7.8.0 `DailyAt`, `WeeklyAt`, and
   `Monthly`, whose days are `MonthDay.Day` 1 to 31 (the last day in a shorter month), `LastDay`,
   `Nth` 1 to 4 of a weekday, and `Last` of a weekday. A rule's days and times form one set of local
-  date-times, so a date-time named twice is due once. A skipped local time is due at the next valid
-  time, a repeated one at its first occurrence. `missed` reads backwards from `now`, so its cost
+  date-times, so a date-time named twice is due once. A skipped local time moves forward in whole
+  minutes to the first valid one and keeps its seconds; a repeated one is due at its first
+  occurrence. Due times are ordered as instants, not as local times. `missed` reads backwards from `now`, so its cost
   depends on the due times it keeps, not on the gap. `create` and `change` sort and deduplicate days
   and times before the same-content comparison. The 7.8.0 cases are added after the 7.7 ones, whose
   stored JSON and index text are unchanged; 7.7 cannot read the new ones.
