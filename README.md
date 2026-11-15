@@ -52,7 +52,8 @@ FCQRS handles one account's commands one at a time; other accounts run independe
 [Workflow tutorial](https://onurgumus.github.io/FCQRS/workflow-tutorial/place-an-order.html) ·
 [Task guides](https://onurgumus.github.io/FCQRS/how-to/index.html) ·
 [API reference](https://onurgumus.github.io/FCQRS/reference/index.html) ·
-[Configuration](https://onurgumus.github.io/FCQRS/configuration.html)
+[Configuration](https://onurgumus.github.io/FCQRS/configuration.html) ·
+[Schedules reference](https://onurgumus.github.io/FCQRS/schedules-reference.html)
 
 ## Install in your own project
 
