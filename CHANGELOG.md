@@ -1,5 +1,18 @@
 # Changelog
 
+## 7.7.2 (FCQRS.Workflows)
+
+- A running instance whose journal holds steps that its new code no longer reaches is parked. Before,
+  an instance that had stored some of the steps a deploy removed from the end of its body replayed,
+  reached the new end, and finished or faulted, and the stored results of the removed steps, or the
+  work of a step that was still running, were dropped without a trace. When the body ends, the
+  machine now raises `WorkflowDivergedException` naming the first stored step it did not reach and
+  what is stored there, so the instance parks and resumes when code that has the step is deployed.
+  Stored signals that no wait consumed and version markers do not count, nor do the stored steps of
+  a race's losing branches or of the branches a failed `all` or `allAtMost` abandoned. An instance
+  that has ended does not replay its body and is unaffected.
+- The package needs FCQRS core 7.2.3. No stored record, step path, or child ID changes.
+
 ## 7.2.3 (FCQRS core)
 
 - The Release IL of `CatchUpAsync` passes IL verification. Its `with` handler raised from each of

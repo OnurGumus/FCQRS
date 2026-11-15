@@ -753,7 +753,107 @@ let private untilUtcTest =
             Expect.equal due "2026-12-01T09:00:00.0000000Z" "the stored due time is the given time, in UTC"
         | other -> failtest $"expected a scheduled timer, found {other}"
 
+/// The journal of `order` without its `Finished` record: an instance that ended does not replay.
+let private orderSteps () =
+    (drive [] orderValues order).Journal |> Seq.filter (function WorkflowRecord.Finished _ -> false | _ -> true) |> List.ofSeq
+
+let private divergedAt (path: string) (stored: string) (run: unit -> Run) =
+    let error = Expect.throwsC (fun () -> run () |> ignore) id
+    match error with
+    | :? WorkflowDivergedException as diverged ->
+        Expect.equal diverged.Path path "the exception names the first step the body did not reach"
+        Expect.stringContains diverged.Message stored "the message names what is stored there"
+    | other -> failtest $"expected a WorkflowDivergedException, found {other}"
+
+let private removedStepsTest =
+    testCase "workflow machine: a body that ends before steps its journal holds diverges" <| fun _ ->
+        let shorter = workflow {
+            let! started = now
+            let! (price: decimal) = activity "price" (Retry.times 3) never
+            return $"{started:HH}:{price}:0"
+        }
+        // The instance had completed "sleep" and "stock" under the old code.
+        divergedAt "2" "a completed Timer 'sleep'" (fun () -> drive (orderSteps ()) orderValues shorter)
+        // It had only begun "stock".
+        let begun = orderSteps () |> List.takeWhile (function WorkflowRecord.StepCompleted("3", _, _, _, _) -> false | _ -> true)
+        let withoutStock = workflow {
+            let! started = now
+            let! (price: decimal) = activity "price" (Retry.times 3) never
+            do! sleep (TimeSpan.FromHours 1.0)
+            return $"{started:HH}:{price}:0"
+        }
+        divergedAt "3" "a scheduled Activity 'stock'" (fun () -> drive begun orderValues withoutStock)
+        // A body that throws before steps its journal holds diverges too.
+        let throws = workflow {
+            let! (_: DateTime) = now
+            failwith "removed"
+            return ""
+        }
+        divergedAt "1" "a completed Activity 'price'" (fun () -> drive (orderSteps ()) orderValues throws)
+
+let private consumedJournalTest =
+    testCase "workflow machine: a body that reaches every stored step finishes, and stored signals no wait took do not count" <| fun _ ->
+        let replayed = drive (orderSteps ()) (fun _ -> None) order
+        Expect.equal (finished replayed |> Option.map Payload.toValue<string>) (Some "10:12.5:7") "the whole journal is consumed"
+        let body = workflow {
+            let! (first: string) = waitSignal "answer"
+            return first
+        }
+        let run = drive [ signal "answer" "one"; signal "answer" "two"; signal "other" 3 ] (fun _ -> None) body
+        Expect.equal (finished run |> Option.map Payload.toValue<string>) (Some "one") "signals that no wait consumed stay stored"
+        let again = drive (List.ofSeq run.Journal |> List.filter (function WorkflowRecord.Finished _ -> false | _ -> true)) (fun _ -> None) body
+        Expect.equal (finished again |> Option.map Payload.toValue<string>) (Some "one") "and replay finishes beside them"
+
+let private raceLoserTest =
+    testCase "workflow machine: steps a race's losing branch stored do not count as steps the body left out" <| fun _ ->
+        let complete name =
+            match name with
+            | "slow" -> Some(Ok(Payload.ofValue 3))
+            | "fast" -> Some(Ok(Payload.ofValue 7))
+            | "fast-again" -> Some(Ok(Payload.ofValue 1))
+            | "after" -> Some(Ok(Payload.ofValue 100))
+            | _ -> None
+        let live = drive [] complete raceBody
+        Expect.equal (finished live |> Option.map Payload.toValue<int>) (Some 108) "the fast branch won"
+        let loser =
+            [ for record in live.Journal do
+                match record with
+                | WorkflowRecord.StepCompleted(path, _, _, _, _)
+                | WorkflowRecord.StepScheduled(path, _, _, _, _) when path.StartsWith "0/0/" -> path
+                | _ -> () ]
+        Expect.equal (List.distinct loser) [ "0/0/0"; "0/0/1" ] "the losing branch stored a completed and a scheduled step"
+        let journal = List.ofSeq live.Journal |> List.filter (function WorkflowRecord.Finished _ -> false | _ -> true)
+        for length in 0 .. journal.Length do
+            let run = drive (List.truncate length journal) complete raceBody
+            Expect.equal (finished run |> Option.map Payload.toValue<int>) (Some 108) $"a restart after {length} records finishes"
+
+let private failedBlockTest =
+    testCase "workflow machine: steps that the siblings of a failed branch stored do not count as steps the body left out" <| fun _ ->
+        let body = workflow {
+            try
+                let! (_: int list) = allAtMost 2 [ "x"; "y"; "z" ] (fun name -> activity name Retry.none never)
+                return "no failure"
+            with :? WorkflowStepFailedException as failed ->
+                return failed.StepName
+        }
+        let complete name =
+            match name with
+            | "x" -> Some(Error { Kind = ErrorKind.Exhausted; ExceptionType = "System.Exception"; Message = "down" })
+            | "y" -> Some(Ok(Payload.ofValue 1))
+            | _ -> None
+        // "y" finishes first, so "z" begins before "x" fails.
+        let choose (ready: PendingStep list) =
+            ready |> List.tryFind (fun step -> step.Path = "0/1/0") |> Option.defaultValue (List.head ready)
+        let live = driveWith choose [] (byName complete) body
+        Expect.equal (finished live |> Option.map Payload.toValue<string>) (Some "x") "the body handles the failure"
+        Expect.contains live.Begun "0/2/0" "the third branch began before the failure"
+        let journal = List.ofSeq live.Journal |> List.filter (function WorkflowRecord.Finished _ -> false | _ -> true)
+        for length in 0 .. journal.Length do
+            let run = driveWith choose (List.truncate length journal) (byName complete) body
+            Expect.equal (finished run |> Option.map Payload.toValue<string>) (Some "x") $"a restart after {length} records finishes"
+
 let tests =
     testList "workflow machine"
         [ payloadTest; recordTest; liveTest; prefixTest; failureTest; unhandledTest; divergedTest; longTest; storedValueTest
-          allTest; allFailureTest; raceTest; limitTest; andTest; andThreeTest; recursionTest; signalTest; liveSignalTest; unreadableTest; farTimerTest; versionTest; versionLoopTest; wrongSignalTest; versionInBranchTest; versionBeforeEmptyBlockTest; versionTwiceTest; blockSwapTest; untilUtcTest ]
+          allTest; allFailureTest; raceTest; limitTest; andTest; andThreeTest; recursionTest; signalTest; liveSignalTest; unreadableTest; farTimerTest; versionTest; versionLoopTest; wrongSignalTest; versionInBranchTest; versionBeforeEmptyBlockTest; versionTwiceTest; blockSwapTest; untilUtcTest
+          removedStepsTest; consumedJournalTest; raceLoserTest; failedBlockTest ]

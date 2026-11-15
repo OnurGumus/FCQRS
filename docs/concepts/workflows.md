@@ -645,6 +645,8 @@ that name and the step's position, so the name is a persistent contract:
 
 An instance whose journal does not match its code is **parked**. It runs nothing, logs an error,
 reports `Parked` from `handle.Status`, and resumes when code that matches its journal is deployed.
+A body that ends before a step its journal holds does not match either, so removing the last steps
+of a workflow parks the instances that had stored them.
 FCQRS does not stop the process for this, because every running instance restarts with the process
 and one mismatched instance would stop all the others on every start. A parked instance can be
 cancelled; it then ends without cleanup.

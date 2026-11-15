@@ -793,6 +793,52 @@ let private parkingTest =
         finally
             deleteDb db
 
+let private removedStepsParkTest =
+    testCase "workflow: an instance whose journal holds steps the new code removed is parked, and resumes with the code that has them" <| fun _ ->
+        let db = newDb ()
+        let outside = Outside()
+        let definition (withThird: bool) =
+            Workflow.define "shrinking" (fun (value: int) -> workflow {
+                let! first = activity "first" Retry.none (fun _ -> task { return value + 1 })
+                let! second = activity "second" Retry.none (fun _ -> task { return first + 1 })
+                if withThird then
+                    let! third = activity "third" (Retry.forever (TimeSpan.FromMinutes 5.0)) (fun context -> task {
+                        outside.Count "third" |> ignore
+                        do! Task.Run(fun () -> outside.Gate.Wait context.Cancellation)
+                        return second + 1 })
+                    return third
+                else
+                    return second
+            })
+        let parked status = match status with WorkflowStatus.Parked _ -> true | _ -> false
+        try
+            let first = boot db "WorkflowShrinking" []
+            let flow = Workflows.register first (definition true)
+            sync (flow.Start "s1" 1) |> ignore
+            eventually "the third step is running" (fun () -> outside.Calls.ContainsKey "third")
+            stop first
+
+            // The third step was removed while the instance was in it.
+            let shorter = boot db "WorkflowShrinking" []
+            try
+                let flow = Workflows.register shorter (definition false)
+                eventually "the instance is parked" (fun () -> parked (sync (flow.Status "s1")))
+                match sync (flow.Status "s1") with
+                | WorkflowStatus.Parked reason -> Expect.stringContains reason "third" "the reason names the stored step the code no longer has"
+                | other -> failtest $"expected Parked, found {other}"
+            finally
+                stop shorter
+
+            let restored = boot db "WorkflowShrinking" []
+            try
+                let flow = Workflows.register restored (definition true)
+                outside.Gate.Set()
+                Expect.equal (sync (flow.Result "s1" wait)) (WorkflowOutcome.Finished 4) "with the three-step code the instance resumes and finishes"
+            finally
+                stop restored
+        finally
+            deleteDb db
+
 // ---------------------------------------------------------------------------
 // Akka.Streams and metrics.
 // ---------------------------------------------------------------------------
@@ -1525,7 +1571,7 @@ let tests =
         testList "workflow"
             [ startTest; faultTest; retryTest; shortTimerTest; restartTest; timerTest; tracingTest; startRaceTest; concurrentStartTest
               signalTest; signalRestartTest; commandTest; parallelCommandTest; commandRestartTest; commandRecoveryTest; unknownOutcomeTest
-              cancelTest; childTest; childRestartTest; parkingTest; streamTest; metricsTest
+              cancelTest; childTest; childRestartTest; parkingTest; removedStepsParkTest; streamTest; metricsTest
               lateCommandTest; cancelParkedTest; childResultTest; unreadableResultTest; idleTest; manifestTest
               sagaStartTest; sagaRepeatTest; sagaRepeatStoredTest; sagaSignalTest; sagaEventReplyTest
               sagaFilterTest; sagaFilterMissedTest; sagaFilterOutcomeTest; effectReplyTest; lateReplyTest

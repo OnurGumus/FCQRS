@@ -143,7 +143,8 @@ type internal Emit =
     /// Stop working on this step: its branch was abandoned.
     | Abandon of path: string
 
-/// Raised when the journal holds a different step at a path than the body asks for.
+/// Raised when the journal holds a different step at a path than the body asks for, or holds a
+/// step the body ended without reaching.
 type WorkflowDivergedException(path: string, expected: string, found: string) =
     inherit Exception($"The workflow body asks for {expected} at step {path}, but the journal holds {found}.")
     /// The step path.
@@ -164,6 +165,16 @@ type internal Machine(history: History, encodeResult: objnull -> Payload, clock:
     let emits = ResizeArray<Emit>()
     let root = Fiber("", None)
     let mutable outcome: Result<objnull, exn> option = None
+    /// The path of every step and block the body reached in this run.
+    let visited = HashSet<string>()
+    /// The path prefixes of the branches a block abandoned: the losers of a race and the siblings
+    /// of a failed branch. Their stored steps need not be reached again.
+    let abandoned = ResizeArray<string>()
+
+    /// Cancels a branch whose block no longer needs it.
+    let abandon (branch: Fiber) =
+        branch.Cancel()
+        abandoned.Add branch.Prefix
 
     let check (path: string) (expected: string) (expectedKind: StepKind) (name: string) (kind: StepKind) =
         if name <> expected || kind <> expectedKind then
@@ -174,6 +185,29 @@ type internal Machine(history: History, encodeResult: objnull -> Payload, clock:
         | Scheduled(name, kind, _, _)
         | Completed(name, kind, _)
         | Failed(name, kind, _) -> $"{kind} '{name}'"
+
+    /// A body that ended before a step its journal holds was changed: the step's stored work, or
+    /// the work in flight, would be dropped without a trace. A version marker is not a step, and
+    /// a stored signal no wait consumed is not kept in `Steps`.
+    let checkConsumed () =
+        let unreached =
+            history.Steps
+            |> Seq.tryFind (fun (KeyValue(path, _)) ->
+                path.IndexOf '@' < 0
+                && not (visited.Contains path)
+                && not (abandoned.Exists(fun prefix -> path.StartsWith(prefix, StringComparison.Ordinal))))
+
+        match unreached with
+        | Some(KeyValue(path, state)) ->
+            let stored =
+                match state with
+                | Scheduled _ -> "scheduled"
+                | Completed _ -> "completed"
+                | Failed _ -> "failed"
+
+            let found = $"a {stored} {describe state}"
+            raise (WorkflowDivergedException(path, "no step (it has ended)", found))
+        | None -> ()
 
     /// `at + span`, or the latest representable time when that overflows.
     let later (at: DateTime) (span: TimeSpan) : DateTime =
@@ -241,6 +275,8 @@ type internal Machine(history: History, encodeResult: objnull -> Payload, clock:
                 // A version marker sits beside the step sequence, so adding one moves no step.
                 | Leaf { Kind = StepKind.Version; Name = changeId } -> $"{fiber.PeekPath()}@{changeId}"
                 | _ -> fiber.NextPath()
+
+            visited.Add path |> ignore
 
             let resume (result: Result<objnull, exn>) =
                 queue.Enqueue(fun () ->
@@ -344,7 +380,7 @@ type internal Machine(history: History, encodeResult: objnull -> Payload, clock:
                     failed <- true
 
                     for branch in fibers do
-                        branch.Cancel()
+                        abandon branch
 
                     sweep ()
                     resume (Error error)
@@ -361,8 +397,14 @@ type internal Machine(history: History, encodeResult: objnull -> Payload, clock:
         match history.Steps.TryGetValue path with
         | true, Completed(name, kind, result) ->
             check path "race" StepKind.Race name kind
-            // The winner is stored: only that branch runs, from its stored steps.
+            // The winner is stored: only that branch runs, from its stored steps. The steps the
+            // losers stored before the winner was decided are not reached again.
             let winner = Payload.toValue<int> result
+
+            for other in 0 .. fibers.Length - 1 do
+                if other <> winner then
+                    abandon fibers[other]
+
             queue.Enqueue(fun () -> run fibers[winner] branches[winner] resume)
         | true, other -> raise (WorkflowDivergedException(path, "Race 'race'", string other))
         | false, _ ->
@@ -374,7 +416,7 @@ type internal Machine(history: History, encodeResult: objnull -> Payload, clock:
 
                     for other in 0 .. fibers.Length - 1 do
                         if other <> index then
-                            fibers[other].Cancel()
+                            abandon fibers[other]
 
                     sweep ()
                     // The body continues once the winner is stored.
@@ -387,6 +429,7 @@ type internal Machine(history: History, encodeResult: objnull -> Payload, clock:
                         run fibers[index] branches[index] (branchDone index))
 
     let finish (result: Result<objnull, exn>) =
+        checkConsumed ()
         outcome <- Some result
         let time = clock ()
 

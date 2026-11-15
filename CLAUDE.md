@@ -170,6 +170,9 @@ Keep these distinctions intact in code comments and documentation.
 - An instance whose journal does not match its code is parked, and the process keeps running. This is
   a deliberate exception to the fail-fast rule: running instances restart with the process, so a
   crash would repeat at every start.
+- A body that ends or faults before a step its journal holds is parked too, so removing trailing
+  steps parks the running instances that stored them. Stored signals and version markers are not
+  steps, and the stored steps of a race's losers or of a failed block's other branches do not count.
 - A faulted workflow is final. Nothing restarts it.
 - An instance leaves memory when it ends. A request to an instance that is not running recovers it
   by replaying its journal, and it then stays in memory until it has had no request for
