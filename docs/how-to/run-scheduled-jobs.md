@@ -510,11 +510,13 @@ with the machine. The catch-up policy decides what runs for the time it was off.
 
 ## What a schedule does not do
 
-- **A monthly rule.** `ScheduleRule` has `Daily`, `Weekly`, and `Every`. For a job on the first of
-  each month, use a daily schedule whose run reads the local date of `run.Due` and ends without
-  work on other days. The date comes from the run's input, so the body stays deterministic. Each
-  day's run is still a stored workflow instance. A job that can run on a fixed weekday fits a
-  weekly rule instead.
+- **Every rule a calendar can express.** Besides `Daily`, `Weekly`, and `Every`, `ScheduleRule` has
+  `Monthly` for days of the month, such as the first or the last Friday, and `DailyAt` and
+  `WeeklyAt` for several times a day; the
+  [Schedules reference](../schedules-reference.html#Schedule-rules) lists them. For a job these
+  cannot express, such as every other Tuesday, use a weekly schedule whose run reads the local date
+  of `run.Due` and ends without work in the other weeks. The date comes from the run's input, so the
+  body stays deterministic. Each run is still a stored workflow instance.
 - **More than one node.** The dispatcher assumes it is the only one, and FCQRS runs on one node.
   Run one copy of the service.
 - **Exactly-once work.** A run starts at least once for each due time the schedule accepts, and its

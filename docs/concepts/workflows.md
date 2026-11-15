@@ -776,6 +776,41 @@ Oslo time in winter (08:00 UTC) and in summer (07:00 UTC). A local time that a c
 runs at the next local time that exists, and one that occurs twice runs once, at the first
 occurrence. `ScheduleRule.Every interval` counts from the creation or the last change.
 
+Ada also pays rent on the last day of each month and wants a reminder in the morning and in the
+evening of that day:
+
+```fsharp
+let remindRent (schedules: ScheduleHandle) =
+    // 09:00 and 18:00, Oslo time, on the last day of each month.
+    let rule =
+        ScheduleRule.Monthly(
+            [ MonthDay.LastDay ],
+            [ TimeOnly(9, 0); TimeOnly(18, 0) ],
+            "Europe/Oslo"
+        )
+    Schedules.createLatest schedules "ada-rent" "remind" "Pay the rent" rule
+```
+
+<div class="cs-alt"></div>
+
+<!-- sample: workflows/csharp Concepts.cs monthly -->
+```csharp
+public static Task RemindRent(ScheduleClient schedules)
+{
+    // 09:00 and 18:00, Oslo time, on the last day of each month.
+    var rule = ScheduleRule.NewMonthly(
+        [MonthDay.LastDay],
+        [new TimeOnly(9, 0), new TimeOnly(18, 0)],
+        "Europe/Oslo");
+    return schedules.CreateAsync("ada-rent", "remind", "Pay the rent", rule);
+}
+```
+
+A monthly rule's days can also be a day number, such as `MonthDay.Day 15`, or a weekday such as
+`MonthDay.Nth(3, DayOfWeek.Wednesday)` or `MonthDay.Last DayOfWeek.Thursday`. `Day 31` runs on the
+last day of a shorter month. `ScheduleRule.DailyAt` and `ScheduleRule.WeeklyAt` take several times a
+day. The [Schedules reference](../schedules-reference.html#Schedule-rules) lists every rule.
+
 A due time is missed when the dispatcher could not fire on time, for example while the process was
 stopped. The catch-up policy decides which missed due times run:
 
@@ -891,7 +926,8 @@ A C# workflow derives from `Workflow<TInput, TResult>` and awaits steps from its
 | `Schedules.create`, `Schedules.change` | `schedules.CreateAsync`, `schedules.ChangeAsync`, with a `CatchUp` |
 | `Schedules.pause`, `resume`, `delete` | `schedules.PauseAsync`, `ResumeAsync`, `DeleteAsync` |
 | `Schedules.state`, `None` when the index has not read it | `schedules.State(id)`, `null` when the index has not read it |
-| `ScheduleRule.Daily(time, zone)` | `ScheduleRule.NewDaily(time, zone)`, and `NewWeekly`, `NewEvery` |
+| `ScheduleRule.Daily(time, zone)` | `ScheduleRule.NewDaily(time, zone)`, and `NewWeekly`, `NewEvery`, `NewDailyAt`, `NewWeeklyAt`, `NewMonthly` |
+| `MonthDay.Nth(3, DayOfWeek.Wednesday)`, `MonthDay.LastDay` | `MonthDay.NewNth(3, DayOfWeek.Wednesday)`, `MonthDay.LastDay`, and `NewDay`, `NewLast` |
 
 Inside a method that returns `WorkflowTask<T>`, `await` accepts workflow steps. Awaiting an
 unfinished `Task`, such as `Task.Delay` or an `HttpClient` call, throws and faults the instance,

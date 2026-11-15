@@ -7,11 +7,12 @@ index: 3
 
 # Schedules reference
 
-This page lists the rules behind FCQRS.Workflows schedules: what each call checks, the limits on
-IDs, how the dispatcher times its starts, where it stores its index, what a deploy can break, and
-what FCQRS stores. [Run workflows on a schedule](concepts/workflows.html#Run-workflows-on-a-schedule)
-explains the model and its guarantee, and [Run scheduled jobs](how-to/run-scheduled-jobs.html)
-builds runnable F# and C# programs.
+This page lists the rules behind FCQRS.Workflows schedules: when each schedule rule is due, what
+each call checks, the limits on IDs, how the dispatcher times its starts, where it stores its
+index, what a deploy can break, and what FCQRS stores.
+[Run workflows on a schedule](concepts/workflows.html#Run-workflows-on-a-schedule) explains the
+model and its guarantee, and [Run scheduled jobs](how-to/run-scheduled-jobs.html) builds runnable
+F# and C# programs.
 
 The F# functions are in the `Schedules` module. The C# `ScheduleClient` methods `CreateAsync`,
 `ChangeAsync`, `PauseAsync`, `ResumeAsync`, `DeleteAsync`, and `State` call them and raise the same
@@ -33,6 +34,51 @@ system's one dispatcher, which starts runs of the listed workflows only.
   schedules after that, for example from a singleton resolved once the host has started, as
   [Run workflows on a schedule](concepts/workflows.html#Run-workflows-on-a-schedule) shows.
 
+## Schedule rules
+
+A rule names the instants a schedule is due. FCQRS computes them in the rule's time zone, a
+time-zone ID such as `Europe/Oslo`, and stores them in UTC.
+
+| Rule | Due |
+| --- | --- |
+| `ScheduleRule.Daily(time, zone)` | Every day at `time` |
+| `ScheduleRule.DailyAt(times, zone)` | Every day at each of `times` |
+| `ScheduleRule.Weekly(days, time, zone)` | On each of `days` at `time` |
+| `ScheduleRule.WeeklyAt(days, times, zone)` | On each of `days` at each of `times` |
+| `ScheduleRule.Monthly(days, times, zone)` | On each `MonthDay` in `days`, every month, at each of `times` |
+| `ScheduleRule.Every interval` | Every `interval` after the creation or the last change, from one second to 366 days |
+
+A monthly rule's days are `MonthDay` values:
+
+| `MonthDay` | Day of the month |
+| --- | --- |
+| `MonthDay.Day n`, `n` from 1 to 31 | Day `n`. A month without it runs on its last day: `Day 31` runs on 30 April, and `Day 29` on 28 February outside a leap year |
+| `MonthDay.LastDay` | The last day |
+| `MonthDay.Nth(n, weekday)`, `n` from 1 to 4 | The `n`th such weekday: `Nth(3, DayOfWeek.Wednesday)` is the third Wednesday. There is no fifth; use `Last` |
+| `MonthDay.Last weekday` | The last such weekday, the fourth or the fifth |
+
+- The days and times of one rule form one set of local date-times, and a date-time that two entries
+  name is due once. `Day 31` and `LastDay` name the same day in every month; `Day 30` and `LastDay`
+  name the same day in a 30-day month.
+- A local time that a clock change skips is due at the next local time that exists. In Oslo,
+  `ScheduleRule.Monthly([ MonthDay.Last DayOfWeek.Sunday ], [ TimeOnly(2, 30) ], "Europe/Oslo")` is
+  due on 28 March 2027 at 03:00 local time, 01:00 UTC. Two times inside the skipped hour, such as
+  02:15 and 02:45, are one due time, at 03:00.
+- A local time that occurs twice is due once, at the first occurrence. The same rule is due on
+  25 October 2026 at the first 02:30, 00:30 UTC, and not at the second, 01:30 UTC.
+- The catch-up policies, the 1000 limit of `CatchUp.All`, and the dispatcher treat every rule the
+  same.
+
+In C#, `ScheduleRule.NewMonthly`, `NewDailyAt`, and `NewWeeklyAt` take F# lists, which a collection
+expression builds. `MonthDay.LastDay` is a property:
+
+```csharp
+var club = ScheduleRule.NewMonthly(
+    [MonthDay.NewNth(3, DayOfWeek.Wednesday), MonthDay.LastDay],
+    [new TimeOnly(18, 0)],
+    "Europe/Oslo");
+```
+
 ## Exceptions each call raises
 
 `create` and `change` check their arguments before they send anything, and every command checks
@@ -40,7 +86,7 @@ the schedule ID first.
 
 | Call | Exception | When |
 | --- | --- | --- |
-| `create`, `change` | `ArgumentException` | `ScheduleRule.validate` rejects the rule: a time zone the system cannot read, a weekly rule without days or with a value that is not a day of the week, or an `Every` interval shorter than one second or longer than 366 days |
+| `create`, `change` | `ArgumentException` | `ScheduleRule.validate` rejects the rule: a time zone the system cannot read, a weekly or monthly rule without days, a rule without times of day, a value that is not a day of the week, a `MonthDay.Day` outside 1 to 31, a `MonthDay.Nth` outside 1 to 4, or an `Every` interval shorter than one second or longer than 366 days |
 | `create`, `change` | `ArgumentNullException` | The rule or the catch-up policy is missing |
 | `create`, `change`, `pause`, `resume`, `delete` | `ArgumentException` | The schedule ID breaks a rule in [Schedule and run IDs](#Schedule-and-run-IDs) |
 | `create`, `change`, `pause`, `resume`, `delete` | `InvalidOperationException` | The saga starters are not wired yet. Nothing is sent |
@@ -55,8 +101,9 @@ the schedule ID first.
 | `register` | `ConfigurationException` | `akka.fcqrs.schedule-check-interval` is not positive |
 
 A second `create` with the same content stores nothing and raises nothing. Before the comparison,
-the days of a weekly rule are sorted and their repeats removed, so `[Thursday; Monday]` and
-`[Monday; Thursday]` are the same content.
+the days and the times of a rule are sorted and their repeats removed, so `[Thursday; Monday]` and
+`[Monday; Thursday]` are the same content. A day written two ways stays two entries: a monthly rule
+with `Day 31` and one with `LastDay` are different contents, though they are due at the same times.
 
 ## Schedule and run IDs
 
@@ -190,7 +237,7 @@ Every schedule stores its workflow's name and its input's stored form, so the ap
 both as persistent contracts. FCQRS also stores these, so they are persistent contracts too:
 
 - the schedule aggregate's name, `fcqrs-schedule`;
-- `ScheduleEvent`, `ScheduleRule`, `CatchUp`, and `ScheduleSpec`;
+- `ScheduleEvent`, `ScheduleRule`, `MonthDay`, `CatchUp`, and `ScheduleSpec`;
 - the snapshot state, `ScheduleState` and `AcceptedDue`;
 - run IDs, every run's input, and `ScheduledRun { Schedule; Due; Input }`;
 - the index table `fcqrs_schedule_index`, its columns `schedule_id` and `entry`, the text stored in
@@ -198,3 +245,6 @@ both as persistent contracts. FCQRS also stores these, so they are persistent co
 - the projection's name, `fcqrs-schedule-index`.
 
 Nothing but the dispatcher should write to the index table.
+
+FCQRS.Workflows 7.7 cannot read the rules added in 7.8.0, `DailyAt`, `WeeklyAt`, and `Monthly`, in
+a schedule event or an index row. Roll back to 7.7 only before any schedule uses one of them.

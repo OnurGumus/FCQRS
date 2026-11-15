@@ -188,8 +188,16 @@ Keep these distinctions intact in code comments and documentation.
 - A schedule is an instance of the aggregate `fcqrs-schedule`, which decides every run. The
   dispatcher's index is a hint: a stale index cannot start a run for a paused or deleted schedule,
   or for a due time that a change removed. The aggregate takes snapshots, so the aggregate name,
-  `ScheduleEvent`, `ScheduleRule`, `CatchUp`, `ScheduleSpec`, and the snapshot state
+  `ScheduleEvent`, `ScheduleRule`, `MonthDay`, `CatchUp`, `ScheduleSpec`, and the snapshot state
   `ScheduleState` and `AcceptedDue` are persistent contracts. Commands are not journaled.
+- Schedule rules are `Daily`, `Weekly`, `Every`, and since 7.8.0 `DailyAt`, `WeeklyAt`, and
+  `Monthly`, whose days are `MonthDay.Day` 1 to 31 (the last day in a shorter month), `LastDay`,
+  `Nth` 1 to 4 of a weekday, and `Last` of a weekday. A rule's days and times form one set of local
+  date-times, so a date-time named twice is due once. A skipped local time is due at the next valid
+  time, a repeated one at its first occurrence. `missed` reads backwards from `now`, so its cost
+  depends on the due times it keeps, not on the gap. `create` and `change` sort and deduplicate days
+  and times before the same-content comparison. The 7.8.0 cases are added after the 7.7 ones, whose
+  stored JSON and index text are unchanged; 7.7 cannot read the new ones.
 - A schedule's run starts at least once per accepted due time, unless its workflow cannot read the
   stored input (below). Its workflow ID is `<schedule ID>@<due time in UTC, "O" format>`, so a
   repeated start stores nothing. The run's input is `ScheduledRun { Schedule; Due; Input }`. Run IDs

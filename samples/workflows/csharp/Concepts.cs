@@ -104,6 +104,21 @@ public static class Reminders
 }
 // docs:end
 
+public static class Rent
+{
+    // docs:monthly
+    public static Task RemindRent(ScheduleClient schedules)
+    {
+        // 09:00 and 18:00, Oslo time, on the last day of each month.
+        var rule = ScheduleRule.NewMonthly(
+            [MonthDay.LastDay],
+            [new TimeOnly(9, 0), new TimeOnly(18, 0)],
+            "Europe/Oslo");
+        return schedules.CreateAsync("ada-rent", "remind", "Pay the rent", rule);
+    }
+    // docs:end
+}
+
 public static class Steps
 {
     // docs:approve
