@@ -441,7 +441,7 @@ type ScheduleClient internal (handle: ScheduleHandle) =
     /// `InvalidOperationException` when the saga starters are not wired, when the workflow is not
     /// registered with the dispatcher or takes another input, and when the schedule refuses: a
     /// schedule with this ID exists with a different content, or was deleted. A repeat with the
-    /// same content is accepted and stores nothing; a weekly rule's days are sorted and their
+    /// same content is accepted and stores nothing; a rule's days and times are sorted and their
     /// repeats removed before the comparison.
     member _.CreateAsync<'TInput>(id: string, workflow: string, input: 'TInput, rule: ScheduleRule, catchUp: CatchUp) : Task =
         Schedules.create handle id workflow input rule catchUp |> Async.StartAsTask :> Task

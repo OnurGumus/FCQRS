@@ -123,6 +123,202 @@ let tests =
                 Expect.equal (Payload.toValue<ScheduleRule> (serializer rule)) rule "rule"
             for policy in [ CatchUp.Latest; CatchUp.All; CatchUp.None ] do
                 Expect.equal (Payload.toValue<CatchUp> (serializer policy)) policy "policy"
+
+        // Monthly, DailyAt and WeeklyAt (7.8.0). Every expected value below was worked out from the
+        // calendar and the zone's offsets, not from the calculator.
+
+        testCase "schedule rule: monthly on the 3rd Wednesday" <| fun _ ->
+            let rule = ScheduleRule.Monthly([ MonthDay.Nth(3, DayOfWeek.Wednesday) ], [ TimeOnly(9, 0) ], oslo)
+            let anchor = utc 2026 11 1 0 0
+            // November 2026 starts on a Sunday: its Wednesdays are 4, 11, 18 and 25. 09:00 CET is 08:00Z.
+            let november = ScheduleRule.next rule anchor (utc 2026 11 15 10 0)
+            Expect.equal november (utc 2026 11 18 8 0) "18 November"
+            // December 2026 starts on a Tuesday: its Wednesdays are 2, 9 and 16.
+            Expect.equal (ScheduleRule.next rule anchor november) (utc 2026 12 16 8 0) "16 December, strictly after"
+
+        testCase "schedule rule: monthly on the last Thursday, a fifth one included" <| fun _ ->
+            let rule = ScheduleRule.Monthly([ MonthDay.Last DayOfWeek.Thursday ], [ TimeOnly(17, 0) ], "UTC")
+            let anchor = utc 2026 11 1 0 0
+            let november = ScheduleRule.next rule anchor anchor
+            Expect.equal november (utc 2026 11 26 17 0) "26 November, the fourth Thursday"
+            let december = ScheduleRule.next rule anchor november
+            Expect.equal december (utc 2026 12 31 17 0) "31 December, the fifth Thursday"
+            Expect.equal (ScheduleRule.next rule anchor december) (utc 2027 1 28 17 0) "28 January"
+
+        testCase "schedule rule: monthly on day 31 runs on the last day of a shorter month" <| fun _ ->
+            let rule = ScheduleRule.Monthly([ MonthDay.Day 31 ], [ TimeOnly(9, 0) ], "UTC")
+            let anchor = utc 2027 1 1 0 0
+            Expect.equal (ScheduleRule.next rule anchor (utc 2027 3 31 9 0)) (utc 2027 4 30 9 0) "April has 30 days"
+            Expect.equal (ScheduleRule.next rule anchor (utc 2027 4 30 9 0)) (utc 2027 5 31 9 0) "May has 31"
+            Expect.equal (ScheduleRule.next rule anchor (utc 2027 1 31 9 0)) (utc 2027 2 28 9 0) "February 2027 has 28"
+            Expect.equal (ScheduleRule.next rule anchor (utc 2028 1 31 9 0)) (utc 2028 2 29 9 0) "February 2028 has 29"
+
+        testCase "schedule rule: monthly on day 29 runs on 28 February in a year that is not a leap year" <| fun _ ->
+            let rule = ScheduleRule.Monthly([ MonthDay.Day 29 ], [ TimeOnly(9, 0) ], "UTC")
+            let anchor = utc 2027 1 1 0 0
+            let february = ScheduleRule.next rule anchor (utc 2027 1 29 9 0)
+            Expect.equal february (utc 2027 2 28 9 0) "28 February 2027"
+            Expect.equal (ScheduleRule.next rule anchor february) (utc 2027 3 29 9 0) "back to the 29th in March"
+            Expect.equal (ScheduleRule.next rule anchor (utc 2028 1 29 9 0)) (utc 2028 2 29 9 0) "29 February 2028"
+
+        testCase "schedule rule: monthly on the last day" <| fun _ ->
+            let rule = ScheduleRule.Monthly([ MonthDay.LastDay ], [ TimeOnly(9, 0) ], "UTC")
+            let anchor = utc 2026 11 1 0 0
+            let dues = List.scan (fun after _ -> ScheduleRule.next rule anchor after) (utc 2026 11 15 0 0) [ 1..4 ] |> List.tail
+            Expect.equal dues [ utc 2026 11 30 9 0; utc 2026 12 31 9 0; utc 2027 1 31 9 0; utc 2027 2 28 9 0 ] "30, 31, 31, 28"
+
+        testCase "schedule rule: several days and times of a month form one set, with repeats collapsed" <| fun _ ->
+            // Day 31 and LastDay are the same day in December and in November; the repeats of Day 1
+            // and of 08:00 add nothing.
+            let rule =
+                ScheduleRule.Monthly(
+                    [ MonthDay.Day 31; MonthDay.LastDay; MonthDay.Day 1; MonthDay.Day 1 ],
+                    [ TimeOnly(18, 0); TimeOnly(8, 0); TimeOnly(8, 0) ],
+                    "UTC"
+                )
+            let anchor = utc 2026 11 1 0 0
+            let expected =
+                [ utc 2026 11 30 8 0; utc 2026 11 30 18 0
+                  utc 2026 12 1 8 0; utc 2026 12 1 18 0
+                  utc 2026 12 31 8 0; utc 2026 12 31 18 0
+                  utc 2027 1 1 8 0; utc 2027 1 1 18 0 ]
+            let after = utc 2026 11 15 0 0
+            let dues = List.scan (fun after _ -> ScheduleRule.next rule anchor after) after [ 1..8 ] |> List.tail
+            Expect.equal dues expected "next, one at a time"
+            Expect.equal (ScheduleRule.missed rule anchor after (utc 2027 1 1 18 0) CatchUp.All) expected "missed, all at once"
+
+        testCase "schedule rule: monthly on the last Sunday at 02:30 in Oslo, across both clock changes" <| fun _ ->
+            let rule = ScheduleRule.Monthly([ MonthDay.Last DayOfWeek.Sunday ], [ TimeOnly(2, 30) ], oslo)
+            let anchor = utc 2026 10 1 0 0
+            let dues = List.scan (fun after _ -> ScheduleRule.next rule anchor after) anchor [ 1..7 ] |> List.tail
+            Expect.equal
+                dues
+                [ // 25 October 2026: 02:30 occurs twice; the first is CEST, 00:30Z. The second, 01:30Z, does not run.
+                  utc 2026 10 25 0 30
+                  utc 2026 11 29 1 30
+                  utc 2026 12 27 1 30
+                  utc 2027 1 31 1 30
+                  utc 2027 2 28 1 30
+                  // 28 March 2027: 02:30 does not exist; the next local time that does is 03:00 CEST, 01:00Z.
+                  utc 2027 3 28 1 0
+                  utc 2027 4 25 0 30 ]
+                "one run a month, at the first occurrence or the next valid time"
+            Expect.equal (ScheduleRule.next rule anchor (utc 2026 3 1 0 0)) (utc 2026 3 29 1 0) "29 March 2026 too"
+
+        testCase "schedule rule: two times inside the skipped hour collapse into one run" <| fun _ ->
+            let rule = ScheduleRule.DailyAt([ TimeOnly(2, 15); TimeOnly(2, 45) ], oslo)
+            let anchor = utc 2027 3 1 0 0
+            let first = ScheduleRule.next rule anchor (utc 2027 3 27 12 0)
+            Expect.equal first (utc 2027 3 28 1 0) "both are 03:00 CEST"
+            Expect.equal (ScheduleRule.next rule anchor first) (utc 2027 3 29 0 15) "then 02:15 CEST the next day"
+
+        testCase "schedule rule: daily at two times" <| fun _ ->
+            let rule = ScheduleRule.DailyAt([ TimeOnly(18, 0); TimeOnly(8, 0) ], oslo)
+            let anchor = utc 2026 11 1 0 0
+            let dues = List.scan (fun after _ -> ScheduleRule.next rule anchor after) (utc 2026 11 14 10 0) [ 1..3 ] |> List.tail
+            Expect.equal dues [ utc 2026 11 14 17 0; utc 2026 11 15 7 0; utc 2026 11 15 17 0 ] "18:00 and 08:00 CET"
+
+        testCase "schedule rule: weekly at several days and times" <| fun _ ->
+            let rule = ScheduleRule.WeeklyAt([ DayOfWeek.Thursday; DayOfWeek.Monday ], [ TimeOnly(17, 30); TimeOnly(8, 0) ], "UTC")
+            let anchor = utc 2026 11 1 0 0
+            // 14 November 2026 is a Saturday.
+            let dues = List.scan (fun after _ -> ScheduleRule.next rule anchor after) (utc 2026 11 14 12 0) [ 1..5 ] |> List.tail
+            Expect.equal
+                dues
+                [ utc 2026 11 16 8 0; utc 2026 11 16 17 30; utc 2026 11 19 8 0; utc 2026 11 19 17 30; utc 2026 11 23 8 0 ]
+                "Monday and Thursday, 08:00 and 17:30"
+
+        testCase "schedule rule: missed of a monthly rule follows the catch-up policy across months" <| fun _ ->
+            let rule = ScheduleRule.Monthly([ MonthDay.Day 15; MonthDay.Day 1 ], [ TimeOnly(9, 0) ], "UTC")
+            let anchor = utc 2026 9 1 0 0
+            let lastDue = utc 2026 9 15 9 0
+            let now = utc 2026 11 20 0 0
+            let all = [ utc 2026 10 1 9 0; utc 2026 10 15 9 0; utc 2026 11 1 9 0; utc 2026 11 15 9 0 ]
+            Expect.equal (ScheduleRule.missed rule anchor lastDue now CatchUp.All) all "all, oldest first"
+            Expect.equal (ScheduleRule.missed rule anchor lastDue now CatchUp.Latest) [ utc 2026 11 15 9 0 ] "latest"
+            Expect.equal (ScheduleRule.missed rule anchor lastDue now CatchUp.None) [] "none"
+            Expect.equal (ScheduleRule.missed rule anchor lastDue (utc 2026 9 30 0 0) CatchUp.Latest) [] "nothing missed"
+            Expect.equal (ScheduleRule.missed rule anchor lastDue (utc 2026 10 1 9 0) CatchUp.All) [ utc 2026 10 1 9 0 ] "a due time at now is missed"
+
+        testCase "schedule rule: All over a long gap of the new rules is bounded" <| fun _ ->
+            let twice = ScheduleRule.DailyAt([ TimeOnly(0, 0); TimeOnly(12, 0) ], "UTC")
+            let result = ScheduleRule.missed twice (utc 2020 1 1 0 0) (utc 2020 1 1 0 0) (utc 2026 11 14 12 0) CatchUp.All
+            Expect.hasLength result 1000 "bounded"
+            Expect.equal (List.last result) (utc 2026 11 14 12 0) "ends at the latest"
+            Expect.equal result.Head (utc 2025 7 3 0 0) "999 half days earlier"
+            Expect.equal result (List.sort result) "ascending"
+            // A hundred years of a monthly rule: 1200 due times.
+            let monthly = ScheduleRule.Monthly([ MonthDay.Day 1 ], [ TimeOnly(0, 0) ], "UTC")
+            let result = ScheduleRule.missed monthly (utc 1926 1 1 0 0) (utc 1926 1 1 0 0) (utc 2026 11 14 0 0) CatchUp.All
+            Expect.hasLength result 1000 "bounded"
+            Expect.equal (List.last result) (utc 2026 11 1 0 0) "ends at the latest"
+            Expect.equal result.Head (utc 1943 8 1 0 0) "999 months earlier"
+            let weekly = ScheduleRule.WeeklyAt([ DayOfWeek.Monday ], [ TimeOnly(8, 0); TimeOnly(9, 0) ], "UTC")
+            Expect.hasLength (ScheduleRule.missed weekly (utc 2010 1 1 0 0) (utc 2010 1 1 0 0) (utc 2026 11 14 0 0) CatchUp.All) 1000 "weekly at two times"
+
+        // A rule with a time every minute has 1440 due times a day. Walking every due time of a ten-year
+        // gap would take minutes; the policies look only at the most recent ones.
+        testCase "schedule rule: Latest and All over a long gap of a rule with many times a day return quickly" <| fun _ ->
+            let everyMinute = [ for minute in 0..1439 -> TimeOnly(minute / 60, minute % 60) ]
+            let now = utc 2036 11 14 12 0
+            let lastDue = utc 2026 11 14 12 0
+            let sw = Diagnostics.Stopwatch.StartNew()
+            for rule in [ ScheduleRule.DailyAt(everyMinute, oslo)
+                          ScheduleRule.WeeklyAt([ DayOfWeek.Friday ], everyMinute, oslo)
+                          ScheduleRule.Monthly([ MonthDay.Day 1 ], everyMinute, oslo) ] do
+                let latest = ScheduleRule.missed rule lastDue lastDue now CatchUp.Latest
+                Expect.hasLength latest 1 $"{rule}: one"
+                Expect.equal latest (ScheduleRule.missed rule lastDue lastDue now CatchUp.All |> List.last |> List.singleton) $"{rule}: the latest of All"
+                Expect.hasLength (ScheduleRule.missed rule lastDue lastDue now CatchUp.All) 1000 $"{rule}: All is bounded"
+            Expect.equal (ScheduleRule.missed (ScheduleRule.DailyAt(everyMinute, oslo)) lastDue lastDue now CatchUp.Latest) [ now ] "every minute: now itself"
+            Expect.isLessThan sw.ElapsedMilliseconds 5000L "fast"
+
+        testCase "schedule rule: validate checks the days, times and zone of the new rules" <| fun _ ->
+            let nine = [ TimeOnly(9, 0) ]
+            let monthly days = ScheduleRule.Monthly(days, nine, "UTC")
+            Expect.isOk (ScheduleRule.validate (monthly [ MonthDay.Day 1; MonthDay.Day 31; MonthDay.LastDay; MonthDay.Nth(1, DayOfWeek.Monday); MonthDay.Nth(4, DayOfWeek.Sunday); MonthDay.Last DayOfWeek.Friday ])) "every case at its limits"
+            Expect.isOk (ScheduleRule.validate (ScheduleRule.DailyAt(nine, oslo))) "daily at"
+            Expect.isOk (ScheduleRule.validate (ScheduleRule.WeeklyAt([ DayOfWeek.Monday ], nine, oslo))) "weekly at"
+            let rejected =
+                [ "monthly, no days", monthly []
+                  "monthly, no day list", monthly Unchecked.defaultof<MonthDay list>
+                  "monthly, a null day", monthly [ Unchecked.defaultof<MonthDay> ]
+                  "monthly, day 0", monthly [ MonthDay.Day 0 ]
+                  "monthly, day 32", monthly [ MonthDay.Day 32 ]
+                  "monthly, day -1", monthly [ MonthDay.Day -1 ]
+                  "monthly, the 0th weekday", monthly [ MonthDay.Nth(0, DayOfWeek.Monday) ]
+                  "monthly, the 5th weekday", monthly [ MonthDay.Nth(5, DayOfWeek.Monday) ]
+                  "monthly, the nth of a day that does not exist", monthly [ MonthDay.Nth(1, enum<DayOfWeek> 7) ]
+                  "monthly, the last of a day that does not exist", monthly [ MonthDay.Last(enum<DayOfWeek> -1) ]
+                  "monthly, no times", ScheduleRule.Monthly([ MonthDay.Day 1 ], [], "UTC")
+                  "monthly, no time list", ScheduleRule.Monthly([ MonthDay.Day 1 ], Unchecked.defaultof<TimeOnly list>, "UTC")
+                  "monthly, unknown zone", ScheduleRule.Monthly([ MonthDay.Day 1 ], nine, "Mars/Base")
+                  "daily at, no times", ScheduleRule.DailyAt([], "UTC")
+                  "daily at, no time list", ScheduleRule.DailyAt(Unchecked.defaultof<TimeOnly list>, "UTC")
+                  "daily at, unknown zone", ScheduleRule.DailyAt(nine, "Mars/Base")
+                  "weekly at, no days", ScheduleRule.WeeklyAt([], nine, "UTC")
+                  "weekly at, no day list", ScheduleRule.WeeklyAt(Unchecked.defaultof<DayOfWeek list>, nine, "UTC")
+                  "weekly at, a day that does not exist", ScheduleRule.WeeklyAt([ enum<DayOfWeek> 9 ], nine, "UTC")
+                  "weekly at, no times", ScheduleRule.WeeklyAt([ DayOfWeek.Monday ], [], "UTC")
+                  "weekly at, no time list", ScheduleRule.WeeklyAt([ DayOfWeek.Monday ], Unchecked.defaultof<TimeOnly list>, "UTC")
+                  "weekly at, unknown zone", ScheduleRule.WeeklyAt([ DayOfWeek.Monday ], nine, "Mars/Base") ]
+            for what, rule in rejected do
+                let result =
+                    try
+                        ScheduleRule.validate rule
+                    with error ->
+                        failtest $"{what}: raised {error.GetType().Name}"
+                Expect.isError result what
+            for zone in [ "Europe"; ""; " "; Unchecked.defaultof<string> ] do
+                Expect.isError (ScheduleRule.validate (ScheduleRule.Monthly([ MonthDay.LastDay ], nine, zone))) $"monthly, zone '{zone}'"
+                Expect.isError (ScheduleRule.validate (ScheduleRule.DailyAt(nine, zone))) $"daily at, zone '{zone}'"
+                Expect.isError (ScheduleRule.validate (ScheduleRule.WeeklyAt([ DayOfWeek.Monday ], nine, zone))) $"weekly at, zone '{zone}'"
+
+        testCase "schedule rule: the new rules survive the journal serializer" <| fun _ ->
+            for rule in [ ScheduleRule.Monthly([ MonthDay.Day 31; MonthDay.LastDay; MonthDay.Nth(3, DayOfWeek.Wednesday); MonthDay.Last DayOfWeek.Thursday ], [ TimeOnly(9, 0); TimeOnly(17, 30) ], oslo)
+                          ScheduleRule.DailyAt([ TimeOnly(8, 0); TimeOnly(20, 0) ], oslo)
+                          ScheduleRule.WeeklyAt([ DayOfWeek.Monday; DayOfWeek.Friday ], [ TimeOnly(8, 0) ], "UTC") ] do
+                Expect.equal (Payload.toValue<ScheduleRule> (Payload.ofValue rule)) rule $"{rule}"
     ]
 
 // The schedule aggregate's decide and fold, tested without an actor system.
@@ -520,4 +716,59 @@ let aggregateTests =
             golden { Schedule = "ada daily"; Due = nine 1; Input = "drink water" } """{"Schedule":"ada daily","Due":"2026-11-01T09:00:00Z","Input":"drink water"}""" "ScheduledRun"
             Expect.equal (Payload.ofValue { Schedule = "ada daily"; Due = nine 1; Input = "drink water" }).Json
                 (json { Schedule = "ada daily"; Due = nine 1; Input = "drink water" }) "a run's stored input is that JSON"
+
+        // The rules added in 7.8.0. The same warning holds: stored schedules hold this JSON.
+        testCase "schedule aggregate: the monthly and several-times rules keep their exact JSON" <| fun _ ->
+            let json (value: 'T) = Text.Json.JsonSerializer.Serialize<'T>(value, Serialization.jsonOptions)
+            let golden (value: 'T) (expected: string) what =
+                Expect.equal (json value) expected what
+                Expect.equal (Text.Json.JsonSerializer.Deserialize<'T>(expected, Serialization.jsonOptions)) value $"{what} reads back"
+            golden (MonthDay.Day 31) """{"Case":"Day","day":31}""" "Day"
+            golden MonthDay.LastDay """{"Case":"LastDay"}""" "LastDay"
+            golden (MonthDay.Nth(3, DayOfWeek.Wednesday)) """{"Case":"Nth","n":3,"weekday":3}""" "Nth"
+            golden (MonthDay.Last DayOfWeek.Thursday) """{"Case":"Last","weekday":4}""" "Last"
+            let monthly =
+                ScheduleRule.Monthly(
+                    [ MonthDay.Day 31; MonthDay.LastDay; MonthDay.Nth(3, DayOfWeek.Wednesday); MonthDay.Last DayOfWeek.Thursday ],
+                    [ TimeOnly(9, 0); TimeOnly(17, 30) ],
+                    "Europe/Oslo"
+                )
+            let monthlyJson =
+                """{"Case":"Monthly","days":[{"Case":"Day","day":31},{"Case":"LastDay"},{"Case":"Nth","n":3,"weekday":3},{"Case":"Last","weekday":4}],"times":["09:00:00","17:30:00"],"zone":"Europe/Oslo"}"""
+            golden monthly monthlyJson "Monthly"
+            golden (ScheduleRule.DailyAt([ TimeOnly(8, 0); TimeOnly(20, 0) ], "Europe/Oslo")) """{"Case":"DailyAt","times":["08:00:00","20:00:00"],"zone":"Europe/Oslo"}""" "DailyAt"
+            golden (ScheduleRule.WeeklyAt([ DayOfWeek.Monday; DayOfWeek.Friday ], [ TimeOnly(8, 0); TimeOnly(16, 45) ], "UTC")) """{"Case":"WeeklyAt","days":[1,5],"times":["08:00:00","16:45:00"],"zone":"UTC"}""" "WeeklyAt"
+            let s = spec monthly CatchUp.All
+            let at = utc 2026 11 1 8 0
+            golden (ScheduleEvent.Created(s, at)) ("""{"Case":"Created","spec":{"Workflow":"remind","Input":{"Type":"System.String","Json":"\u0022hello\u0022"},"Rule":""" + monthlyJson + ""","CatchUp":{"Case":"All"}},"at":"2026-11-01T08:00:00Z"}""") "Created with a monthly rule"
+            golden (ScheduleEvent.Changed(s, at)) ("""{"Case":"Changed","spec":{"Workflow":"remind","Input":{"Type":"System.String","Json":"\u0022hello\u0022"},"Rule":""" + monthlyJson + ""","CatchUp":{"Case":"All"}},"at":"2026-11-01T08:00:00Z"}""") "Changed to a monthly rule"
+
+        testCase "schedule aggregate: a monthly schedule accepts its due times across months" <| fun _ ->
+            let monthly = spec (ScheduleRule.Monthly([ MonthDay.Last DayOfWeek.Sunday ], [ TimeOnly(2, 30) ], "Europe/Oslo")) CatchUp.All
+            let state = given [ utc 2026 10 1 8 0, ScheduleCommand.Create monthly ]
+            let now = utc 2026 12 1 0 0
+            refused now (ScheduleCommand.Fire(utc 2026 10 25 1 30)) state "the second 02:30 of 25 October"
+            refused now (ScheduleCommand.Fire(utc 2026 11 29 1 30)) state "November before October"
+            let reply, state = run now (ScheduleCommand.Fire(utc 2026 10 25 0 30)) state
+            Expect.equal reply (Stored(ScheduleEvent.Firing(utc 2026 10 25 0 30, "remind", hello))) "October, the first 02:30"
+            let _, state = run now (ScheduleCommand.Started(utc 2026 10 25 0 30)) state
+            let reply, _ = run now (ScheduleCommand.Fire(utc 2026 11 29 1 30)) state
+            Expect.equal reply (Stored(ScheduleEvent.Firing(utc 2026 11 29 1 30, "remind", hello))) "then November"
+
+        testCase "schedule aggregate: a create or change with a monthly or several-times rule that cannot produce due times is refused, never raised" <| fun _ ->
+            let nine = [ TimeOnly(9, 0) ]
+            let rules =
+                [ ScheduleRule.Monthly(Unchecked.defaultof<MonthDay list>, nine, "UTC")
+                  ScheduleRule.Monthly([ Unchecked.defaultof<MonthDay> ], nine, "UTC")
+                  ScheduleRule.Monthly([ MonthDay.Day 32 ], nine, "UTC")
+                  ScheduleRule.Monthly([ MonthDay.Nth(5, DayOfWeek.Friday) ], nine, "UTC")
+                  ScheduleRule.Monthly([ MonthDay.Last(enum<DayOfWeek> 9) ], nine, "UTC")
+                  ScheduleRule.Monthly([ MonthDay.LastDay ], Unchecked.defaultof<TimeOnly list>, "UTC")
+                  ScheduleRule.DailyAt([], "UTC")
+                  ScheduleRule.DailyAt(nine, "Europe")
+                  ScheduleRule.WeeklyAt([ DayOfWeek.Monday ], nine, Unchecked.defaultof<string>) ]
+            let existing = given (created CatchUp.Latest)
+            for rule in rules do
+                refused (utc 2026 11 1 8 0) (ScheduleCommand.Create(spec rule CatchUp.Latest)) Schedule.initial $"create with {rule}"
+                refused (utc 2026 11 1 8 30) (ScheduleCommand.Change(spec rule CatchUp.Latest)) existing $"change to {rule}"
     ]

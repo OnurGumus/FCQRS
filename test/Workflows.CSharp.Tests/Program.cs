@@ -277,6 +277,38 @@ async Task Eventually(Func<bool> condition, string what)
         catch (InvalidOperationException) { refused = true; }
         Check(refused, "a create with a different content for the ID throws");
         Check(schedules.State("nobody") is null, "a schedule the index has not read is null");
+
+        // A monthly rule on the 3rd Wednesday and a rule with two times a day. The expected next due
+        // times are worked out here from the calendar, not by FCQRS.
+        var oslo = TimeZoneInfo.FindSystemTimeZoneById("Europe/Oslo");
+        var club = ScheduleRule.NewMonthly(
+            [MonthDay.NewNth(3, DayOfWeek.Wednesday)], [new TimeOnly(18, 0)], "Europe/Oslo");
+        var twice = ScheduleRule.NewDailyAt([new TimeOnly(20, 0), new TimeOnly(8, 0)], "UTC");
+        await schedules.CreateAsync("book-club", "reminder", "read chapter 3", club, CatchUp.Latest);
+        await schedules.CreateAsync("stretch", "reminder", "stretch", twice);
+        await Eventually(() => schedules.State("book-club") is not null && schedules.State("stretch") is not null,
+            "the index has the monthly and the twice-daily schedule");
+
+        DateTime ThirdWednesday(DateTime month)
+        {
+            var first = new DateOnly(month.Year, month.Month, 1);
+            var wednesday = first.AddDays(((int)DayOfWeek.Wednesday - (int)first.DayOfWeek + 7) % 7 + 14);
+            return TimeZoneInfo.ConvertTimeToUtc(wednesday.ToDateTime(new TimeOnly(18, 0)), oslo);
+        }
+        var clubView = schedules.State("book-club")!;
+        var thisMonth = TimeZoneInfo.ConvertTimeFromUtc(clubView.Anchor, oslo);
+        var expectedClub = ThirdWednesday(thisMonth);
+        if (expectedClub <= clubView.Anchor) expectedClub = ThirdWednesday(thisMonth.AddMonths(1));
+        Check(clubView.Rule.Equals(club), "a C# monthly rule reads back from the index");
+        Check(clubView.NextDue.Value == expectedClub,
+            $"a monthly rule on the 3rd Wednesday is next due at 18:00 Oslo time on {expectedClub:O}: {clubView.NextDue.Value:O}");
+
+        var stretchView = schedules.State("stretch")!;
+        var expectedStretch = new[] { 8, 20, 32 }
+            .Select(hours => stretchView.Anchor.Date.AddHours(hours))
+            .First(due => due > stretchView.Anchor);
+        Check(stretchView.NextDue.Value == expectedStretch,
+            $"a rule at 08:00 and 20:00 UTC is next due at {expectedStretch:O}: {stretchView.NextDue.Value:O}");
     }
     finally
     {

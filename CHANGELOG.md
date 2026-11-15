@@ -1,5 +1,35 @@
 # Changelog
 
+## 7.8.0 (FCQRS.Workflows)
+
+- **Monthly schedules.** `ScheduleRule.Monthly(days, times, zone)` is due on days of the month,
+  written as `MonthDay` values: `Day n` from 1 to 31, `LastDay`, `Nth(n, weekday)` with `n` from 1
+  to 4, and `Last weekday`. A month without day `n` runs on its last day, so `Day 31` runs on
+  30 April and on 28 or 29 February. `Nth(3, DayOfWeek.Wednesday)` is the third Wednesday and
+  `Last DayOfWeek.Thursday` the last Thursday, a fifth one included.
+- **Several times a day.** `ScheduleRule.DailyAt(times, zone)` and
+  `ScheduleRule.WeeklyAt(days, times, zone)` take a list of local times. `Monthly` takes one too.
+- A rule's days and times form one set of local date-times, so a date-time that two entries name,
+  such as `Day 31` and `LastDay` in a 31-day month, is due once. Daylight saving works as for
+  `Daily`: a skipped local time is due at the next valid time, and a repeated one once, at its first
+  occurrence. Two times inside a skipped hour are one due time.
+- `ScheduleRule.validate`, and so `create` and `change`, reject an empty or missing day or time list,
+  a `Day` outside 1 to 31, an `Nth` outside 1 to 4, a value that is not a day of the week, and an
+  unknown zone, with an error and never an exception.
+- A repeated `create` sorts and deduplicates the days and times of every rule before it compares
+  the content, as it did for `Weekly` days.
+- `ScheduleRule.missed` reads a rule's local dates backwards from `now` and stops once it has the
+  due times the policy keeps, so a rule with many times a day costs no more after a long downtime
+  than after a short one. For `Daily` and `Weekly` it returns what it returned before.
+- `MonthDay`, `Monthly`, `DailyAt`, and `WeeklyAt` are persistent contracts, in the schedule events
+  and in the index rows, with golden tests. The stored JSON and index text of `Daily`, `Weekly`,
+  and `Every` do not change, and the index format stays 1. FCQRS.Workflows 7.7 cannot read the new
+  rules: roll back only before a schedule uses one.
+- In C#, `ScheduleRule.NewMonthly`, `NewDailyAt`, and `NewWeeklyAt` take F# lists, which a
+  collection expression builds, and a day is `MonthDay.NewNth(3, DayOfWeek.Wednesday)`,
+  `MonthDay.NewDay`, `MonthDay.NewLast`, or `MonthDay.LastDay`.
+- The package needs FCQRS core 7.2.3.
+
 ## 7.7.3 (FCQRS.Workflows)
 
 - A cancelled parent sends its children's cancels again when it recovers. 7.7.2 sent each cancel

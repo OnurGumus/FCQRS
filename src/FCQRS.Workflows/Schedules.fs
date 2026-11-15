@@ -2,8 +2,24 @@ namespace FCQRS.Workflows
 
 open System
 
-/// When a schedule is due, written `ScheduleRule.Daily`, `ScheduleRule.Weekly` or `ScheduleRule.Every`.
-/// A rule is stored in the schedule's journal, so its cases and fields are a persistent contract.
+/// A day of the month for `ScheduleRule.Monthly`, written `MonthDay.Day 15`, `MonthDay.LastDay`,
+/// `MonthDay.Nth(3, DayOfWeek.Wednesday)` or `MonthDay.Last DayOfWeek.Thursday`. Stored in the
+/// schedule's journal, so its cases and fields are a persistent contract.
+[<RequireQualifiedAccess>]
+type MonthDay =
+    /// The day with this number, from 1 to 31. A month without it runs on its last day, so `Day 31`
+    /// runs on 30 April and on 28 or 29 February.
+    | Day of day: int
+    /// The month's last day.
+    | LastDay
+    /// The nth such weekday of the month, `n` from 1 to 4. `Last` covers a fifth one.
+    | Nth of n: int * weekday: DayOfWeek
+    /// The month's last such weekday.
+    | Last of weekday: DayOfWeek
+
+/// When a schedule is due, written `ScheduleRule.Daily`, `ScheduleRule.Weekly`, `ScheduleRule.Every`,
+/// `ScheduleRule.DailyAt`, `ScheduleRule.WeeklyAt` or `ScheduleRule.Monthly`. A rule is stored in the
+/// schedule's journal, so its cases and fields are a persistent contract.
 [<RequireQualifiedAccess>]
 type ScheduleRule =
     /// Every day at a local time in a time zone. The zone is a time-zone ID such as "Europe/Oslo".
@@ -12,6 +28,14 @@ type ScheduleRule =
     | Weekly of days: DayOfWeek list * time: TimeOnly * zone: string
     /// Every interval, counted from the schedule's creation or last change.
     | Every of interval: TimeSpan
+    /// Every day at each of the listed local times in a time zone.
+    | DailyAt of times: TimeOnly list * zone: string
+    /// On the listed days of the week at each of the listed local times in a time zone.
+    | WeeklyAt of days: DayOfWeek list * times: TimeOnly list * zone: string
+    /// On the listed days of each month at each of the listed local times in a time zone. The days
+    /// and times form one set of local date-times per month: a date-time that two entries name, such
+    /// as `Day 31` and `LastDay` in a 31-day month, is due once.
+    | Monthly of days: MonthDay list * times: TimeOnly list * zone: string
 
 /// What a schedule does about due times that passed while nothing could start a run. The policy is
 /// stored in the schedule's journal, so its cases are a persistent contract.
@@ -46,13 +70,43 @@ module ScheduleRule =
                 zone.GetUtcOffset local
         DateTime.SpecifyKind(local - offset, DateTimeKind.Utc)
 
-    // The first due time strictly after `after` on a day the predicate accepts.
-    let private nextLocal zone (time: TimeOnly) (accepts: DayOfWeek -> bool) (after: DateTime) =
-        let startDay = DateOnly.FromDateTime(TimeZoneInfo.ConvertTimeFromUtc(after, zone)).AddDays -1
-        // A weekly rule with one day finds it within a week; a year bounds a zone that never matches.
+    // Whether a local date is the given day of its month.
+    let private isMonthDay (date: DateOnly) (day: MonthDay) =
+        let length = DateTime.DaysInMonth(date.Year, date.Month)
+        match day with
+        | MonthDay.Day n -> date.Day = min n length
+        | MonthDay.LastDay -> date.Day = length
+        | MonthDay.Nth(n, weekday) -> date.DayOfWeek = weekday && (date.Day - 1) / 7 + 1 = n
+        | MonthDay.Last weekday -> date.DayOfWeek = weekday && date.Day + 7 > length
+
+    // A rule due at local times (Local): its zone, the local dates it is due on, and its times of day
+    // in order without repeats. Or an `Every` rule (Interval).
+    let private (|Local|Interval|) (rule: ScheduleRule) =
+        let local zone (accepts: DateOnly -> bool) (times: TimeOnly list) =
+            Local(zoneOf zone, accepts, times |> List.distinct |> List.sort |> Array.ofList)
+
+        let onWeekdays (days: DayOfWeek list) (date: DateOnly) = List.contains date.DayOfWeek days
+
+        match rule with
+        | ScheduleRule.Daily(time, zone) -> local zone (fun _ -> true) [ time ]
+        | ScheduleRule.Weekly(days, time, zone) -> local zone (onWeekdays days) [ time ]
+        | ScheduleRule.DailyAt(times, zone) -> local zone (fun _ -> true) times
+        | ScheduleRule.WeeklyAt(days, times, zone) -> local zone (onWeekdays days) times
+        | ScheduleRule.Monthly(days, times, zone) -> local zone (fun date -> List.exists (isMonthDay date) days) times
+        | ScheduleRule.Every interval -> Interval interval
+
+    let private localDate (zone: TimeZoneInfo) (at: DateTime) = DateOnly.FromDateTime(TimeZoneInfo.ConvertTimeFromUtc(at, zone))
+
+    // The first due time strictly after `after`, on an accepted local date at one of the times. The
+    // times are in order, and a later local date-time is a later instant, so the first one found is
+    // the earliest.
+    let private nextLocal (zone: TimeZoneInfo, accepts: DateOnly -> bool, times: TimeOnly[]) (after: DateTime) =
+        let startDay = (localDate zone after).AddDays -1
+        // A weekly rule finds its day within a week and a monthly rule within two months; a year
+        // bounds a rule that never matches.
         Seq.init 400 startDay.AddDays
-        |> Seq.filter (fun day -> accepts day.DayOfWeek)
-        |> Seq.map (fun day -> toUtc zone day time)
+        |> Seq.filter accepts
+        |> Seq.collect (fun day -> times |> Seq.map (toUtc zone day))
         |> Seq.tryFind (fun due -> due > after)
         |> Option.defaultWith (fun () -> failwith "No due time within a year of the given time.")
 
@@ -60,9 +114,8 @@ module ScheduleRule =
     /// time, which `Every` counts from. All times are UTC.
     let next (rule: ScheduleRule) (anchor: DateTime) (after: DateTime) : DateTime =
         match rule with
-        | ScheduleRule.Daily(time, zone) -> nextLocal (zoneOf zone) time (fun _ -> true) after
-        | ScheduleRule.Weekly(days, time, zone) -> nextLocal (zoneOf zone) time (fun day -> List.contains day days) after
-        | ScheduleRule.Every interval ->
+        | Local local -> nextLocal local after
+        | Interval interval ->
             let elapsed = after - anchor
             let intervals = if elapsed < interval then 1L else elapsed.Ticks / interval.Ticks + 1L
             anchor + TimeSpan.FromTicks(interval.Ticks * intervals)
@@ -80,34 +133,54 @@ module ScheduleRule =
         let last = if now < anchor then 0L else (now - anchor).Ticks / interval.Ticks
         first, last
 
+    // The `keep` most recent due times of a local rule in (lastDue, now], oldest first. It reads the
+    // local dates backwards from `now` and stops once it has them, so its cost depends on `keep` and
+    // the number of times a day, not on the length of the gap. Two times that become the same instant,
+    // such as two times inside the hour that a clock change skips, are one due time.
+    let private recentLocal (zone: TimeZoneInfo, accepts: DateOnly -> bool, times: TimeOnly[]) (lastDue: DateTime) (now: DateTime) (keep: int) =
+        let found = ResizeArray<DateTime>()
+
+        if now > lastDue then
+            let firstDay = localDate zone lastDue
+            let firstDay = if firstDay > DateOnly.MinValue then firstDay.AddDays -1 else firstDay
+            let lastDay = localDate zone now
+            let mutable day = if lastDay < DateOnly.MaxValue then lastDay.AddDays 1 else lastDay
+            let mutable reading = true
+
+            while reading && found.Count < keep do
+                if accepts day then
+                    for index in times.Length - 1 .. -1 .. 0 do
+                        let due = toUtc zone day times[index]
+                        let earlier = found.Count = 0 || due < found[found.Count - 1]
+                        if found.Count < keep && due <= now && due > lastDue && earlier then
+                            found.Add due
+
+                if day > firstDay then day <- day.AddDays -1 else reading <- false
+
+        found.Reverse()
+        List.ofSeq found
+
     /// The due times in `(lastDue, now]` that the policy runs, oldest first. All times are UTC.
     /// `CatchUp.All` returns at most the `MaxMissed` (1000) most recent of them. `CatchUp.Latest`
-    /// returns at most one.
+    /// returns at most one. Neither walks the due times of the whole gap.
     let missed (rule: ScheduleRule) (anchor: DateTime) (lastDue: DateTime) (now: DateTime) (policy: CatchUp) : DateTime list =
         let keep = match policy with CatchUp.All -> MaxMissed | _ -> 1
         match policy, rule with
         | CatchUp.None, _ -> []
-        | _, ScheduleRule.Every interval ->
+        | _, Interval interval ->
             let first, last = everyRange interval anchor lastDue now
             let start = max first (last - int64 keep + 1L)
             [ for k in start..last -> anchor + TimeSpan.FromTicks(interval.Ticks * k) ]
-        | _ ->
-            // A window of the most recent due times: the whole list is never held.
-            let window = System.Collections.Generic.Queue<DateTime>()
-            let mutable due = next rule anchor lastDue
-            while due <= now do
-                window.Enqueue due
-                if window.Count > keep then window.Dequeue() |> ignore
-                due <- next rule anchor due
-            List.ofSeq window
+        | _, Local local -> recentLocal local lastDue now keep
 
     /// The longest `Every` interval: 366 days, which keeps every due time far from the largest
     /// `DateTime`.
     let MaxInterval = TimeSpan.FromDays 366.0
 
     /// Checks that a rule can produce due times: a time zone this system can read, at least one day
-    /// that exists, and an interval from one second to `MaxInterval` (366 days). Returns an error,
-    /// never an exception, whatever the rule holds.
+    /// that exists, at least one time of day, and an interval from one second to `MaxInterval` (366
+    /// days). A monthly day is `Day` 1 to 31, `LastDay`, `Nth` 1 to 4 of a day of the week, or `Last`
+    /// of a day of the week. Returns an error, never an exception, whatever the rule holds.
     let validate (rule: ScheduleRule) : Result<unit, string> =
         let checkZone (zone: string) =
             if String.IsNullOrWhiteSpace zone then
@@ -129,6 +202,31 @@ module ScheduleRule =
                 | Some day -> Error $"{int day} is not a day of the week."
                 | Option.None -> Ok()
 
+        let checkTimes (times: TimeOnly list) =
+            if isNull (box times) || times.IsEmpty then
+                Error "A schedule needs at least one time of day."
+            else
+                Ok()
+
+        let checkMonthDays (days: MonthDay list) =
+            let problem (day: MonthDay) =
+                if isNull (box day) then
+                    Some "A monthly schedule's day is missing."
+                else
+                    match day with
+                    | MonthDay.Day n when n < 1 || n > 31 -> Some $"Day {n} is not a day of the month: use 1 to 31."
+                    | MonthDay.Nth(n, _) when n < 1 || n > 4 -> Some $"Nth {n} is not supported: use 1 to 4, or Last."
+                    | MonthDay.Nth(_, weekday)
+                    | MonthDay.Last weekday when not (Enum.IsDefined weekday) -> Some $"{int weekday} is not a day of the week."
+                    | _ -> Option.None
+
+            if isNull (box days) || days.IsEmpty then
+                Error "A monthly schedule needs at least one day."
+            else
+                match List.tryPick problem days with
+                | Some reason -> Error reason
+                | Option.None -> Ok()
+
         if isNull (box rule) then
             Error "A schedule needs a rule."
         else
@@ -138,6 +236,11 @@ module ScheduleRule =
             | ScheduleRule.Every interval when interval < TimeSpan.FromSeconds 1.0 -> Error "The interval must be at least 1 second."
             | ScheduleRule.Every interval when interval > MaxInterval -> Error "The interval must be at most 366 days."
             | ScheduleRule.Every _ -> Ok()
+            | ScheduleRule.DailyAt(times, zone) -> checkTimes times |> Result.bind (fun () -> checkZone zone)
+            | ScheduleRule.WeeklyAt(days, times, zone) ->
+                checkDays days |> Result.bind (fun () -> checkTimes times) |> Result.bind (fun () -> checkZone zone)
+            | ScheduleRule.Monthly(days, times, zone) ->
+                checkMonthDays days |> Result.bind (fun () -> checkTimes times) |> Result.bind (fun () -> checkZone zone)
 
 /// What a schedule starts and when. Stored in the schedule's journal, so its fields are a
 /// persistent contract.
@@ -573,14 +676,27 @@ module internal ScheduleIndex =
             node[name] <- value
         node
 
+    let private monthDay (value: MonthDay) : JsonNode =
+        match value with
+        | MonthDay.Day n -> objectOf [ "day", JsonValue.Create n ]
+        | MonthDay.LastDay -> text "lastDay"
+        | MonthDay.Nth(n, weekday) -> objectOf [ "nth", objectOf [ "n", JsonValue.Create n; "weekday", text (string weekday) ] ]
+        | MonthDay.Last weekday -> objectOf [ "last", text (string weekday) ]
+
     let private rule (value: ScheduleRule) =
         let timeOf (at: TimeOnly) = text (at.ToString("O", CultureInfo.InvariantCulture))
+        let timesOf (times: TimeOnly list) = JsonArray([| for at in times -> timeOf at |])
+        let daysOf (days: DayOfWeek list) = JsonArray([| for day in days -> text (string day) |])
         match value with
         | ScheduleRule.Daily(at, zone) -> objectOf [ "daily", objectOf [ "time", timeOf at; "zone", text zone ] ]
-        | ScheduleRule.Weekly(days, at, zone) ->
-            let names = JsonArray([| for day in days -> text (string day) |])
-            objectOf [ "weekly", objectOf [ "days", names; "time", timeOf at; "zone", text zone ] ]
+        | ScheduleRule.Weekly(days, at, zone) -> objectOf [ "weekly", objectOf [ "days", daysOf days; "time", timeOf at; "zone", text zone ] ]
         | ScheduleRule.Every interval -> objectOf [ "every", text (interval.ToString("c", CultureInfo.InvariantCulture)) ]
+        | ScheduleRule.DailyAt(times, zone) -> objectOf [ "dailyAt", objectOf [ "times", timesOf times; "zone", text zone ] ]
+        | ScheduleRule.WeeklyAt(days, times, zone) ->
+            objectOf [ "weeklyAt", objectOf [ "days", daysOf days; "times", timesOf times; "zone", text zone ] ]
+        | ScheduleRule.Monthly(days, times, zone) ->
+            let days = JsonArray([| for day in days -> monthDay day |])
+            objectOf [ "monthly", objectOf [ "days", days; "times", timesOf times; "zone", text zone ] ]
 
     let private catchUp (value: CatchUp) =
         text (
@@ -625,26 +741,51 @@ module internal ScheduleIndex =
     let private timeOf (node: JsonNode) = DateTime.ParseExact(textOf node, "O", CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind)
     let private timeOnlyOf (node: JsonNode) = TimeOnly.ParseExact(textOf node, "O", CultureInfo.InvariantCulture)
 
-    let private ruleOf (node: JsonNode) =
+    // The one case of a case object such as {"daily": {...}}: its name and its value.
+    let private caseOf (what: string) (node: JsonNode) =
         let cases = node.AsObject()
         if cases.Count <> 1 then
-            raise (FormatException "An index row's rule has one case.")
+            raise (FormatException $"An index row's {what} has one case.")
 
         let case = Seq.head cases
-        let value = case.Value |> Option.ofObj |> Option.defaultWith (fun () -> raise (FormatException "An index row's rule is empty."))
+        let value = case.Value |> Option.ofObj |> Option.defaultWith (fun () -> raise (FormatException $"An index row's {what} is empty."))
+        case.Key, value
 
-        match case.Key with
-        | "daily" -> ScheduleRule.Daily(timeOnlyOf (field value "time"), textOf (field value "zone"))
-        | "weekly" ->
-            let days =
-                [ for day in (field value "days").AsArray() ->
-                      match day with
-                      | null -> raise (FormatException "An index row's day is empty.")
-                      | day -> Enum.Parse<DayOfWeek>(textOf day) ]
+    // The items of an array field, none of them null.
+    let private itemsOf (node: JsonNode) (name: string) (what: string) : JsonNode list =
+        [ for item in (field node name).AsArray() ->
+              match item with
+              | null -> raise (FormatException $"An index row's {what} is empty.")
+              | item -> item ]
 
-            ScheduleRule.Weekly(days, timeOnlyOf (field value "time"), textOf (field value "zone"))
-        | "every" -> ScheduleRule.Every(TimeSpan.ParseExact(textOf value, "c", CultureInfo.InvariantCulture))
-        | other -> raise (FormatException $"Unknown rule '{other}' in an index row.")
+    let private monthDayOf (node: JsonNode) =
+        match node.GetValueKind() with
+        | Text.Json.JsonValueKind.String ->
+            match textOf node with
+            | "lastDay" -> MonthDay.LastDay
+            | other -> raise (FormatException $"Unknown month day '{other}' in an index row.")
+        | Text.Json.JsonValueKind.Object ->
+            match caseOf "month day" node with
+            | "day", value -> MonthDay.Day(value.GetValue<int>())
+            | "nth", value -> MonthDay.Nth((field value "n").GetValue<int>(), Enum.Parse<DayOfWeek>(textOf (field value "weekday")))
+            | "last", value -> MonthDay.Last(Enum.Parse<DayOfWeek>(textOf value))
+            | other, _ -> raise (FormatException $"Unknown month day '{other}' in an index row.")
+        | _ -> raise (FormatException "An index row's month day is neither text nor an object.")
+
+    let private ruleOf (node: JsonNode) =
+        let days value = [ for day in itemsOf value "days" "day" -> Enum.Parse<DayOfWeek>(textOf day) ]
+        let times value = [ for at in itemsOf value "times" "time" -> timeOnlyOf at ]
+
+        match caseOf "rule" node with
+        | "daily", value -> ScheduleRule.Daily(timeOnlyOf (field value "time"), textOf (field value "zone"))
+        | "weekly", value -> ScheduleRule.Weekly(days value, timeOnlyOf (field value "time"), textOf (field value "zone"))
+        | "every", value -> ScheduleRule.Every(TimeSpan.ParseExact(textOf value, "c", CultureInfo.InvariantCulture))
+        | "dailyAt", value -> ScheduleRule.DailyAt(times value, textOf (field value "zone"))
+        | "weeklyAt", value -> ScheduleRule.WeeklyAt(days value, times value, textOf (field value "zone"))
+        | "monthly", value ->
+            let monthDays = [ for day in itemsOf value "days" "day" -> monthDayOf day ]
+            ScheduleRule.Monthly(monthDays, times value, textOf (field value "zone"))
+        | other, _ -> raise (FormatException $"Unknown rule '{other}' in an index row.")
 
     let private catchUpOf (node: JsonNode) =
         match textOf node with
@@ -1532,10 +1673,16 @@ module Schedules =
             | _ -> return ()
         }
 
-    // A weekly rule's days in order and without repeats, so the same days are the same content.
+    // A rule's days and times in order and without repeats, so the same days and times are the same
+    // content.
     let private normalize (rule: ScheduleRule) =
+        let sorted list = list |> List.distinct |> List.sort
+
         match rule with
-        | ScheduleRule.Weekly(days, time, zone) -> ScheduleRule.Weekly(days |> List.distinct |> List.sort, time, zone)
+        | ScheduleRule.Weekly(days, time, zone) -> ScheduleRule.Weekly(sorted days, time, zone)
+        | ScheduleRule.DailyAt(times, zone) -> ScheduleRule.DailyAt(sorted times, zone)
+        | ScheduleRule.WeeklyAt(days, times, zone) -> ScheduleRule.WeeklyAt(sorted days, sorted times, zone)
+        | ScheduleRule.Monthly(days, times, zone) -> ScheduleRule.Monthly(sorted days, sorted times, zone)
         | rule -> rule
 
     // Checks the arguments before anything is sent, so a caller's mistake raises ArgumentException
@@ -1574,7 +1721,7 @@ module Schedules =
     /// the saga starters are not wired, when the workflow is not registered with the dispatcher or
     /// takes another input, and when the schedule refuses: a schedule with this ID exists with a
     /// different content, or was deleted. A repeat with the same content is accepted and stores
-    /// nothing; a weekly rule's days are sorted and their repeats removed before the comparison.
+    /// nothing; a rule's days and times are sorted and their repeats removed before the comparison.
     let create (handle: ScheduleHandle) (id: string) (workflow: string) (input: 'Input) (rule: ScheduleRule) (catchUp: CatchUp) : Async<unit> =
         async {
             let spec = specOf handle id workflow input rule catchUp

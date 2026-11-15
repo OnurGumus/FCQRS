@@ -855,6 +855,68 @@ let private weeklyDaysNormalized =
             finally
                 node.Stop()
 
+let private newRulesNormalized =
+    testCase "schedules: the days and times of monthly and several-times rules are sorted and repeats removed, so a reordered create is the same content" <| fun _ ->
+        withDb <| fun db ->
+            let node = boot db "ScheduleRulesNormalized" TimeSpan.Zero (Runs())
+            try
+                let nine, five = TimeOnly(9, 0), TimeOnly(17, 0)
+                let wednesday = DayOfWeek.Wednesday
+                let cases =
+                    [ "monthly",
+                      ScheduleRule.Monthly([ MonthDay.LastDay; MonthDay.Nth(3, wednesday); MonthDay.Day 31; MonthDay.LastDay ], [ five; nine; five ], "UTC"),
+                      ScheduleRule.Monthly([ MonthDay.Nth(3, wednesday); MonthDay.Day 31; MonthDay.LastDay ], [ nine; five; nine ], "UTC"),
+                      ScheduleRule.Monthly([ MonthDay.Day 31; MonthDay.LastDay; MonthDay.Nth(3, wednesday) ], [ nine; five ], "UTC"),
+                      ScheduleRule.Monthly([ MonthDay.Day 31; MonthDay.LastDay; MonthDay.Nth(3, wednesday) ], [ nine ], "UTC")
+                      "daily at",
+                      ScheduleRule.DailyAt([ five; nine; five ], "UTC"),
+                      ScheduleRule.DailyAt([ nine; five ], "UTC"),
+                      ScheduleRule.DailyAt([ nine; five ], "UTC"),
+                      ScheduleRule.DailyAt([ nine ], "UTC")
+                      "weekly at",
+                      ScheduleRule.WeeklyAt([ DayOfWeek.Thursday; DayOfWeek.Monday; DayOfWeek.Thursday ], [ five; nine ], "UTC"),
+                      ScheduleRule.WeeklyAt([ DayOfWeek.Monday; DayOfWeek.Thursday ], [ nine; nine; five ], "UTC"),
+                      ScheduleRule.WeeklyAt([ DayOfWeek.Monday; DayOfWeek.Thursday ], [ nine; five ], "UTC"),
+                      ScheduleRule.WeeklyAt([ DayOfWeek.Monday ], [ nine; five ], "UTC") ]
+                for what, first, reordered, stored, different in cases do
+                    let id = what.Replace(' ', '-')
+                    let create rule = Schedules.create node.Schedules id "remind" "x" rule CatchUp.Latest
+                    sync (create first)
+                    sync (create reordered)
+                    Expect.throwsT<InvalidOperationException> (fun () -> sync (create different)) $"{what}: a create with other days or times is refused"
+                    eventually $"{what}: the index has the schedule" (fun () -> hasView node id)
+                    Expect.equal (view node id).Rule stored $"{what}: the stored days and times are sorted, without repeats"
+            finally
+                node.Stop()
+
+let private monthlyFires =
+    testCase "schedules: a monthly schedule starts a run for each due time missed across a month boundary" <| fun _ ->
+        withDb <| fun db ->
+            let runs = Runs()
+            let rule = ScheduleRule.Monthly([ MonthDay.Nth(1, DayOfWeek.Monday); MonthDay.LastDay ], [ TimeOnly(9, 0) ], "Europe/Oslo")
+            let first = boot db "ScheduleMonthly" TimeSpan.Zero runs
+            let anchor =
+                try
+                    sync (Schedules.create first.Schedules "m" "remind" "x" rule CatchUp.All)
+                    eventually "the index has the schedule" (fun () -> hasView first "m")
+                    (view first "m").Anchor
+                finally
+                    first.Stop()
+            Expect.equal runs.Count 0 "no run before the first due time"
+
+            // Three due times of two a month always span a month boundary.
+            let fourDues = List.scan (fun after _ -> ScheduleRule.next rule anchor after) anchor [ 1..4 ] |> List.tail
+            let missed, upcoming = List.take 3 fourDues, List.last fourDues
+            Expect.notEqual missed.Head.Month (List.last missed).Month "the missed due times span a month boundary"
+            let second = boot db "ScheduleMonthly" (List.last missed - DateTime.UtcNow + TimeSpan.FromSeconds 2.0) runs
+            try
+                eventually "a run for each missed due time" (fun () -> runs.Count >= 3)
+                Thread.Sleep 2000
+                Expect.equal (dues runs) missed "one run for each, no more"
+                eventually "the next due time is the first in the future" (fun () -> (view second "m").NextDue = Some upcoming)
+            finally
+                second.Stop()
+
 // The stored index. Its table name, row shape and projection name are persistent contracts, so
 // these tests spell them out instead of reading them from the code.
 
@@ -1291,6 +1353,44 @@ let private rowGolden =
         Expect.equal (ScheduleIndex.decode plainText) plain "it reads back"
         Expect.throws (fun () -> ScheduleIndex.decode (plainText.Replace("\"format\":1", "\"format\":2")) |> ignore) "a row of an unknown format is refused"
 
+// The rules added in 7.8.0 are written into the same format: a 7.7 row reads as it did.
+let private rowGoldenRules =
+    testCase "schedules: an index row's stored text for monthly and several-times rules is a persistent contract" <| fun _ ->
+        let row (rule: ScheduleRule) : ScheduleState =
+            let spec =
+                { Workflow = "remind"
+                  Input = blank
+                  Rule = rule
+                  CatchUp = CatchUp.All }
+            { Schedule.initial with
+                Created = Some(spec, at 1 8)
+                Spec = Some spec
+                Anchor = at 1 8 }
+        let text (rule: string) =
+            $$"""{"format":1,"created":{"spec":{"workflow":"remind","rule":{{rule}},"catchUp":"All"},"at":"2026-11-01T08:00:00.0000000Z"},"spec":{"workflow":"remind","rule":{{rule}},"catchUp":"All"},"anchor":"2026-11-01T08:00:00.0000000Z","pausedAt":null,"resumedAt":null,"deletedAt":null,"last":null}"""
+        let cases =
+            [ "monthly",
+              ScheduleRule.Monthly(
+                  [ MonthDay.Day 31; MonthDay.LastDay; MonthDay.Nth(3, DayOfWeek.Wednesday); MonthDay.Last DayOfWeek.Thursday ],
+                  [ TimeOnly(9, 0); TimeOnly(17, 30, 0, 250) ],
+                  "Europe/Oslo"
+              ),
+              """{"monthly":{"days":[{"day":31},"lastDay",{"nth":{"n":3,"weekday":"Wednesday"}},{"last":"Thursday"}],"times":["09:00:00.0000000","17:30:00.2500000"],"zone":"Europe/Oslo"}}"""
+              "daily at",
+              ScheduleRule.DailyAt([ TimeOnly(8, 0); TimeOnly(20, 0) ], "Europe/Oslo"),
+              """{"dailyAt":{"times":["08:00:00.0000000","20:00:00.0000000"],"zone":"Europe/Oslo"}}"""
+              "weekly at",
+              ScheduleRule.WeeklyAt([ DayOfWeek.Monday; DayOfWeek.Friday ], [ TimeOnly(8, 0); TimeOnly(16, 45) ], "UTC"),
+              """{"weeklyAt":{"days":["Monday","Friday"],"times":["08:00:00.0000000","16:45:00.0000000"],"zone":"UTC"}}""" ]
+        for what, rule, ruleText in cases do
+            Expect.equal (ScheduleIndex.encode (row rule)) (text ruleText) $"{what}: the row text"
+            Expect.equal (ScheduleIndex.decode (text ruleText)) (row rule) $"{what}: the row reads back"
+        for broken in [ """{"monthly":{"days":[{"week":2}],"times":["09:00:00.0000000"],"zone":"UTC"}}"""
+                        """{"monthly":{"days":["firstDay"],"times":["09:00:00.0000000"],"zone":"UTC"}}"""
+                        """{"monthly":{"days":[null],"times":["09:00:00.0000000"],"zone":"UTC"}}"""
+                        """{"dailyAt":{"times":[null],"zone":"UTC"}}""" ] do
+            Expect.throwsT<FormatException> (fun () -> ScheduleIndex.decode (text broken) |> ignore) $"refused: {broken}"
+
 let tests =
     testSequenced (
         testList "schedules" [
@@ -1324,6 +1424,9 @@ let tests =
             clockStepsBack
             weeklyDaysNormalized
             rowGolden
+            rowGoldenRules
+            newRulesNormalized
+            monthlyFires
             restartReadsNewEvents None
             upgradeBuildsIndex None
             deleteWhileDown
