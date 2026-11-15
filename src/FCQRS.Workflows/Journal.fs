@@ -52,6 +52,9 @@ type StepError =
 [<RequireQualifiedAccess>]
 type WorkflowRecord =
     | Started of input: Payload * at: DateTime * traceparent: string option * parent: string option
+    /// A step's start. `detail` is the due time of a timer or of a signal wait's timeout, in
+    /// round-trip format, and the child's ID for a step that starts or waits for a child (stored
+    /// since 7.7.3). Other steps store `None`.
     | StepScheduled of path: string * name: string * kind: StepKind * at: DateTime * detail: string option
     | StepCompleted of path: string * name: string * kind: StepKind * result: Payload * at: DateTime
     | StepFailed of path: string * name: string * kind: StepKind * error: StepError * at: DateTime

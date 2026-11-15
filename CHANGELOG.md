@@ -8,11 +8,22 @@
   recovers, whether it is still running its cleanup, is parked, or has ended, it sends a cancel to
   each child that the cancel reached: the children of the child steps the cancel failed. A parent
   that has ended recovers only when a request reaches it, so until then such a child keeps running.
-  A child that was never started, or has ended, refuses the cancel, which changes nothing. A parent
-  can resume before its child's workflow is registered, so a cancel that finds no such workflow is
-  sent again a few times over about 30 seconds and then logged as a warning.
+  A child that was never started, or has ended, refuses the cancel, which changes nothing. An ended
+  parent sends the cancels at every recovery, for example at a status request after it left memory,
+  and each one makes a child that is not in memory replay its journal to refuse it. A parent can
+  resume before its child's workflow is registered, so a cancel that finds no such workflow is sent
+  again a few times over about 30 seconds and then logged as a warning.
 - A parked parent that is cancelled cancels the child it was starting or waiting for. In 7.7.2 it
-  ended without cancelling any child.
+  ended without cancelling any child. A child step in a race's losing branch, or in a branch of a
+  block that the body went past, stays scheduled in the journal but is no longer waited for, so its
+  child keeps running, as it does when a running parent is cancelled. One case remains: when a
+  failed `all` or `allAtMost` abandoned a branch and the parent was parked before it stored any step
+  after that block, the journal does not show the abandonment, and the cancel reaches the child of
+  that branch.
+- A parent whose child steps were all stored before 7.7.3 keeps 7.7.2's behaviour when it is
+  parked and cancelled: it cancels no child, and a parked parent cancelled under 7.7.2 sends no
+  cancel when it recovers after the upgrade. A child that such a parent left running for weeks is
+  not cancelled by the upgrade.
 - The `StepScheduled` record of a `startChild` or `awaitChild` step holds the child's ID in its
   `detail`, so a recovery that does not run the body knows which child to cancel. 7.7.2 ignores the
   field for these steps, so a rollback reads the new records. A step stored before 7.7.3 holds no
@@ -35,7 +46,9 @@
   parent awaits later still has its own trace.
 - The concepts page warns against starting an instance of a child's workflow with an ID of the form
   `{parentId}:{path}`. A parent whose child would get that ID takes the instance for its child,
-  waits for it, and cancels it. Child IDs do not change.
+  waits for it, and cancels it. A child's ID leaves out the parent's workflow name, so two parent
+  workflows with the same instance ID that start the same child workflow at the same path share one
+  child. Child IDs do not change.
 - The package needs FCQRS core 7.2.3.
 
 ## 7.7.2 (FCQRS.Workflows)

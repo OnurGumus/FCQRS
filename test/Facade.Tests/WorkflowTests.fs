@@ -855,6 +855,13 @@ let private silentRegion (api: IActor) (workflow: string) =
     FCQRS.AkklingHelpers.Internal.entityFactoryFor api.System FCQRS.Common.Internal.shardResolver workflow silent PassivationPolicy.Default false
     |> ignore
 
+/// The IDs of the instances of a workflow that are in memory.
+let private inMemory (api: IActor) (workflow: string) : string list =
+    let region = Akka.Cluster.Sharding.ClusterSharding.Get(api.System).ShardRegion workflow
+    let state = Akka.Actor.Futures.Ask<Akka.Cluster.Sharding.CurrentShardRegionState>(region, box Akka.Cluster.Sharding.GetShardRegionState.Instance, Nullable wait).Result
+    [ for shard in state.Shards do
+          for entity in shard.EntityIds -> Uri.UnescapeDataString entity ]
+
 let private cancelChildRecoveryTest =
     testCase "workflow: a cancelled parent sends its child the cancel again when it recovers" <| fun _ ->
         let db = newDb ()
@@ -898,6 +905,9 @@ let private cancelChildRecoveryTest =
                     sync (flow.Cancel id)
                 Expect.equal (sync (flow.Result "r1" wait)) WorkflowOutcome.Cancelled "r1 ended as cancelled"
                 eventually "r2 runs its cleanup" (fun () -> sync (flow.Status "r2") = WorkflowStatus.Running [ "1 undo" ])
+                // An ended instance that is still in memory when the process stops is remembered
+                // and recovers with the next one. r1 must recover only when it is asked.
+                eventually "r1 left memory" (fun () -> not (List.contains "r1" (inMemory second "starter")))
             finally
                 stop second
 
@@ -997,6 +1007,65 @@ let private awaitRoundsTest =
                 Expect.equal (sync (flow.Result "a1" wait)) (WorkflowOutcome.Finished 40) "the parent got the child's result"
             finally
                 ChildSteps.resultTimeout <- previous
+
+let private cancelParkedBranchesTest =
+    testCase "workflow: a parked parent that is cancelled leaves running the children of branches it abandoned" <| fun _ ->
+        let db = newDb ()
+        let waiter = Workflow.define "waiter" (fun (value: int) -> workflow {
+            let! (answer: int) = waitSignal "go"
+            return value + answer })
+        let brancher (first: string) =
+            Workflow.define "brancher" (fun (value: int) -> workflow {
+                let! start = activity first Retry.none (fun _ -> task { return value })
+                // A child wait with a timeout: the sleep wins, and the wait at 1/0/1 stays scheduled.
+                let timeout = workflow {
+                    do! sleep (TimeSpan.FromSeconds 1.0)
+                    return 0 }
+                let! (_: int) = race [ child waiter start; timeout ]
+                // A failed branch abandons the other one, whose wait at 2/0/1 stays scheduled.
+                let! (_: int) = workflow {
+                    try
+                        let! (_: int list) =
+                            all [ child waiter (start + 1)
+                                  activity "fail" Retry.none (fun _ -> task {
+                                      do! Task.Delay 1000
+                                      return failwith "refused" }) ]
+                        return 1
+                    with :? WorkflowStepFailedException ->
+                        return 0
+                }
+                let! last = child waiter (start + 2)
+                return last })
+        let parked status = match status with WorkflowStatus.Parked _ -> true | _ -> false
+        let running (status: WorkflowStatus) = match status with WorkflowStatus.Running _ -> true | _ -> false
+        try
+            let first = boot db "WorkflowCancelParkedBranches" []
+            try
+                let waiters = Workflows.register first waiter
+                let flow = Workflows.register first (brancher "first")
+                sync (flow.Start "b1" 1) |> ignore
+                eventually "the parent waits for its last child" (fun () -> sync (flow.Status "b1") = WorkflowStatus.Running [ "4 waiter" ])
+                for child in [ "b1:1/0/0"; "b1:2/0/0"; "b1:3" ] do
+                    Expect.isTrue (running (sync (waiters.Status child))) $"{child} runs"
+            finally
+                stop first
+
+            // The first step was renamed, so the parent is parked.
+            let second = boot db "WorkflowCancelParkedBranches" []
+            try
+                let waiters = Workflows.register second waiter
+                let flow = Workflows.register second (brancher "renamed")
+                eventually "the parent is parked" (fun () -> parked (sync (flow.Status "b1")))
+                sync (flow.Cancel "b1")
+                Expect.equal (sync (flow.Result "b1" wait)) WorkflowOutcome.Cancelled "the parked parent ended as cancelled"
+                eventually "the child it waited for is cancelled" (fun () -> sync (waiters.Status "b1:3") = WorkflowStatus.Cancelled)
+                Thread.Sleep 300
+                for child in [ "b1:1/0/0"; "b1:2/0/0" ] do
+                    Expect.isTrue (running (sync (waiters.Status child))) $"{child}, whose branch was abandoned, still runs"
+            finally
+                stop second
+        finally
+            deleteDb db
 
 let private zeroWaitResultTest =
     testCase "workflow: a result request without a timeout gets the result, however many requests come after it" <| fun _ ->
@@ -1837,7 +1906,7 @@ let tests =
             [ startTest; faultTest; retryTest; shortTimerTest; restartTest; timerTest; tracingTest; startRaceTest; concurrentStartTest
               signalTest; signalRestartTest; commandTest; parallelCommandTest; commandRestartTest; commandRecoveryTest; unknownOutcomeTest
               cancelTest; childTest; childRestartTest; cancelChildStartTest; cancelChildStartRestartTest; cancelChildRecoveryTest
-              cancelParkedChildTest; awaitRoundsTest; zeroWaitResultTest; parkingTest; removedStepsParkTest; streamTest; metricsTest
+              cancelParkedChildTest; cancelParkedBranchesTest; awaitRoundsTest; zeroWaitResultTest; parkingTest; removedStepsParkTest; streamTest; metricsTest
               lateCommandTest; cancelParkedTest; childResultTest; unreadableResultTest; idleTest; manifestTest
               sagaStartTest; sagaRepeatTest; sagaRepeatStoredTest; sagaSignalTest; sagaEventReplyTest
               sagaFilterTest; sagaFilterMissedTest; sagaFilterOutcomeTest; effectReplyTest; lateReplyTest

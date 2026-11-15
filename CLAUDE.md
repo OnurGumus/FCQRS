@@ -160,8 +160,8 @@ Keep these distinctions intact in code comments and documentation.
   the policy sets none.
 - After a restart, a command step and a child start make whole attempts, because a repeat is safe
   and the first outcome is unknown. The deadline ends them only when an attempt fails after it.
-- Cancelling a parent cancels the child it waits for and a child whose start is in flight, including
-  a start re-run after a restart and a parked parent's. A child it started and does not wait for
+- Cancelling a parent, also a parked one, cancels the child it waits for and a child whose start is
+  in flight, including a start re-run after a restart. A child it started and does not wait for
   keeps running. The parent sends these cancels again whenever it recovers after the cancel was
   stored; an ended parent recovers only when a request reaches it.
 - An activity result is read back before it is stored. One that cannot be read fails the step as

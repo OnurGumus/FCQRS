@@ -98,7 +98,7 @@ module internal WorkflowActor =
             try
                 system.Scheduler.Advanced.ScheduleOnce(
                     TimeSpan.FromSeconds(float (1 <<< attempt)),
-                    Action(fun () -> cancelChildren system log ActorRefs.NoSender (attempt + 1) unsent)
+                    Action(fun () -> cancelChildren system log sender (attempt + 1) unsent)
                 )
             with error ->
                 // The actor system is stopping.
@@ -166,13 +166,49 @@ module internal WorkflowActor =
         /// The paths of the child steps that a stored cancel of this instance reached.
         let cancelledChildren = HashSet<string>()
         let mutable afterCancelRequest = false
+        /// Whether a child step's stored start holds the child's ID, as 7.7.3 and later store it.
+        let mutable childIdsStored = false
 
-        /// The paths of the child steps whose start is stored and that have no outcome.
-        let pendingChildren () : string list =
-            [ for KeyValue(path, _) in children do
-                  match history.Steps.TryGetValue path with
-                  | true, Scheduled _ -> path
-                  | _ -> () ]
+        /// Whether the step at `path` lies in a branch that its block abandoned, as the journal
+        /// shows it: a losing branch of a race whose winner is stored, or any branch of a block
+        /// that its fiber went past. "2/0/5/1/0" lies in branch 0 of the block at "2" and in
+        /// branch 1 of the block at "2/0/5". A step of an abandoned branch stays scheduled in the
+        /// journal, but the body no longer waits for it.
+        let abandonedBranch (path: string) : bool =
+            let parts = path.Split '/'
+            let mutable abandoned = false
+            let mutable fiber = ""
+            let mutable at = 0
+
+            while not abandoned && at + 2 < parts.Length do
+                let block = fiber + parts[at]
+                let branch = parts[at + 1]
+
+                abandoned <-
+                    (match history.Steps.TryGetValue block with
+                     | true, Completed(_, StepKind.Race, winner) -> string (Payload.toValue<int> winner) <> branch
+                     | _ -> false)
+                    || (match Int32.TryParse parts[at] with
+                        | true, index -> history.ReachedFrom(fiber, index + 1)
+                        | _ -> false)
+
+                fiber <- $"{block}/{branch}/"
+                at <- at + 2
+
+            abandoned
+
+        /// The paths of the child steps that a cancel of this instance while it is parked reaches:
+        /// those whose start is stored, that have no outcome, and whose branch was not abandoned.
+        /// A parent whose child steps were all stored before 7.7.3 cancelled no child when parked,
+        /// and keeps that behaviour, so that an upgrade does not cancel a child it left running.
+        let parkedChildren () : string list =
+            if not childIdsStored then
+                []
+            else
+                [ for KeyValue(path, _) in children do
+                      match history.Steps.TryGetValue path with
+                      | true, Scheduled _ when not (abandonedBranch path) -> path
+                      | _ -> () ]
 
         /// Notes, from each record in journal order, which children a cancel of this instance
         /// reached: the child steps the cancel failed, or, for a parked instance, which a cancel
@@ -182,6 +218,9 @@ module internal WorkflowActor =
             | WorkflowRecord.StepScheduled(path, name, StepKind.Child, _, detail) ->
                 // A start stored before 7.7.3 holds no ID; its child has the derived one.
                 children[path] <- struct (name, detail |> Option.defaultValue $"{id}:{path}")
+
+                if detail.IsSome then
+                    childIdsStored <- true
             | WorkflowRecord.StepFailed(path, name, StepKind.Child, error, _) when error.Kind = ErrorKind.Cancelled ->
                 if not (children.ContainsKey path) then
                     children[path] <- struct (name, $"{id}:{path}")
@@ -189,7 +228,7 @@ module internal WorkflowActor =
                 cancelledChildren.Add path |> ignore
             // A parked instance stores its cancel request and its end in one write.
             | WorkflowRecord.Cancelled _ when afterCancelRequest ->
-                for path in pendingChildren () do
+                for path in parkedChildren () do
                     cancelledChildren.Add path |> ignore
             | _ -> ()
 
@@ -871,7 +910,9 @@ module internal WorkflowActor =
                         recoveryRecords.Record(recovered, nameTag)
 
                     // The cancels sent when the cancel was requested may not have reached the
-                    // children before the process stopped. Sending one again changes nothing.
+                    // children before the process stopped. Sending one again changes nothing, but
+                    // an ended parent sends them at each recovery, and each one makes a child that
+                    // has left memory replay its journal to refuse it.
                     if history.CancelRequested then
                         cancel [ for path in cancelledChildren -> children[path] ]
 
@@ -1043,7 +1084,7 @@ module internal WorkflowActor =
                             // A parked instance cannot run its cleanup: it ends, and so do
                             // the children it was starting or waiting for.
                             | None ->
-                                cancel [ for path in pendingChildren () -> children[path] ]
+                                cancel [ for path in parkedChildren () -> children[path] ]
                                 [ WorkflowRecord.Cancelled time ]
 
                         return! store (WorkflowRecord.CancelRequested time :: consequences) (loop ())

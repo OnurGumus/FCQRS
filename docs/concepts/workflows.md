@@ -355,6 +355,8 @@ public sealed class Parent() : Workflow<string, Summary>("parent")
   middle of `startChild` reaches the same child and does not start a second one.
 - Do not start an instance of a child's workflow with an ID of that form yourself. A parent whose
   child would get that ID takes the instance for its child, waits for it, and cancels it.
+- The ID leaves out the parent's workflow name. Two parent workflows whose instances share an ID
+  share one child when they start the same child workflow at the same position.
 
 A workflow keeps no snapshot: its position is the rest of its body, which cannot be stored. A
 workflow that loops for months should start a detached child with its remaining work and return,
@@ -582,7 +584,8 @@ ends as finished. A child the body was waiting for is cancelled with it.
 - A second cancel request while cleanup runs changes nothing.
 - A child that was started with `startChild` and is not being awaited keeps running. A child whose
   start was still in flight when the parent was cancelled is cancelled too.
-- A parked parent that is cancelled cancels the child it was starting or waiting for.
+- A parked parent that is cancelled cancels the child it was starting or waiting for. A child in a
+  race's losing branch keeps running.
 - The parent sends these cancels again each time it recovers after storing the cancel. A parent
   that has ended recovers only when a request reaches it. Until then, a child that missed the cancel
   because the process stopped keeps running.
