@@ -53,6 +53,11 @@ jobs:
       # Debug build of core and Workflows; the JIT rejects an invalid method when it first runs.
       - name: Debug build sends commands
         run: dotnet run --project samples/schedules/fsharp -c Debug
+      # The sample reaches only the code it runs. ILVerify (pinned in .config/dotnet-tools.json)
+      # checks every method of the Debug assemblies of core, Workflows, Model, Serialization and
+      # SQLProvider.
+      - name: Debug IL verification
+        run: python3 scripts/verify-il.py
       - name: Samples build
         run: |
           dotnet build samples/getting-started-fsharp -c Release

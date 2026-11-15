@@ -15,6 +15,13 @@
         "livedocs"
       ],
       "rollForward": false
+    },
+    "dotnet-ilverify": {
+      "version": "10.0.14",
+      "commands": [
+        "ilverify"
+      ],
+      "rollForward": false
     }
   }
 }

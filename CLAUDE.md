@@ -272,7 +272,9 @@ dotnet build FCQRS.sln
 
 Debug builds work. CI runs the F# schedule sample in Debug, because the F# compiler in SDK 10.0.4xx
 can emit invalid Debug IL for a `raise` used as a value whose argument contains a `let`, `|>`, `if`,
-or `match` (dotnet/fsharp#20564). Bind such an argument before `raise`.
+or `match` (dotnet/fsharp#20564). Bind such an argument before `raise`. CI also runs
+`python3 scripts/verify-il.py`, which checks every method of the five library assemblies' Debug builds
+with the ILVerify version pinned in `.config/dotnet-tools.json`.
 
 Run the Expecto facade and behaviour tests in Release, as CI does:
 
