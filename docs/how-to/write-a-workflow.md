@@ -93,9 +93,9 @@ public interface IMailer
 
 <!-- sample: workflows/fsharp Quote.fs workflow -->
 ```fsharp
-// Five attempts, 200 ms apart.
+// Five attempts, 200 ms apart, each allowed 30 seconds.
 let private retry = {
-    Retry.times 5 with
+    Retry.times 5 (TimeSpan.FromSeconds 30.0) with
         Schedule = FixedInterval(TimeSpan.FromMilliseconds 200.0)
 }
 
@@ -136,9 +136,10 @@ let definition (prices: IPriceService) (mailer: IMailer) =
 public sealed class QuoteWorkflow(IPriceService prices, IMailer mailer)
     : Workflow<QuoteRequest, Quote>("quote")
 {
-    // Five attempts, 200 ms apart.
-    private static readonly RetryPolicy Policy = Retry.times(5)
-        .WithSchedule(RetrySchedules.Fixed(TimeSpan.FromMilliseconds(200)));
+    // Five attempts, 200 ms apart, each allowed 30 seconds.
+    private static readonly RetryPolicy Policy =
+        Retry.times(5, TimeSpan.FromSeconds(30))
+            .WithSchedule(RetrySchedules.Fixed(TimeSpan.FromMilliseconds(200)));
 
     public override async WorkflowTask<Quote> Run(
         WorkflowContext ctx, QuoteRequest request)

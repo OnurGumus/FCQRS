@@ -29,9 +29,10 @@ public interface IMailer
 public sealed class QuoteWorkflow(IPriceService prices, IMailer mailer)
     : Workflow<QuoteRequest, Quote>("quote")
 {
-    // Five attempts, 200 ms apart.
-    private static readonly RetryPolicy Policy = Retry.times(5)
-        .WithSchedule(RetrySchedules.Fixed(TimeSpan.FromMilliseconds(200)));
+    // Five attempts, 200 ms apart, each allowed 30 seconds.
+    private static readonly RetryPolicy Policy =
+        Retry.times(5, TimeSpan.FromSeconds(30))
+            .WithSchedule(RetrySchedules.Fixed(TimeSpan.FromMilliseconds(200)));
 
     public override async WorkflowTask<Quote> Run(
         WorkflowContext ctx, QuoteRequest request)

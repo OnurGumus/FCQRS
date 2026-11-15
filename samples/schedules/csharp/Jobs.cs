@@ -26,8 +26,9 @@ public sealed class BackupWorkflow(IBackupStore store)
     // for every attempt of one run and differs between runs.
     public override async WorkflowTask<bool> Run(
         WorkflowContext ctx, ScheduledRun<string> run) =>
-        await ctx.Activity("copy", Retry.times(3), attempt =>
-            store.Copy(attempt.IdempotencyKey, run.Input));
+        await ctx.Activity(
+            "copy", Retry.times(3, TimeSpan.FromMinutes(10)),
+            attempt => store.Copy(attempt.IdempotencyKey, run.Input));
 }
 // docs:end
 
@@ -55,7 +56,8 @@ public sealed class InvoiceWorkflow(IBilling billing)
     // finds the invoice issued.
     public override async WorkflowTask<bool> Run(
         WorkflowContext ctx, ScheduledRun<string> run) =>
-        await ctx.Activity("issue", Retry.times(3), _ =>
-            billing.Issue(Jobs.InvoiceNumber(run), run.Input));
+        await ctx.Activity(
+            "issue", Retry.times(3, TimeSpan.FromSeconds(30)),
+            _ => billing.Issue(Jobs.InvoiceNumber(run), run.Input));
 }
 // docs:end

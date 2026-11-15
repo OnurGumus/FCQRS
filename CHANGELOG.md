@@ -2,6 +2,17 @@
 
 ## 7.8.0 (FCQRS.Workflows)
 
+- **Breaking: every activity has a time limit.** An attempt without one waited as long as its
+  call, so an activity that ignored its cancellation token kept its step waiting until a cancel.
+  `Retry.none` is replaced by `Retry.once attemptTimeout`, and `Retry.times attempts` is now
+  `Retry.times attempts attemptTimeout`; code that calls them stops compiling until it names a
+  timeout. `Retry.forever deadline` and `Retry.command` are unchanged. `activity` and C#'s
+  `Activity` raise `ArgumentException` for a policy with neither `AttemptTimeout` nor `Deadline`,
+  or with one that is not positive. An attempt that runs out of time fails even when its call
+  ignores the token; the call keeps running and its result is ignored. A command step is
+  unchanged: without `AttemptTimeout` one send waits for the command timeout. Policies are not
+  stored, so running instances and their journals are unaffected.
+
 - **Monthly schedules.** `ScheduleRule.Monthly(days, times, zone)` is due on days of the month,
   written as `MonthDay` values: `Day n` from 1 to 31, `LastDay`, `Nth(n, weekday)` with `n` from 1
   to 4, and `Last weekday`. A month without day `n` runs on its last day, so `Day 31` runs on

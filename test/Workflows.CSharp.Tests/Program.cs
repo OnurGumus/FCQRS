@@ -44,6 +44,16 @@ async Task Eventually(Func<bool> condition, string what)
     Check(condition(), what);
 }
 
+// --- an activity's policy names a time limit ------------------------------------------------
+{
+    var three = Retry.times(3, TimeSpan.FromSeconds(10));
+    Check(three.MaxAttempts.Value == 3 && three.AttemptTimeout.Value == TimeSpan.FromSeconds(10),
+        "Retry.times takes the attempts and the attempt timeout");
+    var once = Retry.once(TimeSpan.FromSeconds(10));
+    Check(once.MaxAttempts.Value == 1 && once.AttemptTimeout.Value == TimeSpan.FromSeconds(10),
+        "Retry.once takes the attempt timeout");
+}
+
 // --- every kind of step, in one run -----------------------------------------------------
 {
     var db = NewDb();
@@ -445,7 +455,7 @@ public sealed class OrderWorkflow(AggregateFactory counter) : Workflow<Order, Or
     public override async WorkflowTask<OrderSummary> Run(WorkflowContext ctx, Order order)
     {
         var before = await ctx.Now();
-        var retry = Retry.times(5).WithSchedule(RetrySchedules.Fixed(TimeSpan.FromMilliseconds(20)));
+        var retry = Retry.times(5, TimeSpan.FromSeconds(30)).WithSchedule(RetrySchedules.Fixed(TimeSpan.FromMilliseconds(20)));
 
         // An activity that fails twice, then succeeds.
         var symbol = await ctx.Activity("price", retry, async attempt =>
@@ -469,7 +479,7 @@ public sealed class OrderWorkflow(AggregateFactory counter) : Workflow<Order, Or
             async attempt => { await Task.Delay(Timeout.Infinite, attempt.Cancellation); return 0; }));
         // Two steps of different types together.
         var (label, four) = await ctx.Both(
-            ctx.Activity("label", Retry.none, _ => Task.FromResult("pair")),
+            ctx.Activity("label", Retry.once(TimeSpan.FromSeconds(30)), _ => Task.FromResult("pair")),
             ctx.Run(() => Part(ctx, 4)));
 
         var counted = await ctx.Send<CounterCommand, CounterEvent>(counter, "c1", new CounterCommand(order.Quantity));
@@ -485,7 +495,7 @@ public sealed class OrderWorkflow(AggregateFactory counter) : Workflow<Order, Or
         finally
         {
             // C# allows an await in a finally block, so cleanup can be a stored step.
-            cleanup = await ctx.Activity("cleanup", Retry.none, _ => Task.FromResult("cleaned"));
+            cleanup = await ctx.Activity("cleanup", Retry.once(TimeSpan.FromSeconds(30)), _ => Task.FromResult("cleaned"));
         }
 
         var after = await ctx.Now();
@@ -494,7 +504,7 @@ public sealed class OrderWorkflow(AggregateFactory counter) : Workflow<Order, Or
 
     private static async WorkflowTask<int> Part(WorkflowContext ctx, int value)
     {
-        var result = await ctx.Activity($"part-{value}", Retry.none, _ => Task.FromResult(value));
+        var result = await ctx.Activity($"part-{value}", Retry.once(TimeSpan.FromSeconds(30)), _ => Task.FromResult(value));
         await ctx.Sleep(TimeSpan.FromMilliseconds(10));
         return result;
     }
@@ -503,7 +513,7 @@ public sealed class OrderWorkflow(AggregateFactory counter) : Workflow<Order, Or
     {
         try
         {
-            await ctx.Activity<int>("down", Retry.times(2).WithSchedule(RetrySchedules.Fixed(TimeSpan.FromMilliseconds(10))),
+            await ctx.Activity<int>("down", Retry.times(2, TimeSpan.FromSeconds(30)).WithSchedule(RetrySchedules.Fixed(TimeSpan.FromMilliseconds(10))),
                 _ => throw new InvalidOperationException("down"));
             return "no failure";
         }
@@ -521,7 +531,7 @@ public sealed class SlowWorkflow() : Workflow<int, int>("slow")
 
     public override async WorkflowTask<int> Run(WorkflowContext ctx, int amount)
     {
-        var reserved = await ctx.Activity("reserve", Retry.times(3), _ =>
+        var reserved = await ctx.Activity("reserve", Retry.times(3, TimeSpan.FromSeconds(30)), _ =>
         {
             Calls.AddOrUpdate("reserve", 1, (_, seen) => seen + 1);
             return Task.FromResult(amount * 2);
@@ -564,7 +574,7 @@ public sealed class CatchingWorkflow() : Workflow<int, int>("catching")
         }
         catch (WorkflowStepFailedException failed) when (failed.Error.Kind.IsCancelled)
         {
-            await ctx.Activity("clean", Retry.none, _ =>
+            await ctx.Activity("clean", Retry.once(TimeSpan.FromSeconds(30)), _ =>
             {
                 Cleaned = true;
                 return Task.FromResult(1);
@@ -592,7 +602,7 @@ public sealed class WaitingWorkflow() : Workflow<int, int>("waiting")
         }
         finally
         {
-            await ctx.Activity("clean", Retry.none, _ =>
+            await ctx.Activity("clean", Retry.once(TimeSpan.FromSeconds(30)), _ =>
             {
                 Cleaned = true;
                 return Task.FromResult(1);
@@ -615,7 +625,7 @@ public sealed class ShoutWorkflow() : Workflow<string, string>("shout")
 {
     public override async WorkflowTask<string> Run(WorkflowContext ctx, string name)
     {
-        return await ctx.Activity("shout", Retry.none, _ => Task.FromResult(name.ToUpperInvariant()));
+        return await ctx.Activity("shout", Retry.once(TimeSpan.FromSeconds(30)), _ => Task.FromResult(name.ToUpperInvariant()));
     }
 }
 
@@ -623,7 +633,7 @@ public sealed class GreetWorkflow(Greeting greeting) : Workflow<string, string>(
 {
     public override async WorkflowTask<string> Run(WorkflowContext ctx, string name)
     {
-        var text = await ctx.Activity("greet", Retry.none, _ => Task.FromResult($"{greeting.Text} {name}"));
+        var text = await ctx.Activity("greet", Retry.once(TimeSpan.FromSeconds(30)), _ => Task.FromResult($"{greeting.Text} {name}"));
         return text;
     }
 }
@@ -634,7 +644,7 @@ public sealed class ReminderWorkflow() : Workflow<ScheduledRun<string>, string>(
 
     public override async WorkflowTask<string> Run(WorkflowContext ctx, ScheduledRun<string> run)
     {
-        await ctx.Activity("record", Retry.none, _ =>
+        await ctx.Activity("record", Retry.once(TimeSpan.FromSeconds(30)), _ =>
         {
             Runs[$"{run.Schedule}@{run.Due:O}"] = run;
             return Task.FromResult(true);

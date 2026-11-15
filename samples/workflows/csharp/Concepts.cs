@@ -55,8 +55,9 @@ public sealed class Enrich() : Workflow<string, Enriched>("enrich")
     public override async WorkflowTask<Enriched> Run(
         WorkflowContext ctx, string order)
     {
-        var points = await ctx.Activity("score", Retry.times(3), attempt =>
-            Score(attempt.IdempotencyKey, order));
+        var points = await ctx.Activity(
+            "score", Retry.times(3, TimeSpan.FromSeconds(30)),
+            attempt => Score(attempt.IdempotencyKey, order));
         await ctx.Sleep(TimeSpan.FromMinutes(5));
         var at = await ctx.Now();
         return new Enriched(points, at);
@@ -84,8 +85,9 @@ public sealed class Remind()
 {
     public override async WorkflowTask<string> Run(
         WorkflowContext ctx, ScheduledRun<string> run) =>
-        await ctx.Activity("send", Retry.times(3), attempt =>
-            SendReminder(attempt.IdempotencyKey, run.Input));
+        await ctx.Activity(
+            "send", Retry.times(3, TimeSpan.FromSeconds(30)),
+            attempt => SendReminder(attempt.IdempotencyKey, run.Input));
 }
 
 public static class Reminders
@@ -136,8 +138,9 @@ public static class Steps
     {
         var orders = new[] { "A", "B", "C" };
         var points = await ctx.All(orders.Select(order =>
-            ctx.Activity("score", Retry.times(3), attempt =>
-                Score(attempt.IdempotencyKey, order))).ToArray());
+            ctx.Activity(
+                "score", Retry.times(3, TimeSpan.FromSeconds(30)),
+                attempt => Score(attempt.IdempotencyKey, order))).ToArray());
         var first = await ctx.Race(
             ctx.Run(() => Charged(ctx)),
             ctx.Run(() => TimedOut(ctx)));
@@ -145,8 +148,9 @@ public static class Steps
     }
 
     static async WorkflowTask<string?> Charged(WorkflowContext ctx) =>
-        await ctx.Activity("charge", Retry.none, attempt =>
-            Charge(attempt.IdempotencyKey, 30m));
+        await ctx.Activity(
+            "charge", Retry.once(TimeSpan.FromSeconds(30)),
+            attempt => Charge(attempt.IdempotencyKey, 30m));
 
     static async WorkflowTask<string?> TimedOut(WorkflowContext ctx)
     {
@@ -160,10 +164,12 @@ public static class Steps
         WorkflowContext ctx)
     {
         var (points, receipt) = await ctx.Both(
-            ctx.Activity("score", Retry.times(3), attempt =>
-                Score(attempt.IdempotencyKey, "A")),
-            ctx.Activity("charge", Retry.none, attempt =>
-                Charge(attempt.IdempotencyKey, 30m)));
+            ctx.Activity(
+                "score", Retry.times(3, TimeSpan.FromSeconds(30)),
+                attempt => Score(attempt.IdempotencyKey, "A")),
+            ctx.Activity(
+                "charge", Retry.once(TimeSpan.FromSeconds(30)),
+                attempt => Charge(attempt.IdempotencyKey, 30m)));
         return (points, receipt);
     }
     // docs:end
@@ -172,8 +178,9 @@ public static class Steps
     static async WorkflowTask<int> WaitUntilShipped(
         WorkflowContext ctx, int checks)
     {
-        var shipped = await ctx.Activity("check", Retry.times(3), attempt =>
-            IsShipped(attempt.IdempotencyKey, "A"));
+        var shipped = await ctx.Activity(
+            "check", Retry.times(3, TimeSpan.FromSeconds(30)),
+            attempt => IsShipped(attempt.IdempotencyKey, "A"));
         if (shipped)
             return checks;
         await ctx.Sleep(TimeSpan.FromMinutes(5));
@@ -233,8 +240,9 @@ public static class Steps
         catch (WorkflowStepFailedException failed)
             when (failed.Error.Kind.IsCancelled)
         {
-            await ctx.Activity("refund", Retry.none, attempt =>
-                Charge(attempt.IdempotencyKey, -30m));
+            await ctx.Activity(
+                "refund", Retry.once(TimeSpan.FromSeconds(30)),
+                attempt => Charge(attempt.IdempotencyKey, -30m));
             throw;
         }
     }
@@ -243,12 +251,14 @@ public static class Steps
     // docs:evolving
     static async WorkflowTask<int> Evolving(WorkflowContext ctx)
     {
-        var points = await ctx.Activity("score", Retry.times(3), attempt =>
-            Score(attempt.IdempotencyKey, "A"));
+        var points = await ctx.Activity(
+            "score", Retry.times(3, TimeSpan.FromSeconds(30)),
+            attempt => Score(attempt.IdempotencyKey, "A"));
         var change = await ctx.Version("add-charge", 2);
         if (change >= 2)
-            await ctx.Activity("charge", Retry.none, attempt =>
-                Charge(attempt.IdempotencyKey, 5m));
+            await ctx.Activity(
+                "charge", Retry.once(TimeSpan.FromSeconds(30)),
+                attempt => Charge(attempt.IdempotencyKey, 5m));
         return points;
     }
     // docs:end

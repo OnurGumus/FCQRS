@@ -103,7 +103,7 @@ let private eventually what (condition: unit -> bool) =
     Expect.isTrue (condition ()) what
 
 let private fast: RetryPolicy =
-    { Retry.none with
+    { Retry.once (TimeSpan.FromSeconds 30.0) with
         Schedule = FixedInterval(TimeSpan.FromMilliseconds 20.0) }
 
 let private stepFailureTest =
@@ -112,7 +112,7 @@ let private stepFailureTest =
             let flow =
                 Workflows.register api (Workflow.define "declined" (fun (_: unit) -> workflow {
                     try
-                        let! (_: int) = activity "charge" Retry.none (fun _ -> task { return failwith "card declined" })
+                        let! (_: int) = activity "charge" (Retry.once (TimeSpan.FromSeconds 30.0)) (fun _ -> task { return failwith "card declined" })
                         return "charged"
                     with :? WorkflowStepFailedException ->
                         return "refused"
@@ -151,7 +151,7 @@ let private progressTest =
         withSystem "WorkflowLogProgress" <| fun api capture ->
             let flow =
                 Workflows.register api (Workflow.define "narrated" (fun (input: string) -> workflow {
-                    let! (_: string) = activity "price" Retry.none (fun _ -> task { return "secret-price" })
+                    let! (_: string) = activity "price" (Retry.once (TimeSpan.FromSeconds 30.0)) (fun _ -> task { return "secret-price" })
                     let! (answer: string) = waitSignal "approval"
                     let! (_: string option) = waitSignalFor "extra" (TimeSpan.FromMilliseconds 50.0)
                     do! sleep (TimeSpan.FromMilliseconds 20.0)
@@ -206,7 +206,7 @@ let private replayTest =
         let gate = new ManualResetEventSlim(false)
         let definition =
             Workflow.define "replayed" (fun (_: unit) -> workflow {
-                let! first = activity "first" Retry.none (fun _ -> task { return 1 })
+                let! first = activity "first" (Retry.once (TimeSpan.FromSeconds 30.0)) (fun _ -> task { return 1 })
                 let! second = activity "second" (Retry.forever (TimeSpan.FromMinutes 5.0)) (fun context -> task {
                     do! Task.Run(fun () -> gate.Wait context.Cancellation)
                     return first + 1 })

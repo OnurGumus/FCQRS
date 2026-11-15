@@ -70,7 +70,7 @@ let private runIdOf (run: ScheduledRun<string>) = $"""{run.Schedule}@{run.Due.To
 /// Records its input in `runs` under the run ID it should have, and returns the input.
 let private recorder (name: string) (runs: Runs) =
     Workflow.define name (fun (run: ScheduledRun<string>) -> workflow {
-        do! activity "record" Retry.none (fun _ -> task { runs[runIdOf run] <- run })
+        do! activity "record" (Retry.once (TimeSpan.FromSeconds 30.0)) (fun _ -> task { runs[runIdOf run] <- run })
         return run.Input
     })
 
@@ -79,7 +79,7 @@ let private remind (runs: Runs) = recorder "remind" runs
 /// Records its input and then fails.
 let private broken (runs: Runs) =
     Workflow.define "broken" (fun (run: ScheduledRun<string>) -> workflow {
-        do! activity "record" Retry.none (fun _ -> task { runs[runIdOf run] <- run })
+        do! activity "record" (Retry.once (TimeSpan.FromSeconds 30.0)) (fun _ -> task { runs[runIdOf run] <- run })
         failwith "the run failed"
         return ()
     })
@@ -437,7 +437,7 @@ let private pendingLogsEachDue =
 let private remindInt (runs: ConcurrentDictionary<string, ScheduledRun<int>>) (api: IActor) =
     let definition =
         Workflow.define "remind" (fun (run: ScheduledRun<int>) -> workflow {
-            do! activity "record" Retry.none (fun _ -> task { runs[$"""{run.Schedule}@{run.Due.ToString "O"}"""] <- run })
+            do! activity "record" (Retry.once (TimeSpan.FromSeconds 30.0)) (fun _ -> task { runs[$"""{run.Schedule}@{run.Due.ToString "O"}"""] <- run })
             return string run.Input
         })
     let handle = Workflows.register api definition
@@ -713,7 +713,7 @@ let private stuckStartAlone =
             // Records when each run of the other schedule ran.
             let timed =
                 Workflow.define "remind" (fun (run: ScheduledRun<string>) -> workflow {
-                    do! activity "record" Retry.none (fun _ -> task {
+                    do! activity "record" (Retry.once (TimeSpan.FromSeconds 30.0)) (fun _ -> task {
                         runs[runIdOf run] <- run
                         ranAt.Enqueue DateTime.UtcNow })
                     return run.Input

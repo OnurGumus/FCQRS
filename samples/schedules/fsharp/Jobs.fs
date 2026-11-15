@@ -22,8 +22,9 @@ let backup (store: IBackupStore) =
     Workflow.define "backup" (fun (run: ScheduledRun<string>) -> workflow {
         // The key holds the run's ID, which holds the due time. It is the same
         // for every attempt of one run and differs between runs.
+        let retry = Retry.times 3 (TimeSpan.FromMinutes 10.0)
         return!
-            activity "copy" (Retry.times 3) (fun attempt ->
+            activity "copy" retry (fun attempt ->
                 store.Copy(attempt.IdempotencyKey, run.Input))
     })
 // docs:end
@@ -45,8 +46,9 @@ let invoice (billing: IBilling) =
     Workflow.define "invoice" (fun (run: ScheduledRun<string>) -> workflow {
         // Keyed by the week, not by the run: a second run in the same week
         // finds the invoice issued.
+        let retry = Retry.times 3 (TimeSpan.FromSeconds 30.0)
         return!
-            activity "issue" (Retry.times 3) (fun _ ->
+            activity "issue" retry (fun _ ->
                 billing.Issue(invoiceNumber run, run.Input))
     })
 // docs:end

@@ -126,9 +126,9 @@ let private never (_: AttemptContext) : Task<'T> = failwith "the machine does no
 
 let private order = workflow {
     let! started = now
-    let! price = activity "price" (Retry.times 3) never
+    let! price = activity "price" (Retry.times 3 (TimeSpan.FromSeconds 30.0)) never
     do! sleep (TimeSpan.FromHours 1.0)
-    let! (stock: int) = activity "stock" (Retry.times 3) never
+    let! (stock: int) = activity "stock" (Retry.times 3 (TimeSpan.FromSeconds 30.0)) never
     return $"{started:HH}:{price}:{stock}"
 }
 
@@ -180,7 +180,7 @@ let private failureTest =
     testCase "workflow machine: a failed step raises the same exception live and on replay" <| fun _ ->
         let body = workflow {
             try
-                let! (price: decimal) = activity "price" Retry.none never
+                let! (price: decimal) = activity "price" (Retry.once (TimeSpan.FromSeconds 30.0)) never
                 return $"{price}"
             with :? WorkflowStepFailedException as failed ->
                 return $"{failed.StepName} {failed.Error.Kind}"
@@ -211,7 +211,7 @@ let private divergedTest =
         let journal = (drive [] orderValues order).Journal |> List.ofSeq
         let renamed = workflow {
             let! (_: DateTime) = now
-            let! (price: decimal) = activity "quote" (Retry.times 3) never
+            let! (price: decimal) = activity "quote" (Retry.times 3 (TimeSpan.FromSeconds 30.0)) never
             return string price
         }
         Expect.throwsT<WorkflowDivergedException> (fun () -> drive journal orderValues renamed |> ignore) "the journal holds 'price' at step 1"
@@ -221,7 +221,7 @@ let private longTest =
         let body = workflow {
             let mutable total = 0
             for _ in 1 .. 20000 do
-                let! (value: int) = activity "next" Retry.none never
+                let! (value: int) = activity "next" (Retry.once (TimeSpan.FromSeconds 30.0)) never
                 total <- total + value
             // A long loop that reaches no step.
             let mutable spins = 0
@@ -239,7 +239,7 @@ let private storedValueTest =
         let body = workflow {
             let! id = newGuid
             let! roll = random
-            let! (_: int) = activity "wait" Retry.none never
+            let! (_: int) = activity "wait" (Retry.once (TimeSpan.FromSeconds 30.0)) never
             return id, roll
         }
         let first = drive [] (fun _ -> None) body
@@ -281,14 +281,14 @@ let rec private permutations (items: 'A list) : 'A list list =
                  for rest in permutations (List.except [ item ] items) -> item :: rest ]
 
 let private fetch (name: string) : Workflow<int> = workflow {
-    let! (first: int) = activity name (Retry.times 3) never
-    let! (second: int) = activity (name + "-again") (Retry.times 3) never
+    let! (first: int) = activity name (Retry.times 3 (TimeSpan.FromSeconds 30.0)) never
+    let! (second: int) = activity (name + "-again") (Retry.times 3 (TimeSpan.FromSeconds 30.0)) never
     return first + second
 }
 
 let private three = workflow {
     let! values = all [ fetch "a"; fetch "b"; fetch "c" ]
-    let! (last: int) = activity "sum" (Retry.times 3) never
+    let! (last: int) = activity "sum" (Retry.times 3 (TimeSpan.FromSeconds 30.0)) never
     return values, last
 }
 
@@ -319,7 +319,7 @@ let private allFailureTest =
                 let! (_: int list) = all [ fetch "a"; fetch "b"; fetch "c" ]
                 return "no failure"
             with :? WorkflowStepFailedException as failed ->
-                let! (after: int) = activity "after" Retry.none never
+                let! (after: int) = activity "after" (Retry.once (TimeSpan.FromSeconds 30.0)) never
                 return $"{failed.StepName} {after}"
         }
         let complete name =
@@ -341,7 +341,7 @@ let private allFailureTest =
 
 let private raceBody = workflow {
     let! winner = race [ fetch "slow"; fetch "fast" ]
-    let! (last: int) = activity "after" Retry.none never
+    let! (last: int) = activity "after" (Retry.once (TimeSpan.FromSeconds 30.0)) never
     return winner + last
 }
 
@@ -376,7 +376,7 @@ let private limitTest =
     testCase "workflow machine: allAtMost keeps to its limit and replays from any prefix" <| fun _ ->
         let body = workflow {
             let! doubled = allAtMost 2 [ 1; 2; 3; 4; 5 ] (fun item -> workflow {
-                let! (value: int) = activity $"double-{item}" (Retry.times 3) never
+                let! (value: int) = activity $"double-{item}" (Retry.times 3 (TimeSpan.FromSeconds 30.0)) never
                 return value })
             return doubled
         }
@@ -393,8 +393,8 @@ let private limitTest =
 let private andTest =
     testCase "workflow machine: and! runs two workflows together" <| fun _ ->
         let body = workflow {
-            let! (left: int) = activity "left" Retry.none never
-            and! (right: string) = activity "right" Retry.none never
+            let! (left: int) = activity "left" (Retry.once (TimeSpan.FromSeconds 30.0)) never
+            and! (right: string) = activity "right" (Retry.once (TimeSpan.FromSeconds 30.0)) never
             return $"{left}{right}"
         }
         let complete name =
@@ -409,9 +409,9 @@ let private andTest =
 let private andThreeTest =
     testCase "workflow machine: three and! branches run together" <| fun _ ->
         let body = workflow {
-            let! (left: int) = activity "left" Retry.none never
-            and! (middle: string) = activity "middle" Retry.none never
-            and! (right: bool) = activity "right" Retry.none never
+            let! (left: int) = activity "left" (Retry.once (TimeSpan.FromSeconds 30.0)) never
+            and! (middle: string) = activity "middle" (Retry.once (TimeSpan.FromSeconds 30.0)) never
+            and! (right: bool) = activity "right" (Retry.once (TimeSpan.FromSeconds 30.0)) never
             return $"{left}{middle}{right}"
         }
         let complete name =
@@ -437,7 +437,7 @@ let private recursionTest =
             if n = 0 then
                 return 0
             else
-                let! (x: int) = activity "tick" Retry.none never
+                let! (x: int) = activity "tick" (Retry.once (TimeSpan.FromSeconds 30.0)) never
                 let! rest = nested (n - 1)
                 return x + rest
         }
@@ -447,7 +447,7 @@ let private recursionTest =
                 return 0
             else
                 try
-                    let! (x: int) = activity "tick" Retry.none never
+                    let! (x: int) = activity "tick" (Retry.once (TimeSpan.FromSeconds 30.0)) never
                     let! rest = guarded (n - 1)
                     return x + rest
                 finally
@@ -457,7 +457,7 @@ let private recursionTest =
             if n = 0 then
                 return total
             else
-                let! (x: int) = activity "tick" Retry.none never
+                let! (x: int) = activity "tick" (Retry.once (TimeSpan.FromSeconds 30.0)) never
                 return! tail (n - 1) (total + x)
         }
         let ticks name = if name = "tick" then Some(Ok(Payload.ofValue 1)) else None
@@ -534,7 +534,7 @@ let private unreadableTest =
               WorkflowRecord.StepCompleted("1", "price", StepKind.Activity, Payload.ofValue "twelve", at) ]
         let typed = workflow {
             let! (_: DateTime) = now
-            let! (price: decimal) = activity "price" (Retry.times 3) never
+            let! (price: decimal) = activity "price" (Retry.times 3 (TimeSpan.FromSeconds 30.0)) never
             return price
         }
         Expect.throwsT<WorkflowDivergedException> (fun () -> drive journal orderValues typed |> ignore) "'price' is read as a decimal"
@@ -560,23 +560,23 @@ let private farTimerTest =
         | other -> failtest $"expected a scheduled timer, found {other}"
 
 let private oldCode = workflow {
-    let! (price: decimal) = activity "price" (Retry.times 3) never
-    let! (stock: int) = activity "stock" (Retry.times 3) never
+    let! (price: decimal) = activity "price" (Retry.times 3 (TimeSpan.FromSeconds 30.0)) never
+    let! (stock: int) = activity "stock" (Retry.times 3 (TimeSpan.FromSeconds 30.0)) never
     return $"{price}:{stock}"
 }
 
 /// The same workflow after a fraud check was added between its two steps.
 let private newCode = workflow {
-    let! (price: decimal) = activity "price" (Retry.times 3) never
+    let! (price: decimal) = activity "price" (Retry.times 3 (TimeSpan.FromSeconds 30.0)) never
     let! change = version "add-fraud-check" 2
     let! checkedBy = workflow {
         if change >= 2 then
-            let! (verdict: string) = activity "fraud" (Retry.times 3) never
+            let! (verdict: string) = activity "fraud" (Retry.times 3 (TimeSpan.FromSeconds 30.0)) never
             return verdict
         else
             return "unchecked"
     }
-    let! (stock: int) = activity "stock" (Retry.times 3) never
+    let! (stock: int) = activity "stock" (Retry.times 3 (TimeSpan.FromSeconds 30.0)) never
     return $"{price}:{stock}:{checkedBy}"
 }
 
@@ -613,7 +613,7 @@ let private versionLoopTest =
             let mutable total = 0
             for _ in 1 .. 3 do
                 let! change = version "loop-change" 2
-                let! (value: int) = activity "next" Retry.none never
+                let! (value: int) = activity "next" (Retry.once (TimeSpan.FromSeconds 30.0)) never
                 total <- total + value * change
             return total
         }
@@ -648,11 +648,11 @@ let private wrongSignalTest =
 let private versionInBranchTest =
     testCase "workflow machine: a version step at the end of a branch gives 1 to an instance that passed the block" <| fun _ ->
         let branch (guarded: bool) (name: string) = workflow {
-            let! (value: int) = activity name (Retry.times 3) never
+            let! (value: int) = activity name (Retry.times 3 (TimeSpan.FromSeconds 30.0)) never
             if guarded then
                 let! change = version "check-branch" 2
                 if change >= 2 then
-                    let! (extra: int) = activity "extra" (Retry.times 3) never
+                    let! (extra: int) = activity "extra" (Retry.times 3 (TimeSpan.FromSeconds 30.0)) never
                     return value + extra
                 else
                     return value
@@ -661,7 +661,7 @@ let private versionInBranchTest =
         }
         let code (guarded: bool) = workflow {
             let! values = all [ branch guarded "a"; branch false "b" ]
-            let! (last: int) = activity "sum" (Retry.times 3) never
+            let! (last: int) = activity "sum" (Retry.times 3 (TimeSpan.FromSeconds 30.0)) never
             return List.sum values + last
         }
         let values name =
@@ -691,10 +691,10 @@ let private versionBeforeEmptyBlockTest =
                     return 1
             }
             if change >= 2 then
-                let! (_: int) = activity "notify" (Retry.times 3) never
+                let! (_: int) = activity "notify" (Retry.times 3 (TimeSpan.FromSeconds 30.0)) never
                 ()
-            let! (reserved: int list) = allAtMost 5 [] (fun (line: string) -> activity line (Retry.times 3) never)
-            let! (shipped: int) = activity "ship" (Retry.times 3) never
+            let! (reserved: int list) = allAtMost 5 [] (fun (line: string) -> activity line (Retry.times 3 (TimeSpan.FromSeconds 30.0)) never)
+            let! (shipped: int) = activity "ship" (Retry.times 3 (TimeSpan.FromSeconds 30.0)) never
             return change * 100 + List.sum reserved + shipped
         }
         let values name =
@@ -714,7 +714,7 @@ let private versionTwiceTest =
         let body = workflow {
             let! first = version "first-change" 2
             let! second = version "second-change" 3
-            let! (value: int) = activity "next" Retry.none never
+            let! (value: int) = activity "next" (Retry.once (TimeSpan.FromSeconds 30.0)) never
             return first * 10 + second + value
         }
         let values _ = Some(Ok(Payload.ofValue 100))
@@ -725,13 +725,13 @@ let private versionTwiceTest =
 let private blockSwapTest =
     testCase "workflow machine: a step swapped for a parallel block, or a block for a step, diverges" <| fun _ ->
         let single = workflow {
-            let! (charge: int) = activity "charge" (Retry.times 3) never
+            let! (charge: int) = activity "charge" (Retry.times 3 (TimeSpan.FromSeconds 30.0)) never
             return charge
         }
         let split = workflow {
             let! (charges: int list) =
-                all [ activity "charge-card" (Retry.times 3) never
-                      activity "charge-voucher" (Retry.times 3) never ]
+                all [ activity "charge-card" (Retry.times 3 (TimeSpan.FromSeconds 30.0)) never
+                      activity "charge-voucher" (Retry.times 3 (TimeSpan.FromSeconds 30.0)) never ]
             return List.sum charges
         }
         let values _ = Some(Ok(Payload.ofValue 1))
@@ -769,7 +769,7 @@ let private removedStepsTest =
     testCase "workflow machine: a body that ends before steps its journal holds diverges" <| fun _ ->
         let shorter = workflow {
             let! started = now
-            let! (price: decimal) = activity "price" (Retry.times 3) never
+            let! (price: decimal) = activity "price" (Retry.times 3 (TimeSpan.FromSeconds 30.0)) never
             return $"{started:HH}:{price}:0"
         }
         // The instance had completed "sleep" and "stock" under the old code.
@@ -778,7 +778,7 @@ let private removedStepsTest =
         let begun = orderSteps () |> List.takeWhile (function WorkflowRecord.StepCompleted("3", _, _, _, _) -> false | _ -> true)
         let withoutStock = workflow {
             let! started = now
-            let! (price: decimal) = activity "price" (Retry.times 3) never
+            let! (price: decimal) = activity "price" (Retry.times 3 (TimeSpan.FromSeconds 30.0)) never
             do! sleep (TimeSpan.FromHours 1.0)
             return $"{started:HH}:{price}:0"
         }
@@ -831,7 +831,7 @@ let private failedBlockTest =
     testCase "workflow machine: steps that the siblings of a failed branch stored do not count as steps the body left out" <| fun _ ->
         let body = workflow {
             try
-                let! (_: int list) = allAtMost 2 [ "x"; "y"; "z" ] (fun name -> activity name Retry.none never)
+                let! (_: int list) = allAtMost 2 [ "x"; "y"; "z" ] (fun name -> activity name (Retry.once (TimeSpan.FromSeconds 30.0)) never)
                 return "no failure"
             with :? WorkflowStepFailedException as failed ->
                 return failed.StepName
@@ -859,10 +859,10 @@ let private manyRacesTest =
         let code (withLast: bool) = workflow {
             let mutable total = 0
             for _ in 1 .. rounds do
-                let! (winner: int) = race [ activity "win" Retry.none never; activity "lose" Retry.none never ]
+                let! (winner: int) = race [ activity "win" (Retry.once (TimeSpan.FromSeconds 30.0)) never; activity "lose" (Retry.once (TimeSpan.FromSeconds 30.0)) never ]
                 total <- total + winner
             if withLast then
-                let! (last: int) = activity "last" Retry.none never
+                let! (last: int) = activity "last" (Retry.once (TimeSpan.FromSeconds 30.0)) never
                 return total + last
             else
                 return total
@@ -884,8 +884,25 @@ let private manyRacesTest =
         Expect.isLessThan watch.Elapsed.TotalSeconds 15.0 $"the replay of {rounds} races took {watch.Elapsed}"
         divergedAt (string rounds) "a completed Activity 'last'" (fun () -> drive journal (fun _ -> None) (code false))
 
+// An attempt without a time limit waits as long as its call, so an activity that ignores its token
+// would keep its step waiting until a cancel. Every activity names a limit.
+let private policyLimitTest =
+    testCase "workflow machine: an activity needs an attempt timeout or a deadline, and each must be positive" <| fun _ ->
+        let call (_: AttemptContext) = Task.FromResult 1
+        let second = TimeSpan.FromSeconds 1.0
+        let once = Retry.once second
+        Expect.equal (once.MaxAttempts, once.AttemptTimeout, once.Deadline) (Some 1, Some second, None) "once: one attempt with the timeout"
+        let three = Retry.times 3 second
+        Expect.equal (three.MaxAttempts, three.AttemptTimeout, three.Deadline) (Some 3, Some second, None) "times: the attempts with the timeout"
+        let unlimited = { once with AttemptTimeout = None }
+        Expect.throwsT<ArgumentException> (fun () -> activity "call" unlimited call |> ignore) "no attempt timeout and no deadline"
+        activity "call" { unlimited with Deadline = Some second } call |> ignore
+        for bad in [ TimeSpan.Zero; TimeSpan.FromMilliseconds -1.0; TimeSpan.FromSeconds -5.0 ] do
+            Expect.throwsT<ArgumentException> (fun () -> activity "call" { once with AttemptTimeout = Some bad } call |> ignore) $"attempt timeout {bad}"
+            Expect.throwsT<ArgumentException> (fun () -> activity "call" { unlimited with Deadline = Some bad } call |> ignore) $"deadline {bad}"
+
 let tests =
     testList "workflow machine"
-        [ payloadTest; recordTest; liveTest; prefixTest; failureTest; unhandledTest; divergedTest; longTest; storedValueTest
+        [ policyLimitTest; payloadTest; recordTest; liveTest; prefixTest; failureTest; unhandledTest; divergedTest; longTest; storedValueTest
           allTest; allFailureTest; raceTest; limitTest; andTest; andThreeTest; recursionTest; signalTest; liveSignalTest; unreadableTest; farTimerTest; versionTest; versionLoopTest; wrongSignalTest; versionInBranchTest; versionBeforeEmptyBlockTest; versionTwiceTest; blockSwapTest; untilUtcTest
           removedStepsTest; consumedJournalTest; raceLoserTest; failedBlockTest; manyRacesTest ]

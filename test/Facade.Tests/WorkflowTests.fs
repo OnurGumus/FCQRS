@@ -58,7 +58,7 @@ let private eventually what (condition: unit -> bool) =
     Expect.isTrue (condition ()) what
 
 let private fast: RetryPolicy =
-    { Retry.none with
+    { Retry.once (TimeSpan.FromSeconds 30.0) with
         Schedule = FixedInterval(TimeSpan.FromMilliseconds 20.0) }
 
 let private startTest =
@@ -161,7 +161,7 @@ type private Outside() =
 
 let private transferDefinition (outside: Outside) =
     Workflow.define "resume" (fun (amount: int) -> workflow {
-        let! reserved = activity "reserve" (Retry.times 3) (fun _ -> task {
+        let! reserved = activity "reserve" (Retry.times 3 (TimeSpan.FromSeconds 30.0)) (fun _ -> task {
             outside.Count "reserve" |> ignore
             return amount * 2 })
         let! shipped = activity "ship" (Retry.forever (TimeSpan.FromMinutes 5.0)) (fun context -> task {
@@ -260,7 +260,7 @@ let private tracingTest =
         let inside = ConcurrentBag<string>()
         let definition =
             Workflow.define "traced" (fun (_: unit) -> workflow {
-                let! first = activity "first" (Retry.times 2) (fun _ -> task {
+                let! first = activity "first" (Retry.times 2 (TimeSpan.FromSeconds 30.0)) (fun _ -> task {
                     match Activity.Current with
                     | null -> ()
                     | span -> inside.Add span.OperationName
@@ -318,7 +318,7 @@ let private startRaceTest =
             let flow =
                 Workflows.register api (Workflow.define "raced" (fun (key: string) -> workflow {
                     do! sleep (TimeSpan.FromMilliseconds 300.0)
-                    let! (_: int) = activity "mark" Retry.none (fun _ -> task {
+                    let! (_: int) = activity "mark" (Retry.once (TimeSpan.FromSeconds 30.0)) (fun _ -> task {
                         ran[key] <- true
                         return 1 })
                     return key
@@ -360,7 +360,7 @@ let private signalTest =
             let flow =
                 Workflows.register api (Workflow.define "approval" (fun (_: unit) -> workflow {
                     // Holds the body back, so the first signals arrive before their waits.
-                    let! (_: int) = activity "hold" Retry.none (fun _ -> task {
+                    let! (_: int) = activity "hold" (Retry.once (TimeSpan.FromSeconds 30.0)) (fun _ -> task {
                         do! Task.Run(fun () -> gate.Wait())
                         return 1 })
                     let! (first: string) = waitSignal "answer"
@@ -581,8 +581,9 @@ let private unknownOutcomeTest =
                       Passivation = PassivationPolicy.Default }
             Fcqrs.wireSagaStarters api []
             let policy =
-                { Retry.none with
+                { Retry.once (TimeSpan.FromSeconds 30.0) with
                     Schedule = FixedInterval(TimeSpan.FromMilliseconds 50.0)
+                    AttemptTimeout = None
                     MaxAttempts = Some 2
                     ShouldRetry = fun error -> error :? TimeoutException }
             let flow =
@@ -624,7 +625,7 @@ let private cancelTest =
                     return "booked"
                 with :? WorkflowStepFailedException as failed when failed.Error.Kind = ErrorKind.Cancelled ->
                     if clean then
-                        let! (_: int) = activity "release" Retry.none (fun _ -> task {
+                        let! (_: int) = activity "release" (Retry.once (TimeSpan.FromSeconds 30.0)) (fun _ -> task {
                             seen.Add "release started"
                             do! Task.Run(fun () -> cleanupGate.Wait())
                             seen.Add "released"
@@ -672,7 +673,7 @@ let private childTest =
                 return 0 })
             let slow = Workflow.define "slow" (fun (_: unit) -> workflow {
                 do! sleep (TimeSpan.FromMilliseconds 400.0)
-                let! (_: int) = activity "tell" Retry.none (fun _ -> task {
+                let! (_: int) = activity "tell" (Retry.once (TimeSpan.FromSeconds 30.0)) (fun _ -> task {
                     detachedDone.Set()
                     return 1 })
                 return "done" })
@@ -939,7 +940,7 @@ let private cancelParkedChildTest =
             return value + answer })
         let keeper (first: string) =
             Workflow.define "keeper" (fun (value: int) -> workflow {
-                let! start = activity first Retry.none (fun _ -> task { return value })
+                let! start = activity first (Retry.once (TimeSpan.FromSeconds 30.0)) (fun _ -> task { return value })
                 let! result = child waiter start
                 return result })
         let parked status = match status with WorkflowStatus.Parked _ -> true | _ -> false
@@ -1016,7 +1017,7 @@ let private cancelParkedBranchesTest =
             return value + answer })
         let brancher (first: string) =
             Workflow.define "brancher" (fun (value: int) -> workflow {
-                let! start = activity first Retry.none (fun _ -> task { return value })
+                let! start = activity first (Retry.once (TimeSpan.FromSeconds 30.0)) (fun _ -> task { return value })
                 // A child wait with a timeout: the sleep wins, and the wait at 1/0/1 stays scheduled.
                 let timeout = workflow {
                     do! sleep (TimeSpan.FromSeconds 1.0)
@@ -1027,7 +1028,7 @@ let private cancelParkedBranchesTest =
                     try
                         let! (_: int list) =
                             all [ child waiter (start + 1)
-                                  activity "fail" Retry.none (fun _ -> task {
+                                  activity "fail" (Retry.once (TimeSpan.FromSeconds 30.0)) (fun _ -> task {
                                       do! Task.Delay 1000
                                       return failwith "refused" }) ]
                         return 1
@@ -1090,7 +1091,7 @@ let private parkingTest =
         let outside = Outside()
         let definition (second: string) =
             Workflow.define "evolving" (fun (value: int) -> workflow {
-                let! first = activity "first" Retry.none (fun _ -> task { return value + 1 })
+                let! first = activity "first" (Retry.once (TimeSpan.FromSeconds 30.0)) (fun _ -> task { return value + 1 })
                 let! last = activity second (Retry.forever (TimeSpan.FromMinutes 5.0)) (fun context -> task {
                     outside.Count second |> ignore
                     do! Task.Run(fun () -> outside.Gate.Wait context.Cancellation)
@@ -1133,8 +1134,8 @@ let private removedStepsParkTest =
         let outside = Outside()
         let definition (withThird: bool) =
             Workflow.define "shrinking" (fun (value: int) -> workflow {
-                let! first = activity "first" Retry.none (fun _ -> task { return value + 1 })
-                let! second = activity "second" Retry.none (fun _ -> task { return first + 1 })
+                let! first = activity "first" (Retry.once (TimeSpan.FromSeconds 30.0)) (fun _ -> task { return value + 1 })
+                let! second = activity "second" (Retry.once (TimeSpan.FromSeconds 30.0)) (fun _ -> task { return first + 1 })
                 if withThird then
                     let! third = activity "third" (Retry.forever (TimeSpan.FromMinutes 5.0)) (fun context -> task {
                         outside.Count "third" |> ignore
@@ -1187,7 +1188,7 @@ let private streamTest =
             let mutable widest = 0
             let flow =
                 Workflows.register api (Workflow.define "square" (fun (value: int) -> workflow {
-                    let! squared = activity "square" Retry.none (fun _ -> task {
+                    let! squared = activity "square" (Retry.once (TimeSpan.FromSeconds 30.0)) (fun _ -> task {
                         calls.AddOrUpdate(value, 1, fun _ seen -> seen + 1) |> ignore
                         let now = Interlocked.Increment &running
                         lock calls (fun () -> widest <- max widest now)
@@ -1283,8 +1284,9 @@ let private lateCommandTest =
             handle
         let deadline = TimeSpan.FromSeconds 5.0
         let policy: RetryPolicy =
-            { Retry.none with
+            { Retry.once (TimeSpan.FromSeconds 30.0) with
                 Schedule = FixedInterval(TimeSpan.FromMilliseconds 50.0)
+                AttemptTimeout = None
                 MaxAttempts = None
                 Deadline = Some deadline
                 ShouldRetry = fun error -> error :? TimeoutException || error :? OperationCanceledException }
@@ -1396,7 +1398,7 @@ let private unreadableResultTest =
             let flow =
                 Workflows.register api (Workflow.define "drawer" (fun (_: unit) -> workflow {
                     try
-                        let! (_: Drawing) = activity "draw" Retry.none (fun _ -> task { return { Outline = Triangle() } })
+                        let! (_: Drawing) = activity "draw" (Retry.once (TimeSpan.FromSeconds 30.0)) (fun _ -> task { return { Outline = Triangle() } })
                         return "drawn"
                     with :? WorkflowStepFailedException as failed ->
                         return string failed.Error.Kind
@@ -1595,8 +1597,9 @@ let private isConfirmed (event: BookingEvent) =
 
 /// Two attempts, each as long as the command timeout.
 let private twice: RetryPolicy =
-    { Retry.none with
+    { Retry.once (TimeSpan.FromSeconds 30.0) with
         Schedule = FixedInterval(TimeSpan.FromMilliseconds 50.0)
+        AttemptTimeout = None
         MaxAttempts = Some 2
         ShouldRetry = fun error -> error :? TimeoutException }
 

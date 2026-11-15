@@ -198,8 +198,8 @@ type SignalOutcome<'T> internal (received: bool, value: 'T) =
     /// The signal's payload. Read it only when `Received` is true.
     member _.Value = value
 
-/// Changes to a retry policy, for C#. `Retry.none`, `Retry.times(n)` and `Retry.forever(deadline)`
-/// give the starting policies.
+/// Changes to a retry policy, for C#. `Retry.once(attemptTimeout)`, `Retry.times(n, attemptTimeout)`
+/// and `Retry.forever(deadline)` give the starting policies.
 [<Extension; Sealed; AbstractClass>]
 type RetryPolicyExtensions =
     /// The wait between attempts.

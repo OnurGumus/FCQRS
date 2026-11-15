@@ -23,7 +23,7 @@ step; this page explains the model behind it.
 let enrich =
     Workflow.define "enrich" (fun (order: string) -> workflow {
         let! points =
-            activity "score" (Retry.times 3) (fun attempt ->
+            activity "score" (Retry.times 3 (TimeSpan.FromSeconds 30.0)) (fun attempt ->
                 score attempt.IdempotencyKey order)
         do! sleep (TimeSpan.FromMinutes 5.0)
         let! at = now
@@ -42,8 +42,9 @@ public sealed class Enrich() : Workflow<string, Enriched>("enrich")
     public override async WorkflowTask<Enriched> Run(
         WorkflowContext ctx, string order)
     {
-        var points = await ctx.Activity("score", Retry.times(3), attempt =>
-            Score(attempt.IdempotencyKey, order));
+        var points = await ctx.Activity(
+            "score", Retry.times(3, TimeSpan.FromSeconds(30)),
+            attempt => Score(attempt.IdempotencyKey, order));
         await ctx.Sleep(TimeSpan.FromMinutes(5));
         var at = await ctx.Now();
         return new Enriched(points, at);
@@ -122,20 +123,19 @@ instance is parked or does the wrong thing.
 An activity's `RetryPolicy` has a schedule, an attempt limit, a deadline for the whole step, a
 timeout for one attempt, and a filter that decides which exceptions are worth another attempt.
 
-- `Retry.none` makes one attempt.
-- `Retry.times 5` makes at most five, with backoff from one second to one minute.
+- `Retry.once timeout` makes one attempt.
+- `Retry.times 5 timeout` makes at most five, with backoff from one second to one minute.
 - `Retry.forever deadline` retries until the deadline.
+
+Every activity has a time limit: an `AttemptTimeout`, which `once` and `times` take, or a
+`Deadline`. An attempt that runs out of time fails even when the activity ignores its cancellation
+token. The call keeps running, and its result is ignored. `activity` raises `ArgumentException`
+for a policy with neither, or with a limit that is not positive.
 
 The deadline is measured from the stored start of the step, so a restart does not extend it. An
 activity whose deadline passed while the process was stopped fails as `DeadlineExceeded` without
 another attempt. Attempts are not stored: after a restart the attempt count and the backoff begin
 again.
-
-An attempt has no time limit unless the policy sets one, and `Retry.none` and `Retry.times` set
-none. An activity that never returns, for example one that ignores its cancellation token, keeps its
-step waiting until the workflow is cancelled. With `AttemptTimeout`, the attempt fails when the time
-is up even if the activity ignores its token. The call itself keeps running, and its result is
-ignored.
 
 When the policy runs out, the failure is stored and raised in the body as
 `WorkflowStepFailedException`. The body can catch it and continue. Replay raises the same exception,
@@ -186,14 +186,14 @@ let both =
         let! points =
             all [
                 for order in [ "A"; "B"; "C" ] ->
-                    activity "score" (Retry.times 3) (fun attempt ->
+                    activity "score" (Retry.times 3 (TimeSpan.FromSeconds 30.0)) (fun attempt ->
                         score attempt.IdempotencyKey order)
             ]
         let! first =
             race [
                 workflow {
                     let! paid =
-                        activity "charge" Retry.none (fun attempt ->
+                        activity "charge" (Retry.once (TimeSpan.FromSeconds 30.0)) (fun attempt ->
                             charge attempt.IdempotencyKey 30m)
                     return Some paid
                 }
@@ -215,8 +215,9 @@ static async WorkflowTask<(IReadOnlyList<int>, string?)> Both(
 {
     var orders = new[] { "A", "B", "C" };
     var points = await ctx.All(orders.Select(order =>
-        ctx.Activity("score", Retry.times(3), attempt =>
-            Score(attempt.IdempotencyKey, order))).ToArray());
+        ctx.Activity(
+            "score", Retry.times(3, TimeSpan.FromSeconds(30)),
+            attempt => Score(attempt.IdempotencyKey, order))).ToArray());
     var first = await ctx.Race(
         ctx.Run(() => Charged(ctx)),
         ctx.Run(() => TimedOut(ctx)));
@@ -224,8 +225,9 @@ static async WorkflowTask<(IReadOnlyList<int>, string?)> Both(
 }
 
 static async WorkflowTask<string?> Charged(WorkflowContext ctx) =>
-    await ctx.Activity("charge", Retry.none, attempt =>
-        Charge(attempt.IdempotencyKey, 30m));
+    await ctx.Activity(
+        "charge", Retry.once(TimeSpan.FromSeconds(30)),
+        attempt => Charge(attempt.IdempotencyKey, 30m));
 
 static async WorkflowTask<string?> TimedOut(WorkflowContext ctx)
 {
@@ -247,10 +249,10 @@ static async WorkflowTask<string?> TimedOut(WorkflowContext ctx)
 let pointsAndReceipt =
     workflow {
         let! points =
-            activity "score" (Retry.times 3) (fun attempt ->
+            activity "score" (Retry.times 3 (TimeSpan.FromSeconds 30.0)) (fun attempt ->
                 score attempt.IdempotencyKey "A")
         and! receipt =
-            activity "charge" Retry.none (fun attempt ->
+            activity "charge" (Retry.once (TimeSpan.FromSeconds 30.0)) (fun attempt ->
                 charge attempt.IdempotencyKey 30m)
         return points, receipt
     }
@@ -264,10 +266,12 @@ static async WorkflowTask<(int, string)> PointsAndReceipt(
     WorkflowContext ctx)
 {
     var (points, receipt) = await ctx.Both(
-        ctx.Activity("score", Retry.times(3), attempt =>
-            Score(attempt.IdempotencyKey, "A")),
-        ctx.Activity("charge", Retry.none, attempt =>
-            Charge(attempt.IdempotencyKey, 30m)));
+        ctx.Activity(
+            "score", Retry.times(3, TimeSpan.FromSeconds(30)),
+            attempt => Score(attempt.IdempotencyKey, "A")),
+        ctx.Activity(
+            "charge", Retry.once(TimeSpan.FromSeconds(30)),
+            attempt => Charge(attempt.IdempotencyKey, 30m)));
     return (points, receipt);
 }
 ```
@@ -291,7 +295,7 @@ every five minutes until it has shipped:
 let rec waitUntilShipped checks =
     workflow {
         let! shipped =
-            activity "check" (Retry.times 3) (fun attempt ->
+            activity "check" (Retry.times 3 (TimeSpan.FromSeconds 30.0)) (fun attempt ->
                 isShipped attempt.IdempotencyKey "A")
         if shipped then
             return checks
@@ -308,8 +312,9 @@ let rec waitUntilShipped checks =
 static async WorkflowTask<int> WaitUntilShipped(
     WorkflowContext ctx, int checks)
 {
-    var shipped = await ctx.Activity("check", Retry.times(3), attempt =>
-        IsShipped(attempt.IdempotencyKey, "A"));
+    var shipped = await ctx.Activity(
+        "check", Retry.times(3, TimeSpan.FromSeconds(30)),
+        attempt => IsShipped(attempt.IdempotencyKey, "A"));
     if (shipped)
         return checks;
     await ctx.Sleep(TimeSpan.FromMinutes(5));
@@ -554,7 +559,7 @@ let booking =
             return paid
         with :? WorkflowStepFailedException as failed
                 when failed.Error.Kind = ErrorKind.Cancelled ->
-            let! _ = activity "refund" Retry.none (fun attempt ->
+            let! _ = activity "refund" (Retry.once (TimeSpan.FromSeconds 30.0)) (fun attempt ->
                          charge attempt.IdempotencyKey -30m)
             return raise failed
     }
@@ -575,8 +580,9 @@ static async WorkflowTask<string> Booking(WorkflowContext ctx)
     catch (WorkflowStepFailedException failed)
         when (failed.Error.Kind.IsCancelled)
     {
-        await ctx.Activity("refund", Retry.none, attempt =>
-            Charge(attempt.IdempotencyKey, -30m));
+        await ctx.Activity(
+            "refund", Retry.once(TimeSpan.FromSeconds(30)),
+            attempt => Charge(attempt.IdempotencyKey, -30m));
         throw;
     }
 }
@@ -611,11 +617,11 @@ step at the same position.
 ```fsharp
 let evolving =
     workflow {
-        let! points = activity "score" (Retry.times 3) (fun attempt ->
+        let! points = activity "score" (Retry.times 3 (TimeSpan.FromSeconds 30.0)) (fun attempt ->
                           score attempt.IdempotencyKey "A")
         let! change = version "add-charge" 2
         if change >= 2 then
-            let! _ = activity "charge" Retry.none (fun attempt ->
+            let! _ = activity "charge" (Retry.once (TimeSpan.FromSeconds 30.0)) (fun attempt ->
                          charge attempt.IdempotencyKey 5m)
             ()
         return points
@@ -628,12 +634,14 @@ let evolving =
 ```csharp
 static async WorkflowTask<int> Evolving(WorkflowContext ctx)
 {
-    var points = await ctx.Activity("score", Retry.times(3), attempt =>
-        Score(attempt.IdempotencyKey, "A"));
+    var points = await ctx.Activity(
+        "score", Retry.times(3, TimeSpan.FromSeconds(30)),
+        attempt => Score(attempt.IdempotencyKey, "A"));
     var change = await ctx.Version("add-charge", 2);
     if (change >= 2)
-        await ctx.Activity("charge", Retry.none, attempt =>
-            Charge(attempt.IdempotencyKey, 5m));
+        await ctx.Activity(
+            "charge", Retry.once(TimeSpan.FromSeconds(30)),
+            attempt => Charge(attempt.IdempotencyKey, 5m));
     return points;
 }
 ```
@@ -676,8 +684,9 @@ it:
 ```fsharp
 let remind =
     Workflow.define "remind" (fun (run: ScheduledRun<string>) -> workflow {
+        let retry = Retry.times 3 (TimeSpan.FromSeconds 30.0)
         return!
-            activity "send" (Retry.times 3) (fun attempt ->
+            activity "send" retry (fun attempt ->
                 sendReminder attempt.IdempotencyKey run.Input)
     })
 
@@ -704,8 +713,9 @@ public sealed class Remind()
 {
     public override async WorkflowTask<string> Run(
         WorkflowContext ctx, ScheduledRun<string> run) =>
-        await ctx.Activity("send", Retry.times(3), attempt =>
-            SendReminder(attempt.IdempotencyKey, run.Input));
+        await ctx.Activity(
+            "send", Retry.times(3, TimeSpan.FromSeconds(30)),
+            attempt => SendReminder(attempt.IdempotencyKey, run.Input));
 }
 
 public static class Reminders

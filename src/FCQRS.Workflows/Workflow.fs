@@ -14,8 +14,10 @@ type RetryPolicy =
       /// The time allowed for the whole step, measured from the stored start of the step.
       /// A restart does not extend it.
       Deadline: TimeSpan option
-      /// The time allowed for one attempt. For a command step it is how long one send waits for
-      /// its event, in place of `akka.fcqrs.command-timeout`.
+      /// The time allowed for one attempt. An activity needs it or `Deadline`. An attempt that
+      /// runs out fails even when its call ignores the cancellation token; the call keeps running
+      /// and its result is ignored. For a command step it is how long one send waits for its
+      /// event, in place of `akka.fcqrs.command-timeout`.
       AttemptTimeout: TimeSpan option
       /// Whether an exception is worth another attempt. `false` fails the step at once.
       ShouldRetry: exn -> bool }
@@ -25,20 +27,28 @@ module Retry =
 
     let private backoff = Backoff(TimeSpan.FromSeconds 1.0, 2.0, TimeSpan.FromMinutes 1.0)
 
-    /// One attempt.
-    let none: RetryPolicy =
+    let private start: RetryPolicy =
         { Schedule = backoff
           MaxAttempts = Some 1
           Deadline = None
           AttemptTimeout = None
           ShouldRetry = fun _ -> true }
 
-    /// At most `attempts` attempts, with backoff from one second to one minute.
-    let times (attempts: int) : RetryPolicy = { none with MaxAttempts = Some attempts }
+    /// One attempt, which fails when it has not finished within `attemptTimeout`.
+    let once (attemptTimeout: TimeSpan) : RetryPolicy =
+        { start with
+            AttemptTimeout = Some attemptTimeout }
 
-    /// Retries with backoff until `deadline` has passed since the step was first reached.
+    /// At most `attempts` attempts, with backoff from one second to one minute. Each attempt fails
+    /// when it has not finished within `attemptTimeout`.
+    let times (attempts: int) (attemptTimeout: TimeSpan) : RetryPolicy =
+        { once attemptTimeout with
+            MaxAttempts = Some attempts }
+
+    /// Retries with backoff until `deadline` has passed since the step was first reached. The
+    /// deadline fails the step even when an attempt is still running.
     let forever (deadline: TimeSpan) : RetryPolicy =
-        { none with
+        { start with
             MaxAttempts = None
             Deadline = Some deadline }
 
@@ -293,10 +303,21 @@ module WorkflowSteps =
 
     /// Calls an external system. The call runs at least once: a crash after the call and before
     /// its result is stored repeats it, so pass `IdempotencyKey` to the external system.
-    /// `name` is stored and must not change while instances are running.
+    /// `name` is stored and must not change while instances are running. The policy needs an
+    /// `AttemptTimeout` or a `Deadline`: an attempt with neither would wait as long as its call,
+    /// also for a call that ignores its cancellation token.
     let activity (name: string) (policy: RetryPolicy) (run: AttemptContext -> Task<'T>) : Workflow<'T> =
         if policy.MaxAttempts.IsNone && policy.Deadline.IsNone then
             invalidArg (nameof policy) $"Activity '{name}' has no attempt limit, so it needs a deadline."
+
+        if policy.AttemptTimeout.IsNone && policy.Deadline.IsNone then
+            invalidArg (nameof policy) $"Activity '{name}' needs an attempt timeout or a deadline."
+
+        if policy.AttemptTimeout |> Option.exists (fun timeout -> timeout <= TimeSpan.Zero) then
+            invalidArg (nameof policy) $"Activity '{name}' has an attempt timeout that is not positive."
+
+        if policy.Deadline |> Option.exists (fun deadline -> deadline <= TimeSpan.Zero) then
+            invalidArg (nameof policy) $"Activity '{name}' has a deadline that is not positive."
 
         let boxed (attempt: AttemptEnv) : Task<objnull> =
             task {

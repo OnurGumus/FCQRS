@@ -149,6 +149,10 @@ Keep these distinctions intact in code comments and documentation.
 - A retry policy's deadline is measured from the stored start of the step. Attempt counts restart
   with the process. An activity whose deadline passed while the process was stopped fails without
   another attempt.
+- Every activity has a time limit: `Retry.once` and `Retry.times` take an attempt timeout, and
+  `activity` refuses a policy with neither `AttemptTimeout` nor `Deadline`. An attempt that runs
+  out fails even when its call ignores the token; the call keeps running. Circuit breakers and
+  rate limits belong inside the activity, not in the step's policy.
 - A command step subscribes before it sends and resends with the same correlation ID after a
   restart. The aggregate must answer a repeat with its first verdict, checked before anything the
   first command changed. No reply by the deadline is `OutcomeUnknown`, not a rejection.

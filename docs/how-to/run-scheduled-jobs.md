@@ -71,8 +71,9 @@ let backup (store: IBackupStore) =
     Workflow.define "backup" (fun (run: ScheduledRun<string>) -> workflow {
         // The key holds the run's ID, which holds the due time. It is the same
         // for every attempt of one run and differs between runs.
+        let retry = Retry.times 3 (TimeSpan.FromMinutes 10.0)
         return!
-            activity "copy" (Retry.times 3) (fun attempt ->
+            activity "copy" retry (fun attempt ->
                 store.Copy(attempt.IdempotencyKey, run.Input))
     })
 ```
@@ -90,8 +91,9 @@ public sealed class BackupWorkflow(IBackupStore store)
     // for every attempt of one run and differs between runs.
     public override async WorkflowTask<bool> Run(
         WorkflowContext ctx, ScheduledRun<string> run) =>
-        await ctx.Activity("copy", Retry.times(3), attempt =>
-            store.Copy(attempt.IdempotencyKey, run.Input));
+        await ctx.Activity(
+            "copy", Retry.times(3, TimeSpan.FromMinutes(10)),
+            attempt => store.Copy(attempt.IdempotencyKey, run.Input));
 }
 ```
 
@@ -126,8 +128,9 @@ let invoice (billing: IBilling) =
     Workflow.define "invoice" (fun (run: ScheduledRun<string>) -> workflow {
         // Keyed by the week, not by the run: a second run in the same week
         // finds the invoice issued.
+        let retry = Retry.times 3 (TimeSpan.FromSeconds 30.0)
         return!
-            activity "issue" (Retry.times 3) (fun _ ->
+            activity "issue" retry (fun _ ->
                 billing.Issue(invoiceNumber run, run.Input))
     })
 ```
@@ -159,8 +162,9 @@ public sealed class InvoiceWorkflow(IBilling billing)
     // finds the invoice issued.
     public override async WorkflowTask<bool> Run(
         WorkflowContext ctx, ScheduledRun<string> run) =>
-        await ctx.Activity("issue", Retry.times(3), _ =>
-            billing.Issue(Jobs.InvoiceNumber(run), run.Input));
+        await ctx.Activity(
+            "issue", Retry.times(3, TimeSpan.FromSeconds(30)),
+            _ => billing.Issue(Jobs.InvoiceNumber(run), run.Input));
 }
 ```
 

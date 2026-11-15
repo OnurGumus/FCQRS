@@ -34,9 +34,9 @@ type IMailer =
 // docs:end
 
 // docs:workflow
-// Five attempts, 200 ms apart.
+// Five attempts, 200 ms apart, each allowed 30 seconds.
 let private retry = {
-    Retry.times 5 with
+    Retry.times 5 (TimeSpan.FromSeconds 30.0) with
         Schedule = FixedInterval(TimeSpan.FromMilliseconds 200.0)
 }
 
