@@ -112,6 +112,8 @@ Keep these distinctions intact in code comments and documentation.
 - It does not mean every projection or external system is current.
 - Subscribe before sending. Subscribing afterward can miss the notification.
 - Projection subscriptions are in-memory request coordination, not a durable client queue.
+- Projection names that start with `fcqrs-` are reserved for FCQRS's own projections, which start
+  through the internal `startOwned`. Every user registration refuses them with `ArgumentException`.
 
 ### Saga
 
@@ -177,10 +179,11 @@ Keep these distinctions intact in code comments and documentation.
   or for a due time that a change removed. The aggregate takes snapshots, so the aggregate name,
   `ScheduleEvent`, `ScheduleRule`, `CatchUp`, `ScheduleSpec`, and the snapshot state
   `ScheduleState` and `AcceptedDue` are persistent contracts. Commands are not journaled.
-- A schedule's run starts at least once per accepted due time. Its workflow ID is
-  `<schedule ID>@<due time in UTC, "O" format>`, so a repeated start stores nothing. The run's input
-  is `ScheduledRun { Schedule; Due; Input }`. Run IDs and `ScheduledRun` are contracts. The escaped
-  workflow name and schedule ID must fit in 205 characters, so a run's persistence ID fits in 255.
+- A schedule's run starts at least once per accepted due time, unless its workflow cannot read the
+  stored input (below). Its workflow ID is `<schedule ID>@<due time in UTC, "O" format>`, so a
+  repeated start stores nothing. The run's input is `ScheduledRun { Schedule; Due; Input }`. Run IDs
+  and `ScheduledRun` are contracts. The escaped workflow name and schedule ID must fit in 205
+  characters, so a run's persistence ID fits in 255.
 - A run decided before a change, pause, or delete still starts, on the workflow and input stored
   when it was decided. Due times inside a pause never run. A deleted schedule ID cannot be created
   again. A fire more than one second early is refused.
@@ -189,6 +192,9 @@ Keep these distinctions intact in code comments and documentation.
   `Schedules.createLatest` and C#'s `CreateAsync` without a policy use it; `create` takes one.
 - A schedule whose workflow the dispatcher does not list logs an error at each due time and fires
   nothing until a later start lists it.
+- A decided run whose stored input its listed workflow cannot read is lost: the dispatcher logs one
+  error naming the schedule, due time, workflow, and exception, sends `Started`, and the schedule
+  moves on. The error log is the only signal. No stored event shape changes; `Fired` records it.
 - `Schedules.state` reads the dispatcher's index, which lags the aggregate by one projection pass.
 - The index is stored in `fcqrs_schedule_index` in the journal's database, one row per schedule,
   by the projection `fcqrs-schedule-index`, each row in the transaction that stores its read

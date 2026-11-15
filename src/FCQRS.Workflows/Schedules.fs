@@ -167,7 +167,8 @@ type ScheduleCommand =
     | Delete
     /// Asks to start the run for a due time. The schedule decides whether that due time runs.
     | Fire of due: DateTime
-    /// Reports that the run for an accepted due time has been started.
+    /// Reports that the run for an accepted due time has been started, or given up because its
+    /// workflow cannot read the stored input.
     | Started of due: DateTime
 
 /// What a schedule replies, and stores. Written `ScheduleEvent.Created` and so on. Every case
@@ -189,7 +190,8 @@ type ScheduleEvent =
     /// A run for `due` was decided, with the workflow it starts and the input it gets. A later
     /// change does not alter either.
     | Firing of due: DateTime * workflow: string * input: Payload
-    /// The run for `due` has been started.
+    /// The run for `due` has been started, or given up because its workflow cannot read the
+    /// stored input.
     | Fired of due: DateTime
     /// A command was refused. Never stored.
     | Refused of reason: string
@@ -202,7 +204,8 @@ type AcceptedDue =
       Workflow: string
       /// The input its run gets.
       Input: Payload
-      /// Whether the run's start is known to be stored.
+      /// Whether the run's start is known to be stored, or the run was given up because its
+      /// workflow cannot read the stored input.
       Started: bool }
 
 /// What a schedule knows. All times are UTC.
@@ -427,25 +430,40 @@ type ScheduledWorkflow internal (name: string, inputType: Type, start: string ->
     /// exists already is left as it is.
     member internal _.Start = start
 
+/// Raised by a `ScheduledWorkflow`'s start when the stored schedule input cannot be read as the
+/// workflow's input type. Nothing was started. Reading it again gives the same failure, so the
+/// dispatcher gives up the run.
+type internal UnreadableScheduleInput(workflow: string, inputType: Type, error: exn) =
+    inherit Exception($"Workflow '{workflow}' cannot read the stored schedule input as a {inputType.Name}: {error.Message}", error)
+
 /// Makes a `ScheduledWorkflow`.
 module ScheduledWorkflow =
 
-    /// A workflow registered with `Workflows.register` whose input is a `ScheduledRun`.
-    let ofHandle (handle: WorkflowHandle<ScheduledRun<'Input>, 'Result>) : ScheduledWorkflow =
+    /// A `ScheduledWorkflow` whose start reads the stored input as `'Input` and passes the run to
+    /// `start`. An input it cannot read raises `UnreadableScheduleInput` before `start` is called.
+    let internal create<'Input> (name: string) (start: string -> ScheduledRun<'Input> -> Async<unit>) : ScheduledWorkflow =
         ScheduledWorkflow(
-            handle.Name,
+            name,
             typeof<'Input>,
             fun runId schedule due input ->
                 async {
-                    let run =
-                        { Schedule = schedule
-                          Due = due
-                          Input = Payload.toValue<'Input> input }
+                    let input =
+                        try
+                            Payload.toValue<'Input> input
+                        with error ->
+                            raise (UnreadableScheduleInput(name, typeof<'Input>, error))
 
-                    let! _ = handle.Start runId run
-                    return ()
+                    do! start runId { Schedule = schedule; Due = due; Input = input }
                 }
         )
+
+    /// A workflow registered with `Workflows.register` whose input is a `ScheduledRun`.
+    let ofHandle (handle: WorkflowHandle<ScheduledRun<'Input>, 'Result>) : ScheduledWorkflow =
+        create<'Input> handle.Name (fun runId run ->
+            async {
+                let! _ = handle.Start runId run
+                return ()
+            })
 
 /// A schedule as the dispatcher's index knows it. The index follows the schedule's events through a
 /// projection, so it can lag the schedule by one projection pass. All times are UTC.
@@ -467,7 +485,8 @@ type ScheduleView =
       Deleted: bool
       /// The last due time the schedule accepted.
       LastDue: DateTime option
-      /// Whether the run for `LastDue` is known to have started.
+      /// Whether the run for `LastDue` is known to have started, or was given up because its
+      /// workflow cannot read the stored input.
       LastStarted: bool
       /// The due time the schedule accepts next, or nothing while it is paused or deleted.
       NextDue: DateTime option }
@@ -910,7 +929,23 @@ type internal Dispatcher
                     | false, _ -> ()
                     | true, workflow ->
                         let runId = runIdOf id accepted
-                        do! workflow.Start runId id accepted input
+
+                        // An input the workflow cannot read stays unreadable, so the run is given up:
+                        // its start is reported anyway, and the schedule moves on to its next due time.
+                        do!
+                            async {
+                                try
+                                    do! workflow.Start runId id accepted input
+                                with :? UnreadableScheduleInput as error ->
+                                    logger.LogError(
+                                        error,
+                                        "Schedule {Schedule} is due at {Due:O}, but workflow {Workflow} cannot read the input stored for the run. The run for this due time is lost; the schedule goes on to its next due time.",
+                                        id,
+                                        accepted,
+                                        name
+                                    )
+                            }
+
                         let! started = send id (cidOf $"{runId}/started") (ScheduleCommand.Started accepted)
 
                         match started.EventDetails with

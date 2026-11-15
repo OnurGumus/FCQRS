@@ -26,14 +26,19 @@ type private Runs = ConcurrentDictionary<string, ScheduledRun<string>>
 /// A logger provider that keeps every line.
 type private Capture() =
     let lines = ConcurrentQueue<LogLevel * string * string>()
+    let errors = ConcurrentQueue<LogLevel * string * (exn | null)>()
     member _.Lines = List.ofSeq lines
+    /// Every line with the exception it was logged with.
+    member _.Errors = List.ofSeq errors
     interface ILoggerProvider with
         member _.CreateLogger(category) =
             { new ILogger with
                 member _.BeginScope<'TState when 'TState: not null>(_state: 'TState) : IDisposable | null = null
                 member _.IsEnabled(_level) = true
                 member _.Log<'TState>(level, _eventId, state: 'TState, error: exn | null, formatter: Func<'TState, exn | null, string>) =
-                    lines.Enqueue(level, category, formatter.Invoke(state, error)) }
+                    let text = formatter.Invoke(state, error)
+                    lines.Enqueue(level, category, text)
+                    errors.Enqueue(level, text, error) }
         member _.Dispose() = ()
 
 let private newDb () = Path.Combine(Path.GetTempPath(), $"fcqrs_schedule_{Guid.NewGuid():N}.db")
@@ -424,6 +429,47 @@ let private pendingLogsEachDue =
                 shiftTo second (pastFirstHour + hour)
                 eventually "a second error at the next due time" (fun () -> (unregisteredErrors capture).Length >= 2)
                 Expect.isFalse (view second "k").LastStarted "the run is still not started"
+            finally
+                second.Stop()
+
+/// Registers "remind" with an `int` input, which the stored input "x" cannot be read as, recording
+/// into `runs`.
+let private remindInt (runs: ConcurrentDictionary<string, ScheduledRun<int>>) (api: IActor) =
+    let definition =
+        Workflow.define "remind" (fun (run: ScheduledRun<int>) -> workflow {
+            do! activity "record" Retry.none (fun _ -> task { runs[$"""{run.Schedule}@{run.Due.ToString "O"}"""] <- run })
+            return string run.Input
+        })
+    let handle = Workflows.register api definition
+    [ ScheduledWorkflow.ofHandle handle ], None
+
+let private unreadableInputLost =
+    testCase "schedules: a decided run whose stored input the workflow cannot read logs one error, is lost, and the schedule goes on" <| fun _ ->
+        withDb <| fun db ->
+            let due = crashAfterFiring db "ScheduleUnreadableInput" (remindOnly (Runs())) ignore
+            let capture = new Capture()
+            use loggers = LoggerFactory.Create(fun builder -> builder.AddProvider capture |> ignore)
+            let runs = ConcurrentDictionary<string, ScheduledRun<int>>()
+            let second = bootWith db "ScheduleUnreadableInput" pastFirstHour loggers (remindInt runs)
+            try
+                // Error lines about the decided run, with their exceptions.
+                let errorsForDue () =
+                    capture.Errors |> List.filter (fun (level, text, _) -> level = LogLevel.Error && text.Contains(due.ToString "O"))
+                eventually "an error for the decided run" (fun () -> not (List.isEmpty (errorsForDue ())))
+                // A retry comes after the shorter of the check interval (one second) and five seconds.
+                Thread.Sleep 3500
+                let errors = errorsForDue ()
+                Expect.equal errors.Length 1 "one error, and no start is tried again"
+                let _, text, error = errors.Head
+                Expect.stringContains text "Schedule k " "the error names the schedule"
+                Expect.stringContains text "workflow remind " "the error names the workflow"
+                Expect.isNotNull error "the error carries the exception"
+                eventually "the lost run's start is reported" (fun () -> let view = view second "k" in view.LastDue = Some due && view.LastStarted)
+                Expect.isEmpty runs "no run started"
+                sync (Schedules.change second.Schedules "k" "remind" 7 (ScheduleRule.Every hour) CatchUp.Latest)
+                shiftTo second (pastFirstHour + hour + TimeSpan.FromSeconds 5.0)
+                eventually "the next due time runs with the changed input" (fun () -> runs.Values |> Seq.exists (fun run -> run.Due > due && run.Input = 7))
+                Expect.equal (errorsForDue ()).Length 1 "still one error"
             finally
                 second.Stop()
 
@@ -1259,6 +1305,7 @@ let tests =
             crashBetween
             allLogsEachDue
             pendingLogsEachDue
+            unreadableInputLost
             decidedWorkflowKept
             deletedLeavesIndex
             checkIntervalRejected

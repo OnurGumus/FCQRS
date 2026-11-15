@@ -479,20 +479,11 @@ type ScheduleHost =
     static member Workflow<'TInput, 'TResult>(client: IWorkflowClient<ScheduledRun<'TInput>, 'TResult>) : ScheduledWorkflow =
         ArgumentNullException.ThrowIfNull client
 
-        ScheduledWorkflow(
-            client.Name,
-            typeof<'TInput>,
-            fun runId schedule due input ->
-                async {
-                    let run =
-                        { Schedule = schedule
-                          Due = due
-                          Input = Payload.toValue<'TInput> input }
-
-                    let! _ = client.StartAsync(runId, run) |> Async.AwaitTask
-                    return ()
-                }
-        )
+        ScheduledWorkflow.create<'TInput> client.Name (fun runId run ->
+            async {
+                let! _ = client.StartAsync(runId, run) |> Async.AwaitTask
+                return ()
+            })
 
     /// Registers the schedule aggregate and starts this actor system's dispatcher, which may start
     /// the listed workflows. Register each workflow with `WorkflowHost.Register` first. Throws

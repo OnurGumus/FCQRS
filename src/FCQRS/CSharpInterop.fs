@@ -281,7 +281,8 @@ type ActorApi =
 /// database under that name and resumes where it stopped; a handler can then see an event again
 /// after a crash. A handler that throws terminates the process. With entity names (an aggregate's,
 /// saga's, or workflow's name), it reads only those entities' events, and other entities' rows stay
-/// in the database; without them, it reads every entity.
+/// in the database; without them, it reads every entity. A name that starts with `fcqrs-` is
+/// reserved for FCQRS's own projections and raises `ArgumentException`.
 type QueryApi =
     static member private Progress(name: string | null) =
         match name with

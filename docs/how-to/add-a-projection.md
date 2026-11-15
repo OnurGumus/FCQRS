@@ -118,6 +118,12 @@ handler that writes to several stores needs that for each of them.
 The name identifies the projection's stored progress. A new name reads the whole journal once. Reusing
 a name resumes that projection, so do not reuse one for a different read model.
 
+Names that start with `fcqrs-` are reserved for FCQRS's own projections, such as the schedule
+dispatcher's `fcqrs-schedule-index`. A projection with such a name would share that projection's
+stored progress, so `Fcqrs.projection` with `Named "fcqrs-..."`, `AddProjection` with such a
+`name`, `QueryApi.Init`, and the transactional registrations raise `ArgumentException`. In C#,
+`AddProjection` raises it when it is called, before the host starts.
+
 ## Read only some entities
 
 The balance list needs only the account aggregate's events. Name its entity, the `Name` the

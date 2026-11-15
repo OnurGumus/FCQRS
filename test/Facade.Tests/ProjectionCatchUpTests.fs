@@ -984,6 +984,40 @@ let private namedProgress =
         finally
             deleteDatabases [ journalPath; projectionPath ]
 
+/// FCQRS names its own projections with `fcqrs-`, such as the schedule dispatcher's
+/// `fcqrs-schedule-index`. A user projection with that name would share its stored read positions.
+let private reservedPrefix =
+    testCase "projection: a name that starts with fcqrs- is refused at registration in F# and C#"
+    <| fun _ ->
+        let suffix, journalPath, projectionPath = sqlitePaths ()
+        let refused what (register: unit -> unit) =
+            let error = Expect.throwsC (fun () -> register ()) id
+            match error with
+            | :? ArgumentException as error -> Expect.stringContains error.Message "'fcqrs-'" $"{what}: the error names the prefix"
+            | other -> failtest $"{what}: expected ArgumentException, got {other.GetType().Name}: {other.Message}"
+        let api =
+            Fcqrs.actor (VerifySerialization.configuration().Build()) NullLoggerFactory.Instance
+                (Some(Fcqrs.connect FCQRS.Actor.DBType.Sqlite (sqliteString journalPath))) ("ReservedPrefix" + suffix)
+        try
+            let ignoreEvent = fun (_: obj) -> ()
+            refused "Fcqrs.projection with Named" (fun () -> ignore (Fcqrs.projection api (Projection.single (Named "fcqrs-schedule-index") ignoreEvent)))
+            refused "Fcqrs.transactionalProjection" (fun () ->
+                ignore (Fcqrs.transactionalProjection api (TransactionalProjectionOptions("fcqrs-mine", sqliteStore journalPath projectionPath)) (fun _ _ _ -> Task.CompletedTask)))
+            refused "QueryApi.Init" (fun () -> ignore (FCQRS.CSharp.QueryApi.Init(api, Action<obj>(ignoreEvent), "fcqrs-mine")))
+            let builder () = ServiceCollection().AddFcqrs(sqliteString journalPath, "ReservedPrefixHost" + suffix)
+            refused "AddProjection" (fun () -> ignore (builder().AddProjection(Action<obj>(ignoreEvent), "fcqrs-mine")))
+            refused "AddProjection with services" (fun () -> ignore (builder().AddProjection(Func<IServiceProvider, Action<obj>>(fun _ -> Action<obj>(ignoreEvent)), "fcqrs-mine")))
+            refused "AddTransactionalProjection" (fun () ->
+                ignore (builder().AddTransactionalProjection(
+                        TransactionalProjectionOptions("fcqrs-mine", sqliteStore journalPath projectionPath),
+                        Func<DbConnection, DbTransaction, EventEnvelope, Task>(fun _ _ _ -> Task.CompletedTask))))
+            // Only the prefix is reserved.
+            use allowed = Fcqrs.projection api (Projection.single (Named "my-fcqrs-projection") ignoreEvent)
+            wait (allowed.CatchUpAsync())
+        finally
+            wait (api.Stop())
+            deleteDatabases [ journalPath; projectionPath ]
+
 
 /// A handler can read rows that other aggregates' events wrote, so a projection applies a pass in
 /// the order the journal numbered the events. Grouped by persistence ID, "alpha" would come first.
@@ -1454,6 +1488,7 @@ let tests =
               observedTimeout
               nullCorrelationId
               namedProgress
+              reservedPrefix
               journalOrder
               transientJournalFailure
               heldAcrossRetry

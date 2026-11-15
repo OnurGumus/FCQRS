@@ -534,7 +534,8 @@ with the machine. The catch-up policy decides what runs for the time it was off.
     begins with, so a renamed workflow gives every run a new key;
   - the step names `copy` and `issue`, which each run's journal stores;
   - the input type `ScheduledRun<string>` and the schedule inputs, which every schedule and run
-    stores;
+    stores. A decided run whose stored input no longer reads as the input type is lost: the
+    dispatcher logs one error and the schedule goes on;
   - the invoice-number format and its zone `Europe/Oslo`, because the billing system recognises a
     repeated invoice by that number: a new format issues a second invoice for a week already billed;
   - the schedule IDs and the run IDs built from them.

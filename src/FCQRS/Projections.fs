@@ -41,8 +41,24 @@ type IProjection =
     /// After an error, restart the projection after correcting its cause.
     abstract Completion: Task
 
+/// The prefix of the projection names FCQRS keeps for its own projections, such as the schedule
+/// dispatcher's `fcqrs-schedule-index`.
+[<Literal>]
+let internal ReservedNamePrefix = "fcqrs-"
+
+/// Raises `ArgumentException` for a projection name that starts with `ReservedNamePrefix`, which
+/// would share the stored read positions of one of FCQRS's own projections.
+let internal checkName (parameter: string) (name: string | null) =
+    match name with
+    | null -> ()
+    | name when name.StartsWith(ReservedNamePrefix, StringComparison.Ordinal) ->
+        invalidArg parameter $"The projection name '{name}' starts with '{ReservedNamePrefix}', which is reserved for FCQRS's own projections. Choose another name."
+    | _ -> ()
+
 /// Options for a named transactional projection. Use a distinct name for each read model.
 /// Reusing a name resumes its stored progress; do not reuse it for an empty or different model.
+/// A name that starts with `fcqrs-` is reserved for FCQRS's own projections: starting a projection
+/// with one raises `ArgumentException`.
 [<Sealed>]
 type TransactionalProjectionOptions(name: string, store: SqlProjectionStore) =
     do
@@ -602,6 +618,8 @@ let private startWith
 
     if isNull (box options) then nullArg (nameof options)
     if isNull (box handler) then nullArg (nameof handler)
+    // FCQRS's own projections, started with `owned`, are the ones that use the reserved prefix.
+    if not owned then checkName "Name" options.Name
     let validateDuration name (value: TimeSpan) =
         if value <= TimeSpan.Zero || value.TotalMilliseconds > float (UInt32.MaxValue - 1u) then
             invalidArg name "The duration must be positive and less than 49.7 days."
@@ -718,7 +736,8 @@ let internal startTracked (actor: IActor) (progress: TrackedProgress) (entities:
     let entities = validateEntities (nameof entities) entities
     match progress with
     | Stored name when String.IsNullOrWhiteSpace name -> invalidArg (nameof progress) "A stored projection needs a name."
-    | _ -> ()
+    | Stored name -> checkName (nameof progress) name
+    | InMemory -> ()
     FCQRS.EventUpcasting.Internal.freeze actor.System
     let logger = actor.LoggerFactory.CreateLogger "Projection"
     // An Akka event adapter must turn each journal row into exactly one event; the sequence

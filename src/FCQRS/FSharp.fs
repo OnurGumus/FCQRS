@@ -92,7 +92,9 @@ type ProjectionProgress =
     /// events. For a read model the process keeps in memory.
     | FromStart
     /// Stored in the journal database under this name: the projection resumes where it stopped.
-    /// For a read model that outlives the process. A new name reads the whole journal once.
+    /// For a read model that outlives the process. A new name reads the whole journal once. A name
+    /// that starts with `fcqrs-` is reserved for FCQRS's own projections, and `Fcqrs.projection`
+    /// raises `ArgumentException` for it.
     | Named of string
 
 /// A projection: where it keeps its progress, which entities it reads, and what it does with each

@@ -782,7 +782,9 @@ schedule that is due, it takes three steps:
 The schedule decides before the run starts, so a pause stored before step 1 stops the run. A crash
 after step 1 leaves a decided run with no reported start. After the restart the dispatcher starts
 it again with the same ID, and a second start of an existing workflow stores nothing. A run
-therefore starts at least once per accepted due time, and one workflow instance serves it.
+therefore starts at least once per accepted due time, and one workflow instance serves it. A run
+whose stored input its workflow cannot read never starts, as
+[Due times, downtime, and changes](#Due-times-downtime-and-changes) describes.
 
 A run is an ordinary workflow instance. A run that faults ends only that instance, and the schedule
 goes on. A run that is still going at the next due time runs alongside the next one.
@@ -815,6 +817,15 @@ A deploy can stop listing a workflow that stored schedules name. The dispatcher 
 for those schedules, logs an error at each due time, and waits. When a later start lists the
 workflow again, the catch-up policy decides which missed due times run. A decided run whose workflow
 is not listed waits the same way.
+
+A deploy can also change the input type of a listed workflow, so that the input a decided run
+stored no longer reads as the workflow's input: the stored JSON is a string and the workflow now
+takes an `int`, for example. Reading it again would fail the same way, so the dispatcher does not
+try again. It logs one error that names the schedule, the due time, the workflow, and the
+exception, reports the run's start to the schedule, and the schedule goes on to its next due time.
+The run for that due time is lost, and the error is the only signal. Later due times store the
+schedule's current input, so they fail the same way until `Schedules.change` gives the schedule an
+input the workflow reads. Keep the input's stored form readable, as for any persistent contract.
 
 `Schedules.state` reads the dispatcher's index, not the aggregate. The index follows the schedule's
 events through a projection, so it lags by one projection pass: a `pause` that has just returned may

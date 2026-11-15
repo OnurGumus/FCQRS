@@ -60,7 +60,8 @@ too.
 Use `Fcqrs.transactionalProjection` in F# or `AddTransactionalProjection` in C#. These are separate
 from the registration in [Add a projection](add-a-projection.html), whose handler writes outside the
 transaction. The transactional runner stores one checkpoint per persistence identity under a stable
-projection name.
+projection name. A name that starts with `fcqrs-` is reserved for FCQRS's own projections:
+`Fcqrs.transactionalProjection` and `AddTransactionalProjection` raise `ArgumentException` for it.
 
 The application supplies a SQL connection factory and a handler. FCQRS opens a transaction, passes
 its connection and transaction to the handler, records progress, and commits them together. Return
