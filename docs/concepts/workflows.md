@@ -353,6 +353,8 @@ public sealed class Parent() : Workflow<string, Summary>("parent")
   outlives its parent.
 - A child's ID is the parent's ID, a colon, and the step's position. A parent that restarts in the
   middle of `startChild` reaches the same child and does not start a second one.
+- Do not start an instance of a child's workflow with an ID of that form yourself. A parent whose
+  child would get that ID takes the instance for its child, waits for it, and cancels it.
 
 A workflow keeps no snapshot: its position is the rest of its body, which cannot be stored. A
 workflow that loops for months should start a detached child with its remaining work and return,

@@ -32,6 +32,9 @@
   children of that start span. A child started with `child` (C#: `ctx.Child`) still joins the
   parent's trace. The trace is chosen when the child starts, so a `startChild` handle that the
   parent awaits later still has its own trace.
+- The concepts page warns against starting an instance of a child's workflow with an ID of the form
+  `{parentId}:{path}`. A parent whose child would get that ID takes the instance for its child,
+  waits for it, and cancels it. Child IDs do not change.
 - The package needs FCQRS core 7.2.3.
 
 ## 7.7.2 (FCQRS.Workflows)
