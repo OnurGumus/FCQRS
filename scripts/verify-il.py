@@ -25,7 +25,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 FRAMEWORK = 'net10.0'
-PROJECTS = ['FCQRS.Model', 'FCQRS.Serialization', 'FCQRS', 'FCQRS.Workflows', 'FCQRS.SQLProvider']
+PROJECTS = ['FCQRS.Model', 'FCQRS.Serialization', 'FCQRS', 'FCQRS.Workflows', 'FCQRS.SQLProvider',
+            'FCQRS.ExpectoTickSpec']
 CONFIGURATIONS = ['Debug', 'Release']
 
 
