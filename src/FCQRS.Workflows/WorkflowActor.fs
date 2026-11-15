@@ -66,6 +66,47 @@ module internal WorkflowActor =
     let private later (at: DateTime) (span: TimeSpan) : DateTime =
         if span >= DateTime.MaxValue - at then DateTime.MaxValue else at + span
 
+    /// How many times a cancel is sent to a child whose workflow is not registered yet.
+    let private childCancelAttempts = 5
+
+    /// Sends a cancel to each child, given by workflow name and ID. A child that was never
+    /// started or has ended refuses it, which changes nothing, and `sender` ignores the reply. A
+    /// parent can resume before its children's workflow is registered, so a cancel that finds no
+    /// region is sent again after a while, a few times.
+    let rec private cancelChildren (system: ActorSystem) (log: ILogger) (sender: IActorRef) (attempt: int) (targets: struct (string * string) list) =
+        let unsent =
+            [ for struct (workflow, childId) as target in targets do
+                  let region =
+                      try
+                          Some(ClusterSharding.Get(system).ShardRegion workflow)
+                      with _ ->
+                          None
+
+                  match region with
+                  | Some region ->
+                      let envelope: Akkling.Cluster.Sharding.ShardEnvelope =
+                          { ShardId = DEFAULT_SHARD
+                            EntityId = childId
+                            Message = CancelWorkflow }
+
+                      region.Tell(envelope, sender)
+                  | None -> target ]
+
+        match unsent with
+        | [] -> ()
+        | unsent when attempt < childCancelAttempts ->
+            try
+                system.Scheduler.Advanced.ScheduleOnce(
+                    TimeSpan.FromSeconds(float (1 <<< attempt)),
+                    Action(fun () -> cancelChildren system log ActorRefs.NoSender (attempt + 1) unsent)
+                )
+            with error ->
+                // The actor system is stopping.
+                log.LogWarning(error, "Cancels for {Count} child workflows could not be sent again.", unsent.Length)
+        | unsent ->
+            for struct (workflow, childId) in unsent do
+                log.LogWarning("Child workflow {Workflow} {Id} could not be cancelled: its workflow is not registered.", workflow, childId)
+
     let behavior (definition: Definition) (api: IActor) (mailbox: Eventsourced<obj>) =
         // Failures, and what an operator must act on.
         let log = api.LoggerFactory.CreateLogger "FCQRS.Workflows"
@@ -115,6 +156,46 @@ module internal WorkflowActor =
         /// The senders of signals being stored, in the order their records will be applied.
         let signalSenders = Queue<IActorRef>()
         let cancelSenders = Queue<IActorRef>()
+        /// The child each child step started or waits for, by the step's path: its workflow name
+        /// and ID, as the step's stored start holds them.
+        let children = Dictionary<string, struct (string * string)>()
+        /// The paths of the child steps that a stored cancel of this instance reached.
+        let cancelledChildren = HashSet<string>()
+        let mutable afterCancelRequest = false
+
+        /// The paths of the child steps whose start is stored and that have no outcome.
+        let pendingChildren () : string list =
+            [ for KeyValue(path, _) in children do
+                  match history.Steps.TryGetValue path with
+                  | true, Scheduled _ -> path
+                  | _ -> () ]
+
+        /// Notes, from each record in journal order, which children a cancel of this instance
+        /// reached: the child steps the cancel failed, or, for a parked instance, which a cancel
+        /// ends at once, the child steps that were pending.
+        let observe (record: WorkflowRecord) =
+            match record with
+            | WorkflowRecord.StepScheduled(path, name, StepKind.Child, _, detail) ->
+                // A start stored before 7.7.3 holds no ID; its child has the derived one.
+                children[path] <- struct (name, detail |> Option.defaultValue $"{id}:{path}")
+            | WorkflowRecord.StepFailed(path, name, StepKind.Child, error, _) when error.Kind = ErrorKind.Cancelled ->
+                if not (children.ContainsKey path) then
+                    children[path] <- struct (name, $"{id}:{path}")
+
+                cancelledChildren.Add path |> ignore
+            // A parked instance stores its cancel request and its end in one write.
+            | WorkflowRecord.Cancelled _ when afterCancelRequest ->
+                for path in pendingChildren () do
+                    cancelledChildren.Add path |> ignore
+            | _ -> ()
+
+            afterCancelRequest <-
+                match record with
+                | WorkflowRecord.CancelRequested _ -> true
+                | _ -> false
+
+        let cancel (targets: struct (string * string) list) =
+            cancelChildren mailbox.System log self 1 targets
 
         let contextOf (traceparent: string) : ActivityContext voption =
             let mutable context = Unchecked.defaultof<ActivityContext>
@@ -456,6 +537,21 @@ module internal WorkflowActor =
         let perform (emits: Emit list) : WorkflowRecord list =
             [ for emit in emits do
                   match emit with
+                  | Store(WorkflowRecord.StepScheduled(path, name, kind, at, None) as record) ->
+                      // The start of a child step holds the child's ID, so that a recovery that
+                      // does not run the body can still cancel the child.
+                      let child =
+                          machine
+                          |> Option.bind (fun machine ->
+                              match machine.Pending.TryGetValue path with
+                              | true, step -> step.Leaf.Child
+                              | _ -> None)
+
+                      match child with
+                      | Some childOf ->
+                          let struct (_, childId) = childOf id path
+                          WorkflowRecord.StepScheduled(path, name, kind, at, Some childId)
+                      | None -> record
                   | Store record -> record
                   | Begin step -> yield! beginStep step
                   | Abandon path -> release path None ]
@@ -484,6 +580,8 @@ module internal WorkflowActor =
             guarded (fun () -> created.Run(WorkflowCore.protect (fun () -> definition.Body input)))
 
         let applyLive (record: WorkflowRecord) : WorkflowRecord list =
+            observe record
+
             match record with
             | WorkflowRecord.Started(input, _, traceparent, _) ->
                 started <- Some(input, traceparent)
@@ -654,6 +752,7 @@ module internal WorkflowActor =
         let applyRecovered (record: WorkflowRecord) =
             recovered <- recovered + 1L
             history.Apply record
+            observe record
 
             match record with
             | WorkflowRecord.Started(input, _, traceparent, _) -> started <- Some(input, traceparent)
@@ -739,6 +838,11 @@ module internal WorkflowActor =
                     if recovered > 0L then
                         recoveryDuration.Record(created.Elapsed.TotalMilliseconds, nameTag)
                         recoveryRecords.Record(recovered, nameTag)
+
+                    // The cancels sent when the cancel was requested may not have reached the
+                    // children before the process stopped. Sending one again changes nothing.
+                    if history.CancelRequested then
+                        cancel [ for path in cancelledChildren -> children[path] ]
 
                     match started, final with
                     | Some(input, _), None ->
@@ -848,11 +952,14 @@ module internal WorkflowActor =
                                           | true, current -> guard current.Cancelled.Cancel
                                           | _ -> ()
 
-                                          step.Leaf.OnCancel |> Option.iter (fun onCancel -> guard (fun () -> onCancel api id path))
+                                          step.Leaf.Child |> Option.iter (fun childOf -> guard (fun () -> cancel [ childOf id path ]))
 
                                           WorkflowRecord.StepFailed(path, step.Leaf.Name, step.Leaf.Kind, cancelled, time) ]
-                            // A parked instance cannot run its cleanup: it ends.
-                            | None -> [ WorkflowRecord.Cancelled time ]
+                            // A parked instance cannot run its cleanup: it ends, and so do
+                            // the children it was starting or waiting for.
+                            | None ->
+                                cancel [ for path in pendingChildren () -> children[path] ]
+                                [ WorkflowRecord.Cancelled time ]
 
                         return! store (WorkflowRecord.CancelRequested time :: consequences) (loop ())
                 | :? AttemptDone as outcome -> return! store (attemptDone outcome) (loop ())

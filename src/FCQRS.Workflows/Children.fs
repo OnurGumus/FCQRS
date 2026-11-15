@@ -90,11 +90,6 @@ module ChildSteps =
                 | other -> return invalidOp $"Unexpected reply to a child workflow start: {other}"
             }
 
-        // The child's ID is known before its start is stored, so a cancel reaches a child that
-        // the start created even if the parent never stored the handle.
-        let cancel (api: IActor) (workflowId: string) (path: string) =
-            (regionOf api definition.Name Int32.MaxValue).Tell(envelope $"{workflowId}:{path}" CancelWorkflow, ActorRefs.NoSender)
-
         Step(
             Leaf
                 { Name = definition.Name
@@ -102,7 +97,9 @@ module ChildSteps =
                   Encode = Payload.encode typeof<ChildHandle<'Result>>
                   Decode = Payload.decode typeof<ChildHandle<'Result>>
                   Op = ActivityOp(startPolicy, run)
-                  OnCancel = Some cancel },
+                  // The child's ID is known before its start is stored, so a cancel reaches a
+                  // child that the start created even if the parent never stored the handle.
+                  Child = Some(fun workflowId path -> struct (definition.Name, $"{workflowId}:{path}")) },
             WorkflowCore.unboxed<ChildHandle<'Result>>
         )
 
@@ -145,7 +142,7 @@ module ChildSteps =
                   Encode = Payload.encode typeof<'Result>
                   Decode = Payload.decode typeof<'Result>
                   Op = ActivityOp(awaitPolicy, run)
-                  OnCancel = Some(fun api _ _ -> (regionOf api handle.Workflow Int32.MaxValue).Tell(envelope handle.Id CancelWorkflow, ActorRefs.NoSender)) },
+                  Child = Some(fun _ _ -> struct (handle.Workflow, handle.Id)) },
             WorkflowCore.unboxed<'Result>
         )
 

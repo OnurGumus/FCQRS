@@ -579,9 +579,11 @@ ends as finished. A child the body was waiting for is cancelled with it.
   other branches are abandoned, and a cleanup step a branch had begun is abandoned with it.
 - A second cancel request while cleanup runs changes nothing.
 - A child that was started with `startChild` and is not being awaited keeps running. A child whose
-  start was still in flight when the parent was cancelled is cancelled too. The parent sends that
-  cancel once: if the process stops after the child stored its start and before it stored the
-  cancel, the child keeps running. A parked parent that is cancelled cancels no child.
+  start was still in flight when the parent was cancelled is cancelled too.
+- A parked parent that is cancelled cancels the child it was starting or waiting for.
+- The parent sends these cancels again each time it recovers after storing the cancel. A parent
+  that has ended recovers only when a request reaches it. Until then, a child that missed the cancel
+  because the process stopped keeps running.
 
 ## Change a workflow while instances are running
 

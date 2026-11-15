@@ -839,6 +839,125 @@ let private cancelChildStartRestartTest =
         finally
             deleteDb db
 
+/// A region with the child workflow's name whose entities never answer and drop every message.
+let private silentRegion (api: IActor) (workflow: string) =
+    let silent =
+        Akkling.Props.props (fun (mailbox: Akkling.Actors.Actor<obj>) ->
+            let rec receive () =
+                Akkling.ComputationExpressions.actor {
+                    let! (message: obj) = mailbox.Receive()
+                    // The region's hand-off message at shutdown.
+                    if message :? StopEntity then
+                        mailbox.UntypedContext.Stop mailbox.UntypedContext.Self
+                    return! receive ()
+                }
+            receive ())
+    FCQRS.AkklingHelpers.Internal.entityFactoryFor api.System FCQRS.Common.Internal.shardResolver workflow silent PassivationPolicy.Default false
+    |> ignore
+
+let private cancelChildRecoveryTest =
+    testCase "workflow: a cancelled parent sends its child the cancel again when it recovers" <| fun _ ->
+        let db = newDb ()
+        let outside = Outside()
+        let waiter = Workflow.define "waiter" (fun (value: int) -> workflow {
+            let! (answer: int) = waitSignal "go"
+            return value + answer })
+        let starter = Workflow.define "starter" (fun (cleanup: bool) -> workflow {
+            try
+                let! handle = startChild waiter 1
+                let! (_: int) = waitSignal "never"
+                return handle.Id
+            with :? WorkflowStepFailedException as failed when failed.Error.Kind = ErrorKind.Cancelled ->
+                if cleanup then
+                    let! (_: int) = activity "undo" (Retry.forever (TimeSpan.FromMinutes 5.0)) (fun context -> task {
+                        outside.Count "undo" |> ignore
+                        do! Task.Run(fun () -> outside.Gate.Wait context.Cancellation)
+                        return 1 })
+                    ()
+                return raise failed
+        })
+        let running (status: WorkflowStatus) = match status with WorkflowStatus.Running _ -> true | _ -> false
+        try
+            // The children store their starts, as the parents' starts would have made them do.
+            let first = boot db "WorkflowCancelChildRecovery" []
+            let waiters = Workflows.register first waiter
+            sync (waiters.Start "r1:0" 1) |> ignore
+            sync (waiters.Start "r2:0" 2) |> ignore
+            stop first
+
+            // The parents' starts and cancels reach entities that drop them: the process stops after
+            // each parent stored its cancel and before its child stored one.
+            let second = boot db "WorkflowCancelChildRecovery" []
+            try
+                silentRegion second "waiter"
+                let flow = Workflows.register second starter
+                sync (flow.Start "r1" false) |> ignore
+                sync (flow.Start "r2" true) |> ignore
+                for id in [ "r1"; "r2" ] do
+                    eventually $"{id}: the child start is in flight" (fun () -> sync (flow.Status id) = WorkflowStatus.Running [ "0 waiter" ])
+                    sync (flow.Cancel id)
+                Expect.equal (sync (flow.Result "r1" wait)) WorkflowOutcome.Cancelled "r1 ended as cancelled"
+                eventually "r2 runs its cleanup" (fun () -> sync (flow.Status "r2") = WorkflowStatus.Running [ "1 undo" ])
+            finally
+                stop second
+
+            let third = boot db "WorkflowCancelChildRecovery" []
+            try
+                // r2 is still running its cleanup, so it recovers with the process and nothing asks
+                // it. It recovers before its child's workflow is registered, and sends the cancel
+                // again once it is.
+                let flow = Workflows.register third starter
+                Thread.Sleep 300
+                let waiters = Workflows.register third waiter
+                Expect.isTrue (running (sync (waiters.Status "r1:0"))) "r1's child still runs"
+                eventually "r2's child is cancelled when r2 recovers" (fun () -> sync (waiters.Status "r2:0") = WorkflowStatus.Cancelled)
+                // r1 has ended, so it recovers when it is asked.
+                Thread.Sleep 300
+                Expect.isTrue (running (sync (waiters.Status "r1:0"))) "r1's child runs until r1 recovers"
+                Expect.equal (sync (flow.Status "r1")) WorkflowStatus.Cancelled "r1 recovers as cancelled"
+                eventually "r1's child is cancelled when r1 recovers" (fun () -> sync (waiters.Status "r1:0") = WorkflowStatus.Cancelled)
+            finally
+                stop third
+        finally
+            deleteDb db
+
+let private cancelParkedChildTest =
+    testCase "workflow: a parked parent that is cancelled cancels the child it waits for" <| fun _ ->
+        let db = newDb ()
+        let waiter = Workflow.define "waiter" (fun (value: int) -> workflow {
+            let! (answer: int) = waitSignal "go"
+            return value + answer })
+        let keeper (first: string) =
+            Workflow.define "keeper" (fun (value: int) -> workflow {
+                let! start = activity first Retry.none (fun _ -> task { return value })
+                let! result = child waiter start
+                return result })
+        let parked status = match status with WorkflowStatus.Parked _ -> true | _ -> false
+        try
+            let first = boot db "WorkflowCancelParkedChild" []
+            try
+                let waiters = Workflows.register first waiter
+                let flow = Workflows.register first (keeper "first")
+                sync (flow.Start "k1" 1) |> ignore
+                eventually "the parent waits for its child" (fun () -> sync (flow.Status "k1") = WorkflowStatus.Running [ "2 waiter" ])
+                Expect.equal (sync (waiters.Status "k1:1")) (WorkflowStatus.Running [ "0 go" ]) "the child runs"
+            finally
+                stop first
+
+            // The first step was renamed, so the parent is parked.
+            let second = boot db "WorkflowCancelParkedChild" []
+            try
+                let waiters = Workflows.register second waiter
+                let flow = Workflows.register second (keeper "renamed")
+                eventually "the parent is parked" (fun () -> parked (sync (flow.Status "k1")))
+                sync (flow.Cancel "k1")
+                Expect.equal (sync (flow.Result "k1" wait)) WorkflowOutcome.Cancelled "the parked parent ended as cancelled"
+                eventually "the child it waited for is cancelled" (fun () -> sync (waiters.Status "k1:1") = WorkflowStatus.Cancelled)
+            finally
+                stop second
+        finally
+            deleteDb db
+
 let private parkingTest =
     testCase "workflow: an instance whose journal does not match its code is parked, and resumes with code that matches" <| fun _ ->
         let db = newDb ()
@@ -1660,7 +1779,8 @@ let tests =
         testList "workflow"
             [ startTest; faultTest; retryTest; shortTimerTest; restartTest; timerTest; tracingTest; startRaceTest; concurrentStartTest
               signalTest; signalRestartTest; commandTest; parallelCommandTest; commandRestartTest; commandRecoveryTest; unknownOutcomeTest
-              cancelTest; childTest; childRestartTest; cancelChildStartTest; cancelChildStartRestartTest; parkingTest; removedStepsParkTest; streamTest; metricsTest
+              cancelTest; childTest; childRestartTest; cancelChildStartTest; cancelChildStartRestartTest; cancelChildRecoveryTest
+              cancelParkedChildTest; parkingTest; removedStepsParkTest; streamTest; metricsTest
               lateCommandTest; cancelParkedTest; childResultTest; unreadableResultTest; idleTest; manifestTest
               sagaStartTest; sagaRepeatTest; sagaRepeatStoredTest; sagaSignalTest; sagaEventReplyTest
               sagaFilterTest; sagaFilterMissedTest; sagaFilterOutcomeTest; effectReplyTest; lateReplyTest

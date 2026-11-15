@@ -104,9 +104,11 @@ module internal Steps =
           Encode: objnull -> Payload
           Decode: Payload -> objnull
           Op: LeafOp
-          /// Runs when the workflow is cancelled while this step is pending, with the workflow's
-          /// ID and the step's path.
-          OnCancel: (IActor -> string -> string -> unit) option }
+          /// For a step that starts or waits for a child workflow: the child's workflow name and
+          /// ID, given this workflow's ID and the step's path. The ID is stored with the step's
+          /// start, and the child is cancelled when this workflow is cancelled while the step is
+          /// pending.
+          Child: (string -> string -> struct (string * string)) option }
 
 /// A workflow that produces a `'T`. It is a description: a workflow instance interprets it,
 /// stores each step's result, and on recovery feeds the stored results back in.
@@ -225,7 +227,7 @@ module internal WorkflowCore =
                   Encode = Payload.encode typeof<'T>
                   Decode = Payload.decode typeof<'T>
                   Op = op
-                  OnCancel = None },
+                  Child = None },
             unboxed<'T>
         )
 
@@ -377,7 +379,7 @@ module WorkflowSteps =
                         else
                             box (Some(Payload.toValue<'T> payload))
                   Op = SignalOp(Some timeout)
-                  OnCancel = None },
+                  Child = None },
             WorkflowCore.unboxed<'T option>
         )
 

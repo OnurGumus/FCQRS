@@ -1,5 +1,25 @@
 # Changelog
 
+## 7.7.3 (FCQRS.Workflows)
+
+- A cancelled parent sends its children's cancels again when it recovers. 7.7.2 sent each cancel
+  once, from memory: if the process stopped after the child stored its start and before it stored
+  the cancel, the child kept running. Now, whenever an instance whose journal holds a cancel request
+  recovers, whether it is still running its cleanup, is parked, or has ended, it sends a cancel to
+  each child that the cancel reached: the children of the child steps the cancel failed. A parent
+  that has ended recovers only when a request reaches it, so until then such a child keeps running.
+  A child that was never started, or has ended, refuses the cancel, which changes nothing. A parent
+  can resume before its child's workflow is registered, so a cancel that finds no such workflow is
+  sent again a few times over about 30 seconds and then logged as a warning.
+- A parked parent that is cancelled cancels the child it was starting or waiting for. In 7.7.2 it
+  ended without cancelling any child.
+- The `StepScheduled` record of a `startChild` or `awaitChild` step holds the child's ID in its
+  `detail`, so a recovery that does not run the body knows which child to cancel. 7.7.2 ignores the
+  field for these steps, so a rollback reads the new records. A step stored before 7.7.3 holds no
+  ID: recovery then cancels the child that a start at that step would have made, which is right for
+  a start and reaches no child for an `awaitChild`.
+- The package needs FCQRS core 7.2.3.
+
 ## 7.7.2 (FCQRS.Workflows)
 
 - A running instance whose journal holds steps that its new code no longer reaches is parked. Before,
