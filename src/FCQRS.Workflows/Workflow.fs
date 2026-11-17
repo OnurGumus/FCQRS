@@ -294,12 +294,128 @@ type WorkflowBuilder() =
                 (WorkflowCore.whileLoop enumerator.MoveNext (Lazy(fun () -> body enumerator.Current)))
                 enumerator.Dispose)
 
+module internal WorkflowResultCore =
+
+    let bind (source: Workflow<Result<'A, 'E>>) (next: 'A -> Workflow<Result<'B, 'E>>) : Workflow<Result<'B, 'E>> =
+        WorkflowCore.bind source (fun result ->
+            match result with
+            | Ok value -> next value
+            | Error error -> Return(Error error))
+
+    let lift (source: Workflow<'T>) : Workflow<Result<'T, 'E>> =
+        WorkflowCore.bind source (fun value -> Return(Ok value))
+
+/// Builds a workflow that gives a `Result`: `workflowResult { let! x = activity ... }`.
+///
+/// `let!` on a step that gives `Result<'T, 'E>` continues with the `Ok` value and ends the
+/// block with the `Error`. `let!` on any other step, such as `now` or `sleep`, continues with
+/// its value. Every step that ran before an `Error` stays stored. An `Error` is a value, so
+/// `try ... with` does not catch it, and an exception does not become an `Error`.
+type WorkflowResultBuilder() =
+    member _.Return(value: 'T) : Workflow<Result<'T, 'E>> = Return(Ok value)
+    member _.ReturnFrom(workflow: Workflow<Result<'T, 'E>>) : Workflow<Result<'T, 'E>> = workflow
+    member _.Zero() : Workflow<Result<unit, 'E>> = Return(Ok())
+
+    member _.Bind(workflow: Workflow<Result<'A, 'E>>, next: 'A -> Workflow<Result<'B, 'E>>) : Workflow<Result<'B, 'E>> =
+        WorkflowResultCore.bind workflow next
+
+    member _.Delay(f: unit -> Workflow<Result<'T, 'E>>) : Workflow<Result<'T, 'E>> = Lazy f
+
+    member _.Combine(first: Workflow<Result<unit, 'E>>, second: Workflow<Result<'T, 'E>>) : Workflow<Result<'T, 'E>> =
+        WorkflowResultCore.bind first (fun () -> second)
+
+    member _.TryWith(body: Workflow<Result<'T, 'E>>, handler: exn -> Workflow<Result<'T, 'E>>) : Workflow<Result<'T, 'E>> =
+        WorkflowCore.tryWith body handler
+
+    member _.TryFinally(body: Workflow<Result<'T, 'E>>, compensation: unit -> unit) : Workflow<Result<'T, 'E>> =
+        WorkflowCore.tryFinally body compensation
+
+    /// Stops at the first iteration that gives an `Error`, and gives that `Error`.
+    member _.While(guard: unit -> bool, body: Workflow<Result<unit, 'E>>) : Workflow<Result<unit, 'E>> =
+        Lazy(fun () ->
+            // Made each time the loop is reached, so no two runs of the body share it.
+            let failed: 'E voption ref = ref ValueNone
+
+            let iteration =
+                WorkflowCore.bind body (fun result ->
+                    match result with
+                    | Ok() -> Return()
+                    | Error error ->
+                        failed.Value <- ValueSome error
+                        Return())
+
+            WorkflowCore.bind (WorkflowCore.whileLoop (fun () -> failed.Value.IsNone && guard ()) iteration) (fun () ->
+                match failed.Value with
+                | ValueSome error -> Return(Error error)
+                | ValueNone -> Return(Ok())))
+
+    member this.For(items: seq<'A>, body: 'A -> Workflow<Result<unit, 'E>>) : Workflow<Result<unit, 'E>> =
+        Lazy(fun () ->
+            let enumerator = items.GetEnumerator()
+
+            WorkflowCore.tryFinally
+                (this.While(enumerator.MoveNext, Lazy(fun () -> body enumerator.Current)))
+                enumerator.Dispose)
+
+    member _.Using(resource: 'R :> IDisposable, body: 'R -> Workflow<Result<'T, 'E>>) : Workflow<Result<'T, 'E>> =
+        WorkflowCore.tryFinally (WorkflowCore.protect (fun () -> body resource)) (fun () ->
+            match box resource with
+            | null -> ()
+            | _ -> resource.Dispose())
+
+    /// `let! a = first and! b = second` runs both together. Both run to the end; the result is
+    /// the first branch's `Error` if it has one, else the second's.
+    member _.MergeSources(first: Workflow<Result<'A, 'E>>, second: Workflow<Result<'B, 'E>>) : Workflow<Result<'A * 'B, 'E>> =
+        WorkflowCore.bind (WorkflowCore.allOf None [ WorkflowCore.boxed first; WorkflowCore.boxed second ]) (fun values ->
+            match values with
+            | [ a; b ] ->
+                match unbox<Result<'A, 'E>> a, unbox<Result<'B, 'E>> b with
+                | Ok a, Ok b -> Return(Ok(a, b))
+                | Error error, _
+                | _, Error error -> Return(Error error)
+            | _ -> Fail(InvalidOperationException "Two branches give two results."))
+
+    member _.Source(workflow: Workflow<Result<'T, 'E>>) : Workflow<Result<'T, 'E>> = workflow
+    member _.Source(result: Result<'T, 'E>) : Workflow<Result<'T, 'E>> = Return result
+    member _.Source(items: seq<'T>) : seq<'T> = items
+
+/// Lets `workflowResult` bind a step that does not give a `Result`. An extension member has a
+/// lower priority than the builder's own `Source` members, so a step that gives a `Result` is
+/// never wrapped in a second one.
+[<AutoOpen>]
+module WorkflowResultBuilderExtensions =
+    type WorkflowResultBuilder with
+        member _.Source(workflow: Workflow<'T>) : Workflow<Result<'T, 'E>> = WorkflowResultCore.lift workflow
+
+/// Functions on a workflow that gives a `Result`.
+[<RequireQualifiedAccess>]
+module WorkflowResult =
+
+    /// Continues with `next` after an `Ok`, and gives an `Error` unchanged.
+    let bind (next: 'A -> Workflow<Result<'B, 'E>>) (source: Workflow<Result<'A, 'E>>) : Workflow<Result<'B, 'E>> =
+        WorkflowResultCore.bind source next
+
+    /// Applies `f` to an `Ok` value.
+    let map (f: 'A -> 'B) (source: Workflow<Result<'A, 'E>>) : Workflow<Result<'B, 'E>> =
+        WorkflowResultCore.bind source (fun value -> Return(Ok(f value)))
+
+    /// Applies `f` to an `Error`, so steps with different error types can share one block.
+    let mapError (f: 'E -> 'F) (source: Workflow<Result<'T, 'E>>) : Workflow<Result<'T, 'F>> =
+        WorkflowCore.bind source (fun result -> Return(Result.mapError f result))
+
+    /// Gives `Ok` with the value of a step that does not give a `Result`.
+    let ofWorkflow (source: Workflow<'T>) : Workflow<Result<'T, 'E>> = WorkflowResultCore.lift source
+
 /// The workflow builder and the steps a workflow can take.
 [<AutoOpen>]
 module WorkflowSteps =
 
     /// Builds a workflow: `workflow { let! x = activity ... }`.
     let workflow = WorkflowBuilder()
+
+    /// Builds a workflow that gives a `Result`. A `let!` on a step that gives an `Error` ends
+    /// the block with it: `workflowResult { let! reservation = reserve ... }`.
+    let workflowResult = WorkflowResultBuilder()
 
     /// Calls an external system. The call runs at least once: a crash after the call and before
     /// its result is stored repeats it, so pass `IdempotencyKey` to the external system.

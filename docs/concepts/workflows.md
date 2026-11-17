@@ -145,6 +145,142 @@ An activity's result is stored as JSON and read back on replay. A result that th
 write and cannot read back, such as a record with an interface-typed field, fails the step as
 `NotRetryable` after the call was made.
 
+## Return an expected failure as a value
+
+`checkout` reserves stock and charges a card. Stock that has run out and a declined card are
+answers from the external system, so its calls return them as values. `reserveStock` and
+`chargeCard` return a `Task<Result<string, CheckoutError>>`, in C# a `Task<Outcome>`, and the error
+type lists the answers:
+
+```fsharp
+type CheckoutError =
+    | OutOfStock of available: int
+    | Declined of reason: string
+
+// The external calls. Each takes the step's idempotency key.
+let reserveStock (key: string) (order: string)
+    : Task<Result<string, CheckoutError>> =
+    Task.FromResult(Ok "r-1")
+
+let chargeCard (key: string) (order: string)
+    : Task<Result<string, CheckoutError>> =
+    Task.FromResult(Error(Declined "card expired"))
+
+let releaseStock (key: string) (reservation: string) : Task<string> =
+    Task.FromResult "released"
+```
+
+<div class="cs-alt"></div>
+
+<!-- sample: workflows/csharp Concepts.cs outcome -->
+```csharp
+// Each case is named so that a stored value reads back as its case.
+[JsonDerivedType(typeof(OutOfStock), "OutOfStock")]
+[JsonDerivedType(typeof(Declined), "Declined")]
+public abstract record CheckoutError;
+public sealed record OutOfStock(int Available) : CheckoutError;
+public sealed record Declined(string Reason) : CheckoutError;
+
+// A step's value, or the error that ends the checkout.
+public sealed record Outcome(string? Value, CheckoutError? Error);
+
+// The external calls. Each takes the step's idempotency key.
+public static class Warehouse
+{
+    public static Task<Outcome> ReserveStock(string key, string order) =>
+        Task.FromResult(new Outcome("r-1", null));
+
+    public static Task<Outcome> ChargeCard(string key, string order) =>
+        Task.FromResult(new Outcome(null, new Declined("card expired")));
+
+    public static Task<string> ReleaseStock(string key, string reservation) =>
+        Task.FromResult("released");
+}
+```
+
+`workflowResult` builds a workflow that gives a `Result`. A `let!` on a step that gives an `Error`
+ends the block with that `Error`. A `let!` on any other step, such as `now` or `sleep`, continues
+with its value:
+
+```fsharp
+let policy = Retry.times 3 (TimeSpan.FromSeconds 30.0)
+
+let checkout =
+    Workflow.define "checkout" (fun (order: string) -> workflowResult {
+        let! reservation =
+            activity "reserve" policy (fun attempt ->
+                reserveStock attempt.IdempotencyKey order)
+        // The inner block gives the Result itself, so this one can release
+        // the stock before it ends with the Error.
+        let! payment = workflow {
+            match! activity "charge" policy (fun attempt ->
+                chargeCard attempt.IdempotencyKey order) with
+            | Ok payment -> return Ok payment
+            | Error error ->
+                // An Error is a value, so `try ... with` would not see it.
+                let! _ = activity "release" policy (fun attempt ->
+                    releaseStock attempt.IdempotencyKey reservation)
+                return Error error
+        }
+        return reservation, payment
+    })
+```
+
+<div class="cs-alt"></div>
+
+<!-- sample: workflows/csharp Concepts.cs checkout -->
+```csharp
+public sealed record Checkout(string Reservation, string Payment);
+public sealed record CheckoutResult(Checkout? Done, CheckoutError? Error);
+
+public sealed class CheckoutWorkflow()
+    : Workflow<string, CheckoutResult>("checkout")
+{
+    static readonly RetryPolicy Policy =
+        Retry.times(3, TimeSpan.FromSeconds(30));
+
+    public override async WorkflowTask<CheckoutResult> Run(
+        WorkflowContext ctx, string order)
+    {
+        var reserved = await ctx.Activity("reserve", Policy,
+            attempt => ReserveStock(attempt.IdempotencyKey, order));
+        if (reserved.Error is { } refused)
+            return new CheckoutResult(null, refused);
+        var reservation = reserved.Value!;
+        var charged = await ctx.Activity("charge", Policy,
+            attempt => ChargeCard(attempt.IdempotencyKey, order));
+        if (charged.Error is { } declined)
+        {
+            // An error is a value, so a catch block would not see it.
+            await ctx.Activity("release", Policy,
+                attempt => ReleaseStock(attempt.IdempotencyKey, reservation));
+            return new CheckoutResult(null, declined);
+        }
+        return new CheckoutResult(
+            new Checkout(reservation, charged.Value!), null);
+    }
+}
+```
+
+The `Error` is the step's stored result. It is not retried, and replay returns it with its fields.
+The steps before it stay stored. C# has no `workflowResult`: an `await` followed by a `return`
+ends the body the same way.
+
+An exception takes the other path. The policy retries it, and when the attempts run out the body
+sees `WorkflowStepFailedException`, which holds only the exception's type name and message. An
+activity that throws for a declined card retries a refusal that will not change, and the reason is
+lost. An activity that returns an `Error` for a timeout stores it, and the call is never tried
+again. Return the answers the external system gives, and throw when the call did not complete.
+
+`try ... with` and `catch` see only exceptions, so compensation for an `Error` belongs in the code
+that receives it, as `checkout` releases the stock. `try ... finally` runs in both cases.
+
+The error type is stored with each step's result, so its cases and fields are a persistent
+contract like an event's. In C#, the abstract record needs a `JsonDerivedType` for every case.
+Without them the stored value cannot be read back, and the step fails as `NotRetryable` after the
+call was made. `WorkflowResult.mapError` converts a step's error type, so steps with different
+error types can share one block.
+
 ## Wait for an answer that arrives later
 
 A signal is a named message sent to an instance from outside:

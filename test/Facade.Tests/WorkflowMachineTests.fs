@@ -901,8 +901,91 @@ let private policyLimitTest =
             Expect.throwsT<ArgumentException> (fun () -> activity "call" { once with AttemptTimeout = Some bad } call |> ignore) $"attempt timeout {bad}"
             Expect.throwsT<ArgumentException> (fun () -> activity "call" { unlimited with Deadline = Some bad } call |> ignore) $"deadline {bad}"
 
+type ReserveError =
+    | OutOfStock of available: int
+    | UnknownItem
+
+let private reserve (name: string) : Workflow<Result<int, ReserveError>> =
+    activity name (Retry.times 3 (TimeSpan.FromSeconds 30.0)) never
+
+let private reserveBody = workflowResult {
+    let! (started: DateTime) = now
+    let! first = reserve "first"
+    do! sleep (TimeSpan.FromHours 1.0)
+    let! second = reserve "second"
+    let! checkedTotal = if first + second > 0 then Ok(first + second) else Error UnknownItem
+    return $"{started:HH}:{checkedTotal}"
+}
+
+let private resultErrorTest =
+    testCase "workflow machine: workflowResult ends at the first Error, stores the steps before it, and replays from any prefix" <| fun _ ->
+        let values name =
+            match name with
+            | "first" -> Some(Ok(Payload.ofValue (Ok 2: Result<int, ReserveError>)))
+            | "second" -> Some(Ok(Payload.ofValue (Error(OutOfStock 1): Result<int, ReserveError>)))
+            | _ -> None
+        let run = drive [] values reserveBody
+        Expect.equal (finished run |> Option.map Payload.toValue<Result<string, ReserveError>>) (Some(Error(OutOfStock 1))) "the Error ends the block with its fields"
+        Expect.equal (List.ofSeq run.Begun) [ "1"; "2"; "3" ] "the steps before the Error ran once"
+        replaysFromEveryPrefix (List.ofSeq run.Journal) values reserveBody (Error(OutOfStock 1))
+
+let private resultOkTest =
+    testCase "workflow machine: workflowResult binds steps that give a Result and steps that do not" <| fun _ ->
+        let values name =
+            match name with
+            | "first" -> Some(Ok(Payload.ofValue (Ok 2: Result<int, ReserveError>)))
+            | "second" -> Some(Ok(Payload.ofValue (Ok 3: Result<int, ReserveError>)))
+            | _ -> None
+        let run = drive [] values reserveBody
+        Expect.equal (finished run |> Option.map Payload.toValue<Result<string, ReserveError>>) (Some(Ok "10:5")) "every Ok value reaches the end"
+        replaysFromEveryPrefix (List.ofSeq run.Journal) values reserveBody (Ok "10:5")
+
+let private resultExceptionTest =
+    testCase "workflow machine: in workflowResult an exception stays an exception and try catches no Error" <| fun _ ->
+        let body = workflowResult {
+            try
+                let! (_: int) = reserve "first"
+                return! Error UnknownItem
+            with :? WorkflowStepFailedException as failed ->
+                return failed.StepName
+        }
+        let failing _ = Some(Error { Kind = ErrorKind.Exhausted; ExceptionType = "System.TimeoutException"; Message = "slow" })
+        let failed = drive [] failing body
+        Expect.equal (finished failed |> Option.map Payload.toValue<Result<string, ReserveError>>) (Some(Ok "first")) "a failed step raises and try catches it"
+        let refused _ = Some(Ok(Payload.ofValue (Ok 1: Result<int, ReserveError>)))
+        let ended = drive [] refused body
+        Expect.equal (finished ended |> Option.map Payload.toValue<Result<string, ReserveError>>) (Some(Error UnknownItem)) "an Error passes through try"
+
+let private resultLoopTest =
+    testCase "workflow machine: a workflowResult loop stops at the first Error, and and! gives the first branch's Error" <| fun _ ->
+        let loop = workflowResult {
+            let mutable total = 0
+            for name in [ "a"; "b"; "c" ] do
+                let! value = reserve name
+                total <- total + value
+            return total
+        }
+        let values name =
+            match name with
+            | "a" -> Some(Ok(Payload.ofValue (Ok 1: Result<int, ReserveError>)))
+            | "b" -> Some(Ok(Payload.ofValue (Error UnknownItem: Result<int, ReserveError>)))
+            | _ -> Some(Ok(Payload.ofValue (Ok 100: Result<int, ReserveError>)))
+        let run = drive [] values loop
+        Expect.equal (finished run |> Option.map Payload.toValue<Result<int, ReserveError>>) (Some(Error UnknownItem)) "the loop gives the Error"
+        Expect.equal (List.ofSeq run.Begun) [ "0"; "1" ] "no round runs after the Error"
+        replaysFromEveryPrefix (List.ofSeq run.Journal) values loop (Error UnknownItem)
+        let both = workflowResult {
+            let! a = reserve "b"
+            and! c = reserve "c" |> WorkflowResult.mapError id
+            return a + c
+        }
+        let pair = drive [] values both
+        Expect.equal (finished pair |> Option.map Payload.toValue<Result<int, ReserveError>>) (Some(Error UnknownItem)) "and! gives the Error"
+        Expect.equal (Set.ofSeq pair.Begun |> Set.count) 2 "both branches ran"
+
 let tests =
     testList "workflow machine"
         [ policyLimitTest; payloadTest; recordTest; liveTest; prefixTest; failureTest; unhandledTest; divergedTest; longTest; storedValueTest
           allTest; allFailureTest; raceTest; limitTest; andTest; andThreeTest; recursionTest; signalTest; liveSignalTest; unreadableTest; farTimerTest; versionTest; versionLoopTest; wrongSignalTest; versionInBranchTest; versionBeforeEmptyBlockTest; versionTwiceTest; blockSwapTest; untilUtcTest
-          removedStepsTest; consumedJournalTest; raceLoserTest; failedBlockTest; manyRacesTest ]
+          removedStepsTest; consumedJournalTest; raceLoserTest; failedBlockTest; manyRacesTest
+          resultErrorTest; resultOkTest; resultExceptionTest; resultLoopTest ]

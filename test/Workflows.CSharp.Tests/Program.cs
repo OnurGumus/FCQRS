@@ -54,6 +54,13 @@ async Task Eventually(Func<bool> condition, string what)
         "Retry.once takes the attempt timeout");
 }
 
+// --- an expected failure returned as a value survives storage ------------------------------
+{
+    var stored = PayloadModule.toValue<ReserveOutcome>(PayloadModule.ofValue<ReserveOutcome>(new OutOfStock(1)));
+    Check(stored is OutOfStock { Available: 1 },
+        "an abstract record with JsonDerivedType cases reads back as the case that was stored");
+}
+
 // --- every kind of step, in one run -----------------------------------------------------
 {
     var db = NewDb();
@@ -652,3 +659,9 @@ public sealed class ReminderWorkflow() : Workflow<ScheduledRun<string>, string>(
         return run.Input;
     }
 }
+
+[System.Text.Json.Serialization.JsonDerivedType(typeof(ReserveSucceeded), "Reserved")]
+[System.Text.Json.Serialization.JsonDerivedType(typeof(OutOfStock), "OutOfStock")]
+public abstract record ReserveOutcome;
+public sealed record ReserveSucceeded(string Reservation) : ReserveOutcome;
+public sealed record OutOfStock(int Available) : ReserveOutcome;

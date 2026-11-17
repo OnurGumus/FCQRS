@@ -1,5 +1,22 @@
 # Changelog
 
+## 7.9.0 (FCQRS.Workflows)
+
+- **`workflowResult`.** A builder for a workflow that gives a `Result`. A `let!` on a step that
+  gives an `Error` ends the block with that `Error`, and a `let!` on any other step, such as `now`
+  or `sleep`, continues with its value. A plain `Result` can be bound too. A loop stops at the first
+  `Error`, and `and!` runs both branches and gives the first branch's `Error`. An `Error` is the
+  step's stored result: it is not retried, and replay returns it with its fields.
+- An `Error` is a value, so `try ... with` does not run for it and `try ... finally` does.
+  Compensation for an `Error` belongs in the code that receives it.
+- `WorkflowResult.bind`, `map`, `mapError`, and `ofWorkflow` work on a workflow that gives a
+  `Result`. `mapError` lets steps with different error types share one block.
+- C# has no builder: an `await` followed by a `return` ends the body the same way. An abstract
+  record returned from an activity needs a `JsonDerivedType` for every case to be read back.
+- The concept page has a new section, "Return an expected failure as a value". Step 7 of the
+  workflow tutorial returns "out of stock" as a value and catches a warehouse that stays busy.
+- Nothing stored changes. Existing workflows and journals are unaffected.
+
 ## 7.8.0 (FCQRS.Workflows)
 
 - **Breaking: every activity has a time limit.** An attempt without one waited as long as its

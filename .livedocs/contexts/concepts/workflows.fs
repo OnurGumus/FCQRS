@@ -27,3 +27,5 @@ type ReservationEvent =
 // snippet: 12
 // snippet: 13
 // snippet: 14
+// snippet: 15
+// snippet: 16

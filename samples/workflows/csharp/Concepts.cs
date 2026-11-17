@@ -4,11 +4,13 @@
 
 using Akka;
 using Akka.Streams.Dsl;
+using System.Text.Json.Serialization;
 using FCQRS.Workflows;
 using FCQRS.Workflows.CSharp;
 using static FCQRS.Common;
 using static FCQRS.CSharp;
 using static Concepts.External;
+using static Concepts.Warehouse;
 // Akka.Streams has a Retry of its own.
 using Retry = FCQRS.Workflows.Retry;
 
@@ -61,6 +63,64 @@ public sealed class Enrich() : Workflow<string, Enriched>("enrich")
         await ctx.Sleep(TimeSpan.FromMinutes(5));
         var at = await ctx.Now();
         return new Enriched(points, at);
+    }
+}
+// docs:end
+
+// docs:outcome
+// Each case is named so that a stored value reads back as its case.
+[JsonDerivedType(typeof(OutOfStock), "OutOfStock")]
+[JsonDerivedType(typeof(Declined), "Declined")]
+public abstract record CheckoutError;
+public sealed record OutOfStock(int Available) : CheckoutError;
+public sealed record Declined(string Reason) : CheckoutError;
+
+// A step's value, or the error that ends the checkout.
+public sealed record Outcome(string? Value, CheckoutError? Error);
+
+// The external calls. Each takes the step's idempotency key.
+public static class Warehouse
+{
+    public static Task<Outcome> ReserveStock(string key, string order) =>
+        Task.FromResult(new Outcome("r-1", null));
+
+    public static Task<Outcome> ChargeCard(string key, string order) =>
+        Task.FromResult(new Outcome(null, new Declined("card expired")));
+
+    public static Task<string> ReleaseStock(string key, string reservation) =>
+        Task.FromResult("released");
+}
+// docs:end
+
+// docs:checkout
+public sealed record Checkout(string Reservation, string Payment);
+public sealed record CheckoutResult(Checkout? Done, CheckoutError? Error);
+
+public sealed class CheckoutWorkflow()
+    : Workflow<string, CheckoutResult>("checkout")
+{
+    static readonly RetryPolicy Policy =
+        Retry.times(3, TimeSpan.FromSeconds(30));
+
+    public override async WorkflowTask<CheckoutResult> Run(
+        WorkflowContext ctx, string order)
+    {
+        var reserved = await ctx.Activity("reserve", Policy,
+            attempt => ReserveStock(attempt.IdempotencyKey, order));
+        if (reserved.Error is { } refused)
+            return new CheckoutResult(null, refused);
+        var reservation = reserved.Value!;
+        var charged = await ctx.Activity("charge", Policy,
+            attempt => ChargeCard(attempt.IdempotencyKey, order));
+        if (charged.Error is { } declined)
+        {
+            // An error is a value, so a catch block would not see it.
+            await ctx.Activity("release", Policy,
+                attempt => ReleaseStock(attempt.IdempotencyKey, reservation));
+            return new CheckoutResult(null, declined);
+        }
+        return new CheckoutResult(
+            new Checkout(reservation, charged.Value!), null);
     }
 }
 // docs:end
