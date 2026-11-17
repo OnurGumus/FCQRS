@@ -7,7 +7,7 @@ index: 7
 ---
 *)
 (*** hide ***)
-#r "nuget: FCQRS.Workflows, 7.8.0"
+#r "nuget: FCQRS.Workflows, 7.9.0"
 #load "../../samples/orders/7-when-a-step-fails/fsharp/Account.fs"
 #load "../../samples/orders/7-when-a-step-fails/fsharp/Order.fs"
 
@@ -88,7 +88,14 @@ stored failure, without running the step.
 
 Replace the workflow. The steps after the reservation move into `fulfil` (in C#, `Fulfil`). The
 body reserves the stock inside a `try`, returns a result for `OutOfStock`, and runs `fulfil` for
-`Reserved`. The approval now waits up to one day, and the carrier gets the item:
+`Reserved`. The approval now waits up to one day, and the carrier gets the item.
+
+An order with reserved stock can still be refused twice: by the approval and by the payment. In
+F#, `approval` and `debit` each give a `Result`, and `fulfil` runs them, the packing timer, and
+`ship` in a `workflowResult` block. A `do!` or `let!` on a step that gives an `Error` ends the
+block with that `Error`, so the steps below it do not run. `release-stock` then runs in one place,
+whichever step refused. C# has no such builder. Its `Fulfil` returns after each refusal, as in
+step 6:
 
 <!-- sample: orders/7-when-a-step-fails/fsharp Order.fs workflow -->
 ```fsharp
@@ -121,47 +128,59 @@ let definition
                 Confirmation = confirmation
                 PlacedAt = placedAt
             }
-            // Gives the stock back when the order does not ship.
-            let release =
-                activity "release-stock" reserveRetry (fun attempt ->
-                    warehouse.Release(attempt.IdempotencyKey, reservation))
+            let total = request.UnitPrice * decimal request.Quantity
             // An order over 1000 waits for a person to approve it, for at
             // most one day. With no answer by then, the wait returns None.
-            let total = request.UnitPrice * decimal request.Quantity
             let approvalWait = TimeSpan.FromDays 1.0
-            let! approved =
+            let approval =
                 workflow {
                     if total <= 1000m then
-                        return true
+                        return Ok()
                     else
                         let! answer =
                             waitSignalFor<bool> "approval" approvalWait
-                        return defaultArg answer false
+                        if defaultArg answer false then
+                            return Ok()
+                        else
+                            return Error "not approved"
                 }
-            if not approved then
-                let! _ = release
-                return finish "not approved" ""
-            else
-                // The confirmation number identifies the payment, so a
-                // repeated debit is recognised as the same payment.
-                let payment = string confirmation
-                let! reply =
-                    send accounts request.Customer (Debit(payment, total))
-                match reply with
-                | Rejected _ ->
-                    let! _ = release
-                    return finish "payment refused" ""
-                | _ ->
-                    // Packing takes two seconds. The timer's due time
-                    // is stored, so a restart does not start the wait.
+            // The confirmation number identifies the payment, so a
+            // repeated debit is recognised as the same payment.
+            let payment = string confirmation
+            let debit =
+                workflow {
+                    let! reply =
+                        send accounts request.Customer (Debit(payment, total))
+                    match reply with
+                    | Rejected _ -> return Error "payment refused"
+                    | _ -> return Ok()
+                }
+            // A step that gives an Error ends this block with it. An order
+            // that is not approved is not charged, and an order that is
+            // not paid for does not ship.
+            let! shipped =
+                workflowResult {
+                    do! approval
+                    do! debit
+                    // Packing takes two seconds. The timer's due time is
+                    // stored, so a restart does not start the wait again.
                     do! sleep (TimeSpan.FromSeconds 2.0)
-                    let! shipment =
+                    return!
                         activity "ship" callRetry (fun attempt ->
                             carrier.Ship(
                                 attempt.IdempotencyKey,
                                 reservation,
                                 request.Item))
-                    return finish "shipped" shipment
+                }
+            match shipped with
+            | Ok shipment -> return finish "shipped" shipment
+            | Error status ->
+                // An Error is a value, so no handler runs for it. The stock
+                // is given back here, whichever step refused.
+                let! _ =
+                    activity "release-stock" reserveRetry (fun attempt ->
+                        warehouse.Release(attempt.IdempotencyKey, reservation))
+                return finish status ""
         }
     Workflow.define "order" (fun (request: OrderRequest) ->
         workflow {
@@ -291,7 +310,14 @@ public sealed class OrderWorkflow(
 ```
 
 `OutOfStock` reaches the body as a value, so the `match` (in C#, the `switch`) handles it. The
-handler never sees it, because a handler sees only exceptions.
+handler never sees it, because a handler sees only exceptions. The same holds for the `Error` that
+ends the `workflowResult` block: no handler runs for it, so the code that receives it gives the
+stock back.
+
+`workflowResult` stores nothing of its own. The steps inside it are stored at the positions they
+had in step 6, and a replay computes the `Error` again from their stored results. A call that
+throws is still a failure: when the carrier throws at every attempt, `ship` fails and the block
+ends with the exception, not with an `Error`.
 
 The handler catches only a failure of `reserve-stock`, checked by `StepName`. The stand-in
 warehouse refuses a call before it reserves anything, so after five refusals nothing has happened

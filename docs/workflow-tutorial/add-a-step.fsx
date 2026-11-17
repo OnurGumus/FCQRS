@@ -7,7 +7,7 @@ index: 8
 ---
 *)
 (*** hide ***)
-#r "nuget: FCQRS.Workflows, 7.8.0"
+#r "nuget: FCQRS.Workflows, 7.9.0"
 #load "../../samples/orders/8-add-a-step/fsharp/Account.fs"
 #load "../../samples/orders/8-add-a-step/fsharp/Order.fs"
 
@@ -134,10 +134,6 @@ let definition
                 Confirmation = confirmation
                 PlacedAt = placedAt
             }
-            // Gives the stock back when the order does not ship.
-            let release =
-                activity "release-stock" reserveRetry (fun attempt ->
-                    warehouse.Release(attempt.IdempotencyKey, reservation))
             let total = request.UnitPrice * decimal request.Quantity
             // The new step: an order that fails the fraud check is not
             // approved.
@@ -148,41 +144,57 @@ let definition
             // An order over 1000 waits for a person to approve it, for at
             // most one day. With no answer by then, the wait returns None.
             let approvalWait = TimeSpan.FromDays 1.0
-            let! approved =
+            let approval =
                 workflow {
                     if not passed then
-                        return false
+                        return Error "not approved"
                     elif total <= 1000m then
-                        return true
+                        return Ok()
                     else
                         let! answer =
                             waitSignalFor<bool> "approval" approvalWait
-                        return defaultArg answer false
+                        if defaultArg answer false then
+                            return Ok()
+                        else
+                            return Error "not approved"
                 }
-            if not approved then
-                let! _ = release
-                return finish "not approved" ""
-            else
-                // The confirmation number identifies the payment, so a
-                // repeated debit is recognised as the same payment.
-                let payment = string confirmation
-                let! reply =
-                    send accounts request.Customer (Debit(payment, total))
-                match reply with
-                | Rejected _ ->
-                    let! _ = release
-                    return finish "payment refused" ""
-                | _ ->
-                    // Packing takes two seconds. The timer's due time
-                    // is stored, so a restart does not start the wait.
+            // The confirmation number identifies the payment, so a
+            // repeated debit is recognised as the same payment.
+            let payment = string confirmation
+            let debit =
+                workflow {
+                    let! reply =
+                        send accounts request.Customer (Debit(payment, total))
+                    match reply with
+                    | Rejected _ -> return Error "payment refused"
+                    | _ -> return Ok()
+                }
+            // A step that gives an Error ends this block with it. An order
+            // that is not approved is not charged, and an order that is
+            // not paid for does not ship.
+            let! shipped =
+                workflowResult {
+                    do! approval
+                    do! debit
+                    // Packing takes two seconds. The timer's due time is
+                    // stored, so a restart does not start the wait again.
                     do! sleep (TimeSpan.FromSeconds 2.0)
-                    let! shipment =
+                    return!
                         activity "ship" callRetry (fun attempt ->
                             carrier.Ship(
                                 attempt.IdempotencyKey,
                                 reservation,
                                 request.Item))
-                    return finish "shipped" shipment
+                }
+            match shipped with
+            | Ok shipment -> return finish "shipped" shipment
+            | Error status ->
+                // An Error is a value, so no handler runs for it. The stock
+                // is given back here, whichever step refused.
+                let! _ =
+                    activity "release-stock" reserveRetry (fun attempt ->
+                        warehouse.Release(attempt.IdempotencyKey, reservation))
+                return finish status ""
         }
     Workflow.define "order" (fun (request: OrderRequest) ->
         workflow {
