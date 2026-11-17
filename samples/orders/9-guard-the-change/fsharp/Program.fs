@@ -25,7 +25,8 @@ let api = Fcqrs.actor configuration logging (Some connection) "orders"
 // docs:end
 
 // docs:warehouse
-// A stand-in for the warehouse. It has no gizmos, and it is busy for the
+// A stand-in for the warehouse. It answers that it has no gizmos, and it is
+// busy at every call for an anvil. For any other item it is busy for the
 // first two calls with a key. It remembers keys, so a repeated call returns
 // the first reservation.
 type Warehouse() =
@@ -36,19 +37,22 @@ type Warehouse() =
         member _.Reserve(key, item, quantity) =
             task {
                 if item = "gizmo" then
+                    // Out of stock is an answer, so it is returned.
                     printfn $"  warehouse has no gizmo (key {key})"
-                    invalidOp "Out of stock"
-                calls[key] <- (match calls.TryGetValue key with
-                               | true, count -> count + 1
-                               | _ -> 1)
-                if calls[key] <= 2 then
-                    printfn $"  warehouse busy (key {key})"
-                    invalidOp "The warehouse is busy"
-                if not (reservations.ContainsKey key) then
-                    reservations[key] <- $"r-{reservations.Count + 1}"
-                    printfn
-                        $"  warehouse reserved {quantity} {item} (key {key})"
-                return reservations[key]
+                    return OutOfStock
+                else
+                    calls[key] <- (match calls.TryGetValue key with
+                                   | true, count -> count + 1
+                                   | _ -> 1)
+                    if calls[key] <= 2 || item = "anvil" then
+                        // Being busy is a failed call, so it is thrown.
+                        printfn $"  warehouse busy (key {key})"
+                        invalidOp "The warehouse is busy"
+                    if not (reservations.ContainsKey key) then
+                        reservations[key] <- $"r-{reservations.Count + 1}"
+                        let stock = $"{quantity} {item}"
+                        printfn $"  warehouse reserved {stock} (key {key})"
+                    return Reserved reservations[key]
             }
         member _.Release(key, reservation) =
             task {
@@ -158,18 +162,18 @@ let place id customer item quantity approval =
     | WorkflowOutcome.Faulted error -> printfn $"{id} faulted: {error.Message}"
     | other -> printfn $"{id} ended: {other}"
 
-// o-7 runs again under this code. It skips the fraud check, uses the
+// o-8 runs again under this code. It skips the fraud check, uses the
 // approval it got while it was parked, and ships.
 let resumed =
-    orders.Result "o-7" (TimeSpan.FromSeconds 30.0) |> Async.RunSynchronously
+    orders.Result "o-8" (TimeSpan.FromSeconds 30.0) |> Async.RunSynchronously
 
 match resumed with
 | WorkflowOutcome.Finished result ->
-    printfn $"o-7 finished: shipped as {result.Shipment}"
-| other -> printfn $"o-7 ended: {other}"
+    printfn $"o-8 finished: shipped as {result.Shipment}"
+| other -> printfn $"o-8 ended: {other}"
 
 // A new order runs the fraud check.
-place "o-9" "ada" "widget" 2 None
+place "o-10" "ada" "widget" 2 None
 // docs:end
 
 // docs:journal
@@ -195,6 +199,6 @@ let printJournal id =
         let number = rows.GetInt64 0
         printfn $"  {number} {record}"
 
-printJournal "o-7"
+printJournal "o-8"
 api.Stop().Wait()
 // docs:end

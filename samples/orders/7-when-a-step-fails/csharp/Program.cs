@@ -77,19 +77,21 @@ await Deposit("ada", 1500m);
 await Deposit("bob", 50m);
 // The warehouse has no gizmos.
 await Place("o-5", "ada", "gizmo", 1, null);
+// The warehouse is busy at every call for an anvil.
+await Place("o-6", "ada", "anvil", 1, null);
 // The carrier does not take crates.
-await Place("o-6", "ada", "crate", 1, null);
+await Place("o-7", "ada", "crate", 1, null);
 
-// o-7 costs 1200 and waits for an approval that this program never sends.
+// o-8 costs 1200 and waits for an approval that this program never sends.
 // Step 8 finds it still waiting.
-await Start("o-7", new OrderRequest("ada", "widget", 30, 40m));
+await Start("o-8", new OrderRequest("ada", "widget", 30, 40m));
 while (true)
 {
-    var status = await orders.StatusAsync("o-7");
+    var status = await orders.StatusAsync("o-8");
     if (status is WorkflowStatus.Running running
         && running.pending.Any(step => step.EndsWith(" approval")))
     {
-        Console.WriteLine($"o-7 status: {status}");
+        Console.WriteLine($"o-8 status: {status}");
         break;
     }
     await Task.Delay(50);
@@ -121,13 +123,14 @@ void PrintJournal(string id)
     }
 }
 
-PrintJournal("o-6");
+PrintJournal("o-7");
 
 await actor.Stop();
 // docs:end
 
 // docs:warehouse
-// A stand-in for the warehouse. It has no gizmos, and it is busy for the
+// A stand-in for the warehouse. It answers that it has no gizmos, and it is
+// busy at every call for an anvil. For any other item it is busy for the
 // first two calls with a key. It remembers keys, so a repeated call returns
 // the first reservation.
 public sealed class Warehouse : IWarehouse
@@ -136,16 +139,18 @@ public sealed class Warehouse : IWarehouse
     private readonly Dictionary<string, string> reservations = new();
     private readonly HashSet<string> releases = new();
 
-    public Task<string> Reserve(string key, string item, int quantity)
+    public Task<StockAnswer> Reserve(string key, string item, int quantity)
     {
         if (item == "gizmo")
         {
+            // Out of stock is an answer, so it is returned.
             Console.WriteLine($"  warehouse has no gizmo (key {key})");
-            throw new InvalidOperationException("Out of stock");
+            return Task.FromResult<StockAnswer>(new OutOfStock());
         }
         calls[key] = calls.GetValueOrDefault(key) + 1;
-        if (calls[key] <= 2)
+        if (calls[key] <= 2 || item == "anvil")
         {
+            // Being busy is a failed call, so it is thrown.
             Console.WriteLine($"  warehouse busy (key {key})");
             throw new InvalidOperationException("The warehouse is busy");
         }
@@ -155,7 +160,7 @@ public sealed class Warehouse : IWarehouse
             Console.WriteLine(
                 $"  warehouse reserved {quantity} {item} (key {key})");
         }
-        return Task.FromResult(reservations[key]);
+        return Task.FromResult<StockAnswer>(new Reserved(reservations[key]));
     }
 
     public Task<string> Release(string key, string reservation)

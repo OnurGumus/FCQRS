@@ -73,13 +73,13 @@ async Task Place(
     }
 }
 
-// o-7 runs again under this code. It skips the fraud check, uses the
+// o-8 runs again under this code. It skips the fraud check, uses the
 // approval it got while it was parked, and ships.
-var resumed = await orders.ResultAsync("o-7", TimeSpan.FromSeconds(30));
-Console.WriteLine($"o-7 finished: shipped as {resumed.Shipment}");
+var resumed = await orders.ResultAsync("o-8", TimeSpan.FromSeconds(30));
+Console.WriteLine($"o-8 finished: shipped as {resumed.Shipment}");
 
 // A new order runs the fraud check.
-await Place("o-9", "ada", "widget", 2, null);
+await Place("o-10", "ada", "widget", 2, null);
 // docs:end
 
 // docs:journal
@@ -107,13 +107,14 @@ void PrintJournal(string id)
     }
 }
 
-PrintJournal("o-7");
+PrintJournal("o-8");
 
 await actor.Stop();
 // docs:end
 
 // docs:warehouse
-// A stand-in for the warehouse. It has no gizmos, and it is busy for the
+// A stand-in for the warehouse. It answers that it has no gizmos, and it is
+// busy at every call for an anvil. For any other item it is busy for the
 // first two calls with a key. It remembers keys, so a repeated call returns
 // the first reservation.
 public sealed class Warehouse : IWarehouse
@@ -122,16 +123,18 @@ public sealed class Warehouse : IWarehouse
     private readonly Dictionary<string, string> reservations = new();
     private readonly HashSet<string> releases = new();
 
-    public Task<string> Reserve(string key, string item, int quantity)
+    public Task<StockAnswer> Reserve(string key, string item, int quantity)
     {
         if (item == "gizmo")
         {
+            // Out of stock is an answer, so it is returned.
             Console.WriteLine($"  warehouse has no gizmo (key {key})");
-            throw new InvalidOperationException("Out of stock");
+            return Task.FromResult<StockAnswer>(new OutOfStock());
         }
         calls[key] = calls.GetValueOrDefault(key) + 1;
-        if (calls[key] <= 2)
+        if (calls[key] <= 2 || item == "anvil")
         {
+            // Being busy is a failed call, so it is thrown.
             Console.WriteLine($"  warehouse busy (key {key})");
             throw new InvalidOperationException("The warehouse is busy");
         }
@@ -141,7 +144,7 @@ public sealed class Warehouse : IWarehouse
             Console.WriteLine(
                 $"  warehouse reserved {quantity} {item} (key {key})");
         }
-        return Task.FromResult(reservations[key]);
+        return Task.FromResult<StockAnswer>(new Reserved(reservations[key]));
     }
 
     public Task<string> Release(string key, string reservation)

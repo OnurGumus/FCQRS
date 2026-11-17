@@ -139,27 +139,28 @@ await actor.Stop();
 // docs:end
 
 // docs:warehouse
-// A stand-in for the warehouse. It has no gizmos, and it is busy for the
-// first two calls with a key. It remembers keys, so a repeated call returns
-// the first reservation. It prints nothing, and a lock keeps it correct
-// when two orders call it at once.
+// A stand-in for the warehouse. It answers that it has no gizmos, and for
+// any other item it is busy for the first two calls with a key. It remembers
+// keys, so a repeated call returns the first reservation. It prints nothing,
+// and a lock keeps it correct when two orders call it at once.
 public sealed class Warehouse : IWarehouse
 {
     private readonly Dictionary<string, int> calls = new();
     private readonly Dictionary<string, string> reservations = new();
 
-    public Task<string> Reserve(string key, string item, int quantity)
+    public Task<StockAnswer> Reserve(string key, string item, int quantity)
     {
         lock (calls)
         {
             if (item == "gizmo")
-                throw new InvalidOperationException("Out of stock");
+                return Task.FromResult<StockAnswer>(new OutOfStock());
             calls[key] = calls.GetValueOrDefault(key) + 1;
             if (calls[key] <= 2)
                 throw new InvalidOperationException("The warehouse is busy");
             if (!reservations.ContainsKey(key))
                 reservations[key] = $"r-{reservations.Count + 1}";
-            return Task.FromResult(reservations[key]);
+            return Task.FromResult<StockAnswer>(
+                new Reserved(reservations[key]));
         }
     }
 

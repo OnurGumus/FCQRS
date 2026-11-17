@@ -128,8 +128,8 @@ var actor = ActorApi.Create(
 
 After the batch, replace the functions and the lines that placed orders with the stream. The
 stream starts the orders and waits for their outcomes, so `start` and `place` (`Start` and `Place`),
-the wait for `o-7`, and the order `o-9` go. Step 10 starts from an empty journal, so nothing waits
-for `o-7`. `deposit` moves to the registration, shown below:
+the wait for `o-8`, and the order `o-10` go. Step 10 starts from an empty journal, so nothing waits
+for `o-8`. `deposit` moves to the registration, shown below:
 
 <!-- sample: orders/10-feed-orders-from-a-stream/fsharp Program.fs start -->
 ```fsharp
@@ -247,7 +247,7 @@ outcome that leaves. Akka.Streams runs the stages of this stream one at a time, 
 no lock. `RunForeach` runs the stream with the actor system's materializer and calls `print`
 (`Print`) for each outcome; the program waits until the stream completes.
 
-At the end, the program prints the journal of `o-widget` instead of `o-7`:
+At the end, the program prints the journal of `o-widget` instead of `o-8`:
 
 <!-- sample: orders/10-feed-orders-from-a-stream/fsharp Program.fs journal -->
 ```fsharp
@@ -318,10 +318,10 @@ because two calls can change them at once:
 
 <!-- sample: orders/10-feed-orders-from-a-stream/fsharp Program.fs warehouse -->
 ```fsharp
-// A stand-in for the warehouse. It has no gizmos, and it is busy for the
-// first two calls with a key. It remembers keys, so a repeated call returns
-// the first reservation. It prints nothing, and a lock keeps it correct
-// when two orders call it at once.
+// A stand-in for the warehouse. It answers that it has no gizmos, and for
+// any other item it is busy for the first two calls with a key. It remembers
+// keys, so a repeated call returns the first reservation. It prints nothing,
+// and a lock keeps it correct when two orders call it at once.
 type Warehouse() =
     let calls = Dictionary<string, int>()
     let reservations = Dictionary<string, string>()
@@ -329,15 +329,16 @@ type Warehouse() =
         member _.Reserve(key, item, _) =
             lock calls (fun () ->
                 if item = "gizmo" then
-                    invalidOp "Out of stock"
-                calls[key] <- (match calls.TryGetValue key with
-                               | true, count -> count + 1
-                               | _ -> 1)
-                if calls[key] <= 2 then
-                    invalidOp "The warehouse is busy"
-                if not (reservations.ContainsKey key) then
-                    reservations[key] <- $"r-{reservations.Count + 1}"
-                Task.FromResult reservations[key])
+                    Task.FromResult OutOfStock
+                else
+                    calls[key] <- (match calls.TryGetValue key with
+                                   | true, count -> count + 1
+                                   | _ -> 1)
+                    if calls[key] <= 2 then
+                        invalidOp "The warehouse is busy"
+                    if not (reservations.ContainsKey key) then
+                        reservations[key] <- $"r-{reservations.Count + 1}"
+                    Task.FromResult(Reserved reservations[key]))
         member _.Release(_, reservation) = Task.FromResult reservation
 ```
 
@@ -345,27 +346,28 @@ type Warehouse() =
 
 <!-- sample: orders/10-feed-orders-from-a-stream/csharp Program.cs warehouse -->
 ```csharp
-// A stand-in for the warehouse. It has no gizmos, and it is busy for the
-// first two calls with a key. It remembers keys, so a repeated call returns
-// the first reservation. It prints nothing, and a lock keeps it correct
-// when two orders call it at once.
+// A stand-in for the warehouse. It answers that it has no gizmos, and for
+// any other item it is busy for the first two calls with a key. It remembers
+// keys, so a repeated call returns the first reservation. It prints nothing,
+// and a lock keeps it correct when two orders call it at once.
 public sealed class Warehouse : IWarehouse
 {
     private readonly Dictionary<string, int> calls = new();
     private readonly Dictionary<string, string> reservations = new();
 
-    public Task<string> Reserve(string key, string item, int quantity)
+    public Task<StockAnswer> Reserve(string key, string item, int quantity)
     {
         lock (calls)
         {
             if (item == "gizmo")
-                throw new InvalidOperationException("Out of stock");
+                return Task.FromResult<StockAnswer>(new OutOfStock());
             calls[key] = calls.GetValueOrDefault(key) + 1;
             if (calls[key] <= 2)
                 throw new InvalidOperationException("The warehouse is busy");
             if (!reservations.ContainsKey(key))
                 reservations[key] = $"r-{reservations.Count + 1}";
-            return Task.FromResult(reservations[key]);
+            return Task.FromResult<StockAnswer>(
+                new Reserved(reservations[key]));
         }
     }
 
@@ -632,9 +634,10 @@ When the source needs only the start stored, not the outcome, `WorkflowFlow.star
 
 The order workflow now reserves stock with retries, takes its time and confirmation number from
 steps, waits for an approval signal, charges an aggregate, releases the stock when the order is
-not approved or not paid, catches the failure it has an answer for, and survives a process that
-stops in the middle of a step and a change to its own code. A stream feeds it orders, two at a
-time, and an element that arrives again reaches the order it started.
+not approved or not paid, returns the warehouse's answer when it has no stock, catches the failure
+it has an answer for, and survives a process that stops in the middle of a step and a change to
+its own code. A stream feeds it orders, two at a time, and an element that arrives again reaches
+the order it started.
 
 The [workflow concept page](../concepts/workflows.html) covers what the tutorial left out: running
 steps together, repeating steps, child workflows, cancellation, and the C# API in full.

@@ -200,27 +200,27 @@ def charge_the_customer(root):
     return [output]
 
 
-def no_gizmo(id):
-    return [f'  warehouse has no gizmo (key order/{id}/0)'] * 5
-
-
 def when_a_step_fails(root):
     [output] = runs(root, [('7-when-a-step-fails', [], 0)])
     same(output,
          ['Deposited 1500 to ada', 'Deposited 50 to bob',
+          # The warehouse answers once, and the body returns a result for the answer.
+          'Started o-5',
+          '  warehouse has no gizmo (key order/o-5/0)',
+          'o-5 finished: out of stock',
           # The body catches reserve-stock's failure and returns a result.
-          'Started o-5'] + no_gizmo('o-5') +
-         ['o-5 finished: out of stock',
+          'Started o-6'] + ['  warehouse busy (key order/o-6/0)'] * 5 +
+         ['o-6 finished: warehouse unavailable',
           # Nothing catches ship's failure, so the order faults.
-          'Started o-6'] + reserve('o-6', 1, 1)[:2] +
-         ['  warehouse reserved 1 crate (key order/o-6/0)'] +
-         ['  carrier does not take crates (key order/o-6/5)'] * 3 +
-         ['o-6 faulted: The carrier does not take crates',
-          # o-7 is left waiting for its approval; step 8 finds it running.
-          'Started o-7'] + reserve('o-7', 30, 1) +
-         ['o-7 status: Running ["3 approval"]',
-          # o-6 was charged (records 6 and 7) before ship failed (10 and 11).
-          'Journal of order/default-shard/o-6:'] +
+          'Started o-7'] + reserve('o-7', 1, 1)[:2] +
+         ['  warehouse reserved 1 crate (key order/o-7/0)'] +
+         ['  carrier does not take crates (key order/o-7/5)'] * 3 +
+         ['o-7 faulted: The carrier does not take crates',
+          # o-8 is left waiting for its approval; step 8 finds it running.
+          'Started o-8'] + reserve('o-8', 30, 1) +
+         ['o-8 status: Running ["3 approval"]',
+          # o-7 was charged (records 6 and 7) before ship failed (10 and 11).
+          'Journal of order/default-shard/o-7:'] +
          [f'  {number} {record}' for number, record in enumerate(
              ['Started', 'StepScheduled', 'StepCompleted', 'StepCompleted', 'StepCompleted',
               'StepScheduled', 'StepCompleted', 'StepScheduled', 'StepCompleted', 'StepScheduled',
@@ -229,18 +229,18 @@ def when_a_step_fails(root):
 
 
 def add_a_step(root):
-    # Step 8 runs on the database step 7 left, with o-7 waiting for its approval.
+    # Step 8 runs on the database step 7 left, with o-8 waiting for its approval.
     _, output = runs(root, [('7-when-a-step-fails', [], 0), ('8-add-a-step', [], 0)])
-    # The new step stands where o-7's journal holds the approval wait, so o-7 is parked.
+    # The new step stands where o-8's journal holds the approval wait, so o-8 is parked.
     same(output,
-         ["o-7 is parked: The workflow body asks for Activity 'check-fraud' at step 3, "
+         ["o-8 is parked: The workflow body asks for Activity 'check-fraud' at step 3, "
           "but the journal holds Signal 'approval'.",
-          'Sent approval to o-7',
-          'Started o-8'] + reserve('o-8', 2, 1) +
-         ['  fraud check passed for ada (key order/o-8/3)',
-          '  carrier shipped r-1 (key order/o-8/6)',
-          'o-8 finished: shipped as s-1',
-          'Journal of order/default-shard/o-7:'] +
+          'Sent approval to o-8',
+          'Started o-9'] + reserve('o-9', 2, 1) +
+         ['  fraud check passed for ada (key order/o-9/3)',
+          '  carrier shipped r-1 (key order/o-9/6)',
+          'o-9 finished: shipped as s-1',
+          'Journal of order/default-shard/o-8:'] +
          [f'  {number} {record}' for number, record in enumerate(
              ['Started', 'StepScheduled', 'StepCompleted', 'StepCompleted', 'StepCompleted',
               'StepScheduled', 'SignalReceived'], 1)], output)
@@ -248,21 +248,21 @@ def add_a_step(root):
 
 
 def guard_the_change(root):
-    # Step 9 runs on the database steps 7 and 8 left: o-7 is parked with its approval stored.
+    # Step 9 runs on the database steps 7 and 8 left: o-8 is parked with its approval stored.
     _, _, output = runs(root, [('7-when-a-step-fails', [], 0), ('8-add-a-step', [], 0),
                                ('9-guard-the-change', [], 0)])
-    # o-7 resumes without the fraud check, uses the approval stored while it was parked, and ships.
-    # o-9 is new and runs the fraud check.
+    # o-8 resumes without the fraud check, uses the approval stored while it was parked, and ships.
+    # o-10 is new and runs the fraud check.
     same(output,
-         ['  carrier shipped r-2 (key order/o-7/6)',
-          'o-7 finished: shipped as s-1',
-          'Started o-9'] + reserve('o-9', 2, 1) +
-         ['  fraud check passed for ada (key order/o-9/3)',
-          '  carrier shipped r-1 (key order/o-9/6)',
-          'o-9 finished: shipped as s-2',
-          # Record 7 is the approval o-7 got while parked; record 8 completes its wait. The
-          # version step stored nothing for o-7.
-          'Journal of order/default-shard/o-7:'] +
+         ['  carrier shipped r-2 (key order/o-8/6)',
+          'o-8 finished: shipped as s-1',
+          'Started o-10'] + reserve('o-10', 2, 1) +
+         ['  fraud check passed for ada (key order/o-10/3)',
+          '  carrier shipped r-1 (key order/o-10/6)',
+          'o-10 finished: shipped as s-2',
+          # Record 7 is the approval o-8 got while parked; record 8 completes its wait. The
+          # version step stored nothing for o-8.
+          'Journal of order/default-shard/o-8:'] +
          [f'  {number} {record}' for number, record in enumerate(
              ['Started', 'StepScheduled', 'StepCompleted', 'StepCompleted', 'StepCompleted',
               'StepScheduled', 'SignalReceived', 'StepCompleted', 'StepScheduled', 'StepCompleted',

@@ -27,10 +27,10 @@ let api = Fcqrs.actor configuration logging (Some connection) "orders"
 // docs:end
 
 // docs:warehouse
-// A stand-in for the warehouse. It has no gizmos, and it is busy for the
-// first two calls with a key. It remembers keys, so a repeated call returns
-// the first reservation. It prints nothing, and a lock keeps it correct
-// when two orders call it at once.
+// A stand-in for the warehouse. It answers that it has no gizmos, and for
+// any other item it is busy for the first two calls with a key. It remembers
+// keys, so a repeated call returns the first reservation. It prints nothing,
+// and a lock keeps it correct when two orders call it at once.
 type Warehouse() =
     let calls = Dictionary<string, int>()
     let reservations = Dictionary<string, string>()
@@ -38,15 +38,16 @@ type Warehouse() =
         member _.Reserve(key, item, _) =
             lock calls (fun () ->
                 if item = "gizmo" then
-                    invalidOp "Out of stock"
-                calls[key] <- (match calls.TryGetValue key with
-                               | true, count -> count + 1
-                               | _ -> 1)
-                if calls[key] <= 2 then
-                    invalidOp "The warehouse is busy"
-                if not (reservations.ContainsKey key) then
-                    reservations[key] <- $"r-{reservations.Count + 1}"
-                Task.FromResult reservations[key])
+                    Task.FromResult OutOfStock
+                else
+                    calls[key] <- (match calls.TryGetValue key with
+                                   | true, count -> count + 1
+                                   | _ -> 1)
+                    if calls[key] <= 2 then
+                        invalidOp "The warehouse is busy"
+                    if not (reservations.ContainsKey key) then
+                        reservations[key] <- $"r-{reservations.Count + 1}"
+                    Task.FromResult(Reserved reservations[key]))
         member _.Release(_, reservation) = Task.FromResult reservation
 // docs:end
 

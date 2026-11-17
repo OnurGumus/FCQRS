@@ -85,8 +85,8 @@ and ships. Every step is a program you run, and every page shows each line of it
 5. [Restart during shipping](workflow-tutorial/restart-during-shipping.html): recovery and replay.
 6. [Charge the customer](workflow-tutorial/charge-the-customer.html): commands to an aggregate and
    compensation.
-7. [When a step fails for good](workflow-tutorial/when-a-step-fails.html): catching failures and
-   faulted orders.
+7. [When a step fails for good](workflow-tutorial/when-a-step-fails.html): answers returned as
+   values, caught failures, and faulted orders.
 8. [Add a step](workflow-tutorial/add-a-step.html): changing a workflow while orders run.
 9. [Guard the change](workflow-tutorial/guard-the-change.html): `version`.
 10. [Feed orders from a stream](workflow-tutorial/feed-orders-from-a-stream.html): starting

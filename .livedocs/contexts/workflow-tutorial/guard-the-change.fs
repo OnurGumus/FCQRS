@@ -20,11 +20,17 @@ module Order =
         Confirmation: Guid
         PlacedAt: DateTime
     }
+    // What the warehouse answers when it is asked for stock. FCQRS stores the
+    // answer as the step's result.
+    type StockAnswer =
+        | Reserved of reservation: string
+        | OutOfStock
+
     // The warehouse is an external system. The key is the same for every
     // attempt of one step, so the warehouse can recognise a repeated call.
     type IWarehouse =
         abstract Reserve:
-            key: string * item: string * quantity: int -> Task<string>
+            key: string * item: string * quantity: int -> Task<StockAnswer>
         abstract Release: key: string * reservation: string -> Task<string>
 
     // The carrier is another external system. It returns a shipment ID.
@@ -54,7 +60,7 @@ let database = "orders.db"
 let api = Unchecked.defaultof<IActor>
 type Warehouse() =
     interface IWarehouse with
-        member _.Reserve(_, _, _) = Tasks.Task.FromResult "r-1"
+        member _.Reserve(_, _, _) = Tasks.Task.FromResult(Reserved "r-1")
         member _.Release(_, reservation) = Tasks.Task.FromResult reservation
 type Carrier(crash: bool) =
     interface ICarrier with

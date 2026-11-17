@@ -14,27 +14,35 @@ index: 7
 (**
 # Step 7: When a step fails for good
 
-A retry policy gives up at some point. Then the step **fails**, and the body decides what that
-means. This step shows both choices: the body catches a failure that has an answer in the domain,
-and lets a failure that has none end the order.
+A step can end without the value the order needs in two ways. The external system can answer
+that it cannot do what was asked, such as a warehouse with no stock. Or the call can throw until
+the retry policy gives up, and then the step **fails**. This step returns the answer as a value,
+catches a failure that has an answer in the domain, and lets a failure that has none end the
+order.
 
 This page changes the program from [step 6](charge-the-customer.html).
 
-## Catch the failure that has an answer
+## Return an answer as a value
 
-When a step's policy gives up, FCQRS stores the failure as the step's result, and the body sees a
-`WorkflowStepFailedException`. On a replay the body sees the same exception again, from the
-stored failure, without running the step.
+A warehouse that has no stock has answered, and a second call gets the same answer. FCQRS stores
+whatever an activity returns as the step's result. The policy retries only a call that throws.
 
-The carrier now needs to know what it ships. In `Order.fs` (`Order.cs`), replace the services:
+In `Order.fs` (`Order.cs`), replace the services. `Reserve` returns a `StockAnswer`, and the
+carrier is told what it ships:
 
 <!-- sample: orders/7-when-a-step-fails/fsharp Order.fs services -->
 ```fsharp
+// What the warehouse answers when it is asked for stock. FCQRS stores the
+// answer as the step's result.
+type StockAnswer =
+    | Reserved of reservation: string
+    | OutOfStock
+
 // The warehouse is an external system. The key is the same for every
 // attempt of one step, so the warehouse can recognise a repeated call.
 type IWarehouse =
     abstract Reserve:
-        key: string * item: string * quantity: int -> Task<string>
+        key: string * item: string * quantity: int -> Task<StockAnswer>
     abstract Release: key: string * reservation: string -> Task<string>
 
 // The carrier is another external system. It returns a shipment ID.
@@ -47,11 +55,17 @@ type ICarrier =
 
 <!-- sample: orders/7-when-a-step-fails/csharp Order.cs services -->
 ```csharp
+// What the warehouse answers when it is asked for stock. FCQRS stores the
+// answer as the step's result.
+public union StockAnswer(Reserved, OutOfStock);
+public sealed record Reserved(string Reservation);
+public sealed record OutOfStock;
+
 // The warehouse is an external system. The key is the same for every
 // attempt of one step, so the warehouse can recognise a repeated call.
 public interface IWarehouse
 {
-    Task<string> Reserve(string key, string item, int quantity);
+    Task<StockAnswer> Reserve(string key, string item, int quantity);
     Task<string> Release(string key, string reservation);
 }
 
@@ -62,9 +76,19 @@ public interface ICarrier
 }
 ```
 
-Replace the workflow. The body from step 6 moves inside a `try` (in C#, into a method `Fulfil`
-that `Run` calls inside a `try`). The approval now waits up to one day, and the carrier gets the
-item:
+In step 6, `reserve-stock` stored a string. It now stores a `StockAnswer`, and the type of a
+stored result is a persistent contract: this code would park an order whose journal holds the
+string. This step starts from an empty database.
+
+## Catch the failure that has an answer
+
+When a step's policy gives up, FCQRS stores the failure as the step's result, and the body sees a
+`WorkflowStepFailedException`. On a replay the body sees the same exception again, from the
+stored failure, without running the step.
+
+Replace the workflow. The steps after the reservation move into `fulfil` (in C#, `Fulfil`). The
+body reserves the stock inside a `try`, returns a result for `OutOfStock`, and runs `fulfil` for
+`Reserved`. The approval now waits up to one day, and the carrier gets the item:
 
 <!-- sample: orders/7-when-a-step-fails/fsharp Order.fs workflow -->
 ```fsharp
@@ -74,82 +98,94 @@ let definition
     (carrier: ICarrier)
     (accounts: AggregateHandle<AccountCommand, AccountEvent>)
     =
+    // The result of an order that reserved no stock.
+    let unfilled status = {
+        Status = status
+        Reservation = ""
+        Shipment = ""
+        Confirmation = Guid.Empty
+        PlacedAt = DateTime.MinValue
+    }
+    // The rest of an order, once its stock is reserved.
+    let fulfil (request: OrderRequest) (reservation: string) =
+        workflow {
+            // The body must give the same answers on every replay, so it
+            // reads the clock and makes GUIDs only through steps. FCQRS
+            // stores their values and replays them.
+            let! placedAt = now
+            let! confirmation = newGuid
+            let finish status shipment = {
+                Status = status
+                Reservation = reservation
+                Shipment = shipment
+                Confirmation = confirmation
+                PlacedAt = placedAt
+            }
+            // Gives the stock back when the order does not ship.
+            let release =
+                activity "release-stock" reserveRetry (fun attempt ->
+                    warehouse.Release(attempt.IdempotencyKey, reservation))
+            // An order over 1000 waits for a person to approve it, for at
+            // most one day. With no answer by then, the wait returns None.
+            let total = request.UnitPrice * decimal request.Quantity
+            let approvalWait = TimeSpan.FromDays 1.0
+            let! approved =
+                workflow {
+                    if total <= 1000m then
+                        return true
+                    else
+                        let! answer =
+                            waitSignalFor<bool> "approval" approvalWait
+                        return defaultArg answer false
+                }
+            if not approved then
+                let! _ = release
+                return finish "not approved" ""
+            else
+                // The confirmation number identifies the payment, so a
+                // repeated debit is recognised as the same payment.
+                let payment = string confirmation
+                let! reply =
+                    send accounts request.Customer (Debit(payment, total))
+                match reply with
+                | Rejected _ ->
+                    let! _ = release
+                    return finish "payment refused" ""
+                | _ ->
+                    // Packing takes two seconds. The timer's due time
+                    // is stored, so a restart does not start the wait.
+                    do! sleep (TimeSpan.FromSeconds 2.0)
+                    let! shipment =
+                        activity "ship" callRetry (fun attempt ->
+                            carrier.Ship(
+                                attempt.IdempotencyKey,
+                                reservation,
+                                request.Item))
+                    return finish "shipped" shipment
+        }
     Workflow.define "order" (fun (request: OrderRequest) ->
         workflow {
             try
                 // A failed attempt is not stored. FCQRS tries again until
                 // an attempt succeeds or the policy gives up.
-                let! reservation =
+                let! answer =
                     activity "reserve-stock" reserveRetry (fun attempt ->
                         warehouse.Reserve(
                             attempt.IdempotencyKey,
                             request.Item,
                             request.Quantity))
-                // The body must give the same answers on every replay, so it
-                // reads the clock and makes GUIDs only through steps. FCQRS
-                // stores their values and replays them.
-                let! placedAt = now
-                let! confirmation = newGuid
-                let finish status shipment = {
-                    Status = status
-                    Reservation = reservation
-                    Shipment = shipment
-                    Confirmation = confirmation
-                    PlacedAt = placedAt
-                }
-                // Gives the stock back when the order does not ship.
-                let release =
-                    activity "release-stock" reserveRetry (fun attempt ->
-                        warehouse.Release(attempt.IdempotencyKey, reservation))
-                // An order over 1000 waits for a person to approve it, for at
-                // most one day. With no answer by then, the wait returns None.
-                let total = request.UnitPrice * decimal request.Quantity
-                let approvalWait = TimeSpan.FromDays 1.0
-                let! approved =
-                    workflow {
-                        if total <= 1000m then
-                            return true
-                        else
-                            let! answer =
-                                waitSignalFor<bool> "approval" approvalWait
-                            return defaultArg answer false
-                    }
-                if not approved then
-                    let! _ = release
-                    return finish "not approved" ""
-                else
-                    // The confirmation number identifies the payment, so a
-                    // repeated debit is recognised as the same payment.
-                    let payment = string confirmation
-                    let! reply =
-                        send accounts request.Customer (Debit(payment, total))
-                    match reply with
-                    | Rejected _ ->
-                        let! _ = release
-                        return finish "payment refused" ""
-                    | _ ->
-                        // Packing takes two seconds. The timer's due time
-                        // is stored, so a restart does not start the wait.
-                        do! sleep (TimeSpan.FromSeconds 2.0)
-                        let! shipment =
-                            activity "ship" callRetry (fun attempt ->
-                                carrier.Ship(
-                                    attempt.IdempotencyKey,
-                                    reservation,
-                                    request.Item))
-                        return finish "shipped" shipment
+                // An answer is the step's result, whichever case it is. It
+                // is stored, and the policy does not retry it.
+                match answer with
+                | OutOfStock -> return unfilled "out of stock"
+                | Reserved reservation -> return! fulfil request reservation
             // When a step's policy gives up, the step fails, and the body
-            // sees WorkflowStepFailedException. Running out of stock is an
-            // answer the order can give; any other failure is not caught.
+            // sees WorkflowStepFailedException. A warehouse that was busy at
+            // every attempt reserved nothing, so the order can end with a
+            // result. Any other failure is not caught.
             with :? WorkflowStepFailedException as failed
                     when failed.StepName = "reserve-stock" ->
-                return {
-                    Status = "out of stock"
-                    Reservation = ""
-                    Shipment = ""
-                    Confirmation = Guid.Empty
-                    PlacedAt = DateTime.MinValue
-                }
+                return unfilled "warehouse unavailable"
         })
 ```
 
@@ -176,27 +212,39 @@ public sealed class OrderWorkflow(
     {
         try
         {
-            return await Fulfil(ctx, request);
+            // A failed attempt is not stored. FCQRS tries again until an
+            // attempt succeeds or the policy gives up.
+            var answer = await ctx.Activity("reserve-stock", ReserveRetry,
+                attempt => warehouse.Reserve(
+                    attempt.IdempotencyKey, request.Item, request.Quantity));
+            // An answer is the step's result, whichever case it is. It is
+            // stored, and the policy does not retry it.
+            return answer switch
+            {
+                OutOfStock => Unfilled("out of stock"),
+                Reserved reserved =>
+                    await Fulfil(ctx, request, reserved.Reservation),
+            };
         }
         // When a step's policy gives up, the step fails, and the body sees
-        // WorkflowStepFailedException. Running out of stock is an answer
-        // the order can give; any other failure is not caught.
+        // WorkflowStepFailedException. A warehouse that was busy at every
+        // attempt reserved nothing, so the order can end with a result. Any
+        // other failure is not caught.
         catch (WorkflowStepFailedException failed)
             when (failed.StepName == "reserve-stock")
         {
-            return new OrderResult(
-                "out of stock", "", "", Guid.Empty, DateTime.MinValue);
+            return Unfilled("warehouse unavailable");
         }
     }
 
+    // The result of an order that reserved no stock.
+    private static OrderResult Unfilled(string status) =>
+        new(status, "", "", Guid.Empty, DateTime.MinValue);
+
+    // The rest of an order, once its stock is reserved.
     private async WorkflowTask<OrderResult> Fulfil(
-        WorkflowContext ctx, OrderRequest request)
+        WorkflowContext ctx, OrderRequest request, string reservation)
     {
-        // A failed attempt is not stored. FCQRS tries again until an
-        // attempt succeeds or the policy gives up.
-        var reservation = await ctx.Activity("reserve-stock", ReserveRetry,
-            attempt => warehouse.Reserve(
-                attempt.IdempotencyKey, request.Item, request.Quantity));
         // The body must give the same answers on every replay, so it
         // reads the clock and makes GUIDs only through steps. FCQRS
         // stores their values and replays them.
@@ -242,11 +290,21 @@ public sealed class OrderWorkflow(
 }
 ```
 
-The handler catches only a failure of `reserve-stock`, checked by `StepName`. If the warehouse
-cannot reserve the stock, nothing has happened yet, so the order can end with a result,
-`out of stock`. The exception also carries `Error.Kind`, which tells why the step failed, for
-example `Exhausted` when the attempts ran out, `DeadlineExceeded` when the step's deadline passed,
-or `OutcomeUnknown` when a command got no reply.
+`OutOfStock` reaches the body as a value, so the `match` (in C#, the `switch`) handles it. The
+handler never sees it, because a handler sees only exceptions.
+
+The handler catches only a failure of `reserve-stock`, checked by `StepName`. The stand-in
+warehouse refuses a call before it reserves anything, so after five refusals nothing has happened
+and the order can end with a result, `warehouse unavailable`. A call that times out is different:
+the warehouse may have reserved the stock, and the body would have to ask it or cancel the
+reservation.
+
+The exception carries `Error.Kind`, which tells why the step failed, for example `Exhausted` when
+the attempts ran out, `DeadlineExceeded` when the step's deadline passed, or `OutcomeUnknown` when
+a command got no reply. It does not carry the exception the call threw. The body sees only that
+exception's type name and message, while a returned answer such as `StockAnswer` keeps its fields.
+[Return an expected failure as a value](../concepts/workflows.html#Return-an-expected-failure-as-a-value)
+compares the two.
 
 A failure of any other step is not caught. It leaves the body, and the order **faults**: FCQRS
 stores the failure as the order's end, and the order runs nothing more. A faulted order is final.
@@ -254,11 +312,13 @@ Nothing restarts it, and a start with the same ID stores nothing.
 
 ## Make the stand-ins fail
 
-In `Program.fs` (`Program.cs`), replace the stand-in warehouse. It has no gizmos:
+In `Program.fs` (`Program.cs`), replace the stand-in warehouse. It returns `OutOfStock` for a
+gizmo and throws at every call for an anvil:
 
 <!-- sample: orders/7-when-a-step-fails/fsharp Program.fs warehouse -->
 ```fsharp
-// A stand-in for the warehouse. It has no gizmos, and it is busy for the
+// A stand-in for the warehouse. It answers that it has no gizmos, and it is
+// busy at every call for an anvil. For any other item it is busy for the
 // first two calls with a key. It remembers keys, so a repeated call returns
 // the first reservation.
 type Warehouse() =
@@ -269,19 +329,22 @@ type Warehouse() =
         member _.Reserve(key, item, quantity) =
             task {
                 if item = "gizmo" then
+                    // Out of stock is an answer, so it is returned.
                     printfn $"  warehouse has no gizmo (key {key})"
-                    invalidOp "Out of stock"
-                calls[key] <- (match calls.TryGetValue key with
-                               | true, count -> count + 1
-                               | _ -> 1)
-                if calls[key] <= 2 then
-                    printfn $"  warehouse busy (key {key})"
-                    invalidOp "The warehouse is busy"
-                if not (reservations.ContainsKey key) then
-                    reservations[key] <- $"r-{reservations.Count + 1}"
-                    printfn
-                        $"  warehouse reserved {quantity} {item} (key {key})"
-                return reservations[key]
+                    return OutOfStock
+                else
+                    calls[key] <- (match calls.TryGetValue key with
+                                   | true, count -> count + 1
+                                   | _ -> 1)
+                    if calls[key] <= 2 || item = "anvil" then
+                        // Being busy is a failed call, so it is thrown.
+                        printfn $"  warehouse busy (key {key})"
+                        invalidOp "The warehouse is busy"
+                    if not (reservations.ContainsKey key) then
+                        reservations[key] <- $"r-{reservations.Count + 1}"
+                        let stock = $"{quantity} {item}"
+                        printfn $"  warehouse reserved {stock} (key {key})"
+                    return Reserved reservations[key]
             }
         member _.Release(key, reservation) =
             task {
@@ -295,7 +358,8 @@ type Warehouse() =
 
 <!-- sample: orders/7-when-a-step-fails/csharp Program.cs warehouse -->
 ```csharp
-// A stand-in for the warehouse. It has no gizmos, and it is busy for the
+// A stand-in for the warehouse. It answers that it has no gizmos, and it is
+// busy at every call for an anvil. For any other item it is busy for the
 // first two calls with a key. It remembers keys, so a repeated call returns
 // the first reservation.
 public sealed class Warehouse : IWarehouse
@@ -304,16 +368,18 @@ public sealed class Warehouse : IWarehouse
     private readonly Dictionary<string, string> reservations = new();
     private readonly HashSet<string> releases = new();
 
-    public Task<string> Reserve(string key, string item, int quantity)
+    public Task<StockAnswer> Reserve(string key, string item, int quantity)
     {
         if (item == "gizmo")
         {
+            // Out of stock is an answer, so it is returned.
             Console.WriteLine($"  warehouse has no gizmo (key {key})");
-            throw new InvalidOperationException("Out of stock");
+            return Task.FromResult<StockAnswer>(new OutOfStock());
         }
         calls[key] = calls.GetValueOrDefault(key) + 1;
-        if (calls[key] <= 2)
+        if (calls[key] <= 2 || item == "anvil")
         {
+            // Being busy is a failed call, so it is thrown.
             Console.WriteLine($"  warehouse busy (key {key})");
             throw new InvalidOperationException("The warehouse is busy");
         }
@@ -323,7 +389,7 @@ public sealed class Warehouse : IWarehouse
             Console.WriteLine(
                 $"  warehouse reserved {quantity} {item} (key {key})");
         }
-        return Task.FromResult(reservations[key]);
+        return Task.FromResult<StockAnswer>(new Reserved(reservations[key]));
     }
 
     public Task<string> Release(string key, string reservation)
@@ -398,8 +464,8 @@ public sealed class Carrier(bool crash) : ICarrier
 ```
 
 Replace the code that starts the orders. `place` takes the item, and reports a faulted order. The
-program places a gizmo and a crate, then starts `o-7`, a large order, and leaves it waiting for an
-approval it never sends:
+program places a gizmo, an anvil, and a crate, then starts `o-8`, a large order, and leaves it
+waiting for an approval it never sends:
 
 <!-- sample: orders/7-when-a-step-fails/fsharp Program.fs start -->
 ```fsharp
@@ -447,19 +513,21 @@ deposit "ada" 1500m
 deposit "bob" 50m
 // The warehouse has no gizmos.
 place "o-5" "ada" "gizmo" 1 None
+// The warehouse is busy at every call for an anvil.
+place "o-6" "ada" "anvil" 1 None
 // The carrier does not take crates.
-place "o-6" "ada" "crate" 1 None
+place "o-7" "ada" "crate" 1 None
 
-// o-7 costs 1200 and waits for an approval that this program never sends.
+// o-8 costs 1200 and waits for an approval that this program never sends.
 // Step 8 finds it still waiting.
 let big = { Customer = "ada"; Item = "widget"; Quantity = 30; UnitPrice = 40m }
-start "o-7" big
+start "o-8" big
 
 let rec waitForApproval () =
-    match orders.Status "o-7" |> Async.RunSynchronously with
+    match orders.Status "o-8" |> Async.RunSynchronously with
     | WorkflowStatus.Running steps as status
         when steps |> List.exists (fun step -> step.EndsWith " approval") ->
-        printfn $"o-7 status: {status}"
+        printfn $"o-8 status: {status}"
     | _ ->
         Thread.Sleep 50
         waitForApproval ()
@@ -514,26 +582,28 @@ await Deposit("ada", 1500m);
 await Deposit("bob", 50m);
 // The warehouse has no gizmos.
 await Place("o-5", "ada", "gizmo", 1, null);
+// The warehouse is busy at every call for an anvil.
+await Place("o-6", "ada", "anvil", 1, null);
 // The carrier does not take crates.
-await Place("o-6", "ada", "crate", 1, null);
+await Place("o-7", "ada", "crate", 1, null);
 
-// o-7 costs 1200 and waits for an approval that this program never sends.
+// o-8 costs 1200 and waits for an approval that this program never sends.
 // Step 8 finds it still waiting.
-await Start("o-7", new OrderRequest("ada", "widget", 30, 40m));
+await Start("o-8", new OrderRequest("ada", "widget", 30, 40m));
 while (true)
 {
-    var status = await orders.StatusAsync("o-7");
+    var status = await orders.StatusAsync("o-8");
     if (status is WorkflowStatus.Running running
         && running.pending.Any(step => step.EndsWith(" approval")))
     {
-        Console.WriteLine($"o-7 status: {status}");
+        Console.WriteLine($"o-8 status: {status}");
         break;
     }
     await Task.Delay(50);
 }
 ```
 
-Replace the code that prints the journal. It now takes an order's ID and prints `o-6`'s:
+Replace the code that prints the journal. It now takes an order's ID and prints `o-7`'s:
 
 <!-- sample: orders/7-when-a-step-fails/fsharp Program.fs journal -->
 ```fsharp
@@ -559,7 +629,7 @@ let printJournal id =
         let number = rows.GetInt64 0
         printfn $"  {number} {record}"
 
-printJournal "o-6"
+printJournal "o-7"
 api.Stop().Wait()
 ```
 
@@ -591,7 +661,7 @@ void PrintJournal(string id)
     }
 }
 
-PrintJournal("o-6");
+PrintJournal("o-7");
 
 await actor.Stop();
 ```
@@ -606,25 +676,28 @@ Deposited 1500 to ada
 Deposited 50 to bob
 Started o-5
   warehouse has no gizmo (key order/o-5/0)
-  warehouse has no gizmo (key order/o-5/0)
-  warehouse has no gizmo (key order/o-5/0)
-  warehouse has no gizmo (key order/o-5/0)
-  warehouse has no gizmo (key order/o-5/0)
 o-5 finished: out of stock
 Started o-6
   warehouse busy (key order/o-6/0)
   warehouse busy (key order/o-6/0)
-  warehouse reserved 1 crate (key order/o-6/0)
-  carrier does not take crates (key order/o-6/5)
-  carrier does not take crates (key order/o-6/5)
-  carrier does not take crates (key order/o-6/5)
-o-6 faulted: The carrier does not take crates
+  warehouse busy (key order/o-6/0)
+  warehouse busy (key order/o-6/0)
+  warehouse busy (key order/o-6/0)
+o-6 finished: warehouse unavailable
 Started o-7
   warehouse busy (key order/o-7/0)
   warehouse busy (key order/o-7/0)
-  warehouse reserved 30 widget (key order/o-7/0)
-o-7 status: Running ["3 approval"]
-Journal of order/default-shard/o-6:
+  warehouse reserved 1 crate (key order/o-7/0)
+  carrier does not take crates (key order/o-7/5)
+  carrier does not take crates (key order/o-7/5)
+  carrier does not take crates (key order/o-7/5)
+o-7 faulted: The carrier does not take crates
+Started o-8
+  warehouse busy (key order/o-8/0)
+  warehouse busy (key order/o-8/0)
+  warehouse reserved 30 widget (key order/o-8/0)
+o-8 status: Running ["3 approval"]
+Journal of order/default-shard/o-7:
   1 Started
   2 StepScheduled
   3 StepCompleted
@@ -639,16 +712,18 @@ Journal of order/default-shard/o-6:
   12 Faulted
 ```
 
-- `o-5`: `reserve-stock` made its five attempts, failed, and the body turned the failure into the
-  result `out of stock`.
-- `o-6`: `ship` made its three attempts and failed. Nothing caught it, so the order faulted. In
+- `o-5`: the warehouse was called once. `reserve-stock` stored its answer, and the body returned
+  the result `out of stock`.
+- `o-6`: `reserve-stock` made its five attempts and failed. The body caught the failure and
+  returned the result `warehouse unavailable`.
+- `o-7`: `ship` made its three attempts and failed. Nothing caught it, so the order faulted. In
   F#, `Result` returns `WorkflowOutcome.Faulted` with the stored error. In C#, `ResultAsync` throws
   `WorkflowFaultedException`.
-- `o-7` is waiting for its approval at position 3 when the program stops.
+- `o-8` is waiting for its approval at position 3 when the program stops.
 
 ## What a faulted order leaves behind
 
-`o-6`'s journal shows what happened before the failure. Records 6 and 7 are the payment: Ada's
+`o-7`'s journal shows what happened before the failure. Records 6 and 7 are the payment: Ada's
 account was charged. Records 8 and 9 are the packing timer. Records 10 and 11 are `ship`, which
 began and failed. Record 12 ends the order.
 
@@ -660,7 +735,7 @@ journal record what it did.
 
 ## Next
 
-[Step 8: Add a step](add-a-step.html) changes the workflow while `o-7` is still waiting.
+[Step 8: Add a step](add-a-step.html) changes the workflow while `o-8` is still waiting.
 
 *)
 

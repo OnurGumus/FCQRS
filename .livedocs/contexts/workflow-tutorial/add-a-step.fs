@@ -38,7 +38,7 @@ let database = "orders.db"
 let api = Unchecked.defaultof<IActor>
 type Warehouse() =
     interface IWarehouse with
-        member _.Reserve(_, _, _) = Tasks.Task.FromResult "r-1"
+        member _.Reserve(_, _, _) = Tasks.Task.FromResult(Reserved "r-1")
         member _.Release(_, reservation) = Tasks.Task.FromResult reservation
 type Carrier(crash: bool) =
     interface ICarrier with

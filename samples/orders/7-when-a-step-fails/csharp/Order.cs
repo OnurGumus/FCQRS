@@ -14,11 +14,17 @@ public sealed record OrderResult(
 // docs:end
 
 // docs:services
+// What the warehouse answers when it is asked for stock. FCQRS stores the
+// answer as the step's result.
+public union StockAnswer(Reserved, OutOfStock);
+public sealed record Reserved(string Reservation);
+public sealed record OutOfStock;
+
 // The warehouse is an external system. The key is the same for every
 // attempt of one step, so the warehouse can recognise a repeated call.
 public interface IWarehouse
 {
-    Task<string> Reserve(string key, string item, int quantity);
+    Task<StockAnswer> Reserve(string key, string item, int quantity);
     Task<string> Release(string key, string reservation);
 }
 
@@ -49,27 +55,39 @@ public sealed class OrderWorkflow(
     {
         try
         {
-            return await Fulfil(ctx, request);
+            // A failed attempt is not stored. FCQRS tries again until an
+            // attempt succeeds or the policy gives up.
+            var answer = await ctx.Activity("reserve-stock", ReserveRetry,
+                attempt => warehouse.Reserve(
+                    attempt.IdempotencyKey, request.Item, request.Quantity));
+            // An answer is the step's result, whichever case it is. It is
+            // stored, and the policy does not retry it.
+            return answer switch
+            {
+                OutOfStock => Unfilled("out of stock"),
+                Reserved reserved =>
+                    await Fulfil(ctx, request, reserved.Reservation),
+            };
         }
         // When a step's policy gives up, the step fails, and the body sees
-        // WorkflowStepFailedException. Running out of stock is an answer
-        // the order can give; any other failure is not caught.
+        // WorkflowStepFailedException. A warehouse that was busy at every
+        // attempt reserved nothing, so the order can end with a result. Any
+        // other failure is not caught.
         catch (WorkflowStepFailedException failed)
             when (failed.StepName == "reserve-stock")
         {
-            return new OrderResult(
-                "out of stock", "", "", Guid.Empty, DateTime.MinValue);
+            return Unfilled("warehouse unavailable");
         }
     }
 
+    // The result of an order that reserved no stock.
+    private static OrderResult Unfilled(string status) =>
+        new(status, "", "", Guid.Empty, DateTime.MinValue);
+
+    // The rest of an order, once its stock is reserved.
     private async WorkflowTask<OrderResult> Fulfil(
-        WorkflowContext ctx, OrderRequest request)
+        WorkflowContext ctx, OrderRequest request, string reservation)
     {
-        // A failed attempt is not stored. FCQRS tries again until an
-        // attempt succeeds or the policy gives up.
-        var reservation = await ctx.Activity("reserve-stock", ReserveRetry,
-            attempt => warehouse.Reserve(
-                attempt.IdempotencyKey, request.Item, request.Quantity));
         // The body must give the same answers on every replay, so it
         // reads the clock and makes GUIDs only through steps. FCQRS
         // stores their values and replays them.
