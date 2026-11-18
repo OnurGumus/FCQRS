@@ -66,6 +66,28 @@ type WorkflowRecord =
 
     interface ISerializable
 
+/// A workflow instance: the workflow's name and the instance's ID.
+type WorkflowInstance = { Workflow: string; Id: string }
+
+/// Reads what a projection receives from a workflow's journal.
+[<AbstractClass; Sealed>]
+type WorkflowJournal =
+    /// The instance whose journal holds an event, read from the event's persistence ID, such as
+    /// `EventEnvelope.PersistenceId`. A `WorkflowRecord` does not hold its instance's ID, so a
+    /// projection over workflow records reads it here. An instance journals under
+    /// "<escaped workflow name>/<shard>/<escaped ID>"; this returns both parts unescaped. Raises
+    /// `ArgumentException` for a persistence ID of another shape. An aggregate's persistence ID has
+    /// the same shape, so match the event as a `WorkflowRecord` first.
+    static member InstanceOf(persistenceId: string) : WorkflowInstance =
+        match persistenceId.Split '/' with
+        | [| workflow; shard; id |] when workflow <> "" && shard <> "" && id <> "" ->
+            { Workflow = Uri.UnescapeDataString workflow
+              Id = Uri.UnescapeDataString id }
+        | _ ->
+            invalidArg
+                (nameof persistenceId)
+                $"'{persistenceId}' is not a workflow instance's persistence ID, which has the shape '<workflow>/<shard>/<ID>'."
+
 /// Raised in a workflow body when a step ended without a value. The body sees this exception
 /// both when the step fails and when a stored failure is replayed, never the original exception.
 type WorkflowStepFailedException(path: string, name: string, error: StepError) =

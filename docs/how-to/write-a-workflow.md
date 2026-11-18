@@ -287,12 +287,16 @@ price service calls in this run: 0
 - The stand-in services ignore the key. A real one must use it.
 - A quote whose approval never arrives waits one day and ends unapproved. Choose that time, and the
   outcome, for your business.
-- If `send-quote` fails five times, the workflow faults and stays faulted. Catch
-  `WorkflowStepFailedException` in the body where a failure should lead somewhere else.
+- If `send-quote` fails five times, the workflow faults and stays faulted: a start with its ID
+  stores nothing, so sending the quote again takes a new ID. Catch `WorkflowStepFailedException` in
+  the body where a failure should lead somewhere else.
 - The price service here always has a price. When an external system can answer that it cannot do
   what was asked, return that answer from the activity as a value: it is stored and not retried.
   In F#, `workflowResult { }` ends a block at the first step that gives an `Error`. See
   [Return an expected failure as a value](../concepts/workflows.html#Return-an-expected-failure-as-a-value).
+- The sample signals the quote right after starting it. An application finds the quotes that wait
+  for approval first: [Find workflows that wait for a signal](find-waiting-workflows.html) checks
+  one quote with `Status` and lists them all with a projection.
 
 Next: [Observe your system](observability.html#Workflows) lists the spans and metrics a workflow
 emits.

@@ -61,6 +61,18 @@ async Task Eventually(Func<bool> condition, string what)
         "an abstract record with JsonDerivedType cases reads back as the case that was stored");
 }
 
+// --- a projection reads the instance from a persistence ID, and a status names its waits -----
+{
+    var instance = WorkflowJournal.InstanceOf("quote%20review/default-shard/q%2F1");
+    Check(instance is { Workflow: "quote review", Id: "q/1" },
+        "InstanceOf unescapes the workflow name and the ID");
+    Check(WorkflowStatus.NewRunning(
+            Microsoft.FSharp.Collections.ListModule.OfSeq(new[] { "0 approval" })).IsWaitingFor("approval"),
+        "IsWaitingFor finds a pending step by its name");
+    Check(!WorkflowStatus.Completed.IsWaitingFor("approval"),
+        "an ended instance waits for nothing");
+}
+
 // --- every kind of step, in one run -----------------------------------------------------
 {
     var db = NewDb();

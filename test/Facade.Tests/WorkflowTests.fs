@@ -1465,6 +1465,65 @@ let private manifestTest =
             Expect.equal manifest $"FCQRS.Workflows.WorkflowRecord+{case}, FCQRS.Workflows" $"the name of a {case} row"
             Expect.equal (serializer.FromBinary(serializer.ToBinary record, manifest)) (box record) $"a {case} row reads back"
 
+let private instanceOfTest =
+    testCase "workflow: InstanceOf reads the unescaped workflow name and ID, and refuses another shape" <| fun _ ->
+        Expect.equal
+            (WorkflowJournal.InstanceOf "quote%20review/default-shard/q%2F1%20a")
+            { Workflow = "quote review"; Id = "q/1 a" }
+            "both parts are unescaped"
+        for shape in [ ""; "quote"; "quote/q-1"; "quote/default-shard/q-1/x"; "quote//q-1" ] do
+            Expect.throwsT<ArgumentException> (fun () -> WorkflowJournal.InstanceOf shape |> ignore) $"'{shape}' is refused"
+        Expect.isFalse (WorkflowStatus.Completed.IsWaitingFor "approval") "an ended instance waits for nothing"
+        Expect.isFalse ((WorkflowStatus.Running [ "1 approval-2" ]).IsWaitingFor "approval") "a name matches whole"
+        Expect.isTrue ((WorkflowStatus.Running [ "0 price"; "3/1/0 approval" ]).IsWaitingFor "approval") "a nested step matches"
+
+let private waitingProjectionTest =
+    testCase "workflow: a transactional projection lists the instances that wait for a signal, and Status agrees" <| fun _ ->
+        let db = newDb ()
+        let api = boot db "WorkflowWaiting" []
+        try
+            let flow =
+                Workflows.register api (Workflow.define "quote review" (fun (_: unit) -> workflow {
+                    let! (approved: bool) = waitSignal "approval"
+                    return approved
+                }))
+            // Both parts need escaping in the persistence ID.
+            let id = "q/1 a"
+            let waiting = ConcurrentDictionary<string, string>()
+            let store =
+                FCQRS.ProjectionStorage.SqlProjectionStore(
+                    FCQRS.ProjectionStorage.ProjectionSqlDialect.Sqlite,
+                    Func<Data.Common.DbConnection>(fun () -> new SqliteConnection($"Data Source={db};")))
+            let options = FCQRS.Projections.TransactionalProjectionOptions("waiting-for-approval", store)
+            options.PollInterval <- TimeSpan.FromMilliseconds 50.0
+            options.Entities <- [ "quote review" ]
+            use projection =
+                Fcqrs.transactionalProjection api options (fun _ _ envelope ->
+                    match envelope.Event with
+                    | :? WorkflowRecord as record ->
+                        let instance = WorkflowJournal.InstanceOf envelope.PersistenceId
+                        Expect.equal instance.Workflow "quote review" "the workflow name is read back"
+                        match record with
+                        | WorkflowRecord.StepScheduled(path, "approval", StepKind.Signal, _, _) -> waiting[instance.Id] <- path
+                        | WorkflowRecord.StepCompleted(path, _, _, _, _)
+                        | WorkflowRecord.StepFailed(path, _, _, _, _) when waiting.TryGetValue instance.Id = (true, path) ->
+                            waiting.TryRemove instance.Id |> ignore
+                        | _ -> ()
+                    | other -> failtest $"the projection named one workflow and received {other}"
+                    Task.CompletedTask)
+            sync (flow.Start id ()) |> ignore
+            eventually "the instance waits for its approval" (fun () -> (sync (flow.Status id)).IsWaitingFor "approval")
+            projection.CatchUpAsync().Wait()
+            Expect.equal (List.ofSeq waiting.Keys) [ id ] "the projection lists the waiting instance by its ID"
+            sync (Workflows.signal flow id "approval" true)
+            Expect.equal (sync (flow.Result id wait)) (WorkflowOutcome.Finished true) "the signal ended the wait"
+            Expect.isFalse ((sync (flow.Status id)).IsWaitingFor "approval") "Status no longer reports the wait"
+            projection.CatchUpAsync().Wait()
+            Expect.isEmpty waiting "the projection removed the instance when the wait completed"
+        finally
+            stop api
+            deleteDb db
+
 // ---------------------------------------------------------------------------
 // A command whose event starts a saga.
 // ---------------------------------------------------------------------------
@@ -1911,6 +1970,7 @@ let tests =
               cancelTest; childTest; childRestartTest; cancelChildStartTest; cancelChildStartRestartTest; cancelChildRecoveryTest
               cancelParkedChildTest; cancelParkedBranchesTest; awaitRoundsTest; zeroWaitResultTest; parkingTest; removedStepsParkTest; streamTest; metricsTest
               lateCommandTest; cancelParkedTest; childResultTest; unreadableResultTest; idleTest; manifestTest
+              instanceOfTest; waitingProjectionTest
               sagaStartTest; sagaRepeatTest; sagaRepeatStoredTest; sagaSignalTest; sagaEventReplyTest
               sagaFilterTest; sagaFilterMissedTest; sagaFilterOutcomeTest; effectReplyTest; lateReplyTest
               attemptTimeoutTest ]

@@ -96,6 +96,20 @@ from the top. At every step it looks in its journal:
 A stored step result is never computed again. A step that was running when the process stopped has
 no stored result, so it runs again.
 
+What happens to an instance at the next start depends on where it was:
+
+- **Running:** it resumes when its workflow is registered, without a request. Register every
+  workflow when the process starts, before it serves requests. A timer or a signal wait keeps the
+  due time it stored, so the time the process was stopped counts toward it.
+- **Finished, faulted, or cancelled:** it is final. Nothing restarts it, and a start with its ID
+  stores nothing and reports its status. To run faulted work again, start a new instance with a new
+  ID and the same input, which the application keeps.
+- **Parked:** it runs nothing until code that matches its journal is deployed. See [Change a workflow
+  while instances are running](#Change-a-workflow-while-instances-are-running).
+
+[Find workflows that wait for a signal](../how-to/find-waiting-workflows.html#List-every-instance-and-its-status)
+lists every instance with its status.
+
 ## An activity runs at least once
 
 A crash can fall between the external call and the storing of its result. The call then happens
@@ -310,6 +324,10 @@ arrives before the body reaches its wait is kept, and waits consume signals with
 first. `waitSignalFor` gives `None` when its time passes; a signal that arrives later stays stored
 for the next wait. A signal whose payload the wait cannot read fails that wait with
 `WorkflowStepFailedException` and is consumed.
+
+`handle.Status` names the steps an instance waits on, and `IsWaitingFor "approval"` checks for
+one. To list every instance that waits, project the workflow's journal: [Find workflows that wait
+for a signal](../how-to/find-waiting-workflows.html).
 
 A timer stores its due time when the body first reaches it. A restart arms it again with the time
 that remains.
@@ -1034,7 +1052,8 @@ so that a replayed element reaches the instance it started before.
 - Give every `Retry.forever` a deadline the business can live with, and handle
   `WorkflowStepFailedException` where a failure has a business meaning.
 - Decide what `OutcomeUnknown` means for each command.
-- Watch for parked and faulted instances. A faulted instance is final: nothing restarts it.
+- Watch for parked and faulted instances. A faulted instance is final: nothing restarts it, so run
+  its work again as a new instance with a new ID.
 - Run on one node. FCQRS does not support multi-node deployment.
 
 ## Choose between a saga and a workflow

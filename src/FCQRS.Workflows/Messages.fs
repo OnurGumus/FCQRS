@@ -38,6 +38,18 @@ type WorkflowStatus =
 
     interface ISerializable
 
+    /// Whether the body is waiting on a step with this name, such as a signal wait, whose step is
+    /// named after its signal. `false` for an instance that is not running.
+    member this.IsWaitingFor(step: string) : bool =
+        match this with
+        | Running pending ->
+            // Each entry is "path name". A path holds no space, so the name follows the first one.
+            pending
+            |> List.exists (fun entry ->
+                let space = entry.IndexOf ' '
+                space >= 0 && entry.Substring(space + 1) = step)
+        | _ -> false
+
 /// The answer to a start request.
 [<RequireQualifiedAccess>]
 type StartResult =

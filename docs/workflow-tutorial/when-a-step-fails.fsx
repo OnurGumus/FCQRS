@@ -334,7 +334,8 @@ compares the two.
 
 A failure of any other step is not caught. It leaves the body, and the order **faults**: FCQRS
 stores the failure as the order's end, and the order runs nothing more. A faulted order is final.
-Nothing restarts it, and a start with the same ID stores nothing.
+Nothing restarts it, and a start with the same ID stores nothing. To try the order again, start it
+with a new ID.
 
 ## Make the stand-ins fail
 

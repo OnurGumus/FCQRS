@@ -265,6 +265,10 @@ Keep these distinctions intact in code comments and documentation.
   workflow task guide quotes it.
 - `samples/resilience/`: a price workflow whose activity runs a Polly circuit breaker and
   concurrency limiter, in F# and C# with project references. The Polly guide quotes it.
+- `samples/approvals/`: the quote workflow from `samples/workflows`, compiled unchanged, with a
+  transactional projection that lists the quotes waiting for approval, a second one that lists every
+  instance with its status, and a `Status` check before a signal, in F# and C# with project
+  references; the C# program registers both with `AddKeyedTransactionalProjection`. The waiting-workflows guide quotes it.
 - `samples/orders/`: the workflow tutorial's steps as equivalent F# and C# programs on .NET 11,
   with the published packages. Its `Directory.Build.props` keeps the repository's settings out.
 - `samples/accounts/`: the tutorial's steps as equivalent F# and C# programs on .NET 11. The C#

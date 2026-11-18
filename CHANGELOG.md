@@ -1,5 +1,31 @@
 # Changelog
 
+## 7.3.0 (FCQRS core)
+
+- **`AddKeyedTransactionalProjection(options, handler)`.** A C# host registers one projection with
+  `AddProjection` or `AddTransactionalProjection`; a second call throws. An application whose
+  projection already keeps its read model could not add another, although F# can start any number.
+  The new builder method adds a further transactional projection beside it. It starts after the main
+  projection, stops before it, keeps its progress under `options.Name`, and is resolved as a keyed
+  `IProjection` under that name for `CatchUpAsync` and subscriptions.
+- Every C# projection registration now refuses a name that another registration already uses, with
+  `InvalidOperationException`: two projections with one name would share their stored progress.
+- Nothing stored changes.
+
+## 7.10.0 (FCQRS.Workflows)
+
+- **`WorkflowJournal.InstanceOf`.** Reads the workflow name and instance ID from the persistence ID
+  that a workflow record is journaled under, such as `EventEnvelope.PersistenceId`. A
+  `WorkflowRecord` does not hold its instance's ID, so a projection over workflow records needs it.
+  It raises `ArgumentException` for a persistence ID that is not `<workflow>/<shard>/<ID>`.
+- **`WorkflowStatus.IsWaitingFor`.** Tells whether a running instance waits on a step with the
+  given name, such as a signal wait, whose step is named after its signal. Before, a caller matched
+  the `"path name"` strings of `Running`.
+- A new task guide, "Find workflows that wait for a signal", checks one quote with `Status` before
+  signalling it, lists the waiting quotes with a transactional projection, and lists every instance
+  with its status with a second one. Its programs are in `samples/approvals`.
+- Nothing stored changes, and `WorkflowStatus` keeps its cases.
+
 ## 7.9.0 (FCQRS.Workflows)
 
 - **`workflowResult`.** A builder for a workflow that gives a `Result`. A `let!` on a step that

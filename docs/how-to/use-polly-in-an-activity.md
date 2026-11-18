@@ -2,7 +2,7 @@
 title: Use Polly inside an activity
 category: Apply
 categoryindex: 5
-index: 10
+index: 11
 ---
 
 # Use Polly inside an activity
