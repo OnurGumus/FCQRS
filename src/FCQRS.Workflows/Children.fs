@@ -62,7 +62,8 @@ module ChildSteps =
                     { Input = Payload.ofValue input
                       Traceparent = if awaited then currentTraceparent () else None
                       Link = if awaited then None else attempt.StepTrace
-                      Parent = Some $"{attempt.WorkflowName}/{attempt.WorkflowId}" }
+                      Parent = Some $"{attempt.WorkflowName}/{attempt.WorkflowId}"
+                      Reuse = WorkflowIdReuse.Reject }
 
                 // A cancelled parent starts no child.
                 attempt.StepCancelled.ThrowIfCancellationRequested()

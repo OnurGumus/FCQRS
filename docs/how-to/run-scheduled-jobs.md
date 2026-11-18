@@ -228,7 +228,7 @@ The order matters:
    service without sagas passes an empty list.
 
 A C# host built with `AddFcqrs` wires the saga starters when the host starts.
-[Run workflows on a schedule](../concepts/workflows.html#Run-workflows-on-a-schedule) shows how to
+[Schedules](../concepts/schedules.html) shows how to
 register the schedules there.
 
 ## Create the schedules
@@ -553,7 +553,7 @@ with the machine. The catch-up policy decides what runs for the time it was off.
   person.
 - A run that is still going at the next due time runs alongside the next one.
 
-Next: [Run workflows on a schedule](../concepts/workflows.html#Run-workflows-on-a-schedule) covers
+Next: [Schedules](../concepts/schedules.html) covers
 pausing, resuming, and changing schedules, and what the dispatcher's index guarantees. The
 [Schedules reference](../schedules-reference.html) lists the exceptions each call raises, the ID
 limits, the dispatcher's timing, and the index table.

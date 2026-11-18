@@ -18,8 +18,12 @@ type WorkflowHandle<'Input, 'Result> =
     { /// The workflow's name.
       Name: string
       /// Starts the workflow with this ID. Returns once the start is stored. A second start with
-      /// the same ID stores nothing and reports the existing instance.
+      /// the same ID stores nothing and reports the existing instance, also when it has ended.
       Start: string -> 'Input -> Async<StartResult>
+      /// Starts the workflow with this ID under a reuse policy. With `WorkflowIdReuse.AfterFailure`,
+      /// an instance that faulted or was cancelled starts a new run with this input; a running,
+      /// parked, or finished one stores nothing and is reported. `Start` is `StartWith Reject`.
+      StartWith: WorkflowIdReuse -> string -> 'Input -> Async<StartResult>
       /// Where the instance is.
       Status: string -> Async<WorkflowStatus>
       /// Waits up to the given time for the instance to end. The wait is in memory: the workflow
@@ -34,7 +38,13 @@ type WorkflowHandle<'Input, 'Result> =
       /// can catch to run cleanup steps; a body that lets it pass ends as cancelled. Returns once
       /// the request is stored. An instance that has already ended is left as it is. Raises
       /// `InvalidOperationException` when no workflow with this ID was started.
-      Cancel: string -> Async<unit> }
+      Cancel: string -> Async<unit>
+      /// Resumes a faulted instance at the step whose failure faulted it: the body replays its
+      /// stored steps and runs that step again, with the same idempotency key, and continues. Steps
+      /// that completed before the failure do not run again. Returns once the resume is stored.
+      /// Raises `InvalidOperationException` when the instance has not faulted, when the body threw
+      /// its own exception, or when the body ran steps after the failure, such as compensation.
+      Resume: string -> Async<unit> }
 
 /// Defines workflows.
 module Workflow =
@@ -67,6 +77,9 @@ module Workflows =
 
         if id.Contains '~' then
             invalidArg (nameof id) $"Workflow ID '{id}' contains '~', which FCQRS uses to separate the parts of saga names and topics."
+
+        if id.Contains '#' then
+            invalidArg (nameof id) $"Workflow ID '{id}' contains '#', which FCQRS uses to name a workflow's later runs."
 
     /// Registers the workflow and returns its handle. Instances that were running when the
     /// process last stopped resume as soon as this is called.
@@ -108,23 +121,26 @@ module Workflows =
                     return raise (TimeoutException $"Workflow {definition.Name} {id} did not answer within {timeout}.")
             }
 
+        let startWith (reuse: WorkflowIdReuse) (id: string) (input: 'Input) =
+            async {
+                let start =
+                    { Input = Payload.ofValue input
+                      Traceparent = currentTraceparent ()
+                      Link = None
+                      Parent = None
+                      Reuse = reuse }
+
+                let! reply = ask id start requestTimeout
+
+                match reply with
+                | :? StartReply as reply when reply.Created -> return StartResult.Started
+                | :? StartReply as reply -> return StartResult.AlreadyStarted reply.Status
+                | other -> return invalidOp $"Unexpected reply to a workflow start: {other}"
+            }
+
         { Name = definition.Name
-          Start =
-            fun id input ->
-                async {
-                    let start =
-                        { Input = Payload.ofValue input
-                          Traceparent = currentTraceparent ()
-                          Link = None
-                          Parent = None }
-
-                    let! reply = ask id start requestTimeout
-
-                    match reply with
-                    | :? StartReply as reply when reply.Created -> return StartResult.Started
-                    | :? StartReply as reply -> return StartResult.AlreadyStarted reply.Status
-                    | other -> return invalidOp $"Unexpected reply to a workflow start: {other}"
-                }
+          Start = startWith WorkflowIdReuse.Reject
+          StartWith = startWith
           Status =
             fun id ->
                 async {
@@ -174,6 +190,18 @@ module Workflows =
                         | CancelAccepted -> return ()
                         | CancelRefused _ -> return invalidOp $"No workflow {definition.Name} with ID '{id}' was started."
                     | other -> return invalidOp $"Unexpected reply to a workflow cancel request: {other}"
+                }
+          Resume =
+            fun id ->
+                async {
+                    let! reply = ask id ResumeWorkflow requestTimeout
+
+                    match reply with
+                    | :? ResumeReply as reply ->
+                        match reply with
+                        | ResumeAccepted -> return ()
+                        | ResumeRefused reason -> return invalidOp reason
+                    | other -> return invalidOp $"Unexpected reply to a workflow resume request: {other}"
                 } }
 
     /// Stores the signal `name` with a typed payload for the instance `id`.

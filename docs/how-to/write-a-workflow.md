@@ -287,9 +287,11 @@ price service calls in this run: 0
 - The stand-in services ignore the key. A real one must use it.
 - A quote whose approval never arrives waits one day and ends unapproved. Choose that time, and the
   outcome, for your business.
-- If `send-quote` fails five times, the workflow faults and stays faulted: a start with its ID
-  stores nothing, so sending the quote again takes a new ID. Catch `WorkflowStepFailedException` in
-  the body where a failure should lead somewhere else.
+- If `send-quote` fails five times, the workflow faults. Once the mailer is back,
+  `quotes.Resume "q-1001"` (C#: `ResumeAsync`) runs `send-quote` again with its earlier key and
+  keeps the stored price and approval. A mailer that stored a failure for that key returns it again. A start with `WorkflowIdReuse.AfterFailure` instead runs the
+  quote again from the first step. Catch
+  `WorkflowStepFailedException` in the body where a failure should lead somewhere else.
 - The price service here always has a price. When an external system can answer that it cannot do
   what was asked, return that answer from the activity as a value: it is stored and not retried.
   In F#, `workflowResult { }` ends a block at the first step that gives an `Error`. See

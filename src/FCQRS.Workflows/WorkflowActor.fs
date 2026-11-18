@@ -160,6 +160,7 @@ module internal WorkflowActor =
         /// The senders of signals being stored, in the order their records will be applied.
         let signalSenders = Queue<IActorRef>()
         let cancelSenders = Queue<IActorRef>()
+        let resumeSenders = Queue<IActorRef>()
         /// The child each child step started or waits for, by the step's path: its workflow name
         /// and ID, as the step's stored start holds them.
         let children = Dictionary<string, struct (string * string)>()
@@ -168,6 +169,30 @@ module internal WorkflowActor =
         let mutable afterCancelRequest = false
         /// Whether a child step's stored start holds the child's ID, as 7.7.3 and later store it.
         let mutable childIdsStored = false
+        /// The run the journal is in: each `Started` record begins one. 0 before the first.
+        let mutable run = 0
+        /// The children that a cancel of an earlier run reached. Recovery sends their cancels
+        /// again, as it does for the current run's.
+        let earlierCancels = ResizeArray<struct (string * string)>()
+
+        /// The name of the current run in idempotency keys, command IDs, and child IDs: the ID for
+        /// run 1, so journals written before runs existed keep their keys, and "<ID>#<run>" after.
+        let runKey () = if run <= 1 then id else $"{id}#{run}"
+
+        /// Begins a run when its `Started` record is applied. A run after the first starts with
+        /// none of the previous run's state; the journal's history clears itself on `Started`.
+        let beginRun () =
+            run <- run + 1
+
+            if run > 1 then
+                for path in cancelledChildren do
+                    earlierCancels.Add children[path]
+
+                children.Clear()
+                cancelledChildren.Clear()
+                childIdsStored <- false
+                final <- None
+                parked <- None
 
         /// Whether the step at `path` lies in a branch that its block abandoned, as the journal
         /// shows it: a losing branch of a race whose winner is stored, or any branch of a block
@@ -217,13 +242,13 @@ module internal WorkflowActor =
             match record with
             | WorkflowRecord.StepScheduled(path, name, StepKind.Child, _, detail) ->
                 // A start stored before 7.7.3 holds no ID; its child has the derived one.
-                children[path] <- struct (name, detail |> Option.defaultValue $"{id}:{path}")
+                children[path] <- struct (name, detail |> Option.defaultValue $"{runKey ()}:{path}")
 
                 if detail.IsSome then
                     childIdsStored <- true
             | WorkflowRecord.StepFailed(path, name, StepKind.Child, error, _) when error.Kind = ErrorKind.Cancelled ->
                 if not (children.ContainsKey path) then
-                    children[path] <- struct (name, $"{id}:{path}")
+                    children[path] <- struct (name, $"{runKey ()}:{path}")
 
                 cancelledChildren.Add path |> ignore
             // A parked instance stores its cancel request and its end in one write.
@@ -474,7 +499,7 @@ module internal WorkflowActor =
             let attemptCancellation = CancellationTokenSource.CreateLinkedTokenSource cancellation.Token
 
             let context: AttemptContext =
-                { IdempotencyKey = $"{definition.Name}/{id}/{path}"
+                { IdempotencyKey = $"{definition.Name}/{runKey ()}/{path}"
                   Attempt = attempt
                   Cancellation = attemptCancellation.Token }
 
@@ -499,7 +524,7 @@ module internal WorkflowActor =
                                         { Api = api
                                           Context = context
                                           WorkflowName = definition.Name
-                                          WorkflowId = id
+                                          WorkflowId = runKey ()
                                           Path = path
                                           StepCancelled = cancelled.Token
                                           StepTrace =
@@ -612,7 +637,7 @@ module internal WorkflowActor =
 
                       match child with
                       | Some childOf ->
-                          let struct (_, childId) = childOf id path
+                          let struct (_, childId) = childOf (runKey ()) path
                           WorkflowRecord.StepScheduled(path, name, kind, at, Some childId)
                       | None -> record
                   | Store record -> record
@@ -647,6 +672,10 @@ module internal WorkflowActor =
 
             match record with
             | WorkflowRecord.Started(input, _, traceparent, _) ->
+                beginRun ()
+                // A run after the first replays nothing of the runs before it.
+                history.Apply record
+                countParked false
                 started <- Some(input, traceparent)
                 startedCount.Add(1L, nameTag)
                 countRunning true
@@ -793,6 +822,21 @@ module internal WorkflowActor =
                 waiters.Clear()
                 passivate ()
                 []
+            | WorkflowRecord.Resumed(path, _) ->
+                if resumeSenders.Count > 0 then
+                    resumeSenders.Dequeue().Tell(ResumeAccepted, self)
+
+                told (fun () -> flow.LogInformation("Workflow {Workflow} {Id} resumed at step {Path}", definition.Name, id, path))
+                |> Option.iter (fun (logger, write) -> report logger null None None write)
+
+                // The step's failure is set aside, and the body replays up to it and runs it again.
+                history.Apply record
+                final <- None
+                countRunning true
+
+                match started with
+                | Some(input, _) -> runBody input
+                | None -> []
             | WorkflowRecord.SignalReceived(signal, _, _, _) ->
                 if signalSenders.Count > 0 then
                     signalSenders.Dequeue().Tell(SignalAccepted, self)
@@ -825,7 +869,10 @@ module internal WorkflowActor =
             observe record
 
             match record with
-            | WorkflowRecord.Started(input, _, traceparent, _) -> started <- Some(input, traceparent)
+            | WorkflowRecord.Started(input, _, traceparent, _) ->
+                beginRun ()
+                started <- Some(input, traceparent)
+            | WorkflowRecord.Resumed _ -> final <- None
             | WorkflowRecord.Finished _
             | WorkflowRecord.Faulted _
             | WorkflowRecord.Cancelled _ -> final <- Some record
@@ -913,8 +960,10 @@ module internal WorkflowActor =
                     // children before the process stopped. Sending one again changes nothing, but
                     // an ended parent sends them at each recovery, and each one makes a child that
                     // has left memory replay its journal to refuse it.
-                    if history.CancelRequested then
-                        cancel [ for path in cancelledChildren -> children[path] ]
+                    let resend = [ yield! earlierCancels; for path in cancelledChildren -> children[path] ]
+
+                    if not resend.IsEmpty then
+                        cancel resend
 
                     match started, final with
                     | Some(input, _), None ->
@@ -937,15 +986,23 @@ module internal WorkflowActor =
 
                         return! loop ()
                 | :? StartWorkflow as start ->
-                    match started with
-                    | Some _ ->
+                    // A running or parked instance is never replaced. An ended one starts a new run
+                    // only when it faulted or was cancelled and the start allows that.
+                    let newRun =
+                        match started, final, start.Reuse with
+                        | None, _, _ -> true
+                        | Some _, Some(WorkflowRecord.Faulted _ | WorkflowRecord.Cancelled _), WorkflowIdReuse.AfterFailure -> true
+                        | _ -> false
+
+                    match newRun with
+                    | false ->
                         mailbox.UntypedContext.Sender.Tell({ Created = false; Status = status () }, self)
 
                         if final.IsSome then
                             leaveWhenIdle ()
 
                         return! loop ()
-                    | None ->
+                    | true ->
                         startSender <- Some mailbox.UntypedContext.Sender
 
                         let link =
@@ -1032,6 +1089,24 @@ module internal WorkflowActor =
                         mailbox.UntypedContext.Sender.Tell(SignalRefused(status ()), self)
                         leaveWhenIdle ()
                         return! loop ()
+                | :? ResumeWorkflow ->
+                    match started, final with
+                    | Some(input, _), Some(WorkflowRecord.Faulted _) ->
+                        match Resumption.failedStep history definition.EncodeResult clock (fun () -> definition.Body input) with
+                        | Ok path ->
+                            resumeSenders.Enqueue mailbox.UntypedContext.Sender
+                            return! store [ WorkflowRecord.Resumed(path, clock ()) ] (loop ())
+                        | Error reason ->
+                            mailbox.UntypedContext.Sender.Tell(ResumeRefused $"Workflow {definition.Name} '{id}' cannot resume. {reason}", self)
+                            leaveWhenIdle ()
+                            return! loop ()
+                    | _ ->
+                        mailbox.UntypedContext.Sender.Tell(ResumeRefused $"Workflow {definition.Name} '{id}' is {status ()}; only a faulted workflow resumes.", self)
+
+                        if started.IsNone || final.IsSome then
+                            leaveWhenIdle ()
+
+                        return! loop ()
                 | :? CancelWorkflow ->
                     match started, final with
                     | None, _ ->
@@ -1078,7 +1153,7 @@ module internal WorkflowActor =
                                           | true, current -> guard current.Cancelled.Cancel
                                           | _ -> ()
 
-                                          step.Leaf.Child |> Option.iter (fun childOf -> guard (fun () -> cancel [ childOf id path ]))
+                                          step.Leaf.Child |> Option.iter (fun childOf -> guard (fun () -> cancel [ childOf (runKey ()) path ]))
 
                                           WorkflowRecord.StepFailed(path, step.Leaf.Name, step.Leaf.Kind, cancelled, time) ]
                             // A parked instance cannot run its cleanup: it ends, and so do

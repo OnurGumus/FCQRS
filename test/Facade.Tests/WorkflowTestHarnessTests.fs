@@ -175,7 +175,7 @@ let private restartTest =
         test.CheckReplay()
 
 let private resumeTest =
-    testCase "workflow test: Resume runs new code over an old journal and parks it when a stored step changed" <| fun _ ->
+    testCase "workflow test: Recover runs new code over an old journal and parks it when a stored step changed" <| fun _ ->
         let old = WorkflowTest.Start(quote never never, large)
         old.Complete("price", 12.5m)
         let renamed =
@@ -183,11 +183,11 @@ let private resumeTest =
                 let! (_: decimal) = activity "unit-price" policy never
                 return "renamed"
             })
-        let parked = WorkflowTest.Resume(renamed, old.Journal)
+        let parked = WorkflowTest.Recover(renamed, old.Journal)
         match parked.Status with
         | WorkflowStatus.Parked reason -> Expect.stringContains reason "'price'" "the reason names the stored step"
         | other -> failtest $"expected Parked, found {other}"
-        let same = WorkflowTest.Resume(quote never never, old.Journal)
+        let same = WorkflowTest.Recover(quote never never, old.Journal)
         Expect.equal [ for step in same.Waiting -> step.Name ] [ "approval" ] "matching code resumes at the wait"
         same.Signal("approval", true)
         same.Complete("send-quote", "sent")
@@ -252,6 +252,112 @@ let private parallelTest =
         Expect.equal staged.Result 6m "each branch took the outcomes in the order its steps started"
         staged.CheckReplay()
 
+let private runsTest =
+    testCase "workflow test: StartAgain begins a new run after a fault or cancel only, and the run starts from nothing" <| fun _ ->
+        let signalled =
+            Workflow.define "signalled" (fun (start: int) -> workflow {
+                let! (charged: int) = activity "charge" policy never
+                let! (go: int) = waitSignal "go"
+                return start + charged + go
+            })
+        let test = WorkflowTest.Start(signalled, 100)
+        // A signal stored in the first run, which no wait takes before the cancel.
+        test.Signal("go", 1)
+        Expect.equal (test.StartAgain 200) (StartResult.AlreadyStarted test.Status) "a running instance is not replaced"
+        test.Cancel()
+        Expect.equal test.Status WorkflowStatus.Cancelled "the first run was cancelled"
+        Expect.equal (test.StartAgain 200) StartResult.Started "a cancelled instance starts again"
+        test.Complete("charge", 20)
+        Expect.equal [ for step in test.Waiting -> step.Name ] [ "go" ] "the new run does not take the first run's signal"
+        test.Signal("go", 3)
+        Expect.equal test.Result 223 "the new run has its own input and outcomes"
+        match test.StartAgain 300 with
+        | StartResult.AlreadyStarted WorkflowStatus.Completed -> ()
+        | other -> failtest $"a finished instance is final, found {other}"
+        test.CheckReplay()
+        test.Restart()
+        Expect.equal test.Result 223 "a restart replays the last run"
+
+let private childRunTest =
+    testCase "workflow test: a child started by a later run has an ID that names the run" <| fun _ ->
+        let child = Workflow.define "child" (fun (n: int) -> workflow { return n })
+        let parent =
+            Workflow.define "parent" (fun () -> workflow {
+                let! handle = startChild child 1
+                return handle.Id
+            })
+        let test = WorkflowTest.Start(parent, ())
+        test.Cancel()
+        Expect.equal (test.StartAgain()) StartResult.Started "the cancelled parent starts again"
+        let childIds =
+            [ for record in test.Journal do
+                  match record with
+                  | WorkflowRecord.StepScheduled(_, "child", StepKind.Child, _, Some childId) -> childId
+                  | _ -> () ]
+        Expect.equal childIds [ "test:0"; "test#2:0" ] "each run's child has its own ID"
+        test.CheckReplay()
+
+let private resumeFaultTest =
+    testCase "workflow test: Resume runs the failed step again and keeps the steps that completed before it" <| fun _ ->
+        let order =
+            Workflow.define "order" (fun () -> workflow {
+                let! (reserved: int) = activity "reserve" policy never
+                let! (charged: int) = activity "charge" policy never
+                return reserved + charged
+            })
+        let test = WorkflowTest.Start(order, ())
+        test.Complete("reserve", 1)
+        test.Fail("charge", TimeoutException "the bank is down")
+        Expect.isTrue (match test.Status with WorkflowStatus.Failed _ -> true | _ -> false) "the order faulted"
+        test.Resume()
+        Expect.equal [ for step in test.Waiting -> step.Name ] [ "charge" ] "only the failed step waits again"
+        test.Complete("charge", 20)
+        Expect.equal test.Result 21 "the order finishes with the stored reservation"
+        Expect.equal
+            (List.ofSeq test.Summary)
+            [ "started"; "scheduled 0 reserve"; "completed 0 reserve"
+              "scheduled 1 charge"; "failed 1 charge (Exhausted)"; "faulted (Exhausted)"
+              "resumed 1"; "scheduled 1 charge"; "completed 1 charge"; "finished" ]
+            "the resume is stored, and the reservation is not scheduled again"
+        test.CheckReplay()
+        test.Restart()
+        Expect.equal test.Result 21 "a restart after the resume reads the result"
+
+let private resumeRefusalTest =
+    testCase "workflow test: Resume refuses an instance that did not fault from a step, or ran steps after the failure" <| fun _ ->
+        let simple =
+            Workflow.define "simple" (fun () -> workflow {
+                let! (value: int) = activity "value" policy never
+                return value
+            })
+        let finished = WorkflowTest.Start(simple, ())
+        finished.Complete("value", 1)
+        Expect.throwsT<InvalidOperationException> (fun () -> finished.Resume()) "a finished instance does not resume"
+        let thrower =
+            Workflow.define "thrower" (fun () -> workflow {
+                let! (value: int) = activity "value" policy never
+                if value > 0 then failwith "the body's own error"
+                return value
+            })
+        let thrown = WorkflowTest.Start(thrower, ())
+        thrown.Complete("value", 1)
+        let error = Expect.throwsC (fun () -> thrown.Resume()) id
+        Expect.stringContains error.Message "threw" "the body's own exception would fault again"
+        let compensating =
+            Workflow.define "compensating" (fun () -> workflow {
+                try
+                    let! (value: int) = activity "charge" policy never
+                    return value
+                with :? WorkflowStepFailedException as failed ->
+                    let! (_: unit) = activity "refund" policy never
+                    return raise failed
+            })
+        let compensated = WorkflowTest.Start(compensating, ())
+        compensated.Fail("charge", TimeoutException "down")
+        compensated.Complete("refund", ())
+        let refused = Expect.throwsC (fun () -> compensated.Resume()) id
+        Expect.stringContains refused.Message "after step 0 charge failed" "a body that compensated does not resume"
+
 /// The harness stores the records the actor stores, in the same order.
 let private fidelityTest =
     testCase "workflow test: an instance on an actor system stores the same records as the harness" <| fun _ ->
@@ -302,4 +408,4 @@ let private fidelityTest =
 let tests =
     testList "workflow test"
         [ walkThrough; timeTest; failureTest; refusalTest; cancelTest; restartTest; resumeTest
-          nondeterminismTest; parallelTest; fidelityTest ]
+          nondeterminismTest; parallelTest; runsTest; childRunTest; resumeFaultTest; resumeRefusalTest; fidelityTest ]

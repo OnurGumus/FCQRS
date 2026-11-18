@@ -369,6 +369,10 @@ type IWorkflowClient<'TInput, 'TResult> =
     /// Starts the workflow with this ID. True when this call started it; false when a workflow
     /// with this ID already existed, in which case nothing was stored.
     abstract StartAsync: id: string * input: 'TInput -> Task<bool>
+    /// Starts the workflow with this ID under a reuse policy. With `WorkflowIdReuse.AfterFailure`,
+    /// an instance that faulted or was cancelled starts a new run with this input. True when this
+    /// call started the workflow or a new run; false when it stored nothing.
+    abstract StartAsync: id: string * input: 'TInput * reuse: WorkflowIdReuse -> Task<bool>
     /// Where the instance is.
     abstract StatusAsync: id: string -> Task<WorkflowStatus>
     /// Waits up to `timeout` for the workflow to end and gives its result. Throws
@@ -382,6 +386,10 @@ type IWorkflowClient<'TInput, 'TResult> =
     abstract SignalAsync<'TSignal> : id: string * name: string * payload: 'TSignal -> Task
     /// Cancels the instance. Returns once the request is stored.
     abstract CancelAsync: id: string -> Task
+    /// Resumes a faulted instance at the step whose failure faulted it. Steps that completed before
+    /// the failure do not run again. Throws `InvalidOperationException` when the instance has not
+    /// faulted, when the body threw its own exception, or when it ran steps after the failure.
+    abstract ResumeAsync: id: string -> Task
 
 /// Registers C# workflows.
 [<Sealed; AbstractClass>]
@@ -401,9 +409,15 @@ type WorkflowHost =
         { new IWorkflowClient<'TInput, 'TResult> with
             member _.Name = handle.Name
 
-            member _.StartAsync(id, input) =
+            member _.StartAsync(id: string, input: 'TInput) : Task<bool> =
                 task {
                     let! result = handle.Start id input
+                    return result = StartResult.Started
+                }
+
+            member _.StartAsync(id: string, input: 'TInput, reuse: WorkflowIdReuse) : Task<bool> =
+                task {
+                    let! result = handle.StartWith reuse id input
                     return result = StartResult.Started
                 }
 
@@ -424,7 +438,9 @@ type WorkflowHost =
             member _.SignalAsync<'TSignal>(id, name, payload: 'TSignal) =
                 handle.Signal id name (Payload.ofValue payload) |> Async.StartAsTask :> Task
 
-            member _.CancelAsync(id) = handle.Cancel id |> Async.StartAsTask :> Task }
+            member _.CancelAsync(id) = handle.Cancel id |> Async.StartAsTask :> Task
+
+            member _.ResumeAsync(id) = handle.Resume id |> Async.StartAsTask :> Task }
 
 /// The schedules of an actor system, from C#. Get it from `ScheduleHost.Register`.
 [<Sealed>]
@@ -437,7 +453,7 @@ type ScheduleClient internal (handle: ScheduleHandle) =
     /// due time of `rule`, with `catchUp` deciding which missed due times run (the overload without
     /// it uses the default, `CatchUp.Latest`). Completes once the schedule is stored. Throws
     /// `ArgumentException` for a rule that `ScheduleRule.validate` rejects, a null rule or policy, or
-    /// an ID that is blank, contains '~', or is too long (see `Schedules.MaxIdLength`). Throws
+    /// an ID that is blank, contains '~' or '#', or is too long (see `Schedules.MaxIdLength`). Throws
     /// `InvalidOperationException` when the saga starters are not wired, when the workflow is not
     /// registered with the dispatcher or takes another input, and when the schedule refuses: a
     /// schedule with this ID exists with a different content, or was deleted. A repeat with the

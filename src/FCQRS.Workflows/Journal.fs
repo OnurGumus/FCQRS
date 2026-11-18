@@ -63,6 +63,10 @@ type WorkflowRecord =
     | Finished of result: Payload * at: DateTime
     | Faulted of error: StepError * at: DateTime
     | Cancelled of at: DateTime
+    /// A faulted instance was resumed: the failure of the step at `path` is set aside, and the body
+    /// runs that step again, with its earlier key. Stored since 7.12.0, which earlier versions
+    /// cannot read.
+    | Resumed of path: string * at: DateTime
 
     interface ISerializable
 

@@ -335,7 +335,8 @@ compares the two.
 A failure of any other step is not caught. It leaves the body, and the order **faults**: FCQRS
 stores the failure as the order's end, and the order runs nothing more. A faulted order is final.
 Nothing restarts it, and a start with the same ID stores nothing. To try the order again, start it
-with a new ID.
+with a new ID. From FCQRS.Workflows 7.12.0, `Resume` also continues it at the failed step, and
+`WorkflowIdReuse.AfterFailure` starts it again under the same ID.
 
 ## Make the stand-ins fail
 

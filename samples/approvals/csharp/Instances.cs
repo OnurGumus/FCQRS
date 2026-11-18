@@ -70,6 +70,9 @@ public static class Instances
             case WorkflowRecord.StepScheduled scheduled:
                 await Run(Stepped, scheduled.at, step: scheduled.name);
                 break;
+            case WorkflowRecord.Resumed resumed:
+                await Run(Ended, resumed.at, status: "running");
+                break;
             case WorkflowRecord.CancelRequested requested:
                 await Run(Ended, requested.at, status: "cancelling");
                 break;

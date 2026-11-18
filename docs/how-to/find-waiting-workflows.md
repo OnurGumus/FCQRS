@@ -357,6 +357,8 @@ let handle (connection: DbConnection) (transaction: DbTransaction)
             | WorkflowRecord.Started(_, at, _, _) -> do! run started at []
             | WorkflowRecord.StepScheduled(_, step, _, at, _) ->
                 do! run stepped at [ "Step", box step ]
+            | WorkflowRecord.Resumed(_, at) ->
+                do! run ended at [ "Status", box "running" ]
             | WorkflowRecord.CancelRequested at ->
                 do! run ended at [ "Status", box "cancelling" ]
             | WorkflowRecord.Finished(_, at) ->
@@ -417,6 +419,9 @@ public static async Task Handle(
         case WorkflowRecord.StepScheduled scheduled:
             await Run(Stepped, scheduled.at, step: scheduled.name);
             break;
+        case WorkflowRecord.Resumed resumed:
+            await Run(Ended, resumed.at, status: "running");
+            break;
         case WorkflowRecord.CancelRequested requested:
             await Run(Ended, requested.at, status: "cancelling");
             break;
@@ -434,7 +439,7 @@ public static async Task Handle(
 ```
 
 `Started` adds the row, `StepScheduled` records the step the instance started last, and
-`CancelRequested`, `Finished`, `Faulted`, and `Cancelled` set the status. `WorkflowJournal.InstanceOf`
+`Resumed`, `CancelRequested`, `Finished`, `Faulted`, and `Cancelled` set the status. `WorkflowJournal.InstanceOf`
 gives the workflow name too, so one projection can list several workflows: name each one in
 `Entities`.
 
@@ -494,9 +499,11 @@ List<Instance> ListInstances()
   counts the parked instances in memory, and each one logs an error in the `FCQRS.Workflows`
   category. See [Observe your system](observability.html#Workflows).
 - **A `running` row survives a stop.** An instance that was running when the process stopped
-  resumes when its workflow is registered at the next start, and its row goes on from there. A
-  `faulted` or `cancelled` instance is final: nothing restarts it, and a start with its ID stores
-  nothing. Start a new instance with a new ID to run the work again.
+  resumes when its workflow is registered at the next start, and its row goes on from there.
+  Nothing restarts a `faulted` or `cancelled` instance by itself. `Resume` continues a faulted
+  one at its failed step, and its `Resumed` record sets the row back to `running`. A start with
+  `WorkflowIdReuse.AfterFailure` begins a new run under the ID, and the run's `Started` record does
+  the same.
 
 ## Run the sample
 

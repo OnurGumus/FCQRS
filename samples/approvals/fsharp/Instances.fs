@@ -61,6 +61,8 @@ let handle (connection: DbConnection) (transaction: DbTransaction)
             | WorkflowRecord.Started(_, at, _, _) -> do! run started at []
             | WorkflowRecord.StepScheduled(_, step, _, at, _) ->
                 do! run stepped at [ "Step", box step ]
+            | WorkflowRecord.Resumed(_, at) ->
+                do! run ended at [ "Status", box "running" ]
             | WorkflowRecord.CancelRequested at ->
                 do! run ended at [ "Status", box "cancelling" ]
             | WorkflowRecord.Finished(_, at) ->

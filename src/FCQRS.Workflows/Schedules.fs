@@ -1585,6 +1585,9 @@ module Schedules =
         if id.Contains '~' then
             invalidArg (nameof id) $"Schedule ID '{id}' contains '~', which a workflow ID cannot contain."
 
+        if id.Contains '#' then
+            invalidArg (nameof id) $"Schedule ID '{id}' contains '#', which a workflow ID cannot contain."
+
         if id.Length > MaxIdLength then
             invalidArg (nameof id) $"A schedule ID must be at most {MaxIdLength} characters."
 
@@ -1724,7 +1727,7 @@ module Schedules =
     /// due time of `rule`, with `catchUp` deciding which missed due times run (`createLatest` uses
     /// the default, `CatchUp.Latest`). Returns once the schedule is stored. Raises
     /// `ArgumentException` for a rule that `ScheduleRule.validate` rejects, a missing rule or policy,
-    /// or an ID that is blank, contains '~', or is too long (see `MaxIdLength`). Raises
+    /// or an ID that is blank, contains '~' or '#', or is too long (see `MaxIdLength`). Raises
     /// `InvalidOperationException` when
     /// the saga starters are not wired, when the workflow is not registered with the dispatcher or
     /// takes another input, and when the schedule refuses: a schedule with this ID exists with a

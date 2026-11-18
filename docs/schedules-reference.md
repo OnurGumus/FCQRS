@@ -10,7 +10,7 @@ index: 3
 This page lists the rules behind FCQRS.Workflows schedules: when each schedule rule is due, what
 each call checks, the limits on IDs, how the dispatcher times its starts, where it stores its
 index, what a deploy can break, and what FCQRS stores.
-[Run workflows on a schedule](concepts/workflows.html#Run-workflows-on-a-schedule) explains the
+[Schedules](concepts/schedules.html) explains the
 model and its guarantee, and [Run scheduled jobs](how-to/run-scheduled-jobs.html) builds runnable
 F# and C# programs.
 
@@ -32,7 +32,7 @@ system's one dispatcher, which starts runs of the listed workflows only.
 - Until the saga starters are wired, the dispatcher fires nothing.
 - A C# host built with `AddFcqrs` wires the saga starters when the host starts. Register the
   schedules after that, for example from a singleton resolved once the host has started, as
-  [Run workflows on a schedule](concepts/workflows.html#Run-workflows-on-a-schedule) shows.
+  [Schedules](concepts/schedules.html) shows.
 
 ## Schedule rules
 
@@ -111,7 +111,7 @@ with `Day 31` and one with `LastDay` are different contents, though they are due
 A schedule ID must:
 
 - not be blank;
-- not contain `~`;
+- not contain `~` or `#`;
 - have at most `Schedules.MaxIdLength` (200) characters;
 - fit its runs' persistence IDs in the journal's 255-character column.
 

@@ -1,0 +1,32 @@
+// include: samples/accounts/5-transfer-money/fsharp/Account.fs
+open System
+open System.Threading.Tasks
+open FCQRS.Common
+open FCQRS.FSharp
+open FCQRS.Workflows
+open Account
+let score (key: string) (order: string) : Task<int> = Task.FromResult 42
+let charge (key: string) (amount: decimal) : Task<string> = Task.FromResult "paid"
+let isShipped (key: string) (order: string) : Task<bool> = Task.FromResult true
+let sendReminder (key: string) (text: string) : Task<string> = Task.FromResult "sent"
+type ReservationCommand = Reserve of id: string
+type ReservationEvent =
+    | Reserved of id: string
+    | Confirmed of id: string
+let enrich =
+    Workflow.define "enrich" (fun (order: string) -> workflow {
+        let! points =
+            activity "score" (Retry.times 3 (TimeSpan.FromSeconds 30.0)) (fun attempt ->
+                score attempt.IdempotencyKey order)
+        let! at = now
+        return points, at
+    })
+// snippet: 1
+// snippet: 2
+// snippet: 3
+// snippet: 4
+// snippet: 5
+// snippet: 6
+// snippet: 7
+// snippet: 8
+// snippet: 9

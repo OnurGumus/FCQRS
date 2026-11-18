@@ -54,12 +54,15 @@ Good prose makes the example easier to reason about. It does not narrate the tea
   the previous step: `scripts/check-learning-snippets.py` fails otherwise. Steps 8 and 9 continue
   from the previous step's database. `scripts/check-orders.py` runs every step and checks the
   output its page shows. The track does not require the CQRS tutorial.
-- `docs/concepts/` explains the underlying models and boundaries.
+- `docs/concepts/` explains the underlying models and boundaries. Workflows span three pages:
+  `workflows.md` (the model, recovery, failures as values, cancel, versioning),
+  `workflow-steps.md` (signals, parallel steps, loops, children, commands, streams), and
+  `schedules.md`.
 - `docs/how-to/` provides focused task instructions.
 - `docs/configuration.md` is the runtime configuration reference.
 - `docs/schedules-reference.md` is the schedules reference: the exceptions each call raises, ID
   limits, dispatcher timing, the index table and its database rights, deploy cases, and persistent
-  contracts. The concept page's schedule section keeps the example, the guarantee, and the
+  contracts. The schedules concept page keeps the example, the guarantee, and the
   behaviour rules, and links there for the rest.
 - XML comments in `src/FCQRS/` feed the generated API reference.
 
@@ -145,7 +148,13 @@ Keep these distinctions intact in code comments and documentation.
   the external system must honour its idempotency key.
 - The body must be deterministic. It reads time, GUIDs, and random numbers through steps and does
   I/O only in activities. FCQRS cannot detect a body that breaks this.
-- A workflow starts by ID, with no aggregate event. A second start with the same ID stores nothing.
+- A workflow starts by ID, with no aggregate event. A second start with the same ID stores nothing,
+  unless the instance faulted or was cancelled and the start passes `WorkflowIdReuse.AfterFailure`:
+  then it begins a new run, a second `Started` record in the same journal. A run replays none of the
+  earlier runs' steps or signals: it is not a resume, and steps that succeeded before the fault run
+  again, so the failed run must have compensated or the activity must pass its own business key. From run 2 on, idempotency keys, command IDs, and child IDs use
+  `<ID>#<run>`; run 1 keeps the plain ID. That format is a persistent contract, and IDs refuse `#`.
+  A finished instance stays final, and a running or parked one is never replaced.
 - A retry policy's deadline is measured from the stored start of the step. Attempt counts restart
   with the process. An activity whose deadline passed while the process was stopped fails without
   another attempt.
@@ -181,7 +190,12 @@ Keep these distinctions intact in code comments and documentation.
 - A body that ends or faults before a step its journal holds is parked too, so removing trailing
   steps parks the running instances that stored them. Stored signals and version markers are not
   steps, and the stored steps of a race's losers or of a failed block's other branches do not count.
-- A faulted workflow is final. Nothing restarts it.
+- Nothing restarts a faulted workflow by itself. `Resume` stores a `Resumed` record that sets aside
+  the failure of the step that faulted it; the body replays its stored steps and runs that step
+  again with the same idempotency key, so a service that stores failed answers per key returns the
+  same failure; a new run gives new keys. It is refused for an instance that has not faulted, a body
+  that threw its own exception, and a body that ran steps after the failure. A start with
+  `AfterFailure` instead begins a new run from the first step.
 - An instance leaves memory when it ends. A request to an instance that is not running recovers it
   by replaying its journal, and it then stays in memory until it has had no request for
   `akka.fcqrs.workflow-idle-timeout`.
@@ -189,7 +203,8 @@ Keep these distinctions intact in code comments and documentation.
 - `WorkflowTest` (`Testing.fs`) drives the same machine as the actor, without one, and must store
   the same records in the same order; a facade test compares it with an actor's journal. Steps do
   not run and retry policies are not applied: a test gives each step's final outcome. `CheckReplay`
-  restarts after each record, never inside one write the test gave.
+  restarts after each record, never inside one write the test gave. `Recover` runs code over a
+  stored journal; `Resume` and `StartAgain` mirror the handle's.
 - A workflow record is journaled under the CLR name of its `WorkflowRecord` case, which a projection
   can read before any workflow is registered. The type's name, namespace, and assembly are
   persistent contracts too.

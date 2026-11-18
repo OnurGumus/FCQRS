@@ -50,12 +50,26 @@ type WorkflowStatus =
                 space >= 0 && entry.Substring(space + 1) = step)
         | _ -> false
 
+/// What a start does when an instance with its ID has ended. A running or parked instance is
+/// never replaced: the start stores nothing and reports it.
+[<RequireQualifiedAccess>]
+type WorkflowIdReuse =
+    /// An ended instance is final: the start stores nothing. The default.
+    | Reject
+    /// An instance that faulted or was cancelled starts a new run under its ID, with the new input.
+    /// A finished instance is final. Run 2 and later give their steps idempotency keys, command
+    /// IDs, and child IDs under `<ID>#<run>`, so an external system does not take the new run's
+    /// calls for repeats of the old run's.
+    | AfterFailure
+
+    interface ISerializable
+
 /// The answer to a start request.
 [<RequireQualifiedAccess>]
 type StartResult =
-    /// This request started the workflow.
+    /// This request started the workflow, or a new run of it.
     | Started
-    /// A workflow with this ID already exists. Nothing was stored.
+    /// A workflow with this ID exists and the start's reuse policy keeps it. Nothing was stored.
     | AlreadyStarted of WorkflowStatus
 
 /// How a workflow ended.
@@ -79,7 +93,9 @@ module internal Protocol =
           /// With no `Traceparent`, the span that the first span of the instance's own trace
           /// links to: the step of a parent that started it as a detached child.
           Link: string option
-          Parent: string option }
+          Parent: string option
+          /// What the start does when the instance has ended.
+          Reuse: WorkflowIdReuse }
 
         interface ISerializable
 
@@ -130,6 +146,17 @@ module internal Protocol =
     type CancelReply =
         | CancelAccepted
         | CancelRefused of WorkflowStatus
+
+        interface ISerializable
+
+    type ResumeWorkflow =
+        | ResumeWorkflow
+
+        interface ISerializable
+
+    type ResumeReply =
+        | ResumeAccepted
+        | ResumeRefused of reason: string
 
         interface ISerializable
 

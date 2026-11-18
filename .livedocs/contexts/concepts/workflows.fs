@@ -18,14 +18,3 @@ type ReservationEvent =
 // snippet: 3
 // snippet: 4
 // snippet: 5
-// snippet: 6
-// snippet: 7
-// snippet: 8
-// snippet: 9
-// snippet: 10
-// snippet: 11
-// snippet: 12
-// snippet: 13
-// snippet: 14
-// snippet: 15
-// snippet: 16

@@ -166,6 +166,16 @@ async Task Eventually(Func<bool> condition, string what)
             Check(fault.Error.Message.Contains("not a workflow step"), $"awaiting a Task in a workflow method faults the workflow: {fault.Error.Message}");
         }
 
+        Check(!await careless.StartAsync("c1", 2), "a faulted C# workflow keeps its ID without a reuse policy");
+        Check(await careless.StartAsync("c1", 2, WorkflowIdReuse.AfterFailure),
+            "a faulted C# workflow starts a new run when the start allows it");
+        var outcome = await careless.OutcomeAsync("c1", wait);
+        Check(outcome.IsFaulted, "the new run faults the same way");
+        var refused = false;
+        try { await careless.ResumeAsync("c1"); }
+        catch (InvalidOperationException error) { refused = error.Message.Contains("threw"); }
+        Check(refused, "a workflow whose body threw its own exception does not resume");
+
         var waiting = WorkflowHost.Register(actor, new WaitingWorkflow());
         await waiting.StartAsync("w1", 1);
         await Eventually(() => WaitingWorkflow.Started, "the waiting workflow is in its activity");

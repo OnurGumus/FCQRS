@@ -38,6 +38,8 @@ type internal TestRun(name: string, id: string, body: Payload -> Workflow<objnul
     let mutable parked: string option = None
     let mutable final: WorkflowRecord option = None
     let mutable input: Payload option = None
+    /// The run the journal is in: each `Started` record begins one.
+    let mutable run = 0
     /// The order the waiting steps started in, by path. A dictionary's order is not that order.
     let began = Dictionary<string, int64>()
     let mutable beginCount = 0L
@@ -53,6 +55,7 @@ type internal TestRun(name: string, id: string, body: Payload -> Workflow<objnul
     member _.Machine = machine
     member _.Parked = parked
     member _.Final = final
+    member _.Input = input
 
     /// When the step at `path` began, relative to the others.
     member _.BeganAt(path: string) =
@@ -68,7 +71,12 @@ type internal TestRun(name: string, id: string, body: Payload -> Workflow<objnul
         times.Add this.Now
 
         match record with
-        | WorkflowRecord.Started(payload, _, _, _) -> input <- Some payload
+        | WorkflowRecord.Started(payload, _, _, _) ->
+            run <- run + 1
+            input <- Some payload
+            final <- None
+            parked <- None
+        | WorkflowRecord.Resumed _ -> final <- None
         | WorkflowRecord.Finished _
         | WorkflowRecord.Faulted _
         | WorkflowRecord.Cancelled _ -> final <- Some record
@@ -91,7 +99,8 @@ type internal TestRun(name: string, id: string, body: Payload -> Workflow<objnul
 
                       match child with
                       | Some childOf ->
-                          let struct (_, childId) = childOf id path
+                          let runKey = if run <= 1 then id else $"{id}#{run}"
+                          let struct (_, childId) = childOf runKey path
                           WorkflowRecord.StepScheduled(path, stepName, kind, at, Some childId)
                       | None -> record
                   | Store record -> record
@@ -111,7 +120,17 @@ type internal TestRun(name: string, id: string, body: Payload -> Workflow<objnul
 
     member private this.ApplyLive(record: WorkflowRecord) : WorkflowRecord list =
         match record with
-        | WorkflowRecord.Started(payload, _, _, _) -> this.RunBody payload
+        | WorkflowRecord.Started(payload, _, _, _) ->
+            // A run after the first replays nothing of the runs before it.
+            history.Apply record
+            this.RunBody payload
+        | WorkflowRecord.Resumed _ ->
+            // The step's failure is set aside, and the body replays up to it and runs it again.
+            history.Apply record
+
+            match input with
+            | Some payload -> this.RunBody payload
+            | None -> []
         | _ ->
             match machine with
             | Some machine -> this.Guarded(fun () -> machine.Apply record)
@@ -229,6 +248,7 @@ type WorkflowTest<'Input, 'Result> internal (run: TestRun, given: int) =
         | WorkflowRecord.Finished _ -> "finished"
         | WorkflowRecord.Faulted(error, _) -> $"faulted ({error.Kind})"
         | WorkflowRecord.Cancelled _ -> "cancelled"
+        | WorkflowRecord.Resumed(path, _) -> $"resumed {path}"
 
     let waiting () =
         match run.Machine with
@@ -356,6 +376,34 @@ type WorkflowTest<'Input, 'Result> internal (run: TestRun, given: int) =
             invalidOp $"Workflow {run.Name} '{run.Id}' is {run.Status} and takes no signal."
 
         run.Give(WorkflowRecord.SignalReceived(name, Payload.ofValue value, run.Now, None))
+
+    /// Starts a new run with `input`, as a start with `WorkflowIdReuse.AfterFailure` does: only
+    /// when the instance faulted or was cancelled. Otherwise it stores nothing and reports the
+    /// instance, as `AlreadyStarted`. The new run replays none of the earlier runs' records.
+    member _.StartAgain(input: 'Input) : StartResult =
+        match run.Final with
+        | Some(WorkflowRecord.Faulted _ | WorkflowRecord.Cancelled _) ->
+            run.Give(WorkflowRecord.Started(Payload.ofValue input, run.Now, None, None))
+            StartResult.Started
+        | _ -> StartResult.AlreadyStarted run.Status
+
+    /// Resumes a faulted instance at the step whose failure faulted it, as `Resume` does for a
+    /// registered workflow: the body replays its stored steps and that step waits again for the
+    /// test's outcome. Raises `InvalidOperationException` with the reason when the instance cannot
+    /// resume: it has not faulted, the body threw its own exception, or it ran steps after the
+    /// failure.
+    member _.Resume() : unit =
+        match run.Final, run.Input with
+        | Some(WorkflowRecord.Faulted _), Some input ->
+            let history = History()
+
+            for record in run.Journal do
+                history.Apply record
+
+            match Resumption.failedStep history run.EncodeResult (fun () -> run.Now) (fun () -> run.Body input) with
+            | Ok path -> run.Give(WorkflowRecord.Resumed(path, run.Now))
+            | Error reason -> invalidOp $"Workflow {run.Name} '{run.Id}' cannot resume. {reason}"
+        | _ -> invalidOp $"Workflow {run.Name} '{run.Id}' is {run.Status}; only a faulted workflow resumes."
 
     /// Moves the time forward, and fires the timers and signal timeouts that are due by then.
     member _.Advance(by: TimeSpan) : unit =
@@ -495,7 +543,7 @@ type WorkflowTest =
     /// the workflow produced, and runs this code over it, as the process does after a deploy.
     /// `Status` reports `Parked` when the journal does not match the code. The test's time starts
     /// at the last record's time.
-    static member Resume(definition: WorkflowDefinition<'Input, 'Result>, journal: WorkflowRecord seq) : WorkflowTest<'Input, 'Result> =
+    static member Recover(definition: WorkflowDefinition<'Input, 'Result>, journal: WorkflowRecord seq) : WorkflowTest<'Input, 'Result> =
         let records = List.ofSeq journal
 
         let atOf (record: WorkflowRecord) =
@@ -508,7 +556,8 @@ type WorkflowTest =
             | WorkflowRecord.CancelRequested at
             | WorkflowRecord.Finished(_, at)
             | WorkflowRecord.Faulted(_, at)
-            | WorkflowRecord.Cancelled at -> at
+            | WorkflowRecord.Cancelled at
+            | WorkflowRecord.Resumed(_, at) -> at
 
         let run = WorkflowTest.RunOf(definition, true)
         run.Load [ for record in records -> record, atOf record, false ]
@@ -516,5 +565,5 @@ type WorkflowTest =
         WorkflowTest<'Input, 'Result>(run, records.Length)
 
     /// Recovers a C# workflow's instance from a stored journal. See the definition overload.
-    static member Resume(workflow: Workflow<'Input, 'Result>, journal: WorkflowRecord seq) : WorkflowTest<'Input, 'Result> =
-        WorkflowTest.Resume(WorkflowHost.Define workflow, journal)
+    static member Recover(workflow: Workflow<'Input, 'Result>, journal: WorkflowRecord seq) : WorkflowTest<'Input, 'Result> =
+        WorkflowTest.Recover(WorkflowHost.Define workflow, journal)

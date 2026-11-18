@@ -1,5 +1,39 @@
 # Changelog
 
+## 7.12.0 (FCQRS.Workflows)
+
+- **Resume a faulted workflow at its failed step.** `handle.Resume id` (C#: `ResumeAsync(id)`)
+  stores a `Resumed` record that sets aside the failure of the step that faulted the instance. The
+  body replays its stored steps, so steps that completed before the failure do not run again, and it
+  runs the failed step again with the same idempotency key, then goes on. The step's retry policy
+  starts over. A service that stores its answer for a key, failures included, returns the stored
+  failure to the resumed step, as it does to any retry with that key; a new run gives new keys. A resume is refused with `InvalidOperationException` when the instance has not
+  faulted, when the body threw an exception of its own, and when the body ran steps after the
+  failure, such as compensation. The actor finds the step by replaying the body over the journal
+  without running anything.
+- `WorkflowRecord.Resumed` is a new record case, a persistent contract. 7.11.0 and earlier cannot
+  read a journal that holds one.
+- **Start a faulted or cancelled workflow again under its ID.** `handle.StartWith
+  WorkflowIdReuse.AfterFailure id input` (C#: `StartAsync(id, input, WorkflowIdReuse.AfterFailure)`)
+  begins a new run with the new input in the same journal. `Start` is `StartWith Reject`, which
+  keeps today's rule: an ended instance is final. A finished instance stays final under either
+  policy, and a running or parked instance is never replaced.
+- A run replays none of the earlier runs' steps or signals: it runs every step from the first,
+  including those that succeeded before the fault. From run 2 on, idempotency keys, command IDs,
+  and child IDs name the run as `<ID>#<run>`; run 1 keeps its keys, so journals written before runs
+  existed keep theirs. The key format is a persistent contract. Work the failed run did is therefore
+  done again unless that run compensated, or an activity passes a key of its own, such as an order
+  number, that the external system dedupes across runs.
+- **Breaking:** a workflow ID or schedule ID that contains `#` is refused with `ArgumentException`,
+  because `#` names a later run. `StartWorkflow` carries the reuse policy, and `WorkflowHandle` and
+  `IWorkflowClient` gain a member.
+- Recovery reads every run's records, and a cancel that reached a child of an earlier run is sent
+  again at recovery, as it is for the current run.
+- `WorkflowTest.Resume()` and `WorkflowTest.StartAgain` do the same in a test. **Breaking:**
+  `WorkflowTest.Resume(definition, journal)`, which runs code over a stored journal, is renamed
+  `WorkflowTest.Recover`.
+- No existing record changes shape. A new run is a second `Started` record.
+
 ## 7.11.0 (FCQRS.Workflows)
 
 - **`WorkflowTest`.** Runs a workflow instance in memory, for tests, with no actor system or

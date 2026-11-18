@@ -72,9 +72,15 @@ type internal History() =
             this.Signals.RemoveAt index
             ValueSome(struct (payload, sender))
 
-    /// Applies a record read from the journal, in journal order.
+    /// Applies a record read from the journal, in journal order. A `Started` record begins a
+    /// run, so it clears what earlier runs stored: a run replays only its own records.
     member this.Apply(record: WorkflowRecord) =
         match record with
+        | WorkflowRecord.Started _ ->
+            this.Steps.Clear()
+            this.Signals.Clear()
+            this.CancelRequested <- false
+            blocks.Clear()
         | WorkflowRecord.StepScheduled(path, name, kind, at, detail) -> this.Record(path, Scheduled(name, kind, at, detail))
         | WorkflowRecord.StepCompleted(path, name, kind, result, _) ->
             this.Record(path, Completed(name, kind, result))
@@ -90,7 +96,20 @@ type internal History() =
                 this.TakeSignal name |> ignore
         | WorkflowRecord.SignalReceived(name, payload, _, sender) -> this.Signals.Add(struct (name, payload, sender))
         | WorkflowRecord.CancelRequested _ -> this.CancelRequested <- true
+        // The failure that faulted the instance is set aside, so the step runs again.
+        | WorkflowRecord.Resumed(path, _) -> this.Steps.Remove path |> ignore
         | _ -> ()
+
+    /// A copy that a probe of the body can change without changing this history.
+    member this.Clone() : History =
+        let copy = History()
+
+        for KeyValue(path, state) in this.Steps do
+            copy.Record(path, state)
+
+        copy.Signals.AddRange this.Signals
+        copy.CancelRequested <- this.CancelRequested
+        copy
 
 /// One line of execution: the body itself, or a branch of a parallel block. A branch's steps
 /// have paths under the block's path and the branch's index.
@@ -207,15 +226,16 @@ type internal Machine(history: History, encodeResult: objnull -> Payload, clock:
     /// A body that ended before a step its journal holds was changed: the step's stored work, or
     /// the work in flight, would be dropped without a trace. A version marker is not a step, and
     /// a stored signal no wait consumed is not kept in `Steps`.
-    let checkConsumed () =
-        let unreached =
-            history.Steps
-            |> Seq.tryFind (fun (KeyValue(path, _)) ->
-                path.IndexOf '@' < 0
-                && not (visited.Contains path)
-                && not (inAbandoned path))
+    /// The stored steps the body has not reached in this run, outside abandoned branches.
+    let unreached () =
+        history.Steps
+        |> Seq.filter (fun (KeyValue(path, _)) ->
+            path.IndexOf '@' < 0
+            && not (visited.Contains path)
+            && not (inAbandoned path))
 
-        match unreached with
+    let checkConsumed () =
+        match Seq.tryHead (unreached ()) with
         | Some(KeyValue(path, state)) ->
             let stored =
                 match state with
@@ -549,3 +569,36 @@ type internal Machine(history: History, encodeResult: objnull -> Payload, clock:
 
     /// The body's result, once it has returned or thrown.
     member _.Outcome = outcome
+
+    /// The paths of the stored steps the body has not reached so far, outside abandoned branches.
+    member _.Unreached: string list = [ for KeyValue(path, _) in unreached () -> path ]
+
+/// Finds where a faulted instance resumes.
+module internal Resumption =
+
+    /// The step whose failure faulted the instance, found by replaying the body over its history
+    /// without running anything. A resume removes that failure, so the body must then reach no
+    /// stored step it would skip: a body that ran steps after the failure, such as compensation,
+    /// cannot resume. `Error` gives the reason.
+    let failedStep (history: History) (encodeResult: objnull -> Payload) (clock: unit -> DateTime) (body: unit -> Workflow<objnull>) : Result<string, string> =
+        try
+            let probe = Machine(history.Clone(), encodeResult, clock)
+            probe.Run(WorkflowCore.protect body) |> ignore
+
+            match probe.Outcome with
+            | Some(Error(:? WorkflowStepFailedException as failed)) ->
+                let resumed = history.Clone()
+                resumed.Apply(WorkflowRecord.Resumed(failed.Path, clock ()))
+                let rerun = Machine(resumed, encodeResult, clock)
+                rerun.Run(WorkflowCore.protect body) |> ignore
+
+                match rerun.Unreached with
+                | [] -> Ok failed.Path
+                | after ->
+                    let steps = String.Join(", ", after)
+                    Error $"The body ran steps after step {failed.Path} {failed.StepName} failed ({steps}), so running that step again would leave them out of order. Start a new run with WorkflowIdReuse.AfterFailure instead."
+            | Some(Error error) ->
+                Error $"The body threw {error.GetType().Name} itself: {error.Message}. Running it again would fault the same way."
+            | _ -> Error "The body does not end with a step's failure over its journal."
+        with error ->
+            Error $"The journal does not match the code: {error.Message}"

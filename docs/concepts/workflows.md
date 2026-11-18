@@ -13,7 +13,9 @@ steps whose results are stored do not run again.
 
 Workflows are in the `FCQRS.Workflows` package. They sit beside [sagas](sagas.html) and do not
 replace them. The [workflow tutorial](../workflow-tutorial/place-an-order.html) builds one step by
-step; this page explains the model behind it.
+step; this page explains the model behind it with activities and timers.
+[Workflow steps](workflow-steps.html) covers signals, parallel steps, loops, child workflows, and
+commands to aggregates, and [Schedules](schedules.html) starts workflows at due times.
 
 ## Start with a workflow that calls an external system
 
@@ -101,11 +103,53 @@ What happens to an instance at the next start depends on where it was:
 - **Running:** it resumes when its workflow is registered, without a request. Register every
   workflow when the process starts, before it serves requests. A timer or a signal wait keeps the
   due time it stored, so the time the process was stopped counts toward it.
-- **Finished, faulted, or cancelled:** it is final. Nothing restarts it, and a start with its ID
-  stores nothing and reports its status. To run faulted work again, start a new instance with a new
-  ID and the same input, which the application keeps.
+- **Finished, faulted, or cancelled:** it has ended, and nothing restarts it by itself. A start with
+  its ID stores nothing and reports its status.
 - **Parked:** it runs nothing until code that matches its journal is deployed. See [Change a workflow
   while instances are running](#Change-a-workflow-while-instances-are-running).
+
+### Resume a faulted workflow
+
+A faulted instance can continue from the step whose failure faulted it: in F#,
+`handle.Resume "order-17"`, and in C#, `client.ResumeAsync("order-17")`. Fix the cause first, because
+a step that fails the same way faults the instance again.
+
+- A `Resumed` record sets the step's failure aside. The body replays its stored steps, so the steps
+  that completed before the failure do not run again, and it runs the failed step again and goes on.
+- The step keeps its idempotency key: it is the same operation, tried again. Its retry policy starts
+  over, with its attempts and deadline counted from the step's new start.
+- A service that stores its answer for a key, failures included, as many payment APIs do, gives
+  the resumed step its stored failure again, as it would for any retry with that key. Resume such a
+  step only when its earlier attempts did not reach the service, such as after a timeout or a
+  refused connection. For another try with a new key, start a new run. An answer such as a declined
+  card is a result, not a failure: [return it as a value](#Return-an-expected-failure-as-a-value).
+- A resume is refused with `InvalidOperationException` when the instance has not faulted, when the
+  body threw an exception of its own, which would fault it the same way, and when the body ran steps
+  after the failure, such as compensation that would otherwise be left out of order.
+
+### Start a new run
+
+To run faulted or cancelled work again from the first step under the same ID, start it with a reuse
+policy: in F#, `handle.StartWith WorkflowIdReuse.AfterFailure "order-17" input`, and in C#,
+`client.StartAsync("order-17", input, WorkflowIdReuse.AfterFailure)`. That begins a new **run** with
+the new input, stored in the same journal:
+
+- The new run does not continue where the earlier run stopped. It replays none of that run's steps
+  or signals and runs every step from the first one, including the steps that succeeded before the
+  fault.
+- From run 2 on, idempotency keys, command IDs, and child IDs name the run as `<ID>#<run>`, such as
+  `order-17#2`, so an external system does not take the new run's calls for repeats. Run 1 keeps
+  `order-17`. A workflow ID cannot contain `#`.
+- So work the failed run did is done again: a card it charged is charged a second time. Before a
+  new run, the failed run must have undone its work, for example in a `try ... with` that
+  compensates before the body ends. Or an activity whose work must happen once per order passes a
+  key of its own, such as the order number, instead of the step's idempotency key, so that the
+  external system recognises the second call.
+- A finished instance stays final, and a running or parked one is never replaced: the start stores
+  nothing and reports it.
+- Recovery reads every run's records, so each run adds to the time an instance takes to recover.
+- A projection over the workflow's records sees the new run's `Started` record, after the earlier
+  run's end.
 
 [Find workflows that wait for a signal](../how-to/find-waiting-workflows.html#List-every-instance-and-its-status)
 lists every instance with its status.
@@ -295,408 +339,6 @@ Without them the stored value cannot be read back, and the step fails as `NotRet
 call was made. `WorkflowResult.mapError` converts a step's error type, so steps with different
 error types can share one block.
 
-## Wait for an answer that arrives later
-
-A signal is a named message sent to an instance from outside:
-
-```fsharp
-let approve =
-    workflow {
-        let! answer = waitSignalFor<bool> "approval" (TimeSpan.FromDays 2.0)
-        return defaultArg answer false
-    }
-```
-
-<div class="cs-alt"></div>
-
-<!-- sample: workflows/csharp Concepts.cs approve -->
-```csharp
-static async WorkflowTask<bool> Approve(WorkflowContext ctx)
-{
-    var answer = await ctx.WaitSignal<bool>(
-        "approval", TimeSpan.FromDays(2));
-    return answer.Received && answer.Value;
-}
-```
-
-`Workflows.signal handle id "approval" true` stores the signal and then returns. A signal that
-arrives before the body reaches its wait is kept, and waits consume signals with one name oldest
-first. `waitSignalFor` gives `None` when its time passes; a signal that arrives later stays stored
-for the next wait. A signal whose payload the wait cannot read fails that wait with
-`WorkflowStepFailedException` and is consumed.
-
-`handle.Status` names the steps an instance waits on, and `IsWaitingFor "approval"` checks for
-one. To list every instance that waits, project the workflow's journal: [Find workflows that wait
-for a signal](../how-to/find-waiting-workflows.html).
-
-A timer stores its due time when the body first reaches it. A restart arms it again with the time
-that remains.
-
-## Run steps together
-
-```fsharp
-let both =
-    workflow {
-        let! points =
-            all [
-                for order in [ "A"; "B"; "C" ] ->
-                    activity "score" (Retry.times 3 (TimeSpan.FromSeconds 30.0)) (fun attempt ->
-                        score attempt.IdempotencyKey order)
-            ]
-        let! first =
-            race [
-                workflow {
-                    let! paid =
-                        activity "charge" (Retry.once (TimeSpan.FromSeconds 30.0)) (fun attempt ->
-                            charge attempt.IdempotencyKey 30m)
-                    return Some paid
-                }
-                workflow {
-                    do! sleep (TimeSpan.FromMinutes 1.0)
-                    return None
-                }
-            ]
-        return points, first
-    }
-```
-
-<div class="cs-alt"></div>
-
-<!-- sample: workflows/csharp Concepts.cs both -->
-```csharp
-static async WorkflowTask<(IReadOnlyList<int>, string?)> Both(
-    WorkflowContext ctx)
-{
-    var orders = new[] { "A", "B", "C" };
-    var points = await ctx.All(orders.Select(order =>
-        ctx.Activity(
-            "score", Retry.times(3, TimeSpan.FromSeconds(30)),
-            attempt => Score(attempt.IdempotencyKey, order))).ToArray());
-    var first = await ctx.Race(
-        ctx.Run(() => Charged(ctx)),
-        ctx.Run(() => TimedOut(ctx)));
-    return (points, first);
-}
-
-static async WorkflowTask<string?> Charged(WorkflowContext ctx) =>
-    await ctx.Activity(
-        "charge", Retry.once(TimeSpan.FromSeconds(30)),
-        attempt => Charge(attempt.IdempotencyKey, 30m));
-
-static async WorkflowTask<string?> TimedOut(WorkflowContext ctx)
-{
-    await ctx.Sleep(TimeSpan.FromMinutes(1));
-    return null;
-}
-```
-
-- `all` finishes when every branch has finished and gives the results in branch order. If a branch
-  fails, the other branches are abandoned.
-- `race` takes the first branch to finish and abandons the rest. The winner is stored, so replay
-  selects the same branch.
-- `allAtMost 4 items body` runs `body` for each item, four at a time.
-
-`and!` runs a fixed set of steps together when their results have different types. In C#,
-`ctx.Both` runs two steps and gives a tuple:
-
-```fsharp
-let pointsAndReceipt =
-    workflow {
-        let! points =
-            activity "score" (Retry.times 3 (TimeSpan.FromSeconds 30.0)) (fun attempt ->
-                score attempt.IdempotencyKey "A")
-        and! receipt =
-            activity "charge" (Retry.once (TimeSpan.FromSeconds 30.0)) (fun attempt ->
-                charge attempt.IdempotencyKey 30m)
-        return points, receipt
-    }
-```
-
-<div class="cs-alt"></div>
-
-<!-- sample: workflows/csharp Concepts.cs pair -->
-```csharp
-static async WorkflowTask<(int, string)> PointsAndReceipt(
-    WorkflowContext ctx)
-{
-    var (points, receipt) = await ctx.Both(
-        ctx.Activity(
-            "score", Retry.times(3, TimeSpan.FromSeconds(30)),
-            attempt => Score(attempt.IdempotencyKey, "A")),
-        ctx.Activity(
-            "charge", Retry.once(TimeSpan.FromSeconds(30)),
-            attempt => Charge(attempt.IdempotencyKey, 30m)));
-    return (points, receipt);
-}
-```
-
-The body continues when both steps have finished, as with `all`. Each result is stored. If one
-step fails, the other is abandoned and the failure is raised at the `let!`, or at the `await` in
-C#. A third `and!` adds a third step. In C#, pass a `ctx.Both` as one of the two steps.
-
-Branches take turns inside one actor. Activities run outside it, so their I/O is concurrent.
-
-Every branch's results are stored in the instance's one journal. Recovery replays all of it, so a
-fan-out over thousands of items makes recovery slow. Start a child workflow per item or per chunk
-for that.
-
-## Repeat steps
-
-A body can repeat steps with `while`, with `for`, or by calling itself. This one checks an order
-every five minutes until it has shipped:
-
-```fsharp
-let rec waitUntilShipped checks =
-    workflow {
-        let! shipped =
-            activity "check" (Retry.times 3 (TimeSpan.FromSeconds 30.0)) (fun attempt ->
-                isShipped attempt.IdempotencyKey "A")
-        if shipped then
-            return checks
-        else
-            do! sleep (TimeSpan.FromMinutes 5.0)
-            return! waitUntilShipped (checks + 1)
-    }
-```
-
-<div class="cs-alt"></div>
-
-<!-- sample: workflows/csharp Concepts.cs repeat -->
-```csharp
-static async WorkflowTask<int> WaitUntilShipped(
-    WorkflowContext ctx, int checks)
-{
-    var shipped = await ctx.Activity(
-        "check", Retry.times(3, TimeSpan.FromSeconds(30)),
-        attempt => IsShipped(attempt.IdempotencyKey, "A"));
-    if (shipped)
-        return checks;
-    await ctx.Sleep(TimeSpan.FromMinutes(5));
-    return await WaitUntilShipped(ctx, checks + 1);
-}
-```
-
-Steps are numbered in the order the body reaches them, so every round's `check` has its own number
-and its own stored result. Replay gives each round the result it had. The stack stays the same size
-at any depth, also when the body does more work after the call returns.
-
-A workflow has no snapshot. Every round stays in the instance's journal, and recovery replays all of
-it: checking every five minutes for a month leaves about 17,000 steps to replay. Give a loop a
-bound, and start a new instance for each period of work that has no end.
-
-## Start other workflows
-
-```fsharp
-let parent =
-    Workflow.define "parent" (fun (order: string) -> workflow {
-        let! detached = startChild enrich order
-        let! points, at = child enrich (order + "-again")
-        return detached.Id, points, at
-    })
-```
-
-<div class="cs-alt"></div>
-
-<!-- sample: workflows/csharp Concepts.cs parent -->
-```csharp
-public sealed class Parent() : Workflow<string, Summary>("parent")
-{
-    public override async WorkflowTask<Summary> Run(
-        WorkflowContext ctx, string order)
-    {
-        var detached = await ctx.StartChild<string, Enriched>("enrich", order);
-        var again = await ctx.Child<string, Enriched>(
-            "enrich", order + "-again");
-        return new Summary(detached.Id, again.Points, again.At);
-    }
-}
-```
-
-- `child` starts another workflow and waits for its result. A child that faults fails the step with
-  `ChildFaulted`. A result that the step's type cannot read fails it with `NotRetryable`.
-- `startChild` gives a handle as soon as the child's start is stored. A child that is never awaited
-  outlives its parent.
-- A child's ID is the parent's ID, a colon, and the step's position. A parent that restarts in the
-  middle of `startChild` reaches the same child and does not start a second one.
-- Do not start an instance of a child's workflow with an ID of that form yourself. A parent whose
-  child would get that ID takes the instance for its child, waits for it, and cancels it.
-- The ID leaves out the parent's workflow name. Two parent workflows whose instances share an ID
-  share one child when they start the same child workflow at the same position.
-
-A workflow keeps no snapshot: its position is the rest of its body, which cannot be stored. A
-workflow that loops for months should start a detached child with its remaining work and return,
-which begins a new journal.
-
-## Send commands to aggregates
-
-```fsharp
-let pay (accounts: AggregateHandle<AccountCommand, AccountEvent>) =
-    workflow {
-        let! reply = send accounts "alice" (Withdraw 30m)
-        match reply with
-        | Withdrawn amount -> return $"took {amount}"
-        | other -> return $"refused: {other}"
-    }
-```
-
-<div class="cs-alt"></div>
-
-<!-- sample: workflows/csharp Concepts.cs pay -->
-```csharp
-static async WorkflowTask<string> Pay(
-    WorkflowContext ctx, AggregateFactory accounts)
-{
-    var reply = await ctx.Send<AccountCommand, AccountEvent>(
-        accounts, "alice", new Withdraw(30m));
-    return reply is Withdrawn taken
-        ? $"took {taken.Amount}"
-        : $"refused: {reply}";
-}
-```
-
-`send` subscribes to the aggregate's replies and then sends, so the reply cannot be missed. It gives
-an event that its own command caused. An event that another command caused is not taken, also when
-it carries the same correlation ID.
-
-The subscription lives in memory. After a restart, a command whose reply was not stored is sent
-again. Every send of one step carries the same correlation ID and the same command ID, so a reply
-that arrives late for one send still answers the step, and the aggregate can recognise a repeat by
-the command's ID. The aggregate must answer a repeated command with the verdict it gave the first
-time, and must check for the repeat before it checks anything the first command changed. A
-withdrawal that is repeated must not be refused for lack of funds because the first one took the
-money.
-
-With no reply before the step's deadline, the step fails as `OutcomeUnknown`. That does not mean the
-command was refused: it may have been applied.
-
-One send waits for its reply for `akka.fcqrs.command-timeout`, and then the command is sent again. A
-policy's `AttemptTimeout` replaces that time for its step.
-
-A restart can take longer than the deadline. The command is still sent again, because a repeat is
-safe and the first outcome is unknown. After a restart each attempt runs to its end, and the
-deadline ends the step only when an attempt has failed after it. `startChild` follows the same rule.
-
-## A command whose event starts a saga
-
-A stored event can start a [saga](sagas.html). When a workflow's command makes an aggregate store
-such an event, the event is the step's reply and the saga starts. The workflow goes on to its next
-step. It does not wait for the saga.
-
-To go on only when the saga has finished, wait for a signal after the command. In the bank,
-`TransferSent` starts the transfer saga:
-
-```fsharp
-let transferAndWait (accounts: AggregateHandle<AccountCommand, AccountEvent>) =
-    workflow {
-        let! reply = send accounts "alice" (SendTransfer("t-1", "bob", 30m))
-        match reply with
-        | TransferSent _ ->
-            // The transfer saga has started and runs on its own.
-            let! delivered =
-                waitSignalFor<bool> "transfer-finished" (TimeSpan.FromMinutes 10.0)
-            return defaultArg delivered false
-        | _ -> return false
-    }
-```
-
-<div class="cs-alt"></div>
-
-<!-- sample: workflows/csharp Concepts.cs saga -->
-```csharp
-static async WorkflowTask<bool> TransferAndWait(
-    WorkflowContext ctx, AggregateFactory accounts)
-{
-    var reply = await ctx.Send<AccountCommand, AccountEvent>(
-        accounts, "alice", new SendTransfer("t-1", "bob", 30m));
-    if (reply is not TransferSent)
-        return false;
-    // The transfer saga has started and runs on its own.
-    var delivered = await ctx.WaitSignal<bool>(
-        "transfer-finished", TimeSpan.FromMinutes(10));
-    return delivered.Received && delivered.Value;
-}
-```
-
-A projection that handles the saga's last event sends the signal with `Workflows.signal`. Its
-handler needs the workflow's ID: carry the ID in the command and its events, or use it as the
-aggregate's ID. The signal is stored, so the workflow gets it after a restart, and a signal that
-arrives before the body reaches its wait is kept. Two cases need care in the handler:
-
-- A workflow that has ended refuses a signal with `InvalidOperationException`. A projection started
-  with `Fcqrs.projection` terminates the process when its handler throws, so the handler must catch
-  that exception.
-- A projection can hand an event to its handler again. The second signal stays stored for a later
-  wait on the same name.
-
-The rule for a repeated command decides what a lost reply costs here:
-
-- An aggregate that answers the repeat with a deferred copy of its first event completes the step. A
-  deferred event starts no saga, so the saga that is running is left alone.
-- An aggregate that stores the event again is refused. A saga starts once per correlation ID and
-  aggregate, so nothing is stored, and the step fails with `SagaAlreadyStartedException` although
-  the first command was applied.
-
-A saga's commands carry the correlation ID of the command that started it. When they come back to
-the same aggregate, their events are published under the ID the step waits on. `send` does not take
-them: it gives only the reply to its own command.
-
-`sendWithFilter` does. It gives the first event its filter accepts, among the events that the
-aggregate it sends to publishes under the step's correlation ID. Here a reservation stores
-`Reserved`, which starts a saga, and the saga's last command makes the same reservation store
-`Confirmed`:
-
-```fsharp
-let reserveAndWait
-    (reservations: AggregateHandle<ReservationCommand, ReservationEvent>)
-    (id: string) =
-    workflow {
-        let isConfirmed reply =
-            match reply with
-            | Confirmed _ -> true
-            | Reserved _ -> false
-        // One send, and five minutes to wait for the saga.
-        let patient =
-            { Retry.command with AttemptTimeout = Some(TimeSpan.FromMinutes 5.0) }
-        return! sendWithFilter patient isConfirmed reservations id (Reserve id)
-    }
-```
-
-<div class="cs-alt"></div>
-
-<!-- sample: workflows/csharp Concepts.cs filter -->
-```csharp
-static async WorkflowTask<ReservationEvent> ReserveAndWait(
-    WorkflowContext ctx, AggregateFactory reservations, string id)
-{
-    // One send, and five minutes to wait for the saga.
-    var patient = Retry.command
-        .WithAttemptTimeout(TimeSpan.FromMinutes(5));
-    return await ctx.Send<ReservationCommand, ReservationEvent>(
-        patient, reservations, id, new Reserve(id),
-        reply => reply is Confirmed);
-}
-```
-
-This wait is in memory, which sets its limits:
-
-- An event published while no attempt listens is not seen. That happens during a restart and between
-  two attempts.
-- Each attempt listens for the policy's `AttemptTimeout`, and then the command is sent again. A
-  policy without one, such as `Retry.command`, listens for `akka.fcqrs.command-timeout`, which is
-  30 seconds, so a wait for a saga sends the command again and again. With a long `AttemptTimeout`
-  the step sends once and waits. A command that never reached the aggregate is then sent again only
-  when that time has passed.
-- The aggregate must answer a repeated command with an event the filter accepts once the outcome is
-  known. An aggregate that answers with its first event leaves the step waiting, and the step fails
-  as `OutcomeUnknown` although the saga finished.
-- The policy's deadline bounds the whole wait. `Retry.command`, the policy of `send`, allows five
-  minutes.
-- Only events of the aggregate the command was sent to are heard. An event that the saga makes
-  another aggregate store is not.
-
-Wait for a signal when the event must not be missed. `send` and `sendWithFilter` store the same
-step, so one can replace the other in a workflow that is running.
-
 ## Cancel a workflow
 
 `handle.Cancel id` stores the request together with a `Cancelled` failure for every step the body
@@ -743,7 +385,8 @@ static async WorkflowTask<string> Booking(WorkflowContext ctx)
 ```
 
 A body that lets the cancellation pass ends as cancelled. A body that catches it and returns a value
-ends as finished. A child the body was waiting for is cancelled with it.
+ends as finished. A [child workflow](workflow-steps.html#Start-other-workflows) the body was
+waiting for is cancelled with it.
 
 - Put cleanup around a parallel block, not inside one branch. When one branch of `all` fails, the
   other branches are abandoned, and a cleanup step a branch had begun is abandoned with it.
@@ -829,221 +472,6 @@ FCQRS does not stop the process for this, because every running instance restart
 and one mismatched instance would stop all the others on every start. A parked instance can be
 cancelled; it then ends without cleanup.
 
-## Run workflows on a schedule
-
-A schedule starts a registered workflow at each of its due times. Ada wants a reminder every day at
-09:00, Oslo time. The reminder is a workflow whose input is a `ScheduledRun`, and a schedule starts
-it:
-
-```fsharp
-let remind =
-    Workflow.define "remind" (fun (run: ScheduledRun<string>) -> workflow {
-        let retry = Retry.times 3 (TimeSpan.FromSeconds 30.0)
-        return!
-            activity "send" retry (fun attempt ->
-                sendReminder attempt.IdempotencyKey run.Input)
-    })
-
-let startReminders (api: IActor) =
-    async {
-        let reminders = Workflows.register api remind
-        let schedules =
-            Schedules.register api [ ScheduledWorkflow.ofHandle reminders ]
-        // Schedule commands raise until the starters are wired.
-        Fcqrs.wireSagaStarters api []
-        do!
-            Schedules.createLatest schedules "ada-daily" "remind" "Drink water"
-                (ScheduleRule.Daily(TimeOnly(9, 0), "Europe/Oslo"))
-        return schedules
-    }
-```
-
-<div class="cs-alt"></div>
-
-<!-- sample: workflows/csharp Concepts.cs schedule -->
-```csharp
-public sealed class Remind()
-    : Workflow<ScheduledRun<string>, string>("remind")
-{
-    public override async WorkflowTask<string> Run(
-        WorkflowContext ctx, ScheduledRun<string> run) =>
-        await ctx.Activity(
-            "send", Retry.times(3, TimeSpan.FromSeconds(30)),
-            attempt => SendReminder(attempt.IdempotencyKey, run.Input));
-}
-
-public static class Reminders
-{
-    public static async Task<ScheduleClient> Start(IActor actor)
-    {
-        var reminders = WorkflowHost.Register(actor, new Remind());
-        var schedules = ScheduleHost.Register(
-            actor, ScheduleHost.Workflow(reminders));
-        // Schedule commands throw until the starters are wired.
-        ActorWiring.InitSagaStarterEmpty(actor);
-        await schedules.CreateAsync("ada-daily", "remind", "Drink water",
-            ScheduleRule.NewDaily(new TimeOnly(9, 0), "Europe/Oslo"));
-        return schedules;
-    }
-}
-```
-
-`Schedules.register` registers the schedule aggregate, `fcqrs-schedule`, and starts the actor
-system's one **dispatcher**, which starts runs of the listed workflows only. The list takes each
-workflow's handle, so the workflows are registered first. Like every aggregate, a schedule stores no
-event until the saga starters are wired, so call `Fcqrs.wireSagaStarters` once, after every aggregate
-and saga is registered, as the [aggregate guide](../how-to/define-an-aggregate.html) describes.
-
-`Schedules.createLatest` creates the schedule with the default catch-up policy, `CatchUp.Latest`.
-`Schedules.create` takes the policy as its last argument. In C#, `CreateAsync` without a policy uses
-`CatchUp.Latest`, and an overload takes one. A create returns once the schedule is stored, and a
-second create with the same content stores nothing, so a program can create its schedules at every
-start.
-
-A C# host built with `AddFcqrs` wires the saga starters when the host starts, so register the
-schedules from a singleton resolved after the host has started:
-
-```csharp
-builder.Services.AddFcqrs(connectionString, "reminders");
-builder.Services.AddWorkflow<Remind, ScheduledRun<string>, string>();
-builder.Services.AddSingleton(services => ScheduleHost.Register(
-    services.GetRequiredService<IActor>(),
-    ScheduleHost.Workflow(services.GetRequiredService<
-        IWorkflowClient<ScheduledRun<string>, string>>())));
-
-using var host = builder.Build();
-await host.StartAsync();
-var schedules = host.Services.GetRequiredService<ScheduleClient>();
-await schedules.CreateAsync("ada-daily", "remind", "Drink water",
-    ScheduleRule.NewDaily(new TimeOnly(9, 0), "Europe/Oslo"));
-```
-
-### A run starts at least once per due time
-
-The schedule aggregate decides each run, and the dispatcher starts it:
-
-1. The dispatcher asks the schedule to fire for a due time. The schedule decides from its own state
-   whether that due time runs, and stores the workflow and the input the run gets. The dispatcher's
-   index of schedules is only a hint: an index that has not seen a pause, change, or delete cannot
-   start a run for a paused or deleted schedule, or for a due time that a change removed.
-2. The dispatcher starts the run. Its workflow ID is `<schedule>@<due UTC>`: the schedule's ID, `@`,
-   and the due time in UTC in ISO 8601 form, such as `ada-daily@2026-11-15T08:00:00.0000000Z`. Its
-   input is `ScheduledRun { Schedule; Due; Input }`, because a workflow body cannot read its own ID.
-3. The dispatcher reports the start, and the schedule stores it.
-
-A pause stored before step 1 stops the run. A crash after step 1 leaves a decided run with no
-reported start. After the restart the dispatcher starts it again with the same ID, and a second
-start of an existing workflow stores nothing. A run therefore starts at least once for each due time
-the schedule accepts, and one workflow instance serves it. A run is an ordinary workflow instance:
-one that faults ends only that instance, and one still going at the next due time runs alongside
-the next run.
-
-### Due times, downtime, and changes
-
-`ScheduleRule.Daily(time, zone)` and `ScheduleRule.Weekly(days, time, zone)` take a local time and a
-time-zone ID. Due times are computed in the zone and stored in UTC, so Ada's reminder runs at 09:00
-Oslo time in winter (08:00 UTC) and in summer (07:00 UTC). A local time that a clock change skips
-runs at the next local time that exists, and one that occurs twice runs once, at the first
-occurrence. `ScheduleRule.Every interval` counts from the creation or the last change.
-
-Ada also pays rent on the last day of each month and wants a reminder in the morning and in the
-evening of that day:
-
-```fsharp
-let remindRent (schedules: ScheduleHandle) =
-    // 09:00 and 18:00, Oslo time, on the last day of each month.
-    let rule =
-        ScheduleRule.Monthly(
-            [ MonthDay.LastDay ],
-            [ TimeOnly(9, 0); TimeOnly(18, 0) ],
-            "Europe/Oslo"
-        )
-    Schedules.createLatest schedules "ada-rent" "remind" "Pay the rent" rule
-```
-
-<div class="cs-alt"></div>
-
-<!-- sample: workflows/csharp Concepts.cs monthly -->
-```csharp
-public static Task RemindRent(ScheduleClient schedules)
-{
-    // 09:00 and 18:00, Oslo time, on the last day of each month.
-    var rule = ScheduleRule.NewMonthly(
-        [MonthDay.LastDay],
-        [new TimeOnly(9, 0), new TimeOnly(18, 0)],
-        "Europe/Oslo");
-    return schedules.CreateAsync("ada-rent", "remind", "Pay the rent", rule);
-}
-```
-
-A monthly rule's days can also be a day number, such as `MonthDay.Day 15`, or a weekday such as
-`MonthDay.Nth(3, DayOfWeek.Wednesday)` or `MonthDay.Last DayOfWeek.Thursday`. `Day 31` runs on the
-last day of a shorter month. `ScheduleRule.DailyAt` and `ScheduleRule.WeeklyAt` take several times a
-day. The [Schedules reference](../schedules-reference.html#Schedule-rules) lists every rule.
-
-A due time is missed when the dispatcher could not fire on time, for example while the process was
-stopped. The catch-up policy decides which missed due times run:
-
-| Case | What runs |
-| --- | --- |
-| Missed due times, `CatchUp.Latest` (the default) | One run, for the most recent |
-| Missed due times, `CatchUp.All` | One run for each, oldest first, at most for the 1000 most recent |
-| Missed due times, `CatchUp.None` | None; the schedule waits for the next due time. A fire up to one minute late still counts as on time |
-| `Schedules.pause`, then `Schedules.resume` | Nothing during the pause. Runs continue from the first due time after the resume: a due time inside the pause never runs, whatever the policy |
-| `Schedules.change` | The new workflow, input, rule, and policy. No due time at or before the change runs |
-| `Schedules.delete` | Nothing more. The ID cannot be used for a new schedule, so a run ID never belongs to two schedules |
-| A run decided before a change, pause, or delete | The run still starts, on the workflow and with the input stored when it was decided |
-
-A fire more than one second before its due time is refused, so a fault in the dispatcher cannot
-start a run more than a second early.
-
-### What a schedule does not guarantee
-
-- **Exactly-once side effects.** A run's steps follow the workflow rules on this page: an activity
-  runs at least once. Its idempotency key includes the run's ID, so it differs per due time and
-  stays the same across the attempts of one run. The external system must honour it.
-- **Precision below a second.** A run starts after its due time, once the dispatcher has woken, the
-  schedule has stored its decision, and the run's start is stored.
-- **More than one node.** The dispatcher assumes it is the only one, and FCQRS runs on one node.
-- **A run whose stored input no longer reads.** After a deploy that changes a workflow's input type,
-  a decided run whose stored input the workflow cannot read is lost, and one logged error is the
-  only signal.
-
-The application chooses each user's time zone, keeps run steps safe to repeat, and treats the
-workflow's name and the input's stored form as persistent contracts: every schedule stores both.
-
-[Schedules reference](../schedules-reference.html) lists the exceptions each call raises, the ID
-limits, the dispatcher's timing, the index table and the database rights it needs, what a deploy
-can break, and every persistent contract. [Run scheduled jobs](../how-to/run-scheduled-jobs.html)
-builds a nightly backup and a weekly invoice as runnable F# and C# programs.
-
-## Feed workflows from a stream
-
-```fsharp
-let outcomes (handle: WorkflowHandle<string, int * DateTime>) =
-    WorkflowFlow.run handle (fun order -> $"enrich-{order}") 8 (TimeSpan.FromMinutes 5.0)
-```
-
-<div class="cs-alt"></div>
-
-<!-- sample: workflows/csharp Concepts.cs stream -->
-```csharp
-static Flow<string, WorkflowEnded<Enriched>, NotUsed> Outcomes(
-    IWorkflowClient<string, Enriched> client) =>
-    WorkflowFlow.Run(
-        client, order => $"enrich-{order}", 8, TimeSpan.FromMinutes(5));
-```
-
-`WorkflowFlow.run` is an Akka.Streams flow that starts one workflow per element and emits each
-outcome in input order, with at most eight workflows between start and outcome. A faulted or
-cancelled workflow is an element of the stream. A workflow that does not end within the timeout
-fails the stream with a `TimeoutException`, and the workflow carries on. `WorkflowFlow.start` emits
-as soon as each start is stored.
-
-The stream is not durable. If the process stops, the workflows resume and the stream does not. The
-source must replay from an offset of its own, and the workflow ID must be computed from the element,
-so that a replayed element reaches the instance it started before.
-
 ## What the application must still do
 
 - Make external calls safe to repeat, using the idempotency key.
@@ -1052,8 +480,9 @@ so that a replayed element reaches the instance it started before.
 - Give every `Retry.forever` a deadline the business can live with, and handle
   `WorkflowStepFailedException` where a failure has a business meaning.
 - Decide what `OutcomeUnknown` means for each command.
-- Watch for parked and faulted instances. A faulted instance is final: nothing restarts it, so run
-  its work again as a new instance with a new ID.
+- Watch for parked and faulted instances. Nothing restarts a faulted instance by itself: once the
+  cause is fixed, resume it at its failed step, or start a new run with
+  `WorkflowIdReuse.AfterFailure`.
 - Run on one node. FCQRS does not support multi-node deployment.
 
 ## Choose between a saga and a workflow
@@ -1092,17 +521,11 @@ A C# workflow derives from `Workflow<TInput, TResult>` and awaits steps from its
 | `handle.Result id timeout` | `client.OutcomeAsync(id, timeout)`, or `client.ResultAsync(id, timeout)`, which throws for a faulted or cancelled workflow |
 | `WorkflowFlow.run` | `WorkflowFlow.Run(client, idOf, parallelism, timeout)` |
 | `WorkflowFlow.start` | `WorkflowFlow.Start(client, idOf, parallelism)` |
-| `Schedules.register api [ ScheduledWorkflow.ofHandle handle ]` | `ScheduleHost.Register(actor, ScheduleHost.Workflow(client))` |
-| `Schedules.createLatest`, with the default `CatchUp.Latest` | `schedules.CreateAsync(id, workflow, input, rule)` |
-| `Schedules.create`, `Schedules.change` | `schedules.CreateAsync`, `schedules.ChangeAsync`, with a `CatchUp` |
-| `Schedules.pause`, `resume`, `delete` | `schedules.PauseAsync`, `ResumeAsync`, `DeleteAsync` |
-| `Schedules.state`, `None` when the index has not read it | `schedules.State(id)`, `null` when the index has not read it |
-| `ScheduleRule.Daily(time, zone)` | `ScheduleRule.NewDaily(time, zone)`, and `NewWeekly`, `NewEvery`, `NewDailyAt`, `NewWeeklyAt`, `NewMonthly` |
-| `MonthDay.Nth(3, DayOfWeek.Wednesday)`, `MonthDay.LastDay` | `MonthDay.NewNth(3, DayOfWeek.Wednesday)`, `MonthDay.LastDay`, and `NewDay`, `NewLast` |
 
 Inside a method that returns `WorkflowTask<T>`, `await` accepts workflow steps. Awaiting an
 unfinished `Task`, such as `Task.Delay` or an `HttpClient` call, throws and faults the instance,
 because its result could not be stored or replayed. An `await` of a task that has already finished
 is not detected.
 
-Next: [Write a workflow](../how-to/write-a-workflow.html) builds and runs one in both languages.
+Next: [Workflow steps](workflow-steps.html) covers the other steps a body can await, and [Write a
+workflow](../how-to/write-a-workflow.html) builds and runs one in both languages.

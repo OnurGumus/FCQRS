@@ -14,7 +14,8 @@ actor system and no database, so a test takes milliseconds.
 
 The tests are in `samples/workflows/fsharp-tests` (Expecto) and `samples/workflows/csharp-tests`
 (xUnit). They compile the quote workflow from `samples/workflows` unchanged, reference the projects
-under `src/`, and need FCQRS.Workflows 7.11.0 or later.
+under `src/`, and need FCQRS.Workflows 7.11.0 or later. `Resume`, `StartAgain`, and `Recover` need
+7.12.0.
 
 ## Give each step's outcome
 
@@ -112,6 +113,8 @@ stores one record, as the actor would, and runs the body to its next wait:
 | `Signal(name, value)` | a signal, which a wait for it takes now or when it starts |
 | `Advance(time)` | nothing itself; it moves the clock and fires the timers and timeouts that are due |
 | `Cancel()` | a cancel request and the failure of every waiting step |
+| `Resume()` | a `Resumed` record: the failed step of a faulted instance waits again |
+| `StartAgain(input)` | a new run, as a start with `WorkflowIdReuse.AfterFailure` stores it, after a fault or cancel only |
 
 `Waiting` lists the steps the body waits on, `Status` reports what a registered workflow's `Status`
 would, and `Result` gives the body's result once it has ended. `Complete` raises
@@ -262,7 +265,7 @@ public void A_quote_stores_the_step_names_that_running_quotes_depend_on()
 ```
 
 The path before each name is the step's position in the body. `Journal` holds the records
-themselves, with each stored value. `WorkflowTest.Resume(definition, journal)` runs code over a
+themselves, with each stored value. `WorkflowTest.Recover(definition, journal)` runs code over a
 journal another test stored, as a deploy does, and its `Status` reports `Parked` when the journal no
 longer matches; see [Change a workflow while instances are
 running](../concepts/workflows.html#Change-a-workflow-while-instances-are-running).

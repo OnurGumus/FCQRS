@@ -205,6 +205,111 @@ let private restartTest =
         finally
             deleteDb db
 
+let private rerunDefinition (keys: ConcurrentQueue<string>) =
+    Workflow.define "rerun" (fun (amount: int) -> workflow {
+        let! charged =
+            activity "charge" fast (fun context -> task {
+                keys.Enqueue context.IdempotencyKey
+                if amount < 0 then failwith "declined"
+                return amount
+            })
+        let! (answer: string) = waitSignal "go"
+        return $"{charged} {answer}"
+    })
+
+let private rerunTest =
+    testCase "workflow: a faulted instance starts a new run only when the start allows it, with keys of its own, and the run survives a restart" <| fun _ ->
+        let db = newDb ()
+        let keys = ConcurrentQueue<string>()
+        try
+            let first = boot db "WorkflowRerun" []
+            try
+                let flow = Workflows.register first (rerunDefinition keys)
+                sync (flow.Start "r1" -1) |> ignore
+                match sync (flow.Result "r1" wait) with
+                | WorkflowOutcome.Faulted _ -> ()
+                | other -> failtest $"the first run should fault, found {other}"
+                match sync (flow.Start "r1" 5) with
+                | StartResult.AlreadyStarted(WorkflowStatus.Failed _) -> ()
+                | other -> failtest $"a start without a reuse policy keeps the fault, found {other}"
+                Expect.equal (sync (flow.StartWith WorkflowIdReuse.AfterFailure "r1" 5)) StartResult.Started "a start that allows reuse begins a new run"
+                eventually "the new run waits for its signal" (fun () -> (sync (flow.Status "r1")).IsWaitingFor "go")
+                match sync (flow.StartWith WorkflowIdReuse.AfterFailure "r1" 9) with
+                | StartResult.AlreadyStarted(WorkflowStatus.Running _) -> ()
+                | other -> failtest $"a running instance is never replaced, found {other}"
+                Expect.equal (List.ofSeq keys) [ "rerun/r1/0"; "rerun/r1#2/0" ] "the second run's keys name the run"
+                Expect.throwsT<ArgumentException> (fun () -> sync (flow.Start "a#b" 1) |> ignore) "an ID with '#' is refused"
+            finally
+                stop first
+
+            let second = boot db "WorkflowRerun" []
+            try
+                let flow = Workflows.register second (rerunDefinition keys)
+                eventually "the second run resumes at its wait" (fun () -> (sync (flow.Status "r1")).IsWaitingFor "go")
+                sync (Workflows.signal flow "r1" "go" "ok")
+                Expect.equal (sync (flow.Result "r1" wait)) (WorkflowOutcome.Finished "5 ok") "the second run finishes with its own input"
+                Expect.equal keys.Count 2 "no run repeated its stored charge"
+                match sync (flow.StartWith WorkflowIdReuse.AfterFailure "r1" 7) with
+                | StartResult.AlreadyStarted WorkflowStatus.Completed -> ()
+                | other -> failtest $"a finished instance is final, found {other}"
+            finally
+                stop second
+        finally
+            deleteDb db
+
+let private resumeDefinition (reserves: int ref) (charges: ConcurrentQueue<string>) (gate: ManualResetEventSlim) =
+    Workflow.define "resume-order" (fun () -> workflow {
+        let! reserved =
+            activity "reserve" fast (fun _ -> task {
+                Interlocked.Increment &reserves.contents |> ignore
+                return 1
+            })
+        let! charged =
+            activity "charge" fast (fun context -> task {
+                charges.Enqueue context.IdempotencyKey
+                // The first attempt fails; the next one waits for the test.
+                if charges.Count = 1 then failwith "the bank is down"
+                gate.Wait()
+                return 20
+            })
+        return reserved + charged
+    })
+
+let private resumeTest =
+    testCase "workflow: Resume runs the failed step again with its key, keeps the completed steps, and survives a restart" <| fun _ ->
+        let db = newDb ()
+        let reserves = ref 0
+        let charges = ConcurrentQueue<string>()
+        use gate = new ManualResetEventSlim(false)
+        try
+            let first = boot db "WorkflowResume" []
+            try
+                let flow = Workflows.register first (resumeDefinition reserves charges gate)
+                sync (flow.Start "o1" ()) |> ignore
+                match sync (flow.Result "o1" wait) with
+                | WorkflowOutcome.Faulted error -> Expect.equal error.Kind ErrorKind.Exhausted "the charge's attempts ran out"
+                | other -> failtest $"expected a fault, found {other}"
+                Expect.throwsT<InvalidOperationException> (fun () -> sync (flow.Resume "nobody")) "an instance that was not started does not resume"
+                sync (flow.Resume "o1")
+                eventually "the charge runs again" (fun () -> charges.Count = 2)
+            finally
+                stop first
+
+            // The resumed charge was running when the process stopped.
+            let second = boot db "WorkflowResume" []
+            try
+                let flow = Workflows.register second (resumeDefinition reserves charges gate)
+                eventually "the resumed charge runs again after the restart" (fun () -> charges.Count = 3)
+                gate.Set()
+                Expect.equal (sync (flow.Result "o1" wait)) (WorkflowOutcome.Finished 21) "the order finishes"
+                Expect.equal reserves.Value 1 "the reservation did not run again"
+                Expect.equal (List.ofSeq charges |> List.distinct) [ "resume-order/o1/1" ] "every attempt of the charge had its first key"
+                Expect.throwsT<InvalidOperationException> (fun () -> sync (flow.Resume "o1")) "a finished instance does not resume"
+            finally
+                stop second
+        finally
+            deleteDb db
+
 let private timerTest =
     testCase "workflow: a timer's due time is stored, so a restart does not postpone it" <| fun _ ->
         let db = newDb ()
@@ -1458,7 +1563,8 @@ let private manifestTest =
               "CancelRequested", WorkflowRecord.CancelRequested at
               "Finished", WorkflowRecord.Finished(payload, at)
               "Faulted", WorkflowRecord.Faulted(error, at)
-              "Cancelled", WorkflowRecord.Cancelled at ]
+              "Cancelled", WorkflowRecord.Cancelled at
+              "Resumed", WorkflowRecord.Resumed("1", at) ]
         for case, record in records do
             let manifest = serializer.Manifest record
             // Journals written since 7.0.0 hold these names. Renaming or moving the type breaks them.
@@ -1970,7 +2076,7 @@ let tests =
               cancelTest; childTest; childRestartTest; cancelChildStartTest; cancelChildStartRestartTest; cancelChildRecoveryTest
               cancelParkedChildTest; cancelParkedBranchesTest; awaitRoundsTest; zeroWaitResultTest; parkingTest; removedStepsParkTest; streamTest; metricsTest
               lateCommandTest; cancelParkedTest; childResultTest; unreadableResultTest; idleTest; manifestTest
-              instanceOfTest; waitingProjectionTest
+              instanceOfTest; waitingProjectionTest; rerunTest; resumeTest
               sagaStartTest; sagaRepeatTest; sagaRepeatStoredTest; sagaSignalTest; sagaEventReplyTest
               sagaFilterTest; sagaFilterMissedTest; sagaFilterOutcomeTest; effectReplyTest; lateReplyTest
               attemptTimeoutTest ]
