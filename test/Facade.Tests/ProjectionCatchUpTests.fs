@@ -482,6 +482,66 @@ let private hostedProjectionInjection =
             for path in [ database; database + "-wal"; database + "-shm" ] do
                 if File.Exists path then File.Delete path
 
+let private keyedProjection =
+    testCase "catch-up: a keyed transactional projection runs beside the host's projection, and a name registers once"
+    <| fun _ ->
+        let database = Path.Combine(Path.GetTempPath(), $"fcqrs-keyed-catchup-{Guid.NewGuid():N}.db")
+        let connectionString = $"Data Source={database};Pooling=False"
+        let factory = Func<DbConnection>(fun () -> new SqliteConnection(connectionString))
+        do
+            use connection = factory.Invoke()
+            connection.Open()
+            execute connection None "CREATE TABLE main_applied (amount INTEGER NOT NULL)" []
+            execute connection None "CREATE TABLE keyed_applied (amount INTEGER NOT NULL)" []
+        let store = SqlProjectionStore(ProjectionSqlDialect.Sqlite, factory)
+        let into (table: string) =
+            Func<DbConnection, DbTransaction, EventEnvelope, Task>(fun connection transaction envelope ->
+                match envelope.Event with
+                | :? Event<int> as event ->
+                    execute connection (Some transaction) $"INSERT INTO {table} (amount) VALUES (@amount)" [ "@amount", box event.EventDetails ]
+                | _ -> ()
+                Task.CompletedTask)
+        let register (services: IServiceCollection) =
+            services
+                .AddFcqrs(connectionString, "KeyedCatchUpTest")
+                .AddAggregate<HostedCatchUpAggregate, int, int, int>()
+                .AddTransactionalProjection(TransactionalProjectionOptions("main", store), into "main_applied")
+                .AddKeyedTransactionalProjection(TransactionalProjectionOptions("keyed", store), into "keyed_applied")
+        // Two projections with one name would share their stored progress.
+        for what, name in [ "the main projection's name", "main"; "a keyed projection's name", "keyed" ] do
+            Expect.throwsT<InvalidOperationException>
+                (fun () -> ignore ((register (ServiceCollection())).AddKeyedTransactionalProjection(TransactionalProjectionOptions(name, store), into "keyed_applied")))
+                $"{what} is refused a second time"
+        let builder = HostBuilder()
+        builder.ConfigureServices(Action<HostBuilderContext, IServiceCollection>(fun _ services -> register services |> ignore)) |> ignore
+        use host = builder.Build()
+        let sum (table: string) =
+            use connection = factory.Invoke()
+            connection.Open()
+            use command = connection.CreateCommand()
+            command.CommandText <- $"SELECT COALESCE(SUM(amount), 0) FROM {table}"
+            Convert.ToInt64(command.ExecuteScalar())
+        try
+            wait (host.StartAsync())
+            let handler = host.Services.GetRequiredService<FCQRS.CSharp.Handler<int, int>>()
+            let keyed = host.Services.GetRequiredKeyedService<IProjection>("keyed")
+            let main = host.Services.GetRequiredService<IProjection>()
+            let cid = FCQRS.CSharp.Values.NewCID()
+            // Subscribe before sending: the keyed projection publishes after it commits.
+            use committed = keyed.Subscribe(cid, 1)
+            let reply = (handler.Invoke(Func<int, bool>(fun _ -> true), cid, FCQRS.CSharp.Values.CreateAggregateId "keyed", 42)).Result
+            Expect.equal reply.EventDetails 42 "the aggregate stored the event"
+            wait (committed.Task.WaitAsync(TimeSpan.FromSeconds 30.0))
+            Expect.equal (sum "keyed_applied") 42L "the keyed projection committed the event before notifying"
+            wait (main.CatchUpAsync())
+            Expect.equal (sum "main_applied") 42L "the main projection applied the same event"
+            wait (keyed.CatchUpAsync())
+            Expect.equal (sum "keyed_applied") 42L "the keyed projection applied it once"
+        finally
+            wait (host.StopAsync())
+            for path in [ database; database + "-wal"; database + "-shm" ] do
+                if File.Exists path then File.Delete path
+
 let private sqlitePaths () =
     let suffix = Guid.NewGuid().ToString("N")
     suffix,
@@ -1011,6 +1071,10 @@ let private reservedPrefix =
                 ignore (builder().AddTransactionalProjection(
                         TransactionalProjectionOptions("fcqrs-mine", sqliteStore journalPath projectionPath),
                         Func<DbConnection, DbTransaction, EventEnvelope, Task>(fun _ _ _ -> Task.CompletedTask))))
+            refused "AddKeyedTransactionalProjection" (fun () ->
+                ignore (builder().AddKeyedTransactionalProjection(
+                        TransactionalProjectionOptions("fcqrs-mine", sqliteStore journalPath projectionPath),
+                        Func<DbConnection, DbTransaction, EventEnvelope, Task>(fun _ _ _ -> Task.CompletedTask))))
             // Only the prefix is reserved.
             use allowed = Fcqrs.projection api (Projection.single (Named "my-fcqrs-projection") ignoreEvent)
             wait (allowed.CatchUpAsync())
@@ -1481,6 +1545,7 @@ let tests =
               timeoutIsolation
               actorShutdown
               hostedProjectionInjection
+              keyedProjection
               shardingBookkeeping
               coordinatorBookkeeping
               causalNotification

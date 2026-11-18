@@ -2,7 +2,7 @@
 title: Use FCQRS from C#
 category: Apply
 categoryindex: 5
-index: 17
+index: 18
 ---
 
 # Use FCQRS from C#
@@ -132,8 +132,10 @@ Both default to configuration; [Configuration](../configuration.html) gives the 
 ## 3. Register the runtime
 
 The host starts aggregates first, then sagas, the saga starter, and finally the projection. Register
-one projection per FCQRS runtime: a second `AddProjection` or `AddTransactionalProjection` call throws
-`InvalidOperationException`. That one handler may update several read-model tables.
+one projection with `AddProjection` or `AddTransactionalProjection`: a second call throws
+`InvalidOperationException`. That one handler may update several read-model tables. Add a further
+transactional read model with `AddKeyedTransactionalProjection`, which starts after it and is
+resolved as a keyed `IProjection` under its name.
 
 ```csharp
 var builder = Host.CreateApplicationBuilder(args);

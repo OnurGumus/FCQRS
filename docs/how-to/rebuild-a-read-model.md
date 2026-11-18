@@ -2,7 +2,7 @@
 title: Rebuild a read model
 category: Apply
 categoryindex: 5
-index: 13
+index: 14
 ---
 
 # Rebuild a read model
@@ -61,9 +61,10 @@ returns, so its handler can receive the last event again.
 For a large model or one that must remain available:
 
 1. create new tables or an index with a versioned name, such as `statement_v2`;
-2. run a second projection with its own name into the new destination, **in a separate
-   process or deployment**: one FCQRS host supports one projection, and a second `AddProjection` or
-   `AddTransactionalProjection` call throws `InvalidOperationException` at registration;
+2. run a second projection with its own name into the new destination: in F#, a second
+   `Fcqrs.transactionalProjection`; in a C# host, `AddKeyedTransactionalProjection`, because a
+   second `AddProjection` or `AddTransactionalProjection` call throws `InvalidOperationException`
+   at registration. A separate process or deployment works too;
 3. let it replay and catch up while queries continue using the old model;
 4. compare the old and new results;
 5. switch queries to the new destination;

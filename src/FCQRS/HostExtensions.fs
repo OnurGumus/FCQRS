@@ -51,6 +51,9 @@ type FcqrsRuntime(actor: IActor) =
     /// The projection subscription, set when the projection step runs at startup.
     member val Subscription: FCQRS.Query.ISubscribe | null = null with get, set
 
+    /// The projections added with AddKeyedTransactionalProjection, by name, set at startup.
+    member val KeyedProjections = Dictionary<string, FCQRS.Projections.IProjection>() with get
+
     /// Record an aggregate's wiring under its CLR type (called at startup).
     member _.Register(shardType: Type, factory: AggregateFactory, boxedRefs: obj) =
         factories[shardType] <- factory
@@ -80,6 +83,11 @@ type FcqrsBuilder internal (services: IServiceCollection, connectionString: stri
     // builder-wide list would keep rules bound to an earlier, stopped actor system.
     let sagaSteps = ResizeArray<IServiceProvider -> IActor -> FcqrsRuntime -> (obj -> AggregateFactory option)>()
     let mutable projectionStep: (IServiceProvider -> IActor -> FCQRS.Query.ISubscribe) option = None
+    // Projections added with AddKeyedTransactionalProjection, started after the main one.
+    let keyedProjectionSteps = ResizeArray<string * (IActor -> FCQRS.Projections.IProjection)>()
+    // The names of the registered projections. Two projections with one name would share stored
+    // read positions, so a second registration of a name fails.
+    let projectionNames = HashSet<string>(StringComparer.Ordinal)
     // Builder-level snapshot default: what an entity's SnapshotPolicy.Default
     // resolves to. Itself Default => fall through to the config key / 30.
     let mutable defaultSnapshotPolicy = SnapshotPolicy.Default
@@ -200,6 +208,14 @@ type FcqrsBuilder internal (services: IServiceCollection, connectionString: stri
     member internal _.AggregateSteps = aggregateSteps
     member internal _.SagaSteps = sagaSteps
     member internal _.ProjectionStep = projectionStep
+    member internal _.KeyedProjectionSteps = keyedProjectionSteps
+
+    member private _.ClaimProjectionName(name: string | null) =
+        match name with
+        | null -> ()
+        | name when not (projectionNames.Add name) ->
+            invalidOp $"A projection named '{name}' is already registered. Two projections with one name would share their stored progress; give each its own name."
+        | _ -> ()
 
     /// Register an aggregate. The shard is constructed via DI (ctor args resolved
     /// from the container) and Init'd at startup; its Handler and AggregateRefs are
@@ -291,8 +307,9 @@ type FcqrsBuilder internal (services: IServiceCollection, connectionString: stri
     member private this.SetProjectionStep(step: IServiceProvider -> IActor -> FCQRS.Query.ISubscribe) =
         if projectionStep.IsSome then
             invalidOp
-                "A projection is already registered. FCQRS supports one projection per host; \
-                 combine handlers into a single AddProjection call instead of registering twice."
+                "A projection is already registered. A host has one projection that serves ISubscribe; \
+                 combine handlers into a single AddProjection call, or add a further transactional \
+                 read model with AddKeyedTransactionalProjection."
 
         projectionStep <- Some step
 
@@ -345,6 +362,7 @@ type FcqrsBuilder internal (services: IServiceCollection, connectionString: stri
             [<Optional; DefaultParameterValue(null: string | null)>] name: string | null,
             [<Optional; DefaultParameterValue(null: seq<string> | null)>] entities: seq<string> | null) : FcqrsBuilder =
         FCQRS.Projections.checkName (nameof name) name
+        this.ClaimProjectionName name
         this.RegisterProjection(fun _ actor -> QueryApi.Init(actor, handler, name, entities))
 
     /// Register the read-model projection with a single-event handler: the handler just
@@ -356,6 +374,7 @@ type FcqrsBuilder internal (services: IServiceCollection, connectionString: stri
             [<Optional; DefaultParameterValue(null: string | null)>] name: string | null,
             [<Optional; DefaultParameterValue(null: seq<string> | null)>] entities: seq<string> | null) : FcqrsBuilder =
         FCQRS.Projections.checkName (nameof name) name
+        this.ClaimProjectionName name
         this.RegisterProjection(fun _ actor -> QueryApi.Init(actor, handler, name, entities))
 
     /// Register the read-model projection with a filtered single-event handler: the handler
@@ -366,6 +385,7 @@ type FcqrsBuilder internal (services: IServiceCollection, connectionString: stri
             [<Optional; DefaultParameterValue(null: string | null)>] name: string | null,
             [<Optional; DefaultParameterValue(null: seq<string> | null)>] entities: seq<string> | null) : FcqrsBuilder =
         FCQRS.Projections.checkName (nameof name) name
+        this.ClaimProjectionName name
         this.RegisterProjection(fun _ actor -> QueryApi.Init(actor, handler, name, entities))
 
     /// Register the read-model projection, building the handler from DI. Use this overload
@@ -375,6 +395,7 @@ type FcqrsBuilder internal (services: IServiceCollection, connectionString: stri
             [<Optional; DefaultParameterValue(null: string | null)>] name: string | null,
             [<Optional; DefaultParameterValue(null: seq<string> | null)>] entities: seq<string> | null) : FcqrsBuilder =
         FCQRS.Projections.checkName (nameof name) name
+        this.ClaimProjectionName name
         this.RegisterProjection(fun sp actor -> QueryApi.Init(actor, handler.Invoke sp, name, entities))
 
     /// DI variant of the single-event handler overload.
@@ -383,6 +404,7 @@ type FcqrsBuilder internal (services: IServiceCollection, connectionString: stri
             [<Optional; DefaultParameterValue(null: string | null)>] name: string | null,
             [<Optional; DefaultParameterValue(null: seq<string> | null)>] entities: seq<string> | null) : FcqrsBuilder =
         FCQRS.Projections.checkName (nameof name) name
+        this.ClaimProjectionName name
         this.RegisterProjection(fun sp actor -> QueryApi.Init(actor, handler.Invoke sp, name, entities))
 
     /// DI variant of the filtered single-event handler overload.
@@ -391,6 +413,7 @@ type FcqrsBuilder internal (services: IServiceCollection, connectionString: stri
             [<Optional; DefaultParameterValue(null: string | null)>] name: string | null,
             [<Optional; DefaultParameterValue(null: seq<string> | null)>] entities: seq<string> | null) : FcqrsBuilder =
         FCQRS.Projections.checkName (nameof name) name
+        this.ClaimProjectionName name
         this.RegisterProjection(fun sp actor -> QueryApi.Init(actor, handler.Invoke sp, name, entities))
 
     /// Register a transactional projection with journal-wide CatchUpAsync support.
@@ -408,8 +431,60 @@ type FcqrsBuilder internal (services: IServiceCollection, connectionString: stri
         if isNull (box options) then nullArg (nameof options)
         if isNull (box handler) then nullArg (nameof handler)
         FCQRS.Projections.checkName (nameof options) options.Name
+        this.ClaimProjectionName options.Name
         this.RegisterProjection(fun _ actor ->
             FCQRS.Projections.start actor options (fun connection transaction envelope -> handler.Invoke(connection, transaction, envelope)))
+
+    /// Register a further transactional projection, beside the projection that AddProjection or
+    /// AddTransactionalProjection registers. A host has one of those, which serves `ISubscribe`
+    /// and the unkeyed `IProjection`; add each further read model with this method. It is
+    /// resolved as a keyed `IProjection` under `options.Name`, for example with
+    /// `GetRequiredKeyedService<IProjection>("quote-approvals")` or
+    /// `[FromKeyedServices("quote-approvals")]`, to call `CatchUpAsync` or subscribe to the
+    /// notifications it publishes after each commit. It starts after the main projection and stops
+    /// before it. The handler must write through the supplied connection and transaction and
+    /// await all database work; FCQRS commits its updates with the projection's progress. Raises
+    /// `ArgumentException` when `options.Name` starts with `fcqrs-`, and
+    /// `InvalidOperationException` when a projection with that name is already registered.
+    member this.AddKeyedTransactionalProjection(
+            options: FCQRS.Projections.TransactionalProjectionOptions,
+            handler: Func<System.Data.Common.DbConnection, System.Data.Common.DbTransaction, Akka.Persistence.Query.EventEnvelope, Task>) : FcqrsBuilder =
+        if isNull (box options) then nullArg (nameof options)
+        if isNull (box handler) then nullArg (nameof handler)
+        FCQRS.Projections.checkName (nameof options) options.Name
+        this.ClaimProjectionName options.Name
+        let name = options.Name
+        let start (actor: IActor) =
+            FCQRS.Projections.start actor options (fun connection transaction envelope ->
+                handler.Invoke(connection, transaction, envelope))
+        keyedProjectionSteps.Add((name, start))
+
+        services.AddKeyedSingleton<FCQRS.Projections.IProjection>(name, fun (sp: IServiceProvider) (_: obj) ->
+            let runtime = sp.GetRequiredService<FcqrsRuntime>()
+            let current () =
+                match runtime.KeyedProjections.TryGetValue name with
+                | true, projection -> projection
+                | _ -> invalidOp $"The projection '{name}' is not initialized yet (the host has not started)."
+            { new FCQRS.Projections.IProjection with
+                member _.CatchUpAsync() = (current ()).CatchUpAsync()
+                member _.CatchUpAsync(ct) = (current ()).CatchUpAsync(ct)
+                member _.Completion = (current ()).Completion
+                member _.Dispose() =
+                    match runtime.KeyedProjections.TryGetValue name with
+                    | true, projection -> projection.Dispose()
+                    | _ -> ()
+                member _.Subscribe(callback, ?cancellationToken) = (current ()).Subscribe(callback, ?cancellationToken = cancellationToken)
+                member _.Subscribe(filter: IMessageWithCID -> bool, take, ?callback, ?cancellationToken) = (current ()).Subscribe(filter, take, ?callback = callback, ?cancellationToken = cancellationToken)
+                member _.Subscribe(cid: CID, take, ?callback, ?cancellationToken) = (current ()).Subscribe(cid, take, ?callback = callback, ?cancellationToken = cancellationToken)
+                member _.Subscribe(cid: CID, filter: IMessageWithCID -> bool, take, ?callback, ?cancellationToken) = (current ()).Subscribe(cid, filter, take, ?callback = callback, ?cancellationToken = cancellationToken)
+
+              interface FCQRS.Query.IHasNotificationTimeout with
+                  member _.Timeout =
+                      match box (current ()) with
+                      | :? FCQRS.Query.IHasNotificationTimeout as t -> t.Timeout
+                      | _ -> TimeSpan.FromSeconds 30.0 })
+        |> ignore
+        this
 
 /// The single startup step: creates the actor system (via the IActor singleton),
 /// runs the recorded registration steps in order, wires the saga-starter from all
@@ -445,9 +520,15 @@ type internal FcqrsHostedService(sp: IServiceProvider, builder: FcqrsBuilder, ru
             | Some step -> runtime.Subscription <- step sp actor
             | None -> ()
 
+            for name, start in builder.KeyedProjectionSteps do
+                runtime.KeyedProjections[name] <- start actor
+
             Task.CompletedTask
 
         member _.StopAsync(_ct: CancellationToken) : Task =
+            for projection in runtime.KeyedProjections.Values do
+                projection.Dispose()
+
             match runtime.Subscription with
             | :? FCQRS.Projections.IProjection as projection -> projection.Dispose()
             | _ -> ()

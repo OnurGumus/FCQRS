@@ -191,10 +191,14 @@ call `CatchUpAsync` to wait until it has handled every event stored before the c
 [Read your writes](read-your-writes.html) shows both. Aggregate `.Send` waits only for the aggregate
 reply; the projection is the separate read-side confirmation.
 
-The C# host builder supports one projection per FCQRS runtime: a second `AddProjection` call throws
-`InvalidOperationException` at registration. A handler may update several read models in the same
-process, and a side-by-side rebuild runs as a separate process (see
-[Rebuild a read model](rebuild-a-read-model.html)).
+The C# host builder registers one projection with `AddProjection` or `AddTransactionalProjection`:
+a second call throws `InvalidOperationException` at registration. That projection serves
+`ISubscribe` and the unkeyed `IProjection`, and its handler may update several read models. Add a
+further transactional read model with `AddKeyedTransactionalProjection(options, handler)`. It runs
+beside the first one, keeps its own progress under `options.Name`, and is resolved with
+`GetRequiredKeyedService<IProjection>(options.Name)`. Each registered projection needs its own
+name: reusing one throws `InvalidOperationException`. F# has no such limit: each
+`Fcqrs.projection` or `Fcqrs.transactionalProjection` call starts another projection.
 
 ## Handle failures visibly
 
