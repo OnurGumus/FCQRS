@@ -139,7 +139,7 @@ type ShortString =
                 |> t.End))
 
     member this.IsValid = ValueLens.IsValidValue this
-    override this.ToString() = (ValueLens.Value this).ToString()
+    override this.ToString() = ValueLens.Value this
 
 /// Represents any string at least 1 chars
 type LongString =
@@ -151,7 +151,7 @@ type LongString =
         (fun (s: string) _ -> single (fun t -> t.TestOne s |> t.NotBlank EmptyString |> t.Map LongString |> t.End))
 
     member this.IsValid = ValueLens.IsValidValue this
-    override this.ToString() = (ValueLens.Value this).ToString()
+    override this.ToString() = ValueLens.Value this
 
 /// CorrelationID for commands and Sagas.
 /// A CID cannot contain '~'. FCQRS joins a CID to an aggregate ID with '~' to name sagas and

@@ -59,6 +59,7 @@ read-model rows are not three names for the same data.
 | How does straight-line code resume after a crash? | [Workflows](workflows.html) |
 | How does a workflow wait for a signal, run steps together, or call an aggregate? | [Workflow steps](workflow-steps.html) |
 | How do workflows start at due times? | [Schedules](schedules.html) |
+| How can logic name its operations and leave them to an interpreter? | [Free programs](free-programs.html) |
 | What do defer, snapshot, and passivation each do? | [Deferring, snapshots, and passivation](aggregate-lifecycle.html) |
 | What is durable at each point in the complete flow? | [Consistency and recovery](consistency-and-recovery.html) |
 | Why did my process stop, and what should I do about it? | [When FCQRS stops the process](process-termination.html) |

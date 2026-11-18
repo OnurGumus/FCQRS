@@ -15,3 +15,4 @@ bin/
 nupkg/
 test/Facade.Tests/bin/*
 test/Facade.Tests/obj/*
+test/Model.Fable.Tests/out/

@@ -1,5 +1,48 @@
 # Changelog
 
+## 7.13.0 (FCQRS.Workflows)
+
+- **Run a free-monad program as a workflow.** `Free.toWorkflow step program` carries out each
+  instruction of a `FCQRS.Model.FreeMonad` program as the workflow step that `step` gives for it,
+  and `Free.answer` boxes a step's result as the instruction's answer. Each instruction stores its
+  answer as its step's result, so a restart replays the stored answers through the program and
+  continues at the instruction it had reached. The program's code must be deterministic, like a
+  workflow body, and the step names and the order of the instructions are persistent contracts. A
+  step whose result has another type than the program expects faults the instance. It works with
+  FCQRS.Model 6.1.0 and 6.2.0. New guide: "Run a free-monad program as a workflow". F# only.
+
+## 6.2.0 (FCQRS.Model)
+
+- **Nested binds in a `Free` program stay cheap.** `Free.bind` kept one closure per bind, so a
+  program that recursed `n` levels below a `let!` called `n` closures for every instruction: 8,000
+  levels took 775 ms, and 200,000 overflowed the stack. `bind` now keeps the bound functions as
+  data and runs them in a loop: 8,000 levels take 4 ms and 300,000 levels run. A loop whose
+  recursive call is the last thing in its block was already linear; a million rounds took 40 ms
+  before and 72 ms now, in one measurement each. `Pure` and `Impure` are unchanged, so a hand-written interpreter still works,
+  and no public signature was removed. Under Fable, `bind` is the earlier one.
+- **The builders take loops and `try`.** `free` and `freeResult` now accept `while`, `for`,
+  `try ... with`, `try ... finally`, and an `if` without `else` followed by more code. A handler
+  sees an exception that the program's own code throws between instructions. `freeResult`'s loops
+  end at the first `Error`.
+- **Interpreters.** `Free.run`, `Free.runAsync`, and on .NET `Free.runTask` run a program with a
+  function that answers each instruction, so an interpreter need not match on `Pure` and `Impure`.
+- **A program value shares its first block's state between runs.** The builder runs a block's
+  code up to its first instruction when the block is built, so a `let mutable` or a `for` loop's
+  position created there belongs to the value, and a second run of the same value continues from
+  the first one's state. Build such a program in a function and call it for each run. The
+  builders' XML comments say so.
+- **Fable.** FCQRS.Model compiles with Fable 5.24. CI now checks it: `scripts/check-fable.py`
+  compiles `test/Model.Fable.Tests` to JavaScript with the Fable version pinned in
+  `.config/dotnet-tools.json` and runs it under Node. Under Fable, `Eff.safeUnbox` does not check an answer's type, because
+  JavaScript keeps no generic type to test and a type test of an option always failed there; it
+  also called `Type.ToString`, which Fable does not support. `ShortString.ToString` and
+  `LongString.ToString` return their string directly, because Fable 5 rejects `String.ToString`.
+- **Documentation.** New concept page "Free programs": instructions, the builders, what an
+  interpreter is, and what the types do not check. Every public member of `FreeMonad` has an XML
+  comment.
+- `Impure`'s continuation is declared over `obj | null`: the answer to an instruction that gives
+  `unit` or `None` is null. The compiled signature is the same.
+
 ## 7.12.0 (FCQRS.Workflows)
 
 - **Resume a faulted workflow at its failed step.** `handle.Resume id` (C#: `ResumeAsync(id)`)

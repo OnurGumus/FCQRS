@@ -64,6 +64,10 @@ jobs:
       # Serialization, SQLProvider and ExpectoTickSpec.
       - name: IL verification
         run: python3 scripts/verify-il.py
+      # FCQRS.Model is a Fable library: Fable apps compile it from source. Fable (pinned in
+      # .config/dotnet-tools.json) compiles a check program with it to JavaScript, and Node runs it.
+      - name: Fable compatibility of FCQRS.Model
+        run: python3 scripts/check-fable.py
       - name: Samples build
         run: |
           dotnet build samples/getting-started-fsharp -c Release

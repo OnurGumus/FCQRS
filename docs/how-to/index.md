@@ -25,6 +25,7 @@ Choose the task you need. For a first working application, start with [the tutor
 | Find the workflows that wait for an approval or another signal | [Find workflows that wait for a signal](find-waiting-workflows.html) |
 | Run jobs nightly, weekly, or at an interval | [Run scheduled jobs](run-scheduled-jobs.html) |
 | Add a circuit breaker or a concurrency limit to an external call | [Use Polly inside an activity](use-polly-in-an-activity.html) |
+| Run a program written with the free monad as durable steps | [Run a free-monad program as a workflow](run-a-free-program-as-a-workflow.html) |
 | Test decisions, replay, and retries | [Test your domain](test-your-domain.html) |
 | Change stored event contracts safely | [Evolve persisted events](evolve-events.html) |
 | Rebuild derived query data | [Rebuild a read model](rebuild-a-read-model.html) |

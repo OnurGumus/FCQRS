@@ -176,4 +176,5 @@ such as a cached price or a person's decision.
 [Run scheduled jobs](run-scheduled-jobs.html) can start many runs at once after downtime. A limiter
 like this one keeps them from calling a service at the same moment.
 
-Next: [Test your domain](test-your-domain.html) checks decisions, replay, and retries.
+Next: [Run a free-monad program as a workflow](run-a-free-program-as-a-workflow.html) carries out
+a program's instructions as workflow steps.

@@ -205,3 +205,5 @@ limits, the dispatcher's timing, the index table and the database rights it need
 can break, and every persistent contract. [Run scheduled jobs](../how-to/run-scheduled-jobs.html)
 builds a nightly backup and a weekly invoice as runnable F# and C# programs.
 
+Next: [Free programs](free-programs.html) describes logic as instructions that an interpreter,
+such as a workflow, carries out.

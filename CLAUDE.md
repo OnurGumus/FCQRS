@@ -57,7 +57,8 @@ Good prose makes the example easier to reason about. It does not narrate the tea
 - `docs/concepts/` explains the underlying models and boundaries. Workflows span three pages:
   `workflows.md` (the model, recovery, failures as values, cancel, versioning),
   `workflow-steps.md` (signals, parallel steps, loops, children, commands, streams), and
-  `schedules.md`.
+  `schedules.md`. `free-programs.md` explains `FCQRS.Model.FreeMonad`, and the how-to
+  `run-a-free-program-as-a-workflow.md` runs one with `Free.toWorkflow`.
 - `docs/how-to/` provides focused task instructions.
 - `docs/configuration.md` is the runtime configuration reference.
 - `docs/schedules-reference.md` is the schedules reference: the exceptions each call raises, ID
@@ -266,7 +267,9 @@ Keep these distinctions intact in code comments and documentation.
 
 ## Architecture map
 
-- `src/FCQRS.Model/`: validated domain values and query model types.
+- `src/FCQRS.Model/`: validated domain values and query model types. `FreeMonad.fs` holds `Free`,
+  whose `bind` on .NET queues continuations as data (`Queued`) so nested binds stay linear and
+  stack-safe; the Fable path keeps the closure form, because the package is also a Fable library.
 - `src/FCQRS/Actor.fs`: aggregate persistence, replay, snapshots, and command delivery.
 - `src/FCQRS/Saga.fs`: saga state machines, recovery, and command dispatch.
 - `src/FCQRS/Query.fs`: correlation subscriptions and projection notifications.
@@ -276,7 +279,7 @@ Keep these distinctions intact in code comments and documentation.
 - `src/FCQRS/HostExtensions.fs`: C# host-builder and dependency-injection registration.
 - `src/FCQRS/default.hocon`: embedded Akka.NET defaults.
 - `src/FCQRS.Workflows/`: durable workflows. `Workflow.fs` holds the builder and the steps,
-  `Machine.fs` the pure replay interpreter, `WorkflowActor.fs` the persistent actor, `CSharp.fs`
+  `Free.fs` `Free.toWorkflow`, which runs a `FreeMonad` program as steps, `Machine.fs` the pure replay interpreter, `WorkflowActor.fs` the persistent actor, `CSharp.fs`
   the C# API with its async method builder, `Testing.fs` the in-memory `WorkflowTest`,
   `Streams.fs` the Akka.Streams flows, and `Schedules.fs` the schedule rules, the schedule
   aggregate, and the dispatcher that starts runs and keeps its index in a table.
@@ -300,6 +303,9 @@ Keep these distinctions intact in code comments and documentation.
   and persisted-compatibility checks. The C# interop page links `registration-csharp` as a .NET 10
   example.
 - `sample/` and `saga_sample/`: executable examples.
+- `test/Model.Fable.Tests/`: an F# program that Fable compiles to JavaScript and Node runs, to
+  check that FCQRS.Model compiles under Fable and that free programs behave the same there. Run it
+  with `python3 scripts/check-fable.py`; Fable is pinned in `.config/dotnet-tools.json`.
 - `test/Workflows.CSharp.Tests/`: a C# program that checks the C# workflow API as the C# compiler
   builds it. Run it with `dotnet run --project test/Workflows.CSharp.Tests -c Release`.
 - `test/Facade.Tests/`: facade and behaviour tests. `WorkflowMachineTests.fs` tests replay without an

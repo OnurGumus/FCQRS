@@ -2712,6 +2712,7 @@ let main argv =
                 ScheduleRuleTests.aggregateTests
                 WorkflowTests.tests
                 WorkflowTestHarnessTests.tests
+                FreeMonadTests.tests
                 ScheduleTests.tests
                 WorkflowLoggingTests.tests
                 WorkflowBankInvariantTests.tests

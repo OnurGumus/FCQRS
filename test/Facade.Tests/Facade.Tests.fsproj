@@ -33,6 +33,7 @@
     <Compile Include="ScheduleRuleTests.fs" />
     <Compile Include="WorkflowTests.fs" />
     <Compile Include="WorkflowTestHarnessTests.fs" />
+    <Compile Include="FreeMonadTests.fs" />
     <Compile Include="ScheduleTests.fs" />
     <Compile Include="WorkflowLoggingTests.fs" />
     <Compile Include="WorkflowBankInvariantTests.fs" />
