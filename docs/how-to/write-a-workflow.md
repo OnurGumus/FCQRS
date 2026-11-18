@@ -298,5 +298,5 @@ price service calls in this run: 0
   for approval first: [Find workflows that wait for a signal](find-waiting-workflows.html) checks
   one quote with `Status` and lists them all with a projection.
 
-Next: [Observe your system](observability.html#Workflows) lists the spans and metrics a workflow
-emits.
+Next: [Test a workflow](test-a-workflow.html) tests this workflow in memory, and [Observe your
+system](observability.html#Workflows) lists the spans and metrics a workflow emits.

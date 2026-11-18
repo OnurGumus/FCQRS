@@ -3,7 +3,7 @@
 title: Test your domain
 category: Apply
 categoryindex: 5
-index: 12
+index: 13
 ---
 *)
 (*** hide ***)
@@ -129,4 +129,5 @@ Keep clocks and external calls out of the fold.
 These tests verify the rule and replay function. Also run the application across a real restart to
 check persistence and query recovery, as the [tutorial's first step](../tutorial/open-an-account.html#Run-it-again) does.
 For changes to stored event shapes, [test compatibility with old events](evolve-events.html).
+To test a workflow without an actor system, see [Test a workflow](test-a-workflow.html).
 *)

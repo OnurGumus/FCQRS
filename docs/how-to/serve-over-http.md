@@ -2,7 +2,7 @@
 title: Serve an aggregate over HTTP
 category: Apply
 categoryindex: 5
-index: 19
+index: 20
 ---
 
 # Serve an aggregate over HTTP

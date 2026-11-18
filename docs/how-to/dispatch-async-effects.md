@@ -2,7 +2,7 @@
 title: Dispatch a best-effort async effect
 category: Apply
 categoryindex: 5
-index: 15
+index: 16
 ---
 
 # Dispatch a best-effort async effect

@@ -1,5 +1,26 @@
 # Changelog
 
+## 7.11.0 (FCQRS.Workflows)
+
+- **`WorkflowTest`.** Runs a workflow instance in memory, for tests, with no actor system or
+  database. It drives the same replay machine as the workflow actor and stores the same records in
+  the same order. Activities, commands, and child workflows do not run: `Complete` and `Fail` give
+  a waiting step's outcome, `Signal` stores a signal, `Advance` moves the test's clock and fires the
+  timers and signal timeouts that are due, and `Cancel` cancels. `Waiting`, `Status`, `Outcome`,
+  `Result`, `Journal`, and `Summary` (one line per record) show where the instance is. The input,
+  results, and signals are stored and read back, as recovery reads them.
+- `CheckReplay` restarts the instance after every record the test stored, never inside one write,
+  and raises `WorkflowReplayException` when a restart stores a different journal: a body whose
+  steps, stored values, or result change on replay. An activity's arguments are not stored, so a
+  GUID or time read outside a step that reaches only an activity's call passes the check.
+  `Restart` does one restart. `WorkflowTest.Resume` runs code over a stored journal
+  and reports `Parked` when they no longer match.
+- `WorkflowTest.Start` and `Resume` take an F# definition or a C# `Workflow<TInput, TResult>`.
+- Retry policies are not applied in a test: the outcome a test gives is the step's final one.
+- A new task guide, "Test a workflow", tests the quote workflow with Expecto and xUnit, in
+  `samples/workflows/fsharp-tests` and `samples/workflows/csharp-tests`.
+- Nothing stored changes.
+
 ## 7.3.0 (FCQRS core)
 
 - **`AddKeyedTransactionalProjection(options, handler)`.** A C# host registers one projection with

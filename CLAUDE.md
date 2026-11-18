@@ -186,6 +186,10 @@ Keep these distinctions intact in code comments and documentation.
   by replaying its journal, and it then stays in memory until it has had no request for
   `akka.fcqrs.workflow-idle-timeout`.
 - Step names, step kinds, the workflow name, and stored payload types are persistent contracts.
+- `WorkflowTest` (`Testing.fs`) drives the same machine as the actor, without one, and must store
+  the same records in the same order; a facade test compares it with an actor's journal. Steps do
+  not run and retry policies are not applied: a test gives each step's final outcome. `CheckReplay`
+  restarts after each record, never inside one write the test gave.
 - A workflow record is journaled under the CLR name of its `WorkflowRecord` case, which a projection
   can read before any workflow is registered. The type's name, namespace, and assembly are
   persistent contracts too.
@@ -257,12 +261,15 @@ Keep these distinctions intact in code comments and documentation.
 - `src/FCQRS/HostExtensions.fs`: C# host-builder and dependency-injection registration.
 - `src/FCQRS/default.hocon`: embedded Akka.NET defaults.
 - `src/FCQRS.Workflows/`: durable workflows. `Workflow.fs` holds the builder and the steps,
-  `Machine.fs` the pure replay interpreter, `WorkflowActor.fs` the persistent actor, `CSharp.fs` the
-  C# API with its async method builder, `Streams.fs` the Akka.Streams flows, and `Schedules.fs`
-  the schedule rules, the schedule aggregate, and the dispatcher that starts runs and keeps its
-  index in a table.
+  `Machine.fs` the pure replay interpreter, `WorkflowActor.fs` the persistent actor, `CSharp.fs`
+  the C# API with its async method builder, `Testing.fs` the in-memory `WorkflowTest`,
+  `Streams.fs` the Akka.Streams flows, and `Schedules.fs` the schedule rules, the schedule
+  aggregate, and the dispatcher that starts runs and keeps its index in a table.
 - `samples/workflows/`: the quote workflow in F# and C# on .NET 10, with project references. The
   workflow task guide quotes it.
+- `samples/workflows/fsharp-tests/` and `samples/workflows/csharp-tests/`: Expecto and xUnit tests
+  of the quote workflow with `WorkflowTest`, linking the sample's workflow file. The workflow test
+  guide quotes them.
 - `samples/resilience/`: a price workflow whose activity runs a Polly circuit breaker and
   concurrency limiter, in F# and C# with project references. The Polly guide quotes it.
 - `samples/approvals/`: the quote workflow from `samples/workflows`, compiled unchanged, with a

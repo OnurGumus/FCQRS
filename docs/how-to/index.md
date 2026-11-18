@@ -21,6 +21,7 @@ Choose the task you need. For a first working application, start with [the tutor
 | Wait until a projection has processed a journal snapshot | [Catch up projections](catch-up-projections.html) |
 | Coordinate several aggregate owners | [Write a saga](write-a-saga.html) |
 | Run durable steps that call external systems | [Write a workflow](write-a-workflow.html) |
+| Test a workflow's steps, timeouts, failures, and replay in memory | [Test a workflow](test-a-workflow.html) |
 | Find the workflows that wait for an approval or another signal | [Find workflows that wait for a signal](find-waiting-workflows.html) |
 | Run jobs nightly, weekly, or at an interval | [Run scheduled jobs](run-scheduled-jobs.html) |
 | Add a circuit breaker or a concurrency limit to an external call | [Use Polly inside an activity](use-polly-in-an-activity.html) |
