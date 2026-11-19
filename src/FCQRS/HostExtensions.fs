@@ -351,7 +351,9 @@ type FcqrsBuilder internal (services: IServiceCollection, connectionString: stri
     /// numbers, so it never skips a stored event. Without a name it keeps its progress in memory
     /// and reads the whole journal at each start, for a read model kept in memory. With a name it
     /// stores its progress in the journal database and resumes, and a handler can see an event
-    /// again after a crash. A handler that throws terminates the process. The handler returns the
+    /// again after a crash. The progress is stored after the handler returns, outside it, so the
+    /// handler can wait for a journal write such as a workflow start. A handler that throws
+    /// terminates the process. The handler returns the
     /// notifications to publish. With entity names (an aggregate's, saga's, or workflow's name), it
     /// reads only those entities' events, and other entities' rows stay in the database; without
     /// them it reads every entity. Resolve FCQRS.Projections.IProjection to wait for it. A name
@@ -423,8 +425,10 @@ type FcqrsBuilder internal (services: IServiceCollection, connectionString: stri
     /// Each pass applies events in journal order: per persistence ID in sequence order, and across
     /// persistence IDs in write order on SQLite; on PostgreSQL an event that commits late is applied
     /// in a later pass. Set `options.Entities` to read only some entities' events. Unprocessed
-    /// journal history must be retained. Raises `ArgumentException` when `options.Name` starts
-    /// with `fcqrs-`, which is reserved for FCQRS's own projections.
+    /// journal history must be retained. On SQLite the handler runs while the transaction holds
+    /// the database's single writer lock, so it must not wait for a journal write such as a
+    /// workflow start; use a named `AddProjection` for that. Raises `ArgumentException` when
+    /// `options.Name` starts with `fcqrs-`, which is reserved for FCQRS's own projections.
     member this.AddTransactionalProjection(
             options: FCQRS.Projections.TransactionalProjectionOptions,
             handler: Func<System.Data.Common.DbConnection, System.Data.Common.DbTransaction, Akka.Persistence.Query.EventEnvelope, Task>) : FcqrsBuilder =

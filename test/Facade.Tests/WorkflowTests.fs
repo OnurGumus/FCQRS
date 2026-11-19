@@ -568,6 +568,35 @@ let private commandTest =
             Expect.equal (balance accounts "alice") "Insufficient funds: 70 available" "Alice paid once for t1 and was refunded t2"
             Expect.equal (balance accounts "bob") "Insufficient funds: 30 available" "Bob received t1 once"
 
+/// A projection that keeps its progress in the journal's SQLite database runs its handler without
+/// holding the database's single writer lock, so a handler can start a workflow, whose start is a
+/// journal write. While the lock was held, the start waited for it until the catch-up timed out.
+let private projectionStartTest =
+    testCase "workflow: a projection with stored progress starts a workflow from an aggregate event on SQLite" <| fun _ ->
+        withSystem "WorkflowProjectionStart" <| fun api ->
+            let accounts = accountsOf api
+            let welcomes =
+                Workflows.register api (Workflow.define "welcome" (fun (owner: string) -> workflow { return $"welcomed {owner}" }))
+            let handled = ConcurrentQueue<string>()
+            use starter =
+                Projection.single (Named "welcome-starter") (fun message ->
+                    match message with
+                    | :? Event<AccountEvent> as stored ->
+                        match stored.EventDetails with
+                        | Opened owner ->
+                            let id = $"welcome-{stored.Sender.Value}"
+                            Async.RunSynchronously(welcomes.Start id owner, 20000) |> ignore
+                            handled.Enqueue id
+                        | _ -> ()
+                    | _ -> ())
+                |> Projection.ofEntities [ "Account" ]
+                |> Fcqrs.projection api
+            sync (accounts.Send (Fcqrs.newCid ()) (Fcqrs.aggregateId "alice") (Open "Alice") (fun _ -> true)) |> ignore
+            let catchUp = starter.CatchUpAsync()
+            Expect.isTrue (catchUp.Wait(TimeSpan.FromSeconds 25.0)) "the projection caught up while its handler started a workflow"
+            Expect.equal (List.ofSeq handled) [ "welcome-alice" ] "the handler started the workflow once"
+            Expect.equal (sync (welcomes.Result "welcome-alice" wait)) (WorkflowOutcome.Finished "welcomed Alice") "the workflow ran"
+
 let private parallelCommandTest =
     testCase "workflow: parallel commands to one aggregate each get their own reply" <| fun _ ->
         withSystem "WorkflowParallelCommand" <| fun api ->
@@ -2072,7 +2101,7 @@ let tests =
     testSequenced (
         testList "workflow"
             [ startTest; faultTest; retryTest; shortTimerTest; restartTest; timerTest; tracingTest; startRaceTest; concurrentStartTest
-              signalTest; signalRestartTest; commandTest; parallelCommandTest; commandRestartTest; commandRecoveryTest; unknownOutcomeTest
+              signalTest; signalRestartTest; commandTest; projectionStartTest; parallelCommandTest; commandRestartTest; commandRecoveryTest; unknownOutcomeTest
               cancelTest; childTest; childRestartTest; cancelChildStartTest; cancelChildStartRestartTest; cancelChildRecoveryTest
               cancelParkedChildTest; cancelParkedBranchesTest; awaitRoundsTest; zeroWaitResultTest; parkingTest; removedStepsParkTest; streamTest; metricsTest
               lateCommandTest; cancelParkedTest; childResultTest; unreadableResultTest; idleTest; manifestTest

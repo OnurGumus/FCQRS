@@ -1,5 +1,22 @@
 # Changelog
 
+## 7.4.0 (FCQRS core)
+
+- **A projection with stored progress can start a workflow on SQLite.** `Fcqrs.projection` with
+  `Named` progress, and a named C# `AddProjection`, ran their handler inside the transaction that
+  stores the position, which holds SQLite's single writer lock. A handler that waited for a journal
+  write, such as a workflow's `Start` or `Signal`, waited for that lock until the projection timed
+  out, and the process terminated. The handler now runs before that transaction; the position is
+  stored after it returns, only if no other writer moved it. Delivery stays at least once. A
+  transactional projection still runs its handler inside the transaction, and its documentation
+  now says it must not wait for a journal write on SQLite. New guide: "Start a workflow from an
+  aggregate event".
+- **Akka.NET 1.5.75, Akka.Persistence.Sql 1.5.73, Akkling 0.18.1.** The package now requires
+  FSharp.Core 10.1.201 or later, and caps Akka.Persistence.Sql below 1.6.
+- **linq2db 6.** Akka.Persistence.Sql 1.5.73 brings linq2db 6.5.1, a major version. An application
+  that references linq2db 5 itself must move to 6. The provider names FCQRS passes still resolve.
+- Nothing stored changes.
+
 ## 7.13.0 (FCQRS.Workflows)
 
 - **Run a free-monad program as a workflow.** `Free.toWorkflow step program` carries out each

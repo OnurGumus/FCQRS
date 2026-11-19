@@ -3,19 +3,19 @@ source https://api.nuget.org/v3/index.json
 storage: none
 framework: net9.0, net10.0
 
-nuget FSharp.Core >= 9.0.303
+nuget FSharp.Core >= 10.1.201
 nuget FSharp.Interop.Dynamic >= 5.0.1.268
 nuget Microsoft.Extensions.Configuration >= 9.0.10
 nuget Microsoft.Extensions.Logging.Console >= 9.0.10
 nuget Microsoft.Extensions.Hosting.Abstractions >= 9.0.0
 nuget Microsoft.Data.SQLite >= 9.0.10
-nuget Akka.Cluster.Sharding >= 1.5.55
-nuget Akka.Cluster.Tools >= 1.5.55
-nuget Akka.Persistence.Sql >= 1.5.59
-nuget Akka.TestKit >= 1.5.55
-nuget Akkling.Cluster.Sharding >= 0.17.0
-nuget Akkling.Persistence >= 0.17.0
-nuget Akkling.Streams >= 0.17.0
+nuget Akka.Cluster.Sharding >= 1.5.75
+nuget Akka.Cluster.Tools >= 1.5.75
+nuget Akka.Persistence.Sql >= 1.5.73 < 1.6
+nuget Akka.TestKit >= 1.5.75
+nuget Akkling.Cluster.Sharding >= 0.18.1
+nuget Akkling.Persistence >= 0.18.1
+nuget Akkling.Streams >= 0.18.1
 nuget FSharp.SystemTextJson >= 1.4.36
 nuget FsToolkit.ErrorHandling >= 5.1.0
 nuget Hocon.Extensions.Configuration >= 2.0.4
@@ -33,4 +33,4 @@ nuget Serilog.Sinks.Console >= 6.0.0
 nuget Serilog.Extensions.Logging >= 8.0.0 < 10.0.0
 nuget SerilogTracing
 nuget SerilogTracing.Sinks.Seq
-nuget linq2db 5.4.1
+nuget linq2db 6.5.1

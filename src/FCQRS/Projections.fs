@@ -667,6 +667,9 @@ let private startWith
 /// Creates an independently running projection. The handler must write exclusively
 /// through the supplied connection and transaction, and await all its database work.
 /// FCQRS commits the handler's updates and contiguous journal position together.
+/// The transaction holds SQLite's single writer lock while the handler runs, so on SQLite the
+/// handler must not wait for a journal write, such as a workflow start: that write waits for the
+/// lock until the projection times out. Start workflows from `Fcqrs.projection` instead.
 /// Each pass applies the events it found in journal order: per persistence ID in sequence
 /// order, and across persistence IDs in write order on SQLite; on PostgreSQL an event that
 /// commits late is applied in a later pass. Retain journal history until it has been processed.
@@ -731,7 +734,9 @@ let internal journalStore (actor: IActor) : SqlProjectionStore =
 /// queries select their persistence IDs, so other entities' rows stay in the database. Empty reads
 /// every entity.
 /// With stored progress, a handler can see an event again after a crash: its position is stored
-/// after the handler returns. A handler that throws terminates the process. The journal must be
+/// after the handler returns. The handler runs outside the transaction that stores the position, so
+/// it can wait for a journal write, such as a workflow start, also on SQLite. A handler that throws
+/// terminates the process. The journal must be
 /// SQLite or PostgreSQL, configured through HOCON.
 let internal startTracked (actor: IActor) (progress: TrackedProgress) (entities: string list) (handler: obj -> IMessageWithCID list) : IProjection =
     if isNull (box handler) then nullArg (nameof handler)
@@ -795,14 +800,26 @@ let internal startTracked (actor: IActor) (progress: TrackedProgress) (entities:
               Journal = journalReads store entities
               ReadPositions = fun ids token -> store.ReadPositionsAsync(name, ids, token)
               Apply =
+                // The handler runs outside the transaction that stores the position. That
+                // transaction takes SQLite's single writer lock, so a handler that waits for a
+                // journal write, such as a workflow start, would wait for its own caller. The
+                // handler writes nothing through the transaction, and its event is handed over
+                // again when the position is not stored, as before.
                 fun publish envelope token -> task {
-                    use! connection = store.OpenProjectionAsync(token)
-                    use! transaction = connection.BeginTransactionAsync(token)
-                    do! store.LockProjectionAsync(connection, transaction, name, token)
-                    let! position = store.ReadPositionAsync(connection, transaction, name, envelope.PersistenceId, token)
+                    let! position = task {
+                        use! connection = store.OpenProjectionAsync(token)
+                        use! transaction = connection.BeginTransactionAsync(token)
+                        let! position = store.ReadPositionAsync(connection, transaction, name, envelope.PersistenceId, token)
+                        do! transaction.CommitAsync(token)
+                        return position
+                    }
                     if envelope.SequenceNr > position then
                         gap name envelope position
                         let notifications = handle envelope
+                        use! connection = store.OpenProjectionAsync(token)
+                        use! transaction = connection.BeginTransactionAsync(token)
+                        do! store.LockProjectionAsync(connection, transaction, name, token)
+                        // Stores the position only if it is still the one read before the handler.
                         do! store.WritePositionAsync(connection, transaction, name, envelope.PersistenceId, position, envelope.SequenceNr, token)
                         do! transaction.CommitAsync(token)
                         notifications |> List.iter publish

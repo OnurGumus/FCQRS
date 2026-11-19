@@ -92,9 +92,10 @@ type ProjectionProgress =
     /// events. For a read model the process keeps in memory.
     | FromStart
     /// Stored in the journal database under this name: the projection resumes where it stopped.
-    /// For a read model that outlives the process. A new name reads the whole journal once. A name
-    /// that starts with `fcqrs-` is reserved for FCQRS's own projections, and `Fcqrs.projection`
-    /// raises `ArgumentException` for it.
+    /// For a read model that outlives the process. A new name reads the whole journal once. The
+    /// position is stored after the handler returns, outside the handler, so the handler can wait for
+    /// a journal write such as a workflow start. A name that starts with `fcqrs-` is reserved for
+    /// FCQRS's own projections, and `Fcqrs.projection` raises `ArgumentException` for it.
     | Named of string
 
 /// A projection: where it keeps its progress, which entities it reads, and what it does with each
@@ -436,7 +437,10 @@ module Fcqrs =
     /// Retain unprocessed journal history. Each pass applies events in journal order: per
     /// persistence ID in sequence order, and across persistence IDs in write order on SQLite; on
     /// PostgreSQL an event that commits late is applied in a later pass. Set
-    /// `options.Entities` to read only some entities' events. See TransactionalProjectionOptions.
+    /// `options.Entities` to read only some entities' events. On SQLite the handler runs while the
+    /// transaction holds the database's single writer lock, so it must not wait for a journal write
+    /// such as a workflow start; use `projection` with `Named` progress for that.
+    /// See TransactionalProjectionOptions.
     let transactionalProjection
         (api: IActor)
         (options: FCQRS.Projections.TransactionalProjectionOptions)
