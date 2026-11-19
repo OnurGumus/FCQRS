@@ -1,5 +1,7 @@
 using FCQRS;
 using FCQRS.Model;
+using FCQRS.Workflows;
+using FCQRS.Workflows.CSharp;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -22,12 +24,13 @@ var options = new TransactionalProjectionOptions("Statement", store);
 var builder = Host.CreateApplicationBuilder();
 builder.Logging.ClearProviders();
 // docs:register
-// Register the saga with the accounts it sends commands to. The host installs
-// its start rule: from now on, each stored TransferSent starts one transfer.
+// Register the workflow beside the account. The host registers it at startup,
+// which also resumes the transfers that were running when the process stopped.
 builder.Services.AddFcqrs(connectionString, "accounts")
     .AddAggregate<Account>()
-    .AddSaga(services => new Transfer(services.AggregateFactory<Account>()))
     .AddTransactionalProjection(options, Statement.Handle);
+builder.Services
+    .AddWorkflow<TransferWorkflow, TransferRequest, TransferOutcome>();
 // docs:end
 using var host = builder.Build();
 await host.StartAsync();
@@ -35,6 +38,8 @@ await host.StartAsync();
 var accounts = host.Services
     .GetRequiredService<Handler<AccountCommand, AccountEvent>>();
 var statement = host.Services.GetRequiredService<IProjection>();
+var transfers = host.Services
+    .GetRequiredService<IWorkflowClient<TransferRequest, TransferOutcome>>();
 
 // Print a reply. Journaled tells whether FCQRS stored the event.
 void Show(Event<AccountEvent> reply)
@@ -63,33 +68,33 @@ await Send(alice, new Deposit(100m));
 await Send(bob, new Open("Bob"));
 
 // docs:transfer
-// A transfer ends when the target stores the money or the source gets it back.
-static bool Finished(Data.IMessageWithCID message) =>
-    message is Event<AccountEvent>
-    {
-        EventDetails: TransferReceived or TransferRefunded
-    };
-
-// Ask Alice's account to send money, and wait until the saga has finished.
-async Task SendTransfer(string id, string target, decimal amount)
+static string DescribeOutcome(TransferOutcome outcome) => outcome switch
 {
-    var cid = Values.NewCID();
-    // Subscribe first: the saga can finish before the reply arrives.
-    using var outcome = statement.SubscribeForFirst(cid, Finished);
-    var reply = await accounts(
-        _ => true, cid, alice, new SendTransfer(id, target, amount));
-    Show(reply);
-    if (reply.Journaled?.Value == true)
-        await outcome.Task.WaitAsync(TimeSpan.FromSeconds(30));
+    Completed => "completed",
+    Refunded => "refunded",
+    Refused refused => $"refused: {refused.Reason}"
+};
+
+// Start a transfer from Alice and wait for it to end. A start with an ID that
+// is already in the journal stores nothing, so a repeated request moves no
+// money: the transfer's ID is the workflow's ID.
+async Task Transfer(string id, string target, decimal amount)
+{
+    var request = new TransferRequest(id, "alice", target, amount);
+    var started = await transfers.StartAsync(id, request);
+    var repeated = started ? "" : " (already started)";
+    var outcome = await transfers.ResultAsync(id, TimeSpan.FromSeconds(30));
+    Console.WriteLine($"Transfer {id}: {DescribeOutcome(outcome)}{repeated}");
 }
 
-await SendTransfer("t1", "bob", 30m);
+await Transfer("t1", "bob", 30m);
 // Carol has no account, so this transfer comes back.
-await SendTransfer("t2", "carol", 20m);
+await Transfer("t2", "carol", 20m);
 // docs:end
 
 // docs:repeat
-// After a restart, a saga sends its last command again. Do the same by hand:
+// After a restart, a workflow sends a command again when its reply was not
+// stored. Do the same by hand:
 await Send(bob, new ReceiveTransfer("t1", "alice", 30m));
 // docs:end
 
@@ -117,6 +122,9 @@ void PrintStatement(string account)
     }
 }
 
+// The statement follows the journal on its own; wait until it has read
+// everything the transfers stored.
+await statement.CatchUpAsync();
 PrintStatement("alice");
 PrintStatement("bob");
 

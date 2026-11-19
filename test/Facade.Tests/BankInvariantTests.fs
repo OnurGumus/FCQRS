@@ -1,8 +1,8 @@
 module BankInvariantTests
 
-// The tutorial's bank from samples/accounts/5-transfer-money, killed at random points. A transfer
-// moves money between two accounts through a saga, so the total across the accounts must stay the
-// same however often the process dies. It runs on SQLite, and on PostgreSQL when
+// The tutorial's bank with the saga of samples/accounts/transfer-with-a-saga, killed at random
+// points. A transfer moves money between two accounts through a saga, so the total across the
+// accounts must stay the same however often the process dies. It runs on SQLite, and on PostgreSQL when
 // FCQRS_TEST_POSTGRES names a server: PostgreSQL runs writes concurrently, so a write can commit
 // after later ones, which SQLite's single writer never does.
 
@@ -70,7 +70,7 @@ let private start (journal: Journal) =
               Fold = fold
               Snapshots = Every 3
               Passivation = PassivationPolicy.Default }
-    let transfers = Fcqrs.saga api { Transfer.definition accounts.Factory with Snapshots = Every 2 }
+    let transfers = Fcqrs.saga api { TransferSaga.definition accounts.Factory with Snapshots = Every 2 }
     Fcqrs.wireSagaStarters api [ transfers ]
     api, accounts
 

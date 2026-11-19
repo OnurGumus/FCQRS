@@ -7,6 +7,13 @@ index: 6
 
 # Sagas: durable coordination
 
+Sagas are the coordination mechanism FCQRS offered before workflows. They stay supported for the
+applications that use them and the journals those applications have stored. New code coordinates
+aggregates with a [workflow](workflows.html) that the application starts:
+[Transfer money](../tutorial/transfer-money.html) builds the transfer below as one. A workflow
+writes the conversation as ordinary code in one place, stores each step's reply, and needs no start
+rule inside the aggregate. This page explains sagas for the applications that run them.
+
 An aggregate can make a correct decision only from state it owns. Alice's account can decide whether
 she has the money to send, but it cannot decide whether Bob's account can take it. That rule belongs to
 Bob's account.
@@ -270,10 +277,11 @@ pretend every action is reversible.
 
 ## Decide whether you need a saga
 
-Use a saga when work crosses independent consistency boundaries and its progress must survive restart.
+Use a workflow, or a saga in an application that already has them, when work crosses independent
+consistency boundaries and its progress must survive restart.
 Use an aggregate command when one owner can decide the rule. Use an async effect for best-effort work
 that may safely be lost and does not need durable progress.
 
-The [tutorial's transfer](../tutorial/transfer-money.html) runs this saga, and
-[Write a saga](../how-to/write-a-saga.html) is the compact F# and C# recipe. [Consistency and recovery](consistency-and-recovery.html) places saga resumption beside the
+The sample [`samples/accounts/transfer-with-a-saga`](https://github.com/OnurGumus/FCQRS/tree/main/samples/accounts/transfer-with-a-saga)
+runs this saga, and [Write a saga](../how-to/write-a-saga.html) is the compact F# and C# recipe. [Consistency and recovery](consistency-and-recovery.html) places saga resumption beside the
 other durable boundaries.

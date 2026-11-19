@@ -24,8 +24,8 @@ Every FCQRS design can be approached through four questions:
 4. **What information must callers query?** A projection turns the stored facts into a read model
    shaped for that question.
 
-If one decision needs work owned by several aggregates, a saga coordinates the steps without merging
-their state.
+If one decision needs work owned by several aggregates, a workflow coordinates the steps without
+merging their state.
 
 ## The vocabulary, in dependency order
 
@@ -37,7 +37,10 @@ their state.
 - A **projection** consumes journal events and updates query-ready data.
 - A **read model** is the data produced by a projection for a particular query or screen.
 - A projection's **progress** records the last version of each aggregate it has handled.
-- A **saga** stores the progress of work that crosses aggregate or service boundaries.
+- A **workflow** runs work that crosses aggregate or service boundaries as ordinary code, and stores
+  the result of each step so it can continue after a restart.
+- A **saga**, the mechanism FCQRS offered before workflows, stores the same kind of progress as a
+  state machine started by an aggregate's event.
 - A [**correlation id**](correlation-ids.html) ties one request to the commands, events, saga steps,
   and projection signal it causes.
 - A [**snapshot**](aggregate-lifecycle.html) is a recovery checkpoint. It shortens replay but does not
@@ -55,11 +58,11 @@ read-model rows are not three names for the same data.
 | Where should one business rule live? | [Aggregates and the write side](aggregates.html) |
 | How do projections, their progress, and query models differ? | [The read side](read-models.html) |
 | How does one request wait for the correct projection? | [Correlation IDs and read-your-writes](correlation-ids.html) |
-| How do independent owners coordinate after failures? | [Sagas](sagas.html) |
-| How does straight-line code resume after a crash? | [Workflows](workflows.html) |
+| How do independent owners coordinate, and resume after a crash? | [Workflows](workflows.html) |
 | How does a workflow wait for a signal, run steps together, or call an aggregate? | [Workflow steps](workflow-steps.html) |
 | How do workflows start at due times? | [Schedules](schedules.html) |
 | How can logic name its operations and leave them to an interpreter? | [Free programs](free-programs.html) |
+| How do sagas, the older coordination mechanism, work? | [Sagas](sagas.html) |
 | What do defer, snapshot, and passivation each do? | [Deferring, snapshots, and passivation](aggregate-lifecycle.html) |
 | What is durable at each point in the complete flow? | [Consistency and recovery](consistency-and-recovery.html) |
 | Why did my process stop, and what should I do about it? | [When FCQRS stops the process](process-termination.html) |

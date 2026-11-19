@@ -2,14 +2,11 @@
     // snippet: 2
 // include: samples/accounts/5-transfer-money/fsharp/Statement.fs
 module Transfer =
-    open System
-    open FCQRS.Common
     open FCQRS.FSharp
+    open FCQRS.Workflows
     open Account
     // snippet: 3
     // snippet: 4
-    // snippet: 5
-    // snippet: 6
 open System
 open System.Data.Common
 open System.IO
@@ -22,7 +19,9 @@ open FCQRS.FSharp
 open FCQRS.Model.Data
 open FCQRS.ProjectionStorage
 open FCQRS.Projections
+open FCQRS.Workflows
 open Account
+open Transfer
 let database = Path.Combine(AppContext.BaseDirectory, "accounts.db")
 let connectionString = $"Data Source={database}"
 
@@ -40,7 +39,10 @@ let accounts =
           Fold = fold
           Snapshots = Default
           Passivation = PassivationPolicy.Default }
-// snippet: 7
+
+// Finish the aggregate startup. This program has no sagas.
+Fcqrs.wireSagaStarters api []
+// snippet: 5
 
 // The statement from step 4, with rows for transfers.
 do
@@ -77,5 +79,6 @@ let send account command =
     Fcqrs.sendAwaiting statement accounts (Fcqrs.newCid ()) account command (fun _ -> true)
     |> Async.RunSynchronously
     |> show
+// snippet: 6
+// snippet: 7
 // snippet: 8
-// snippet: 9

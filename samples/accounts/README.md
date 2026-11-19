@@ -14,10 +14,14 @@ run the programs from here or from a step's folder.
    from `fold`.
 4. [Show a statement](4-show-a-statement/): a read model, a projection that writes it, and waiting for
    the read model after a command.
-5. [Transfer money](5-transfer-money/): a saga that moves money between accounts, refunds a transfer
+5. [Transfer money](5-transfer-money/): a workflow that moves money between accounts, refunds a transfer
    the target cannot take, and commands that are safe to repeat.
 6. [Add a memo](6-add-a-memo/): an optional field that old events read as missing, and a read model
    rebuilt from the first event. It continues from step 5's database, so run step 5 first.
+
+[transfer-with-a-saga](transfer-with-a-saga/) is step 5's transfer written with a saga, the mechanism
+FCQRS offered before workflows, for the [Write a saga](https://onurgumus.github.io/FCQRS/how-to/write-a-saga.html)
+guide. It compiles step 5's account and statement.
 
 [serve-over-http](serve-over-http/) puts step 4's account and statement behind ASP.NET Core endpoints
 for the [Serve an aggregate over HTTP](https://onurgumus.github.io/FCQRS/how-to/serve-over-http.html)

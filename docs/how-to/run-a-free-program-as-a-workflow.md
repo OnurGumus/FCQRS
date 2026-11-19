@@ -2,7 +2,7 @@
 title: Run a free-monad program as a workflow
 category: Apply
 categoryindex: 5
-index: 13
+index: 15
 ---
 
 # Run a free-monad program as a workflow
@@ -114,6 +114,86 @@ without a workflow: `Free.run`, in FCQRS.Model 6.2.0 and later, runs it with a f
 answers each instruction, as [Free programs](../concepts/free-programs.html#Run-it-with-an-interpreter)
 shows.
 
+## Run instructions together
+
+A program performs one instruction at a time. To ask two carriers for a shipping price at once, an
+instruction carries the programs to run as its parameters, and the step that carries it out runs
+them with `all` or `race`:
+
+```fsharp
+type ShippingInstruction =
+    | Quote of carrier: string
+    | All of Free<ShippingInstruction, objnull> list
+    | First of Free<ShippingInstruction, objnull> list
+
+let quote carrier : Free<ShippingInstruction, decimal> =
+    Eff.perform (Quote carrier)
+
+let allOf (programs: Free<ShippingInstruction, 'T> list) =
+    Eff.perform<_, objnull list> (All(List.map (Free.map box) programs))
+    |> Free.map (List.map unbox<'T>)
+
+let firstOf (programs: Free<ShippingInstruction, 'T> list) =
+    Eff.perform<_, 'T> (First(List.map (Free.map box) programs))
+
+let priced carrier =
+    quote carrier |> Free.map (fun price -> carrier, price)
+
+let cheapest carriers =
+    free {
+        let! prices = allOf (List.map priced carriers)
+        return List.minBy snd prices
+    }
+
+let fastest carriers = firstOf (List.map priced carriers)
+```
+
+`allOf` gives every program's result, in the order of the list. `firstOf` gives the result of the
+program that finishes first. One instruction holds programs with one result type, so the helpers
+box each program's result and unbox the answer; `cheapest` and `fastest` see typed values.
+
+The step for `All` and `First` turns each program into a workflow with `Free.toWorkflow`, so the
+instructions inside a program become steps of their own:
+
+```fsharp
+type ICarriers =
+    abstract Quote: key: string * carrier: string -> Task<decimal>
+
+let rec shippingStep (carriers: ICarriers) instruction =
+    let branches programs =
+        programs |> List.map (Free.toWorkflow (shippingStep carriers))
+
+    match instruction with
+    | Quote carrier ->
+        activity $"quote {carrier}" policy (fun attempt ->
+            carriers.Quote(attempt.IdempotencyKey, carrier))
+        |> Free.answer
+    | All programs -> branches programs |> all |> Free.answer
+    | First programs -> branches programs |> race |> Free.answer
+
+let shipping carriers =
+    Workflow.define "shipping" (fun (names: string list) ->
+        Free.toWorkflow (shippingStep carriers) (cheapest names))
+```
+
+Both quotes are scheduled before either completes, and the order in which they complete does not
+matter. Each step's name holds the carrier, so a test can answer them in any order:
+
+```fsharp
+let cheapestWins (carriers: ICarriers) =
+    let flow = WorkflowTest.Start(shipping carriers, [ "north"; "south" ])
+    flow.Complete("quote south", 9m)
+    flow.Complete("quote north", 12m)
+    flow.CheckReplay()
+    flow.Result = ("south", 9m)
+```
+
+With `fastest`, `race` stores the first quote that completes and cancels the other step. Another
+interpreter decides what `All` and `First` mean for it. A function that `Free.run` calls can run the
+programs of `All` one after another and answer `First` with its first program's result. An
+interpreter for `Free.runTask` receives no cancellation token, so it cannot stop the programs that
+lose a race.
+
 ## What the program must keep
 
 - **The program's code must be deterministic.** It runs again on every replay, like a workflow
@@ -127,7 +207,9 @@ shows.
   the instruction's caller expects faults the instance with an exception that names both types.
   Pair each instruction with a typed function, as `reserve` and `charge` do, so the type is written
   once.
-- **A program is sequential.** One instruction follows another. For steps that run together, map
-  one instruction to a step built with `all` or `race`.
+- **A program performs one instruction at a time.** Steps run together only inside one
+  instruction, as [Run instructions together](#Run-instructions-together) shows. The position of
+  each program in `All` or `First` is part of its steps' stored paths, so reordering the programs
+  parks running instances, as reordering instructions does.
 
 Next: [Test your domain](test-your-domain.html) checks decisions, replay, and retries.

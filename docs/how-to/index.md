@@ -19,10 +19,11 @@ Choose the task you need. For a first working application, start with [the tutor
 | Project events into query data | [Add a projection](add-a-projection.html) |
 | Wait before querying your own change | [Read your writes](read-your-writes.html) |
 | Wait until a projection has processed a journal snapshot | [Catch up projections](catch-up-projections.html) |
-| Coordinate several aggregate owners | [Write a saga](write-a-saga.html) |
 | Run durable steps that call external systems | [Write a workflow](write-a-workflow.html) |
 | Test a workflow's steps, timeouts, failures, and replay in memory | [Test a workflow](test-a-workflow.html) |
 | Find the workflows that wait for an approval or another signal | [Find workflows that wait for a signal](find-waiting-workflows.html) |
+| Apply only the newest of the changes that arrive while one is applied | [Apply only the newest change](apply-the-newest-change.html) |
+| Start a workflow when an aggregate stores an event | [Start a workflow from an aggregate event](start-a-workflow-from-an-event.html) |
 | Run jobs nightly, weekly, or at an interval | [Run scheduled jobs](run-scheduled-jobs.html) |
 | Add a circuit breaker or a concurrency limit to an external call | [Use Polly inside an activity](use-polly-in-an-activity.html) |
 | Run a program written with the free monad as durable steps | [Run a free-monad program as a workflow](run-a-free-program-as-a-workflow.html) |
@@ -33,6 +34,7 @@ Choose the task you need. For a first working application, start with [the tutor
 | Choose journal and snapshot storage | [Configure the database](configure-the-database.html) |
 | Add logs, traces, and failure signals | [Observe your system](observability.html) |
 | Build a C# host and domain | [Use FCQRS from C#](use-from-csharp.html) |
+| Maintain a saga in an application that has them | [Write a saga](write-a-saga.html) |
 
 [Consistency and recovery](../concepts/consistency-and-recovery.html) explains how aggregate persistence,
 projection commits, saga progress, and external work fit together.

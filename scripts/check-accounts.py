@@ -40,6 +40,11 @@ def replies(output):
     return re.findall(r'^\S.* \(version \d+(?:, (?:not )?stored)?\)$', output, re.M)
 
 
+def outcomes(output):
+    """The printed transfer outcomes, such as 'Transfer t1: completed', in order."""
+    return re.findall(r'^Transfer \w+: .*$', output, re.M)
+
+
 def journal(output):
     """The printed journal rows of Alice's account as (sequence number, stored event) pairs."""
     return [(int(number), event)
@@ -178,9 +183,8 @@ def transfer_money(project, language):
     same(replies(first), ['Opened for Alice (version 1, stored)',
                           'Deposited 100 (version 2, stored)',
                           'Opened for Bob (version 1, stored)',
-                          'Sent 30 to bob (t1) (version 3, stored)',
-                          'Sent 20 to carol (t2) (version 4, stored)',
                           'Received 30 from alice (t1) (version 2, not stored)'], first)
+    same(outcomes(first), ['Transfer t1: completed', 'Transfer t2: refunded'], first)
     # t1 reached Bob once, although it was delivered twice; t2 came back to Alice.
     same(statements(first, 24), {'alice': alice, 'bob': bob}, first)
     # The second run repeats the requests: the transfer IDs stop them from moving money again.
@@ -188,9 +192,33 @@ def transfer_money(project, language):
     same(replies(second), ['Rejected: The account is already open (version 5, not stored)',
                            'Deposited 100 (version 6, stored)',
                            'Rejected: The account is already open (version 2, not stored)',
-                           'Rejected: Transfer t1 was already sent (version 6, not stored)',
-                           'Rejected: Transfer t2 was already sent (version 6, not stored)',
                            'Received 30 from alice (t1) (version 2, not stored)'], second)
+    same(outcomes(second), ['Transfer t1: completed (already started)',
+                            'Transfer t2: refunded (already started)'], second)
+    same(statements(second, 24), {'alice': alice + [(6, 'Deposit', 100, 170)], 'bob': bob}, second)
+
+
+def transfer_with_a_saga(project, language):
+    # The saga sample compiles step 5's account and statement, so copy both into a tree of their own.
+    root = project.parent.parent / 'with-step-5'
+    copy(root, '5-transfer-money', language)
+    project = copy(root, 'transfer-with-a-saga', language)
+    alice = [(1, 'Opened for Alice', 0, 0), (2, 'Deposit', 100, 100),
+             (3, 'Transfer t1 to bob', -30, 70), (4, 'Transfer t2 to carol', -20, 50),
+             (5, 'Refund of transfer t2', 20, 70)]
+    bob = [(1, 'Opened for Bob', 0, 0), (2, 'Transfer t1 from alice', 30, 30)]
+    first = run(project)
+    same(replies(first), ['Opened for Alice (version 1, stored)',
+                          'Deposited 100 (version 2, stored)',
+                          'Opened for Bob (version 1, stored)',
+                          'Sent 30 to bob (t1) (version 3, stored)',
+                          'Sent 20 to carol (t2) (version 4, stored)',
+                          'Received 30 from alice (t1) (version 2, not stored)'], first)
+    same(statements(first, 24), {'alice': alice, 'bob': bob}, first)
+    # A repeated send gets its first answer, not stored, so no saga starts again.
+    second = run(project)
+    same(replies(second)[3:5], ['Sent 30 to bob (t1) (version 6, not stored)',
+                                'Sent 20 to carol (t2) (version 6, not stored)'], second)
     same(statements(second, 24), {'alice': alice + [(6, 'Deposit', 100, 170)], 'bob': bob}, second)
 
 
@@ -227,13 +255,13 @@ def add_a_memo(project, language):
         'bob': [(1, 'Opened for Bob', '', 0, 0), (2, 'Transfer t1 from alice', '', 30, 30),
                 (3, 'Transfer t3 from alice', 'rent', 25, 55)]}
     first = run(project)
-    same(replies(first), ['Sent 25 to bob (t3, "rent") (version 6, stored)'], first)
+    same(outcomes(first), ['Transfer t3: completed'], first)
     # Events step 5 stored have no memo; the new code reads them and adds one with a memo.
     same(journal(first), transfers, first)
     # The new statement was built from the first event, so it has step 5's history too.
     same(memo_statements(first), statements, first)
     second = run(project)
-    same(replies(second), ['Rejected: Transfer t3 was already sent (version 6, not stored)'], second)
+    same(outcomes(second), ['Transfer t3: completed (already started)'], second)
     same(memo_statements(second), statements, second)
 
 
@@ -262,7 +290,8 @@ STEPS = {'1-open-an-account': open_an_account,
          '3-restart-the-bank': restart_the_bank,
          '4-show-a-statement': show_a_statement,
          '5-transfer-money': transfer_money,
-         '6-add-a-memo': add_a_memo}
+         '6-add-a-memo': add_a_memo,
+         'transfer-with-a-saga': transfer_with_a_saga}
 
 # Optional arguments select steps by folder name, for example: 2-withdraw-money
 selected = sys.argv[1:] or list(STEPS)

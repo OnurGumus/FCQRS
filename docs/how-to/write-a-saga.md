@@ -7,11 +7,18 @@ index: 7
 
 # Write a saga
 
-This recipe coordinates a money transfer across two accounts. Alice's account stores `TransferSent`,
+Sagas are the coordination mechanism FCQRS offered before workflows. They stay supported for the
+applications that use them and the journals those applications have stored. New code coordinates
+aggregates with a workflow that the application starts, as
+[Transfer money](../tutorial/transfer-money.html) does.
+
+This recipe coordinates the same money transfer with a saga. Alice's account stores `TransferSent`,
 which takes the money out of her balance. Bob's account decides whether to accept it. A saga delivers
-the money to the target account and, if the target rejects it, refunds the source.
-[Transfer money](../tutorial/transfer-money.html) builds and runs this saga step by step. This page
-lists what every saga needs, using the same code.
+the money to the target account and, if the target rejects it, refunds the source. The code is the
+runnable sample [`samples/accounts/transfer-with-a-saga`](https://github.com/OnurGumus/FCQRS/tree/main/samples/accounts/transfer-with-a-saga),
+which uses step 5's account. This page lists what every saga needs, using that code.
+
+<img src="../img/transfer-with-a-saga.svg" alt="Alice's account stores TransferSent, which starts a transfer saga in the Delivering state. The saga sends ReceiveTransfer to Bob, who stores TransferReceived, and the saga completes. For a transfer to Carol, who has no account, the target rejects ReceiveTransfer, the saga moves to Refunding and sends RefundTransfer to Alice, who stores TransferRefunded, and the saga completes." width="900"/>
 
 Read [Sagas](../concepts/sagas.html) first if you need the ground-up explanation of transitions,
 `SagaStartingEvent`, the starter handshake, and recovery re-drive.
@@ -38,7 +45,7 @@ The implementation has one function for the first three columns and another for 
 
 Each state carries what its command needs:
 
-<!-- sample: accounts/5-transfer-money/fsharp Transfer.fs states -->
+<!-- sample: accounts/transfer-with-a-saga/fsharp Transfer.fs states -->
 ```fsharp
 // What a transfer moves, and between which accounts.
 type TransferDetails = {
@@ -59,7 +66,7 @@ type TransferState =
 
 <div class="cs-alt"></div>
 
-<!-- sample: accounts/5-transfer-money/csharp Transfer.cs states -->
+<!-- sample: accounts/transfer-with-a-saga/csharp Transfer.cs states -->
 ```csharp
 // What a transfer moves, and between which accounts.
 public sealed record TransferDetails(
@@ -81,7 +88,7 @@ public sealed record TransferData;
 saga state together. The state is `None` when the starting event first reaches user code. `Sender`
 identifies the account that stored an event, which separates the target's rejection from any other.
 
-<!-- sample: accounts/5-transfer-money/fsharp Transfer.fs react -->
+<!-- sample: accounts/transfer-with-a-saga/fsharp Transfer.fs react -->
 ```fsharp
 // Turns an event into the next state to store.
 let handleEvent (message: obj) (saga: SagaState<unit, TransferState option>) =
@@ -110,7 +117,7 @@ let handleEvent (message: obj) (saga: SagaState<unit, TransferState option>) =
 
 <div class="cs-alt"></div>
 
-<!-- sample: accounts/5-transfer-money/csharp Transfer.cs react -->
+<!-- sample: accounts/transfer-with-a-saga/csharp Transfer.cs react -->
 ```csharp
 // Turns the event that started the transfer into its first state.
 public override EventAction<TransferState> Start(
@@ -172,7 +179,7 @@ aggregates' reply events and `ToSelf` timeout payloads.
 the transition FCQRS should make after issuing them. In C#, `ApplySideEffects` runs only once a user
 state exists, so it receives the state directly.
 
-<!-- sample: accounts/5-transfer-money/fsharp Transfer.fs effects -->
+<!-- sample: accounts/transfer-with-a-saga/fsharp Transfer.fs effects -->
 ```fsharp
 // Returns the commands for a stored state. It runs again after recovery; the
 // last argument says whether FCQRS is recovering, and this saga ignores it.
@@ -195,7 +202,7 @@ let applySideEffects accounts (saga: SagaState<unit, TransferState>) _ =
 
 <div class="cs-alt"></div>
 
-<!-- sample: accounts/5-transfer-money/csharp Transfer.cs effects -->
+<!-- sample: accounts/transfer-with-a-saga/csharp Transfer.cs effects -->
 ```csharp
 // Returns the commands for a stored state. It runs again after recovery;
 // `recovering` says whether FCQRS is recovering, and this saga ignores it.
@@ -312,7 +319,7 @@ Choose per state:
 `StartOn` answers “which originator event creates one new instance of this saga?” Match only the event
 that begins the workflow.
 
-<!-- sample: accounts/5-transfer-money/fsharp Transfer.fs definition -->
+<!-- sample: accounts/transfer-with-a-saga/fsharp Transfer.fs definition -->
 ```fsharp
 // A transfer starts when an account stores TransferSent.
 let startsOn (event: Event<AccountEvent>) =
@@ -333,7 +340,7 @@ let definition accounts = {
 
 <div class="cs-alt"></div>
 
-<!-- sample: accounts/5-transfer-money/csharp Transfer.cs definition -->
+<!-- sample: accounts/transfer-with-a-saga/csharp Transfer.cs definition -->
 ```csharp
 // A transfer starts when an account stores TransferSent.
 public override bool StartsOn(Event<AccountEvent> stored) =>
@@ -362,17 +369,17 @@ explains when that happens.
 Register participant aggregates before constructing the saga, then wire every saga start rule once.
 Here the accounts are both the originator and the target, so the saga needs one factory:
 
-<!-- sample: accounts/5-transfer-money/fsharp Program.fs register -->
+<!-- sample: accounts/transfer-with-a-saga/fsharp Program.fs register -->
 ```fsharp
 // Register the saga with the accounts it sends commands to, then install its
 // start rule. From now on, each stored TransferSent starts one transfer.
-let transfers = Fcqrs.saga api (Transfer.definition accounts.Factory)
+let transfers = Fcqrs.saga api (TransferSaga.definition accounts.Factory)
 Fcqrs.wireSagaStarters api [ transfers ]
 ```
 
 <div class="cs-alt"></div>
 
-<!-- sample: accounts/5-transfer-money/csharp Program.cs register -->
+<!-- sample: accounts/transfer-with-a-saga/csharp Program.cs register -->
 ```csharp
 // Register the saga with the accounts it sends commands to. The host installs
 // its start rule: from now on, each stored TransferSent starts one transfer.
@@ -402,8 +409,7 @@ the previous command is uncertain, so each waiting state must do one of the foll
 In this example, each account records the IDs of the transfers it has received and refunded. A
 repeated `ReceiveTransfer` or `RefundTransfer` for a known ID returns the first answer as a deferred
 reply and moves no money. The normal commands are therefore safe to issue again, after recovery or on
-each retry. [Transfer money](../tutorial/transfer-money.html) sends a repeated delivery and shows the
-result.
+each retry. The sample sends a repeated delivery and shows the result.
 
 Do not return no command merely because `recovering` is true. If the process stopped before delivery,
 that leaves the workflow waiting forever. Add a timeout for every event that may never arrive.

@@ -3,12 +3,13 @@ module Account
 
 open FCQRS.Common
 
-// What a caller, or the transfer saga, can ask an account to do.
+// What a caller, or a transfer, can ask an account to do.
 type AccountCommand =
     | Open of owner: string
     | Deposit of amount: decimal
     | Withdraw of amount: decimal
-    // New in this step: an optional memo, which the saga passes to the target.
+    // New in this step: an optional memo, which the transfer passes to the
+    // target.
     | SendTransfer of
         transferId: string * target: string * amount: decimal *
         memo: string option
@@ -60,6 +61,10 @@ let decide (command: Command<AccountCommand>) (state: AccountState) =
     | Open _, Some _ -> DeferEvent(Rejected "The account is already open")
     | Open owner, None -> PersistEvent(Opened owner)
     | _, None -> DeferEvent(Rejected "The account is not open")
+    // A repeated send gets the first answer, checked before the balance,
+    // because the first send lowered it. No money moves twice.
+    | SendTransfer(id, target, amount, memo), _ when state.Sent.Contains id ->
+        DeferEvent(TransferSent(id, target, amount, memo))
     | (Deposit amount | Withdraw amount | SendTransfer(_, _, amount, _)), _
         when amount <= 0m -> DeferEvent(Rejected "The amount must be positive")
     | Deposit amount, _ -> PersistEvent(Deposited amount)
@@ -67,8 +72,6 @@ let decide (command: Command<AccountCommand>) (state: AccountState) =
         when amount > state.Balance ->
         DeferEvent(Rejected $"Insufficient funds: {state.Balance} available")
     | Withdraw amount, _ -> PersistEvent(Withdrawn amount)
-    | SendTransfer(id, _, _, _), _ when state.Sent.Contains id ->
-        DeferEvent(Rejected $"Transfer {id} was already sent")
     | SendTransfer(id, target, amount, memo), _ ->
         PersistEvent(TransferSent(id, target, amount, memo))
     // A repeated delivery gets the first answer; no money moves.
@@ -88,6 +91,7 @@ let fold (event: Event<AccountEvent>) (state: AccountState) =
     | Opened owner -> { state with Owner = Some owner }
     | Deposited amount -> { state with Balance = state.Balance + amount }
     | Withdrawn amount -> { state with Balance = state.Balance - amount }
+    | TransferSent(id, _, _, _) when state.Sent.Contains id -> state
     | TransferSent(id, _, amount, _) ->
         { state with
             Balance = state.Balance - amount

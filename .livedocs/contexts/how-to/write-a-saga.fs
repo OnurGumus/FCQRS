@@ -1,5 +1,5 @@
 // include: samples/accounts/5-transfer-money/fsharp/Account.fs
-module Transfer =
+module TransferSaga =
     open System
     open FCQRS.Common
     open FCQRS.FSharp

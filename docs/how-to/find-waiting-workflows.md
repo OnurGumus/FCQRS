@@ -543,4 +543,5 @@ Adding that step to a workflow whose instances are running changes the steps tho
 stored. Follow [Change a workflow while instances are
 running](../concepts/workflows.html#Change-a-workflow-while-instances-are-running).
 
-Next: [Run scheduled jobs](run-scheduled-jobs.html) starts workflows on a schedule.
+Next: [Apply only the newest change](apply-the-newest-change.html) uses signals to apply only the
+newest of the changes that arrive while one is applied.

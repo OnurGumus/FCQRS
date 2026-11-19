@@ -1,5 +1,7 @@
 using FCQRS;
 using FCQRS.Model;
+using FCQRS.Workflows;
+using FCQRS.Workflows.CSharp;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -43,49 +45,38 @@ var options = new TransactionalProjectionOptions("StatementV2", store);
 
 var builder = Host.CreateApplicationBuilder();
 builder.Logging.ClearProviders();
-// Register the accounts, the transfer saga, and the new statement.
+// Register the accounts, the new statement, and the transfer workflow.
 builder.Services.AddFcqrs(connectionString, "accounts")
     .AddAggregate<Account>()
-    .AddSaga(services => new Transfer(services.AggregateFactory<Account>()))
     .AddTransactionalProjection(options, Statement.Handle);
+builder.Services
+    .AddWorkflow<TransferWorkflow, TransferRequest, TransferOutcome>();
 using var host = builder.Build();
 await host.StartAsync();
 
-var accounts = host.Services
-    .GetRequiredService<Handler<AccountCommand, AccountEvent>>();
 var statement = host.Services.GetRequiredService<IProjection>();
-
-// Print a reply. Journaled tells whether FCQRS stored the event.
-void Show(Event<AccountEvent> reply)
-{
-    var stored = reply.Journaled?.Value == true ? "stored" : "not stored";
-    var description = Describe(reply.EventDetails);
-    Console.WriteLine($"{description} (version {reply.Version}, {stored})");
-}
-
-var alice = Values.CreateAggregateId("alice");
-
-// A transfer ends when the target stores the money or the source gets it back.
-static bool Finished(Data.IMessageWithCID message) =>
-    message is Event<AccountEvent>
-    {
-        EventDetails: TransferReceived or TransferRefunded
-    };
+var transfers = host.Services
+    .GetRequiredService<IWorkflowClient<TransferRequest, TransferOutcome>>();
 
 // docs:transfer
-// Ask Alice's account for a transfer with a memo, and wait for the saga.
-async Task SendTransfer(string id, string target, decimal amount, string? memo)
+static string DescribeOutcome(TransferOutcome outcome) => outcome switch
 {
-    var cid = Values.NewCID();
-    using var outcome = statement.SubscribeForFirst(cid, Finished);
-    var reply = await accounts(
-        _ => true, cid, alice, new SendTransfer(id, target, amount, memo));
-    Show(reply);
-    if (reply.Journaled?.Value == true)
-        await outcome.Task.WaitAsync(TimeSpan.FromSeconds(30));
+    Completed => "completed",
+    Refunded => "refunded",
+    Refused refused => $"refused: {refused.Reason}"
+};
+
+// Start a transfer from Alice with a memo, and wait for it to end.
+async Task Transfer(string id, string target, decimal amount, string? memo)
+{
+    var request = new TransferRequest(id, "alice", target, amount, memo);
+    var started = await transfers.StartAsync(id, request);
+    var repeated = started ? "" : " (already started)";
+    var outcome = await transfers.ResultAsync(id, TimeSpan.FromSeconds(30));
+    Console.WriteLine($"Transfer {id}: {DescribeOutcome(outcome)}{repeated}");
 }
 
-await SendTransfer("t3", "bob", 25m, "rent");
+await Transfer("t3", "bob", 25m, "rent");
 // docs:end
 
 // Applications do not read the journal. This program reads it only to show how
@@ -136,27 +127,12 @@ void PrintStatement(string account)
     }
 }
 
+// The statement follows the journal on its own; wait until it has read
+// everything, including the events step 5 stored.
+await statement.CatchUpAsync();
 PrintTransfers();
 PrintStatement("alice");
 PrintStatement("bob");
 
 await host.StopAsync();
 return 0;
-
-static string Describe(AccountEvent @event)
-{
-    static string About(string? memo) => memo is null ? "" : $", \"{memo}\"";
-    return @event switch
-    {
-        Opened opened => $"Opened for {opened.Owner}",
-        Deposited deposited => $"Deposited {deposited.Amount}",
-        Withdrawn withdrawn => $"Withdrew {withdrawn.Amount}",
-        TransferSent sent =>
-            $"Sent {sent.Amount} to {sent.Target} ({sent.TransferId}{About(sent.Memo)})",
-        TransferReceived received =>
-            $"Received {received.Amount} from {received.Source} " +
-            $"({received.TransferId}{About(received.Memo)})",
-        TransferRefunded refunded => $"Refunded {refunded.Amount} ({refunded.TransferId})",
-        Rejected rejected => $"Rejected: {rejected.Reason}"
-    };
-}

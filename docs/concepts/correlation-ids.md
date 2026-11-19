@@ -148,7 +148,7 @@ work caused by that request.
 ## Put it into practice
 
 The [tutorial's statement](../tutorial/show-a-statement.html) waits for each command's event before it
-queries, and the [transfer step](../tutorial/transfer-money.html) waits for a saga's last event by
-correlation ID. [Read your writes](../how-to/read-your-writes.html) provides the F# and C# APIs,
+queries. In the [transfer step](../tutorial/transfer-money.html), each `send` of the workflow subscribes
+to its command's correlation ID before it sends. [Read your writes](../how-to/read-your-writes.html) provides the F# and C# APIs,
 including filters, multiple notifications, cancellation, and `sendAwaiting`. [Observe your
 system](../how-to/observability.html) shows how the same CID appears in logs and traces.

@@ -1,114 +1,58 @@
 using FCQRS;
+using FCQRS.Workflows.CSharp;
 using static FCQRS.Common;
 using static FCQRS.CSharp;
 
-// docs:states
-// What a transfer moves, and between which accounts.
-public sealed record TransferDetails(
+// docs:types
+// What the application asks for. The application starts the workflow with
+// the transfer's ID as the workflow ID.
+public sealed record TransferRequest(
     string Id, string Source, string Target, decimal Amount);
 
-// Where a transfer is.
-public union TransferState(Delivering, Refunding, Completed);
-// Waiting for the target account to take the money.
-public sealed record Delivering(TransferDetails Transfer);
-// The target turned it down: waiting for the source account's refund.
-public sealed record Refunding(TransferDetails Transfer);
+// How a transfer ended.
+public union TransferOutcome(Completed, Refunded, Refused);
+// The target account took the money.
 public sealed record Completed;
-
-// The saga needs no fixed data besides its state.
-public sealed record TransferData;
+// The target turned it down, and the source account got the money back.
+public sealed record Refunded;
+// The source account turned it down, so no money moved.
+public sealed record Refused(string Reason);
 // docs:end
 
-public sealed class Transfer(AggregateFactory accounts)
-    : Saga<TransferData, TransferState, AccountEvent>
+// docs:workflow
+// Each send is a step: FCQRS stores its reply, and after a restart the
+// workflow continues after the last stored step. A step that had not stored
+// its reply sends its command again.
+// The name is stored with every instance and must not change.
+public sealed class TransferWorkflow(IServiceProvider services)
+    : Workflow<TransferRequest, TransferOutcome>("Transfer")
 {
-    public override string SagaName => "Transfer";
-    public override TransferData InitialData => new();
-    // The aggregate whose event starts the saga.
-    public override AggregateFactory Originator => accounts;
+    // The accounts the workflow sends commands to.
+    private readonly AggregateFactory accounts =
+        services.AggregateFactory<Account>();
 
-    // docs:react
-    // Turns the event that started the transfer into its first state.
-    public override EventAction<TransferState> Start(
-        object message, TransferData data) =>
-        message is Event<AccountEvent>
-        {
-            EventDetails: TransferSent sent, Sender: { } sender
-        }
-            ? StateChanged(new Delivering(
-                new(sent.TransferId, sender.Value.ToString(), sent.Target,
-                    sent.Amount)))
-            : Unhandled();
+    public override async WorkflowTask<TransferOutcome> Run(
+        WorkflowContext ctx, TransferRequest request)
+    {
+        var (id, source, target, amount) = request;
+        // Take the money from the source account.
+        var send = new SendTransfer(id, target, amount);
+        if (await Send(ctx, source, send) is Rejected rejected)
+            return new Refused(rejected.Reason);
+        // Deliver it to the target account.
+        var deliver = new ReceiveTransfer(id, source, amount);
+        if (await Send(ctx, target, deliver) is TransferReceived)
+            return new Completed();
+        // The target's only other answer is Rejected: give the money back.
+        var refund = new RefundTransfer(id, target, amount);
+        await Send(ctx, source, refund);
+        return new Refunded();
+    }
 
-    // Turns a later event into the next state to store.
-    public override EventAction<TransferState> HandleEvent(
-        object message, SagaState<TransferData, TransferState> saga) =>
-        (message, saga.State) switch
-        {
-            // Sender is the ID of the account that stored the event.
-            (Event<AccountEvent> { Sender: { } sender } stored, var state) =>
-                React(stored.EventDetails, sender.Value.ToString(), state),
-            // No answer in time. The outcome is unknown, so enter the same
-            // state again, which sends the command again.
-            (ExpectationExhausted, Delivering or Refunding) =>
-                StateChanged(saga.State),
-            _ => Unhandled()
-        };
-
-    static EventAction<TransferState> React(
-        AccountEvent @event, string sender, TransferState state) =>
-        (@event, state) switch
-        {
-            (TransferReceived received, Delivering delivering)
-                when received.TransferId == delivering.Transfer.Id =>
-                StateChanged(new Completed()),
-            (Rejected, Delivering delivering)
-                when sender == delivering.Transfer.Target =>
-                StateChanged(new Refunding(delivering.Transfer)),
-            (TransferRefunded refunded, Refunding refunding)
-                when refunded.TransferId == refunding.Transfer.Id =>
-                StateChanged(new Completed()),
-            _ => Unhandled()
-        };
-    // docs:end
-
-    // docs:effects
-    // Returns the commands for a stored state. It runs again after recovery;
-    // `recovering` says whether FCQRS is recovering, and this saga ignores it.
-    public override SagaSideEffectResult<TransferState> ApplySideEffects(
-        SagaState<TransferData, TransferState> saga, bool recovering) =>
-        saga.State switch
-        {
-            Delivering(var (id, source, target, amount)) =>
-                Deliver(ToAccount(target, new ReceiveTransfer(id, source, amount))),
-            Refunding(var (id, _, target, amount)) =>
-                Deliver(ToSource(new RefundTransfer(id, target, amount))),
-            Completed => new() { Transition = StopSaga(), Commands = [] }
-        };
-
-    // Send now and every 5 seconds; after 30 seconds, tell HandleEvent.
-    static SagaSideEffectResult<TransferState> Deliver(ExecuteCommand command) =>
-        new()
-        {
-            Transition = Stay(),
-            Expect = Expectations.Create(
-                [command],
-                TimeSpan.FromSeconds(30),
-                RetrySchedules.Fixed(TimeSpan.FromSeconds(5)))
-        };
-
-    // SagaCommands takes any object. These helpers take an AccountCommand, so the
+    // Send takes any command. This helper takes an AccountCommand, so the
     // compiler rejects anything else sent to an account.
-    ExecuteCommand ToAccount(string id, AccountCommand command) =>
-        SagaCommands.ToAggregate(accounts, id, command);
-
-    ExecuteCommand ToSource(AccountCommand command) =>
-        SagaCommands.ToOriginator(accounts, command);
-    // docs:end
-
-    // docs:definition
-    // A transfer starts when an account stores TransferSent.
-    public override bool StartsOn(Event<AccountEvent> stored) =>
-        stored.EventDetails is TransferSent;
-    // docs:end
+    Step<AccountEvent> Send(
+        WorkflowContext ctx, string account, AccountCommand command) =>
+        ctx.Send<AccountCommand, AccountEvent>(accounts, account, command);
 }
+// docs:end

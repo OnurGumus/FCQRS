@@ -429,8 +429,7 @@ stay available.
 ## Next
 
 [Step 5: Transfer money](transfer-money.html) moves money from Alice to Bob. A transfer changes two
-accounts, and each account decides only with its own state, so the transfer needs a workflow that
-coordinates them: a saga.
+accounts, and each account decides only with its own state, so a workflow coordinates them.
 
 *)
 

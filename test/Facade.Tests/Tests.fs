@@ -2713,6 +2713,7 @@ let main argv =
                 WorkflowTests.tests
                 WorkflowTestHarnessTests.tests
                 FreeMonadTests.tests
+                ReservationTests.tests
                 ScheduleTests.tests
                 WorkflowLoggingTests.tests
                 WorkflowBankInvariantTests.tests

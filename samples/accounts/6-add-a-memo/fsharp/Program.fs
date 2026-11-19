@@ -10,7 +10,9 @@ open FCQRS.FSharp
 open FCQRS.Model.Data
 open FCQRS.ProjectionStorage
 open FCQRS.Projections
+open FCQRS.Workflows
 open Account
+open Transfer
 
 // docs:continue
 // This step is the bank's next release. On its first run, it copies the
@@ -48,9 +50,9 @@ let accounts =
         Passivation = PassivationPolicy.Default
     }
 
-// Register the transfer saga and install its start rule.
-let transfers = Fcqrs.saga api (Transfer.definition accounts.Factory)
-Fcqrs.wireSagaStarters api [ transfers ]
+// Finish the aggregate startup, and register the transfer workflow.
+Fcqrs.wireSagaStarters api []
+let transfers = Workflows.register api (Transfer.definition accounts)
 
 // docs:register
 // The new statement has its own table and its own projection name. FCQRS has no
@@ -67,47 +69,34 @@ let options = TransactionalProjectionOptions("StatementV2", store)
 let statement = Fcqrs.transactionalProjection api options Statement.handle
 // docs:end
 
-let describe event =
-    let about memo = memo |> Option.map (sprintf ", \"%s\"") |> Option.defaultValue ""
-    match event with
-    | Opened owner -> $"Opened for {owner}"
-    | Deposited amount -> $"Deposited {amount}"
-    | Withdrawn amount -> $"Withdrew {amount}"
-    | TransferSent(id, target, amount, memo) -> $"Sent {amount} to {target} ({id}{about memo})"
-    | TransferReceived(id, source, amount, memo) ->
-        $"Received {amount} from {source} ({id}{about memo})"
-    | TransferRefunded(id, _, amount) -> $"Refunded {amount} ({id})"
-    | Rejected reason -> $"Rejected: {reason}"
-
-// Print a reply. Journaled tells whether FCQRS stored the event.
-let show (reply: Event<AccountEvent>) =
-    let stored = if reply.Journaled = Some true then "stored" else "not stored"
-    let description = describe reply.EventDetails
-    printfn $"{description} (version {reply.Version}, {stored})"
-
-let alice = Fcqrs.aggregateId "alice"
-
-// A transfer ends when the target stores the money or the source gets it back.
-let finished (message: IMessageWithCID) =
-    match message with
-    | :? Event<AccountEvent> as event ->
-        match event.EventDetails with
-        | TransferReceived _ | TransferRefunded _ -> true
-        | _ -> false
-    | _ -> false
-
 // docs:transfer
-// Ask Alice's account for a transfer with a memo, and wait for the saga.
+let describeOutcome outcome =
+    match outcome with
+    | Completed -> "completed"
+    | Refunded -> "refunded"
+    | Refused reason -> $"refused: {reason}"
+
+// Start a transfer from Alice with a memo, and wait for it to end.
 let transfer id target amount memo =
-    let cid = Fcqrs.newCid ()
-    use outcome = statement.Subscribe(cid, finished, 1)
-    let command = SendTransfer(id, target, amount, memo)
-    let reply =
-        accounts.Send cid alice command (fun _ -> true)
+    let request = {
+        Id = id
+        Source = "alice"
+        Target = target
+        Amount = amount
+        Memo = memo
+    }
+    let start = transfers.Start id request |> Async.RunSynchronously
+    let repeated =
+        match start with
+        | StartResult.Started -> ""
+        | StartResult.AlreadyStarted _ -> " (already started)"
+    let ended =
+        transfers.Result id (TimeSpan.FromSeconds 30.)
         |> Async.RunSynchronously
-    show reply
-    if reply.Journaled = Some true then
-        outcome.Task.WaitAsync(TimeSpan.FromSeconds 30.).Wait()
+    match ended with
+    | WorkflowOutcome.Finished outcome ->
+        printfn $"Transfer {id}: {describeOutcome outcome}{repeated}"
+    | other -> printfn $"Transfer {id} ended without a result: %A{other}"
 
 transfer "t3" "bob" 25m (Some "rent")
 // docs:end
@@ -149,6 +138,9 @@ let printStatement (account: string) =
         printfn $"  {version,7}  {entry,-24} {memo,-6}{amount,7}{balance,9}"
 
 printTransfers ()
+// The statement follows the journal on its own; wait until it has read
+// everything, including the events step 5 stored.
+statement.CatchUpAsync().Wait()
 printStatement "alice"
 printStatement "bob"
 

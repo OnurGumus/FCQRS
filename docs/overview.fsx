@@ -51,14 +51,15 @@ read model can be built from the history that already exists.
 You write the rules of each aggregate: which event a command produces, and how an event changes the
 state. FCQRS runs one instance per aggregate ID and hands it one command at a time. It stores the events,
 rebuilds the state after a restart, and updates your read models. It also runs processes that span
-several aggregates: **sagas**, which react to stored events, and **workflows**, which are ordinary
-functions that FCQRS records step by step and resumes after a restart. FCQRS runs on Akka.NET and has F#
+several aggregates as **workflows**: ordinary functions that FCQRS records step by step and resumes
+after a restart. Applications written before workflows coordinate with **sagas**, state machines
+that react to stored events, which FCQRS still runs. FCQRS runs on Akka.NET and has F#
 and C# APIs.
 
 ## Learn it by building a bank
 
-There are two tutorials. Start with this one for aggregates, read models, and sagas: the parts of an
-application that decide and record what happened. Start with [the workflow
+There are two tutorials. Start with this one for aggregates, read models, and a workflow that
+coordinates them: the parts of an application that decide and record what happened. Start with [the workflow
 tutorial](#Learn-workflows-by-building-an-order) for a process that calls other systems, waits, and must
 finish after a restart. Neither requires the other.
 
@@ -69,7 +70,7 @@ model. Every step is a program you run.
 2. [Withdraw money](tutorial/withdraw-money.html): rules, rejections, and one command at a time.
 3. [Restart the bank](tutorial/restart-the-bank.html): loading an account and snapshots.
 4. [Show a statement](tutorial/show-a-statement.html): read models and projections.
-5. [Transfer money](tutorial/transfer-money.html): sagas and commands that are safe to repeat.
+5. [Transfer money](tutorial/transfer-money.html): a workflow and commands that are safe to repeat.
 6. [Add a memo](tutorial/add-a-memo.html): changing events the journal already holds.
 
 ## Learn workflows by building an order

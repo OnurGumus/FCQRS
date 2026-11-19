@@ -366,7 +366,93 @@ let workflowWrongTypeTest =
         | other -> failtest $"expected a faulted instance, got {other}"
     }
 
+// Programs that run together: an instruction carries programs as its parameters, and the
+// workflow interpreter runs them with all or race. The Free type itself stays sequential.
+
+type ShippingInstruction =
+    | Quote of carrier: string
+    | All of Free<ShippingInstruction, objnull> list
+    | First of Free<ShippingInstruction, objnull> list
+
+let private quote (carrier: string) : Free<ShippingInstruction, decimal> = Eff.perform (Quote carrier)
+
+let private allOf (programs: Free<ShippingInstruction, 'T> list) : Free<ShippingInstruction, 'T list> =
+    Eff.perform<_, objnull list> (All(List.map (Free.map box) programs))
+    |> Free.map (List.map unbox<'T>)
+
+let private firstOf (programs: Free<ShippingInstruction, 'T> list) : Free<ShippingInstruction, 'T> =
+    Eff.perform<_, 'T> (First(List.map (Free.map box) programs))
+
+let private priced carrier = quote carrier |> Free.map (fun price -> carrier, price)
+
+let private cheapest carriers =
+    free {
+        let! prices = allOf (List.map priced carriers)
+        return List.minBy snd prices
+    }
+
+let private fastest carriers = firstOf (List.map priced carriers)
+
+let rec private shippingStep (instruction: ShippingInstruction) : Workflow<objnull> =
+    let branches programs = programs |> List.map (Free.toWorkflow shippingStep)
+
+    match instruction with
+    | Quote carrier -> Free.answer (activity $"quote {carrier}" policy (never: AttemptContext -> Task<decimal>))
+    | All programs -> branches programs |> all |> Free.answer
+    | First programs -> branches programs |> race |> Free.answer
+
+let private cheapestFlow =
+    Workflow.define "free-cheapest" (fun (carriers: string list) -> Free.toWorkflow shippingStep (cheapest carriers))
+
+let private fastestFlow =
+    Workflow.define "free-fastest" (fun (carriers: string list) -> Free.toWorkflow shippingStep (fastest carriers))
+
+let allProgramsTest =
+    test "programs carried by one instruction run as parallel steps" {
+        let flow = WorkflowTest.Start(cheapestFlow, [ "north"; "south" ])
+        Expect.isTrue (flow.Status.IsWaitingFor "quote north") "the first program waits"
+        Expect.isTrue (flow.Status.IsWaitingFor "quote south") "and so does the second, before the first completes"
+        flow.Complete("quote south", 9m)
+        flow.Complete("quote north", 12m)
+        Expect.equal flow.Result ("south", 9m) "every result, in list order"
+
+        Expect.equal
+            (List.ofSeq flow.Summary)
+            [ "started"
+              "scheduled 0/0/0 quote north"
+              "scheduled 0/1/0 quote south"
+              "completed 0/1/0 quote south"
+              "completed 0/0/0 quote north"
+              "finished" ]
+            "one branch per program"
+
+        flow.CheckReplay()
+    }
+
+let raceProgramsTest =
+    test "a race of programs takes the first to complete and cancels the others" {
+        let flow = WorkflowTest.Start(fastestFlow, [ "north"; "south" ])
+        flow.Complete("quote south", 9m)
+        Expect.equal flow.Result ("south", 9m) "the winner"
+        Expect.isFalse (flow.Summary |> Seq.exists (fun line -> line.StartsWith "completed 0/0/0")) "the loser never completed"
+        flow.CheckReplay()
+    }
+
+let sequentialInterpreterTest =
+    test "an in-memory interpreter can run the carried programs one after another" {
+        let rec answer (instruction: ShippingInstruction) : objnull =
+            match instruction with
+            | Quote "north" -> box 12m
+            | Quote _ -> box 9m
+            | All programs -> box (List.map (Free.run answer) programs)
+            | First programs -> Free.run answer (List.head programs)
+
+        Expect.equal (Free.run answer (cheapest [ "north"; "south" ])) ("south", 9m) "all"
+        Expect.equal (Free.run answer (fastest [ "north"; "south" ])) ("north", 12m) "the first program"
+    }
+
 let tests =
     testList "free monad"
         [ answersTest; wrongAnswerTest; nestedBindTest; sharedProgramTest; handWrittenTest; builderTest
-          rerunTest; longLoopTest; resultBuilderTest; interpretersTest; workflowTest; workflowErrorTest; workflowWrongTypeTest ]
+          rerunTest; longLoopTest; resultBuilderTest; interpretersTest; workflowTest; workflowErrorTest; workflowWrongTypeTest
+          allProgramsTest; raceProgramsTest; sequentialInterpreterTest ]

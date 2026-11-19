@@ -1,8 +1,8 @@
 module WorkflowBankInvariantTests
 
-// The bank's transfer written as a workflow. Processes are killed while transfers run, and a new
-// process finishes them. The vaults together must hold what they held at the start: no kill may
-// create money, lose it, or move a transfer twice.
+// The tutorial's bank from samples/accounts/5-transfer-money, whose transfer is a workflow.
+// Processes are killed while transfers run, and a new process finishes them. The accounts together
+// must hold what they held at the start: no kill may create money, lose it, or move a transfer twice.
 //
 // FCQRS_TEST_POSTGRES names a server, as for the saga version of this test.
 
@@ -22,7 +22,10 @@ open Microsoft.Extensions.Logging.Abstractions
 open Npgsql
 open FCQRS.Common
 open FCQRS.FSharp
+open FCQRS.Model.Data
 open FCQRS.Workflows
+open Account
+open Transfer
 
 /// The argument that makes this assembly run as the child that starts transfers.
 [<Literal>]
@@ -31,87 +34,11 @@ let ChildFlag = "--workflow-bank-child"
 [<Literal>]
 let private Prefix = "workflow-bank-child: "
 
-// A vault answers a repeated command with the verdict it gave the first time. A workflow sends a
-// command again after a restart when the reply was not stored, so this is what keeps a transfer
-// from moving money twice.
-type VaultCommand =
-    | Open of balance: decimal
-    | Take of transferId: string * amount: decimal
-    | Give of transferId: string * amount: decimal
-    | GiveBack of transferId: string * amount: decimal
-    | Report
-
-type VaultEvent =
-    | Opened of balance: decimal
-    | Taken of transferId: string * amount: decimal
-    | Given of transferId: string * amount: decimal
-    | GivenBack of transferId: string * amount: decimal
-    | Refused of reason: string
-    | Reported of balance: decimal
-
-type VaultState =
-    { IsOpen: bool
-      Balance: decimal
-      Taken: Set<string>
-      Given: Set<string>
-      GivenBack: Set<string> }
-
-let private initial =
-    { IsOpen = false
-      Balance = 0m
-      Taken = Set.empty
-      Given = Set.empty
-      GivenBack = Set.empty }
-
-let private decide (command: Command<VaultCommand>) (state: VaultState) =
-    match command.CommandDetails, state.IsOpen with
-    | Open _, true -> DeferEvent(Refused "already open")
-    | Open balance, false -> PersistEvent(Opened balance)
-    | _, false -> DeferEvent(Refused "not open")
-    | Report, _ -> DeferEvent(Reported state.Balance)
-    // The repeat check comes before the funds check: a repeated Take must not be refused because
-    // the first one already took the money.
-    | Take(id, amount), _ when state.Taken.Contains id -> DeferEvent(Taken(id, amount))
-    | Take(_, amount), _ when amount > state.Balance -> DeferEvent(Refused "insufficient funds")
-    | Take(id, amount), _ -> PersistEvent(Taken(id, amount))
-    | Give(id, amount), _ when state.Given.Contains id -> DeferEvent(Given(id, amount))
-    | Give(id, amount), _ -> PersistEvent(Given(id, amount))
-    | GiveBack(id, amount), _ when state.GivenBack.Contains id -> DeferEvent(GivenBack(id, amount))
-    | GiveBack(id, amount), _ -> PersistEvent(GivenBack(id, amount))
-
-let private fold (event: Event<VaultEvent>) (state: VaultState) =
-    match event.EventDetails with
-    | Opened balance -> { state with IsOpen = true; Balance = balance }
-    // A repeated verdict is deferred and must change nothing.
-    | Taken(id, _) when state.Taken.Contains id -> state
-    | Taken(id, amount) -> { state with Balance = state.Balance - amount; Taken = state.Taken.Add id }
-    | Given(id, _) when state.Given.Contains id -> state
-    | Given(id, amount) -> { state with Balance = state.Balance + amount; Given = state.Given.Add id }
-    | GivenBack(id, _) when state.GivenBack.Contains id -> state
-    | GivenBack(id, amount) -> { state with Balance = state.Balance + amount; GivenBack = state.GivenBack.Add id }
-    | Refused _
-    | Reported _ -> state
-
-/// Take the money, deliver it, and give it back if delivery is refused.
-let private transfer (vaults: AggregateHandle<VaultCommand, VaultEvent>) =
-    Workflow.define "VaultTransfer" (fun (id: string, source: string, target: string, amount: decimal) -> workflow {
-        let! taken = send vaults source (Take(id, amount))
-        match taken with
-        | Taken _ ->
-            let! given = send vaults target (Give(id, amount))
-            match given with
-            | Given _ -> return "moved"
-            | _ ->
-                let! (_: VaultEvent) = send vaults source (GiveBack(id, amount))
-                return "returned"
-        | _ -> return "refused"
-    })
-
-let private vaultNames = [| for i in 0..5 -> $"v{i}" |]
+let private accountNames = [| for i in 0..5 -> $"a{i}" |]
 // Never opened: delivery to one of them is refused, and the money goes back.
 let private closedNames = [| "closed0"; "closed1" |]
 let private opening = 1000m
-let private total = opening * decimal vaultNames.Length
+let private total = opening * decimal accountNames.Length
 
 type private Journal =
     | Sqlite of path: string
@@ -140,9 +67,10 @@ let private actorOn (journal: Journal) =
 
 let private start (journal: Journal) =
     let api = actorOn journal
-    let vaults =
+    // Short snapshot intervals, so recovery also starts from snapshots.
+    let accounts =
         Fcqrs.aggregate api
-            { Name = "Vault"
+            { Name = "Account"
               Initial = initial
               Decide = decide
               Fold = fold
@@ -150,34 +78,35 @@ let private start (journal: Journal) =
               Passivation = PassivationPolicy.Default }
     Fcqrs.wireSagaStarters api []
     // Registering the workflow resumes the transfers an earlier process left running.
-    let transfers = Workflows.register api (transfer vaults)
-    api, vaults, transfers
+    let transfers = Workflows.register api (Transfer.definition accounts)
+    api, accounts, transfers
 
-let private ask (vaults: AggregateHandle<VaultCommand, VaultEvent>) (vault: string) command =
-    Async.RunSynchronously(vaults.Send (Fcqrs.newCid ()) (Fcqrs.aggregateId vault) command (fun _ -> true), 30000)
+let private ask (accounts: AggregateHandle<AccountCommand, AccountEvent>) (account: string) command =
+    Async.RunSynchronously(accounts.Send (Fcqrs.newCid ()) (Fcqrs.aggregateId account) command (fun _ -> true), 30000)
 
 /// Starts random transfers from concurrent callers until the parent kills the process, and
 /// reports each transfer whose start was stored.
 let runChild (seed: string) (journal: string) : int =
-    let _, vaults, transfers = start (Journal.Parse journal)
+    let _, accounts, transfers = start (Journal.Parse journal)
     // Report ready once the bank and the transfers' shard region answer, so the kill lands while
     // transfers are running and not while the regions are still starting.
-    ask vaults vaultNames[0] Report |> ignore
+    ask accounts accountNames[0] (Withdraw(total + 1m)) |> ignore
     Async.RunSynchronously(transfers.Status "warm-up", 60000) |> ignore
     Console.WriteLine(Prefix + "ready")
     let caller (random: Random) =
         async {
             while true do
-                let source = vaultNames[random.Next vaultNames.Length]
+                let source = accountNames[random.Next accountNames.Length]
                 let target =
                     if random.Next 6 = 0 then
                         closedNames[random.Next closedNames.Length]
                     else
-                        let others = vaultNames |> Array.filter ((<>) source)
+                        let others = accountNames |> Array.filter ((<>) source)
                         others[random.Next others.Length]
                 let id = Guid.NewGuid().ToString "N"
                 try
-                    let! started = transfers.Start id (id, source, target, decimal (random.Next(1, 300)))
+                    let request = { Id = id; Source = source; Target = target; Amount = decimal (random.Next(1, 300)) }
+                    let! started = transfers.Start id request
                     if started = StartResult.Started then
                         Console.WriteLine(Prefix + "started " + id)
                     // Does not wait for the outcome, so many transfers are running when the kill lands.
@@ -199,7 +128,7 @@ let private killDuringTransfers (journal: Journal) (seed: int) (delay: TimeSpan)
     let info = ProcessStartInfo(host)
     // Under `dotnet Facade.Tests.dll` the host is the muxer, which needs the assembly path.
     if String.Equals(Path.GetFileNameWithoutExtension host, "dotnet", StringComparison.OrdinalIgnoreCase) then
-        info.ArgumentList.Add typeof<VaultState>.Assembly.Location
+        info.ArgumentList.Add typeof<AccountState>.Assembly.Location
     for argument in [ ChildFlag; string seed; journal.Argument ] do
         info.ArgumentList.Add argument
     info.RedirectStandardOutput <- true
@@ -234,28 +163,28 @@ let private killDuringTransfers (journal: Journal) (seed: int) (delay: TimeSpan)
         if line.StartsWith(Prefix + "started ") then
             yield line.Substring((Prefix + "started ").Length) ]
 
-/// The journal's persistence IDs, and every stored vault event grouped by vault.
+/// The transfers' IDs, and every stored account event grouped by account.
 let private stored (api: IActor) =
     let journal = PersistenceQuery.Get(api.System).ReadJournalFor<SqlReadJournal>(SqlReadJournal.Identifier)
     let ids = journal.CurrentPersistenceIds().RunWith(Sink.Seq<string>(), api.Materializer).Result |> List.ofSeq
-    let vaults =
+    let accounts =
         dict [
             for id in ids do
-                if id.StartsWith "Vault/" then
+                if id.StartsWith "Account/" then
                     let events =
                         journal.CurrentEventsByPersistenceId(id, 0L, Int64.MaxValue).RunWith(Sink.Seq<EventEnvelope>(), api.Materializer).Result
-                        |> Seq.map (fun envelope -> envelope.Event :?> Event<VaultEvent>)
+                        |> Seq.map (fun envelope -> envelope.Event :?> Event<AccountEvent>)
                         |> List.ofSeq
                     yield id.Substring(id.LastIndexOf '/' + 1), events ]
-    let transfers = [ for id in ids do if id.StartsWith "VaultTransfer/" then id.Substring(id.LastIndexOf '/' + 1) ]
-    transfers, vaults
+    let transfers = [ for id in ids do if id.StartsWith "Transfer/" then id.Substring(id.LastIndexOf '/' + 1) ]
+    transfers, accounts
 
 /// The transfers whose journal has no final record.
 let private unfinishedIn (api: IActor) =
     let journal = PersistenceQuery.Get(api.System).ReadJournalFor<SqlReadJournal>(SqlReadJournal.Identifier)
     let ids = journal.CurrentPersistenceIds().RunWith(Sink.Seq<string>(), api.Materializer).Result
     [ for id in ids do
-        if id.StartsWith "VaultTransfer/" then
+        if id.StartsWith "Transfer/" then
             let last =
                 journal.CurrentEventsByPersistenceId(id, 0L, Int64.MaxValue).RunWith(Sink.Seq<EventEnvelope>(), api.Materializer).Result
                 |> Seq.map (fun envelope -> envelope.Event :?> WorkflowRecord)
@@ -296,10 +225,11 @@ let private killAndCheck (database: string) (rounds: int) (journal: Journal) =
     let random = Random seed
     let context = $"{database}, seed {seed}"
     do
-        let api, vaults, _ = start journal
+        let api, accounts, _ = start journal
         try
-            for name in vaultNames do
-                ask vaults name (Open opening) |> ignore
+            for name in accountNames do
+                ask accounts name (Open name) |> ignore
+                ask accounts name (Deposit opening) |> ignore
         finally
             api.Stop().Wait(TimeSpan.FromSeconds 30.0) |> ignore
 
@@ -323,7 +253,7 @@ let private killAndCheck (database: string) (rounds: int) (journal: Journal) =
 
     // A new process recovers the transfers the kills interrupted. Nothing is sent to them.
     let recovery = Stopwatch.StartNew()
-    let api, vaults, transfers = start journal
+    let api, accounts, transfers = start journal
     try
         let ended id =
             match Async.RunSynchronously(transfers.Status id, 30000) with
@@ -343,9 +273,9 @@ let private killAndCheck (database: string) (rounds: int) (journal: Journal) =
         Expect.isEmpty (confirmed |> List.filter (fun id -> not (List.contains id ids))) $"every confirmed start is in the journal ({context})"
 
         let pick choose = [ for vault in events.Values do yield! vault |> List.choose (fun event -> choose event.EventDetails) ]
-        let taken = pick (function Taken(id, _) -> Some id | _ -> None)
-        let given = pick (function Given(id, _) -> Some id | _ -> None)
-        let back = pick (function GivenBack(id, _) -> Some id | _ -> None)
+        let taken = pick (function TransferSent(id, _, _) -> Some id | _ -> None)
+        let given = pick (function TransferReceived(id, _, _) -> Some id | _ -> None)
+        let back = pick (function TransferRefunded(id, _, _) -> Some id | _ -> None)
         printfn "workflow bank invariant (%s): %d transfers started, %d taken, %d given, %d given back; kills found %d transfers unfinished, %d after the last, which ended %.1f s after the new process started"
             context ids.Length taken.Length given.Length back.Length interrupted unfinished recovered.TotalSeconds
         let once (list: string list) what =
@@ -359,9 +289,11 @@ let private killAndCheck (database: string) (rounds: int) (journal: Journal) =
         let balances = dict [ for KeyValue(name, history) in events -> name, (history |> List.fold (fun state event -> fold event state) initial).Balance ]
         for KeyValue(name, balance) in balances do
             Expect.isGreaterThanOrEqual balance 0m $"{name} ends with no debt ({context})"
-        Expect.equal (Seq.sum balances.Values) total $"the vaults together still hold {total} ({context})"
+        Expect.equal (Seq.sum balances.Values) total $"the accounts together still hold {total} ({context})"
         for KeyValue(name, balance) in balances do
-            Expect.equal (ask vaults name Report).EventDetails (Reported balance) $"{name} recovered the balance its journal holds ({context})"
+            let reply = ask accounts name (Withdraw(total + 1m))
+            Expect.equal reply.EventDetails (Rejected $"Insufficient funds: {balance} available")
+                $"{name} recovered the balance its journal holds ({context})"
     finally
         api.Stop().Wait(TimeSpan.FromSeconds 30.0) |> ignore
 
@@ -370,6 +302,34 @@ let private conserved (postgres: string option) (rounds: int) =
     testCase $"workflow bank invariant: transfers written as workflows keep the total across process kills ({database})"
     <| fun _ -> withJournal postgres (killAndCheck database rounds)
 
+/// A repeated SendTransfer, as a workflow sends after a restart, gets the first verdict even when the
+/// first send spent the balance: a refusal would make the workflow end the transfer as refused.
+let private repeatedSend =
+    testCase "workflow bank: a repeated SendTransfer answers TransferSent after the balance was spent" <| fun _ ->
+        let command details : Command<AccountCommand> =
+            { CommandDetails = details
+              CreationDate = DateTime.UtcNow
+              Id = Guid.CreateVersion7().ToString() |> ValueLens.CreateAsResult |> Result.value
+              Sender = None
+              CorrelationId = Fcqrs.newCid ()
+              Metadata = Map.empty }
+        let event details : Event<AccountEvent> =
+            { EventDetails = details
+              CreationDate = DateTime.UtcNow
+              Id = Guid.CreateVersion7().ToString() |> ValueLens.CreateAsResult |> Result.value
+              Sender = None
+              CorrelationId = Fcqrs.newCid ()
+              Version = Version.Zero
+              Metadata = Map.empty }
+        let state =
+            [ Opened "Alice"; Deposited 50m; TransferSent("t1", "bob", 50m) ]
+            |> List.fold (fun state details -> fold (event details) state) initial
+        Expect.equal state.Balance 0m "the first send spent the balance"
+        match decide (command (SendTransfer("t1", "bob", 50m))) state with
+        | DeferEvent(TransferSent("t1", "bob", 50m)) -> ()
+        | other -> failtest $"expected the first verdict, not stored; got %A{other}"
+        Expect.equal (fold (event (TransferSent("t1", "bob", 50m))) state).Balance 0m "folding the repeated reply moves no money"
+
 let tests =
     let postgres =
         match Environment.GetEnvironmentVariable "FCQRS_TEST_POSTGRES" with
@@ -377,6 +337,7 @@ let tests =
         | value -> Some value
     testSequenced (
         testList "workflow bank invariant" [
+            repeatedSend
             conserved None 6
             match postgres with
             | Some _ -> conserved postgres 10

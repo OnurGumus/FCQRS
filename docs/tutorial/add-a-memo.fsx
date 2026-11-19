@@ -7,7 +7,7 @@ index: 6
 ---
 *)
 (*** hide ***)
-#r "nuget: FCQRS, 6.14.0"
+#r "nuget: FCQRS, 7.3.0"
 #load "../../samples/accounts/6-add-a-memo/fsharp/Account.fs"
 
 (**
@@ -93,12 +93,13 @@ module Account
 
 open FCQRS.Common
 
-// What a caller, or the transfer saga, can ask an account to do.
+// What a caller, or a transfer, can ask an account to do.
 type AccountCommand =
     | Open of owner: string
     | Deposit of amount: decimal
     | Withdraw of amount: decimal
-    // New in this step: an optional memo, which the saga passes to the target.
+    // New in this step: an optional memo, which the transfer passes to the
+    // target.
     | SendTransfer of
         transferId: string * target: string * amount: decimal *
         memo: string option
@@ -147,13 +148,13 @@ let initial = {
 
 <!-- sample: accounts/6-add-a-memo/csharp Account.cs messages -->
 ```csharp
-// What a caller, or the transfer saga, can ask an account to do.
+// What a caller, or a transfer, can ask an account to do.
 public union AccountCommand(
     Open, Deposit, Withdraw, SendTransfer, ReceiveTransfer, RefundTransfer);
 public sealed record Open(string Owner);
 public sealed record Deposit(decimal Amount);
 public sealed record Withdraw(decimal Amount);
-// New in this step: an optional memo, which the saga passes to the target.
+// New in this step: an optional memo, which the transfer passes to the target.
 public sealed record SendTransfer(
     string TransferId, string Target, decimal Amount, string? Memo = null);
 public sealed record ReceiveTransfer(
@@ -203,6 +204,10 @@ let decide (command: Command<AccountCommand>) (state: AccountState) =
     | Open _, Some _ -> DeferEvent(Rejected "The account is already open")
     | Open owner, None -> PersistEvent(Opened owner)
     | _, None -> DeferEvent(Rejected "The account is not open")
+    // A repeated send gets the first answer, checked before the balance,
+    // because the first send lowered it. No money moves twice.
+    | SendTransfer(id, target, amount, memo), _ when state.Sent.Contains id ->
+        DeferEvent(TransferSent(id, target, amount, memo))
     | (Deposit amount | Withdraw amount | SendTransfer(_, _, amount, _)), _
         when amount <= 0m -> DeferEvent(Rejected "The amount must be positive")
     | Deposit amount, _ -> PersistEvent(Deposited amount)
@@ -210,8 +215,6 @@ let decide (command: Command<AccountCommand>) (state: AccountState) =
         when amount > state.Balance ->
         DeferEvent(Rejected $"Insufficient funds: {state.Balance} available")
     | Withdraw amount, _ -> PersistEvent(Withdrawn amount)
-    | SendTransfer(id, _, _, _), _ when state.Sent.Contains id ->
-        DeferEvent(Rejected $"Transfer {id} was already sent")
     | SendTransfer(id, target, amount, memo), _ ->
         PersistEvent(TransferSent(id, target, amount, memo))
     // A repeated delivery gets the first answer; no money moves.
@@ -231,6 +234,7 @@ let fold (event: Event<AccountEvent>) (state: AccountState) =
     | Opened owner -> { state with Owner = Some owner }
     | Deposited amount -> { state with Balance = state.Balance + amount }
     | Withdrawn amount -> { state with Balance = state.Balance - amount }
+    | TransferSent(id, _, _, _) when state.Sent.Contains id -> state
     | TransferSent(id, _, amount, _) ->
         { state with
             Balance = state.Balance - amount
@@ -272,6 +276,11 @@ public sealed class Account
             (Open, not null) => Reject("The account is already open"),
             (Open open, null) => Store(new Opened(open.Owner)),
             (_, null) => Reject("The account is not open"),
+            // A repeated send gets the first answer, checked before the
+            // balance, because the first send lowered it. No money moves twice.
+            (SendTransfer send, _) when state.Sent.Contains(send.TransferId) =>
+                Repeat(new TransferSent(
+                    send.TransferId, send.Target, send.Amount, send.Memo)),
             (Deposit { Amount: <= 0m } or Withdraw { Amount: <= 0m }
                 or SendTransfer { Amount: <= 0m }, _) =>
                 Reject("The amount must be positive"),
@@ -281,8 +290,6 @@ public sealed class Account
             (SendTransfer send, _) when send.Amount > state.Balance =>
                 Reject($"Insufficient funds: {state.Balance} available"),
             (Withdraw withdraw, _) => Store(new Withdrawn(withdraw.Amount)),
-            (SendTransfer send, _) when state.Sent.Contains(send.TransferId) =>
-                Reject($"Transfer {send.TransferId} was already sent"),
             (SendTransfer send, _) => Store(new TransferSent(
                 send.TransferId, send.Target, send.Amount, send.Memo)),
             // A repeated delivery gets the first answer; no money moves.
@@ -312,6 +319,8 @@ public sealed class Account
                 state with { Balance = state.Balance + deposited.Amount },
             Withdrawn withdrawn =>
                 state with { Balance = state.Balance - withdrawn.Amount },
+            TransferSent sent
+                when state.Sent.Contains(sent.TransferId) => state,
             TransferSent sent => state with
             {
                 Balance = state.Balance - sent.Amount,
@@ -349,8 +358,8 @@ public sealed class Account
 }
 ```
 
-The rules only pass the memo along. The saga passes it too: its `TransferDetails` gets an optional
-`Memo` for the same reason, because step 5's sagas stored their states without one.
+The rules only pass the memo along. The transfer workflow passes it too: `TransferRequest` gets an
+optional `Memo`, and the workflow puts it in `SendTransfer` and `ReceiveTransfer`.
 
 ## Rebuild the statement with a memo column
 
@@ -530,17 +539,33 @@ available, and [step 4](show-a-statement.html#Rebuild-the-statement) rebuilds a 
 
 <!-- sample: accounts/6-add-a-memo/fsharp Program.fs transfer -->
 ```fsharp
-// Ask Alice's account for a transfer with a memo, and wait for the saga.
+let describeOutcome outcome =
+    match outcome with
+    | Completed -> "completed"
+    | Refunded -> "refunded"
+    | Refused reason -> $"refused: {reason}"
+
+// Start a transfer from Alice with a memo, and wait for it to end.
 let transfer id target amount memo =
-    let cid = Fcqrs.newCid ()
-    use outcome = statement.Subscribe(cid, finished, 1)
-    let command = SendTransfer(id, target, amount, memo)
-    let reply =
-        accounts.Send cid alice command (fun _ -> true)
+    let request = {
+        Id = id
+        Source = "alice"
+        Target = target
+        Amount = amount
+        Memo = memo
+    }
+    let start = transfers.Start id request |> Async.RunSynchronously
+    let repeated =
+        match start with
+        | StartResult.Started -> ""
+        | StartResult.AlreadyStarted _ -> " (already started)"
+    let ended =
+        transfers.Result id (TimeSpan.FromSeconds 30.)
         |> Async.RunSynchronously
-    show reply
-    if reply.Journaled = Some true then
-        outcome.Task.WaitAsync(TimeSpan.FromSeconds 30.).Wait()
+    match ended with
+    | WorkflowOutcome.Finished outcome ->
+        printfn $"Transfer {id}: {describeOutcome outcome}{repeated}"
+    | other -> printfn $"Transfer {id} ended without a result: %A{other}"
 
 transfer "t3" "bob" 25m (Some "rent")
 ```
@@ -549,19 +574,24 @@ transfer "t3" "bob" 25m (Some "rent")
 
 <!-- sample: accounts/6-add-a-memo/csharp Program.cs transfer -->
 ```csharp
-// Ask Alice's account for a transfer with a memo, and wait for the saga.
-async Task SendTransfer(string id, string target, decimal amount, string? memo)
+static string DescribeOutcome(TransferOutcome outcome) => outcome switch
 {
-    var cid = Values.NewCID();
-    using var outcome = statement.SubscribeForFirst(cid, Finished);
-    var reply = await accounts(
-        _ => true, cid, alice, new SendTransfer(id, target, amount, memo));
-    Show(reply);
-    if (reply.Journaled?.Value == true)
-        await outcome.Task.WaitAsync(TimeSpan.FromSeconds(30));
+    Completed => "completed",
+    Refunded => "refunded",
+    Refused refused => $"refused: {refused.Reason}"
+};
+
+// Start a transfer from Alice with a memo, and wait for it to end.
+async Task Transfer(string id, string target, decimal amount, string? memo)
+{
+    var request = new TransferRequest(id, "alice", target, amount, memo);
+    var started = await transfers.StartAsync(id, request);
+    var repeated = started ? "" : " (already started)";
+    var outcome = await transfers.ResultAsync(id, TimeSpan.FromSeconds(30));
+    Console.WriteLine($"Transfer {id}: {DescribeOutcome(outcome)}{repeated}");
 }
 
-await SendTransfer("t3", "bob", 25m, "rent");
+await Transfer("t3", "bob", 25m, "rent");
 ```
 
 ## Run it
@@ -583,7 +613,7 @@ dotnet run --project 6-add-a-memo/csharp
 After one run of step 5, step 6 prints:
 
 ```text
-Sent 25 to bob (t3, "rent") (version 6, stored)
+Transfer t3: completed
 
 Transfers stored for alice:
   3  {"transferId":"t1","target":"bob","amount":30}
@@ -594,7 +624,7 @@ Transfers stored for alice:
 <div class="cs-alt" data-fs="text" data-cs="text"></div>
 
 ```text
-Sent 25 to bob (t3, "rent") (version 6, stored)
+Transfer t3: completed
 
 Transfers stored for alice:
   3  {"TransferId":"t1","Target":"bob","Amount":30}
@@ -627,11 +657,12 @@ statements have more rows.
 ## Run it again
 
 ```text
-Rejected: Transfer t3 was already sent (version 6, not stored)
+Transfer t3: completed (already started)
 ```
 
-The rest of the output is the same: the statement keeps its rows, and the projection continues after
-the last event it committed.
+`t3` is already in the journal, so its start stores nothing and `Result` gives its stored result. The
+rest of the output is the same: the statement keeps its rows, and the projection continues after the
+last event it committed.
 
 ## Change stored events safely
 
@@ -655,9 +686,11 @@ The six steps built a bank with the parts of FCQRS an application uses:
 2. [Withdraw money](withdraw-money.html): rules, rejections, and one command at a time.
 3. [Restart the bank](restart-the-bank.html): loading an account and snapshots.
 4. [Show a statement](show-a-statement.html): read models and projections.
-5. [Transfer money](transfer-money.html): sagas and commands that are safe to repeat.
+5. [Transfer money](transfer-money.html): a workflow and commands that are safe to repeat.
 6. Add a memo: changing stored events.
 
+The [workflow tutorial](../workflow-tutorial/place-an-order.html) continues with workflows: retries, timers,
+signals from people, parallel steps, and changing a workflow while instances run.
 [Concepts](../concepts/index.html) explains the models behind these steps, the
 [task guides](../how-to/index.html) cover single tasks such as testing and serving an aggregate over
 HTTP, and [Configuration](../configuration.html) lists the runtime settings.

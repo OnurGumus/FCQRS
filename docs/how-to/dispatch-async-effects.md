@@ -2,7 +2,7 @@
 title: Dispatch a best-effort async effect
 category: Apply
 categoryindex: 5
-index: 17
+index: 19
 ---
 
 # Dispatch a best-effort async effect
@@ -12,11 +12,12 @@ restart is acceptable. Examples include a cache lookup, optional enrichment, or 
 caller can request again.
 
 Nothing in the tutorial's bank qualifies. Moving money must survive a restart, so the tutorial's
-[transfer](../tutorial/transfer-money.html) uses a saga. This page uses a note that asks a service for
+[transfer](../tutorial/transfer-money.html) uses a workflow. This page uses a note that asks a service for
 a summary instead.
 
-Use a [saga](write-a-saga.html) when the work must resume after a restart, needs durable retries, or
-crosses aggregate boundaries as a business process.
+Use a [workflow](write-a-workflow.html), or a [saga](write-a-saga.html) in an application that already
+has them, when the work must resume after a restart, needs durable retries, or crosses aggregate
+boundaries as a business process.
 
 | Requirement | `RunAsync` | Saga |
 |---|---:|---:|

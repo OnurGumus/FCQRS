@@ -2,7 +2,7 @@
 title: Serve an aggregate over HTTP
 category: Apply
 categoryindex: 5
-index: 21
+index: 23
 ---
 
 # Serve an aggregate over HTTP
@@ -299,7 +299,7 @@ projection continues from its stored progress.
 
 A deposit is not idempotent: sending the same POST twice deposits twice. After a 503, read the
 statement before retrying. An API that retries automatically needs a request ID from the client and
-an account that rejects a repeated one, as the transfer IDs in
+an account that recognises a repeated one, as the transfer IDs in
 [Transfer money](../tutorial/transfer-money.html) do.
 
 The sample has no authentication: any caller can move any account's money. Add ASP.NET Core

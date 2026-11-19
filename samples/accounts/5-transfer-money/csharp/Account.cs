@@ -3,7 +3,7 @@ using static FCQRS.Common;
 using static FCQRS.CSharp;
 
 // docs:messages
-// What a caller, or the transfer saga, can ask an account to do.
+// What a caller, or a transfer, can ask an account to do.
 public union AccountCommand(
     Open, Deposit, Withdraw, SendTransfer, ReceiveTransfer, RefundTransfer);
 public sealed record Open(string Owner);
@@ -58,6 +58,11 @@ public sealed class Account
             (Open, not null) => Reject("The account is already open"),
             (Open open, null) => Store(new Opened(open.Owner)),
             (_, null) => Reject("The account is not open"),
+            // A repeated send gets the first answer, checked before the
+            // balance, because the first send lowered it. No money moves twice.
+            (SendTransfer send, _) when state.Sent.Contains(send.TransferId) =>
+                Repeat(new TransferSent(
+                    send.TransferId, send.Target, send.Amount)),
             (Deposit { Amount: <= 0m } or Withdraw { Amount: <= 0m }
                 or SendTransfer { Amount: <= 0m }, _) =>
                 Reject("The amount must be positive"),
@@ -67,8 +72,6 @@ public sealed class Account
             (SendTransfer send, _) when send.Amount > state.Balance =>
                 Reject($"Insufficient funds: {state.Balance} available"),
             (Withdraw withdraw, _) => Store(new Withdrawn(withdraw.Amount)),
-            (SendTransfer send, _) when state.Sent.Contains(send.TransferId) =>
-                Reject($"Transfer {send.TransferId} was already sent"),
             (SendTransfer send, _) => Store(
                 new TransferSent(send.TransferId, send.Target, send.Amount)),
             // A repeated delivery gets the first answer; no money moves.
@@ -98,6 +101,8 @@ public sealed class Account
                 state with { Balance = state.Balance + deposited.Amount },
             Withdrawn withdrawn =>
                 state with { Balance = state.Balance - withdrawn.Amount },
+            TransferSent sent
+                when state.Sent.Contains(sent.TransferId) => state,
             TransferSent sent => state with
             {
                 Balance = state.Balance - sent.Amount,

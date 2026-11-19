@@ -10,7 +10,9 @@ open FCQRS.FSharp
 open FCQRS.Model.Data
 open FCQRS.ProjectionStorage
 open FCQRS.Projections
+open FCQRS.Workflows
 open Account
+open Transfer
 
 let database = Path.Combine(AppContext.BaseDirectory, "accounts.db")
 let connectionString = $"Data Source={database}"
@@ -34,11 +36,13 @@ let accounts =
         Passivation = PassivationPolicy.Default
     }
 
+// Finish the aggregate startup. This program has no sagas.
+Fcqrs.wireSagaStarters api []
+
 // docs:register
-// Register the saga with the accounts it sends commands to, then install its
-// start rule. From now on, each stored TransferSent starts one transfer.
-let transfers = Fcqrs.saga api (Transfer.definition accounts.Factory)
-Fcqrs.wireSagaStarters api [ transfers ]
+// Register the workflow with the accounts it sends commands to. Registering
+// it also resumes the transfers that were running when the process stopped.
+let transfers = Workflows.register api (Transfer.definition accounts)
 // docs:end
 
 // The statement from step 4, with rows for transfers.
@@ -83,27 +87,34 @@ send alice (Deposit 100m)
 send bob (Open "Bob")
 
 // docs:transfer
-// A transfer ends when the target stores the money or the source gets it back.
-let finished (message: IMessageWithCID) =
-    match message with
-    | :? Event<AccountEvent> as event ->
-        match event.EventDetails with
-        | TransferReceived _ | TransferRefunded _ -> true
-        | _ -> false
-    | _ -> false
+let describeOutcome outcome =
+    match outcome with
+    | Completed -> "completed"
+    | Refunded -> "refunded"
+    | Refused reason -> $"refused: {reason}"
 
-// Ask Alice's account to send money, and wait until the saga has finished.
+// Start a transfer from Alice and wait for it to end. A start with an ID that
+// is already in the journal stores nothing, so a repeated request moves no
+// money: the transfer's ID is the workflow's ID.
 let transfer id target amount =
-    let cid = Fcqrs.newCid ()
-    // Subscribe first: the saga can finish before the reply arrives.
-    use outcome = statement.Subscribe(cid, finished, 1)
-    let command = SendTransfer(id, target, amount)
-    let reply =
-        accounts.Send cid alice command (fun _ -> true)
+    let request = {
+        Id = id
+        Source = "alice"
+        Target = target
+        Amount = amount
+    }
+    let start = transfers.Start id request |> Async.RunSynchronously
+    let repeated =
+        match start with
+        | StartResult.Started -> ""
+        | StartResult.AlreadyStarted _ -> " (already started)"
+    let ended =
+        transfers.Result id (TimeSpan.FromSeconds 30.)
         |> Async.RunSynchronously
-    show reply
-    if reply.Journaled = Some true then
-        outcome.Task.WaitAsync(TimeSpan.FromSeconds 30.).Wait()
+    match ended with
+    | WorkflowOutcome.Finished outcome ->
+        printfn $"Transfer {id}: {describeOutcome outcome}{repeated}"
+    | other -> printfn $"Transfer {id} ended without a result: %A{other}"
 
 transfer "t1" "bob" 30m
 // Carol has no account, so this transfer comes back.
@@ -111,7 +122,8 @@ transfer "t2" "carol" 20m
 // docs:end
 
 // docs:repeat
-// After a restart, a saga sends its last command again. Do the same by hand:
+// After a restart, a workflow sends a command again when its reply was not
+// stored. Do the same by hand:
 send bob (ReceiveTransfer("t1", "alice", 30m))
 // docs:end
 
@@ -132,6 +144,9 @@ let printStatement (account: string) =
         let amount, balance = rows.GetDecimal 2, rows.GetDecimal 3
         printfn $"  {version,7}  {entry,-24}{amount,7}{balance,9}"
 
+// The statement follows the journal on its own; wait until it has read
+// everything the transfers stored.
+statement.CatchUpAsync().Wait()
 printStatement "alice"
 printStatement "bob"
 

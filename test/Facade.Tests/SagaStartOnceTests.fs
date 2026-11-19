@@ -53,7 +53,7 @@ let private reusedCorrelation =
                       Fold = fold
                       Snapshots = Default
                       Passivation = PassivationPolicy.Default }
-            Fcqrs.wireSagaStarters api [ Fcqrs.saga api (Transfer.definition accounts.Factory) ]
+            Fcqrs.wireSagaStarters api [ Fcqrs.saga api (TransferSaga.definition accounts.Factory) ]
             let send cid account command =
                 Async.RunSynchronously(accounts.Send cid (Fcqrs.aggregateId account) command (fun _ -> true), 30000)
             // A withdrawal larger than any balance is rejected with the balance.

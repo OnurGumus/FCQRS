@@ -114,7 +114,10 @@ program never sees them.
   so a second run of the same value continues from the first run's state. `order` is a function,
   so each call builds a fresh program; write programs that keep state the same way.
 - **A program is sequential.** One instruction follows another, and nothing runs in parallel unless
-  an interpreter does it inside one instruction.
+  an interpreter does it inside one instruction. An instruction can carry programs for the
+  interpreter to run together, as
+  [Run instructions together](../how-to/run-a-free-program-as-a-workflow.html#Run-instructions-together)
+  shows.
 
 Binds nested to any depth run in a loop on .NET, so a program that recurses below a `let!` neither
 grows the stack nor slows down with depth. Under Fable, bind keeps a closure per level.

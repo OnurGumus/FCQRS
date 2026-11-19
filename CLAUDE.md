@@ -44,9 +44,12 @@ Good prose makes the example easier to reason about. It does not narrate the tea
 - `docs/overview.fsx` explains why FCQRS separates aggregates from read models and maps both
   tutorials.
 - `docs/tutorial/` ("Tutorial: CQRS" in the sidebar) builds a small bank in order, from the first
-  aggregate to sagas and changing stored events. Each step has a runnable F# and C# program under
-  `samples/accounts/`; step 6 continues from step 5's database, so both build an assembly named
-  `Accounts`.
+  aggregate to a transfer workflow that the application starts and changing stored events. Each step
+  has a runnable F# and C# program under `samples/accounts/`; step 6 continues from step 5's
+  database, so both build an assembly named `Accounts`.
+- Sagas are the older coordination mechanism: supported for existing applications and their
+  journals, not recommended for new code. `concepts/sagas.md` and `how-to/write-a-saga.md` say so
+  first and quote `samples/accounts/transfer-with-a-saga`.
 - `docs/workflow-tutorial/` ("Tutorial: Workflows") builds an order workflow in ten steps, from one
   activity to changing a workflow while orders run. Step 10, "Feed orders from a stream", starts
   orders from an Akka.Streams flow and stops the process while two of them ship. Each step has an F#
@@ -103,6 +106,10 @@ Keep these distinctions intact in code comments and documentation.
   PostgreSQL, an event that commits after later-numbered ones is applied in a later pass, after them.
 - Commit a read-model update and its progress in the same transaction when they share a store. A
   projection that stores progress after its handler returns can hand an event to it again.
+- A projection with `Named` progress (a named C# `AddProjection`) runs its handler outside the
+  transaction that stores the position, so the handler can wait for a journal write, such as a
+  workflow start. A transactional projection runs its handler inside that transaction, which holds
+  SQLite's single writer lock: on SQLite its handler must not wait for a journal write.
 - A projection that names entities reads only their persistence IDs (`<escaped name>/...`, escaped
   as Akka escapes a sharding region's name): its SQL selects those rows, so other entities' events
   are never fetched or deserialized. On SQLite the full scan reads only the names' range of the
@@ -125,6 +132,9 @@ Keep these distinctions intact in code comments and documentation.
 
 ### Saga
 
+- Sagas are the older mechanism. New code coordinates aggregates with a workflow that the
+  application starts; a workflow that must follow an aggregate event is started by a named
+  projection whose workflow ID comes from the event.
 - A saga stores workflow progress and issues commands across aggregate boundaries.
 - Recovery re-drives side effects for recovered state. Commands it issues must be retry-safe or
   explicitly recovery-aware.
@@ -294,11 +304,20 @@ Keep these distinctions intact in code comments and documentation.
   transactional projection that lists the quotes waiting for approval, a second one that lists every
   instance with its status, and a `Status` check before a signal, in F# and C# with project
   references; the C# program registers both with `AddKeyedTransactionalProjection`. The waiting-workflows guide quotes it.
+- `samples/reservations/`: a workflow per reservation that applies one change at a time and, after
+  each, only the newest of the changes signalled meanwhile, in F# and C# with project references.
+  The newest-change guide quotes it, and `test/Facade.Tests/ReservationTests.fs` links its F#
+  workflow.
+- `samples/start-from-an-event/`: a named projection that starts a workflow for each `Opened` event
+  an account stores, in F# and C# with project references. CI runs each program twice, so the
+  second run checks that nothing starts again. The how-to "Start a workflow from an aggregate event"
+  quotes it.
 - `samples/orders/`: the workflow tutorial's steps as equivalent F# and C# programs on .NET 11,
   with the published packages. Its `Directory.Build.props` keeps the repository's settings out.
 - `samples/accounts/`: the tutorial's steps as equivalent F# and C# programs on .NET 11. The C#
   programs use C# 15 unions, and `samples/accounts/global.json` selects the .NET 11 SDK. The task
-  guides quote these programs too; `serve-over-http/` puts step 4 behind ASP.NET Core endpoints.
+  guides quote these programs too; `serve-over-http/` puts step 4 behind ASP.NET Core endpoints, and
+  `transfer-with-a-saga/` is step 5's transfer as a saga, compiling step 5's account and statement.
 - `samples/registration-*/` and `samples/getting-started-*/`: older .NET 10 samples kept for CI checks
   and persisted-compatibility checks. The C# interop page links `registration-csharp` as a .NET 10
   example.
@@ -309,12 +328,12 @@ Keep these distinctions intact in code comments and documentation.
 - `test/Workflows.CSharp.Tests/`: a C# program that checks the C# workflow API as the C# compiler
   builds it. Run it with `dotnet run --project test/Workflows.CSharp.Tests -c Release`.
 - `test/Facade.Tests/`: facade and behaviour tests. `WorkflowMachineTests.fs` tests replay without an
-  actor system, and `WorkflowBankInvariantTests.fs` kills processes while transfers written as
-  workflows run. Every test actor system runs Akka's `serialize-messages` through
+  actor system. Every test actor system runs Akka's `serialize-messages` through
   `VerifySerialization.fs`, and the last test names each message type that another node could not
-  read. `BankInvariantTests.fs` compiles step 5's F# `Account.fs` and
-  `Transfer.fs`, kills processes during transfers, and checks that the total balance is unchanged, on
-  SQLite and, when `FCQRS_TEST_POSTGRES` is set as in CI, on PostgreSQL.
+  read. `BankInvariantTests.fs` compiles step 5's F# `Account.fs` and the saga sample's
+  `TransferSaga`, and `WorkflowBankInvariantTests.fs` step 5's `Account.fs` and
+  workflow `Transfer.fs`. Both kill processes during transfers and check that the total balance is
+  unchanged, on SQLite and, when `FCQRS_TEST_POSTGRES` is set as in CI, on PostgreSQL.
 
 ## Development workflow
 

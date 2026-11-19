@@ -2,7 +2,7 @@
 title: Observe your system
 category: Apply
 categoryindex: 5
-index: 19
+index: 21
 ---
 
 # Observe your system
@@ -15,8 +15,9 @@ complete workflow.
 
 At `Information` level, the `FCQRS.MessageFlow` category records aggregate decisions, persisted event
 versions, saga transitions, and commands issued by sagas. Every line contains the correlation id.
-These lines are the first transfer from the tutorial's [transfer money](../tutorial/transfer-money.html)
-step, one correlation id from Alice's command to Bob's stored event:
+These lines are the first transfer of the saga sample
+[`transfer-with-a-saga`](https://github.com/OnurGumus/FCQRS/tree/main/samples/accounts/transfer-with-a-saga),
+one correlation id from Alice's command to Bob's stored event:
 
 ```text
 info: FCQRS.MessageFlow[0]
