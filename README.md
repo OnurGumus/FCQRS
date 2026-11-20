@@ -47,6 +47,15 @@ let fold (event: Event<AccountEvent>) (state: AccountState) =
 `decide` chooses the event to store for a command, and `fold` applies a stored event to the state.
 FCQRS handles one account's commands one at a time; other accounts run independently.
 
+An application built on FCQRS has three parts:
+
+- An aggregate, such as one account, keeps its own rules consistent.
+- A workflow carries out a rule that spans aggregates, such as a transfer between two accounts. It
+  sends a command to each account in order, stores each answer, and after a restart continues from
+  the stored answers. [Tutorial step 5](https://onurgumus.github.io/FCQRS/tutorial/transfer-money.html)
+  writes the transfer.
+- A projection updates query views, such as a statement, from the stored events.
+
 [Why FCQRS](https://onurgumus.github.io/FCQRS/overview.html) ·
 [CQRS tutorial](https://onurgumus.github.io/FCQRS/tutorial/open-an-account.html) ·
 [Workflow tutorial](https://onurgumus.github.io/FCQRS/workflow-tutorial/place-an-order.html) ·
