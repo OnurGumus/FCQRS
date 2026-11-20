@@ -559,10 +559,14 @@ let private farTimerTest =
             Expect.equal (DateTime.Parse(due, null, Globalization.DateTimeStyles.RoundtripKind)) DateTime.MaxValue "the due time is capped"
         | other -> failtest $"expected a scheduled timer, found {other}"
 
+/// Formats a price the same way on every machine, whatever its culture.
+let private invariant (price: decimal) =
+    price.ToString(Globalization.CultureInfo.InvariantCulture)
+
 let private oldCode = workflow {
     let! (price: decimal) = activity "price" (Retry.times 3 (TimeSpan.FromSeconds 30.0)) never
     let! (stock: int) = activity "stock" (Retry.times 3 (TimeSpan.FromSeconds 30.0)) never
-    return $"{price}:{stock}"
+    return $"{invariant price}:{stock}"
 }
 
 /// The same workflow after a fraud check was added between its two steps.
@@ -577,7 +581,7 @@ let private newCode = workflow {
             return "unchecked"
     }
     let! (stock: int) = activity "stock" (Retry.times 3 (TimeSpan.FromSeconds 30.0)) never
-    return $"{price}:{stock}:{checkedBy}"
+    return $"{invariant price}:{stock}:{checkedBy}"
 }
 
 let private versionValues name =
