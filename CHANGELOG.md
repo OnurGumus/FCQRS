@@ -1,5 +1,16 @@
 # Changelog
 
+## 7.5.1 (FCQRS core) and 7.15.1 (FCQRS.Workflows)
+
+- **An application that installs FCQRS 7.4.0 or later from NuGet starts again.** FCQRS is compiled
+  against Akka.Streams and Akka.Persistence.Query 1.5.75, but its package did not list them: they
+  came through Akka.Persistence.Sql 1.5.73, which asks for 1.5.73, and NuGet chose that older
+  version. The application then stopped at startup with `FileNotFoundException` for
+  `Akka.Streams, Version=1.5.75.0` or `Akka.Persistence.Query, Version=1.5.75.0`. The package now
+  lists both at 1.5.75 or later. FCQRS.Workflows 7.15.1 changes nothing but requires core 7.5.1,
+  so an application that installs only Workflows gets the fixed core. A project that referenced
+  both packages at 1.5.75 itself was not affected. Nothing stored changes.
+
 ## 7.15.0 (FCQRS.Workflows)
 
 - **See what is running.** `Workflows.running api` (C#: `WorkflowHost.Running(actor)`) lists the

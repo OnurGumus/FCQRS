@@ -4,6 +4,8 @@ Akkling.Persistence
 Akkling.Cluster.Sharding
 Akka.Cluster.Tools
 Akka.Persistence.Sql
+Akka.Persistence.Query
+Akka.Streams
 Akkling.Streams
 Microsoft.Data.SQLite
 FSharp.Interop.Dynamic

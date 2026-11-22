@@ -12,6 +12,10 @@ nuget Microsoft.Data.SQLite >= 9.0.10
 nuget Akka.Cluster.Sharding >= 1.5.75
 nuget Akka.Cluster.Tools >= 1.5.75
 nuget Akka.Persistence.Sql >= 1.5.73 < 1.6
+// Listed directly, though Akka.Persistence.Sql brings them: it asks for 1.5.73, and NuGet would
+// give an application that version, older than the 1.5.75 FCQRS is compiled against.
+nuget Akka.Persistence.Query >= 1.5.75
+nuget Akka.Streams >= 1.5.75
 nuget Akka.TestKit >= 1.5.75
 nuget Akkling.Cluster.Sharding >= 0.18.1
 nuget Akkling.Persistence >= 0.18.1
