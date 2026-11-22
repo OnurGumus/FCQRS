@@ -2,9 +2,10 @@ module BankInvariantTests
 
 // The tutorial's bank with the saga of samples/accounts/transfer-with-a-saga, killed at random
 // points. A transfer moves money between two accounts through a saga, so the total across the
-// accounts must stay the same however often the process dies. It runs on SQLite, and on PostgreSQL when
-// FCQRS_TEST_POSTGRES names a server: PostgreSQL runs writes concurrently, so a write can commit
-// after later ones, which SQLite's single writer never does.
+// accounts must stay the same however often the process dies. It runs on SQLite, on PostgreSQL when
+// FCQRS_TEST_POSTGRES names a server, and on SQL Server when FCQRS_TEST_SQLSERVER does: both servers
+// run writes concurrently, so a write can commit after later ones, which SQLite's single writer
+// never does.
 
 open System
 open System.Collections.Concurrent
@@ -19,7 +20,6 @@ open Expecto
 open Microsoft.Data.Sqlite
 open Microsoft.Extensions.Configuration
 open Microsoft.Extensions.Logging.Abstractions
-open Npgsql
 open FCQRS.Common
 open FCQRS.FSharp
 open Account
@@ -33,19 +33,21 @@ let private closedNames = [| "closed0"; "closed1" |]
 let private opening = 1000m
 let private total = opening * decimal accountNames.Length
 
-/// The journal database, written as "sqlite:<path>" or "postgres:<connection string>" for the child.
+/// The journal database, written as "sqlite:<path>", or the server kind's prefix and a connection string,
+/// for the child.
 type private Journal =
     | Sqlite of path: string
-    | Postgres of connectionString: string
+    | OnServer of kind: TestDatabases.Kind * connectionString: string
 
     member journal.Argument =
         match journal with
         | Sqlite path -> "sqlite:" + path
-        | Postgres connectionString -> "postgres:" + connectionString
+        | OnServer(kind, connectionString) -> kind.Prefix + connectionString
 
     static member Parse(argument: string) =
-        if argument.StartsWith "postgres:" then Postgres(argument.Substring "postgres:".Length)
-        else Sqlite(argument.Substring "sqlite:".Length)
+        match TestDatabases.Kind.Parse argument with
+        | Some(kind, connectionString) -> OnServer(kind, connectionString)
+        | None -> Sqlite(argument.Substring "sqlite:".Length)
 
 /// An actor system on the journal, with no aggregates or sagas yet.
 let private actorOn (journal: Journal) =
@@ -56,7 +58,7 @@ let private actorOn (journal: Journal) =
     let connection =
         match journal with
         | Sqlite path -> Fcqrs.connect FCQRS.Actor.DBType.Sqlite $"Data Source={path};"
-        | Postgres connectionString -> Fcqrs.connect FCQRS.Actor.DBType.PostgreSQL15 connectionString
+        | OnServer(kind, connectionString) -> Fcqrs.connect kind.DBType connectionString
     Fcqrs.actor configuration NullLoggerFactory.Instance (Some connection) "BankInvariant"
 
 let private start (journal: Journal) =
@@ -180,8 +182,8 @@ let private unsettled (history: IDictionary<string, Event<AccountEvent> list>) =
     [ for t in all do yield! t.Sent ] |> List.filter (finished.Contains >> not)
 
 /// Creates a fresh journal database, runs `test` on it, and removes it.
-let private withJournal (postgres: string option) (test: Journal -> unit) =
-    match postgres with
+let private withJournal (server: TestDatabases.Server option) (test: Journal -> unit) =
+    match server with
     | None ->
         let path = Path.Combine(Path.GetTempPath(), $"fcqrs_bank_invariant_{Guid.NewGuid():N}.db")
         try
@@ -190,22 +192,8 @@ let private withJournal (postgres: string option) (test: Journal -> unit) =
             SqliteConnection.ClearAllPools()
             for file in [ path; path + "-wal"; path + "-shm" ] do
                 if File.Exists file then File.Delete file
-    | Some root ->
-        let database = $"fcqrs_bank_{Guid.NewGuid():N}"
-        let admin (sql: string) =
-            use connection = new NpgsqlConnection(root)
-            connection.Open()
-            use command = connection.CreateCommand()
-            command.CommandText <- sql
-            command.ExecuteNonQuery() |> ignore
-        admin $"CREATE DATABASE {database}"
-        try
-            let builder = NpgsqlConnectionStringBuilder(root)
-            builder.Database <- database
-            test (Postgres builder.ConnectionString)
-        finally
-            NpgsqlConnection.ClearAllPools()
-            admin $"DROP DATABASE IF EXISTS {database} WITH (FORCE)"
+    | Some server ->
+        TestDatabases.withDatabase server "fcqrs_bank" (fun connectionString -> test (OnServer(server.Kind, connectionString)))
 
 let private killAndCheck (database: string) (rounds: int) (journal: Journal) =
     let seed = Random.Shared.Next 1_000_000
@@ -279,20 +267,19 @@ let private killAndCheck (database: string) (rounds: int) (journal: Journal) =
         finally
             api.Stop().Wait(TimeSpan.FromSeconds 30.0) |> ignore
 
-let private conserved (postgres: string option) (rounds: int) =
-    let database = if postgres.IsSome then "PostgreSQL" else "SQLite"
+let private conserved (server: TestDatabases.Server option) (rounds: int) =
+    let database = server |> Option.map _.Kind.Name |> Option.defaultValue "SQLite"
     testCase $"bank invariant: transfers keep the total balance across process kills ({database})"
-    <| fun _ -> withJournal postgres (killAndCheck database rounds)
+    <| fun _ -> withJournal server (killAndCheck database rounds)
 
 let tests =
-    let postgres =
-        match Environment.GetEnvironmentVariable "FCQRS_TEST_POSTGRES" with
-        | null | "" -> None
-        | value -> Some value
     testSequenced (
         testList "bank invariant" [
             conserved None 8
-            match postgres with
-            // More kills: each one lands while more transfers run at once than on SQLite.
-            | Some _ -> conserved postgres 15
-            | None -> ptestCase "bank invariant on PostgreSQL: set FCQRS_TEST_POSTGRES to run" ignore ])
+            // More kills on a server: each one lands while more transfers run at once than on SQLite.
+            for server, variable in [ TestDatabases.postgres, "FCQRS_TEST_POSTGRES"; TestDatabases.sqlServer, "FCQRS_TEST_SQLSERVER" ] do
+                match server with
+                | Some _ -> conserved server 15
+                | None ->
+                    let kind = if variable = "FCQRS_TEST_POSTGRES" then "PostgreSQL" else "SQL Server"
+                    ptestCase $"bank invariant on {kind}: set {variable} to run" ignore ])

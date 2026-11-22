@@ -27,6 +27,19 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
+      # The facade tests create each database with the binary collation FCQRS requires.
+      sqlserver:
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        env:
+          ACCEPT_EULA: "Y"
+          MSSQL_SA_PASSWORD: Fcqrs-test-1
+        ports:
+          - 1433:1433
+        options: >-
+          --health-cmd "/opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P Fcqrs-test-1 -Q 'SELECT 1'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
@@ -39,6 +52,7 @@ jobs:
       - name: Facade tests
         env:
           FCQRS_TEST_POSTGRES: "Host=localhost;Port=5432;Database=fcqrs_test;Username=fcqrs;Password=fcqrs-test"
+          FCQRS_TEST_SQLSERVER: "Server=localhost,1433;User Id=sa;Password=Fcqrs-test-1;TrustServerCertificate=True"
         run: dotnet run --project test/Facade.Tests -c Release
       - name: C# workflow tests
         run: dotnet run --project test/Workflows.CSharp.Tests -c Release

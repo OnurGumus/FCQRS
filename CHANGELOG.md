@@ -1,5 +1,35 @@
 # Changelog
 
+## 7.5.0 (FCQRS core)
+
+- **Projections on SQL Server.** `ProjectionSqlDialect.SqlServer` joins SQLite and PostgreSQL:
+  `Fcqrs.projection`, `Fcqrs.transactionalProjection`, and the C# `AddProjection` and
+  `AddTransactionalProjection` run on a journal connected with a `SqlServer` `DBType`. Install
+  Microsoft.Data.SqlClient in the application. Projections need SQL Server 2016 or later, at
+  compatibility level 130 or higher, and a projection name of at most 128 characters. A projection
+  applies each aggregate's events in version order and skips none, as on the other databases.
+- **A SQL Server database must have a binary collation.** Akka.NET creates the journal and snapshot
+  tables without a collation, so their persistence-ID column takes the database's. Under a
+  case-insensitive collation, a server's usual default, `Account/0/abc` and `Account/0/ABC` are one
+  journal key, so one aggregate could recover the other's events. The actor system now refuses to
+  start, with `InvalidOperationException`, on a SQL Server database whose default collation is not
+  binary (`_BIN` or `_BIN2`), or whose existing journal or snapshot persistence-ID column has another
+  collation than the database's. Create a new database with one, such as
+  `CREATE DATABASE accounts COLLATE Latin1_General_100_BIN2_UTF8`. **Breaking for an existing SQL
+  Server journal on a case-insensitive database:** first check that no two persistence IDs differ
+  only in case, then change the database's collation and the `persistence_id` columns of the
+  journal, snapshot, and tags tables, dropping and recreating the indexes that include them. Other
+  databases are not checked.
+- With another provider than SQLite, PostgreSQL, or SQL Server, registering a projection raises
+  `ArgumentException` naming the provider, as before.
+- Nothing stored changes. The SQL that projections run on SQLite and PostgreSQL is unchanged.
+
+## 7.14.0 (FCQRS.Workflows)
+
+- **Schedules on SQL Server.** The schedule dispatcher keeps its index table,
+  `fcqrs_schedule_index`, on SQL Server too, with the requirements of FCQRS core 7.5.0, which this
+  version needs. On SQLite and PostgreSQL the table and its row text are unchanged.
+
 ## 7.4.0 (FCQRS core)
 
 - **A projection with stored progress can start a workflow on SQLite.** `Fcqrs.projection` with

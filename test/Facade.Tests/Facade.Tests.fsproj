@@ -11,12 +11,14 @@
 
   <ItemGroup>
     <Compile Include="VerifySerialization.fs" />
+    <Compile Include="TestDatabases.fs" />
     <Compile Include="BridgeSteps.fs" />
     <Compile Include="CommandSubscriptionTests.fs" />
     <Compile Include="SagaHandshakeTests.fs" />
     <Compile Include="SagaLifecycleTests.fs" />
     <Compile Include="ProjectionSubscriptionTests.fs" />
     <Compile Include="ProjectionCatchUpTests.fs" />
+    <Compile Include="SqlServerTests.fs" />
     <Compile Include="ExpectedVersionTests.fs" />
     <Compile Include="ConditionalCommandSerializationTests.fs" />
     <Compile Include="EventUpcastingTests.fs" />
@@ -62,6 +64,7 @@
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.*" />
     <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.*" />
     <PackageReference Include="Npgsql" Version="10.0.3" />
+    <PackageReference Include="Microsoft.Data.SqlClient" Version="6.1.4" />
   </ItemGroup>
 
 </Project>

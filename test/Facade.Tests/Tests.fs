@@ -2699,6 +2699,7 @@ let main argv =
                 SagaLifecycleTests.tests
                 ProjectionSubscriptionTests.tests
                 ProjectionCatchUpTests.tests
+                SqlServerTests.tests
                 ExpectedVersionTests.tests
                 ConditionalCommandSerializationTests.tests
                 EventUpcastingTests.tests

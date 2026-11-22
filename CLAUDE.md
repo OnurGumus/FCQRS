@@ -103,7 +103,9 @@ Keep these distinctions intact in code comments and documentation.
 - A projection follows each aggregate's and saga's own sequence numbers, never a global journal
   number, so it cannot skip an event that commits after later-numbered ones. Each pass applies the
   events it found in journal order across aggregates: on SQLite, the order they were written. On
-  PostgreSQL, an event that commits after later-numbered ones is applied in a later pass, after them.
+  PostgreSQL, and on SQL Server with `READ_COMMITTED_SNAPSHOT`, an event that commits after
+  later-numbered ones is applied in a later pass, after them. SQL Server's default read committed
+  makes the journal query wait for that write instead.
 - Commit a read-model update and its progress in the same transaction when they share a store. A
   projection that stores progress after its handler returns can hand an event to it again.
 - A projection with `Named` progress (a named C# `AddProjection`) runs its handler outside the
@@ -112,10 +114,11 @@ Keep these distinctions intact in code comments and documentation.
   SQLite's single writer lock: on SQLite its handler must not wait for a journal write.
 - A projection that names entities reads only their persistence IDs (`<escaped name>/...`, escaped
   as Akka escapes a sharding region's name): its SQL selects those rows, so other entities' events
-  are never fetched or deserialized. On SQLite the full scan reads only the names' range of the
-  persistence-ID index; the queries bounded by a journal number read every row above it, because
-  the index range would make each call read the entity's whole history. PostgreSQL reads other
-  rows in every query. A filtered pass reads each persistence ID's events with its own query, so
+  are never fetched or deserialized. On SQLite and SQL Server the full scan reads only the names'
+  range of the persistence-ID index; the queries bounded by a journal number read every row above
+  it (`NOT INDEXED` on SQLite, `INDEX(1)`, the clustered journal-number key, on SQL Server),
+  because the index range would make each call read the entity's whole history. PostgreSQL reads
+  other rows in every query. A filtered pass reads each persistence ID's events with its own query, so
   interleaved identities cost about one query per one or two events at startup. A pass still
   applies the named entities' events in journal order. An event of an entity it does not name never
   reaches it. An unnamed projection in an application that has schedules also receives
@@ -264,6 +267,19 @@ Keep these distinctions intact in code comments and documentation.
   actor treats that as fatal. One dispatcher per actor system; a hung start delays only its own
   schedule. Schedules give no exactly-once side effect and no precision below a second.
 
+### Databases
+
+- Every Akka.Persistence.Sql provider stores aggregates, sagas, and workflows. Projections and
+  schedules run their own SQL (`ProjectionStorage.fs`, the schedule index), written for SQLite,
+  PostgreSQL, and SQL Server; another provider raises `ArgumentException` when one is registered.
+  The SQL for SQLite and PostgreSQL must stay byte-for-byte what it was when a dialect is added.
+- On SQL Server the database's default collation must be binary, and existing journal and snapshot
+  persistence-ID columns must use it: Akka creates them without a collation, and a case-insensitive
+  one makes `Account/0/abc` and `Account/0/ABC` one journal key. `SqlServer.checkPersistence`
+  refuses to start the actor system otherwise. Projections also need compatibility level 130 for
+  `OPENJSON`. A binary collation makes catalog names case-sensitive, so tests and docs write
+  `INFORMATION_SCHEMA` in upper case.
+
 ### Deployment
 
 - FCQRS runs on one node. Nodes do not form one cluster (each joins itself), and a command's reply
@@ -283,6 +299,9 @@ Keep these distinctions intact in code comments and documentation.
 - `src/FCQRS/Actor.fs`: aggregate persistence, replay, snapshots, and command delivery.
 - `src/FCQRS/Saga.fs`: saga state machines, recovery, and command dispatch.
 - `src/FCQRS/Query.fs`: correlation subscriptions and projection notifications.
+- `src/FCQRS/SqlServer.fs`: the startup check of a SQL Server database's collation and level.
+- `src/FCQRS/ProjectionStorage.fs`: the projection store's SQL for each dialect, its progress and
+  lock tables, and the tables FCQRS owns, such as the schedule index.
 - `src/FCQRS/Projections.fs`: projections, their per-aggregate progress, catch-up, and retries.
 - `src/FCQRS/FSharp.fs`: F# facade.
 - `src/FCQRS/CSharpInterop.fs`: C# types and lower-level interop.
@@ -333,7 +352,9 @@ Keep these distinctions intact in code comments and documentation.
   read. `BankInvariantTests.fs` compiles step 5's F# `Account.fs` and the saga sample's
   `TransferSaga`, and `WorkflowBankInvariantTests.fs` step 5's `Account.fs` and
   workflow `Transfer.fs`. Both kill processes during transfers and check that the total balance is
-  unchanged, on SQLite and, when `FCQRS_TEST_POSTGRES` is set as in CI, on PostgreSQL.
+  unchanged, on SQLite and, when `FCQRS_TEST_POSTGRES` or `FCQRS_TEST_SQLSERVER` is set as in CI,
+  on PostgreSQL or SQL Server. `TestDatabases.fs` makes and drops each test's database on those
+  servers; `SqlServerTests.fs` checks the collation refusal and IDs that differ only in case.
 
 ## Development workflow
 

@@ -13,7 +13,6 @@ open Microsoft.Extensions.Configuration
 open Microsoft.Extensions.DependencyInjection
 open Microsoft.Extensions.Hosting
 open Microsoft.Extensions.Logging.Abstractions
-open Npgsql
 open FCQRS
 open FCQRS.Common
 open FCQRS.FSharp
@@ -51,31 +50,31 @@ let private execute (connection: DbConnection) (transaction: DbTransaction optio
         command.Parameters.Add parameter |> ignore
     command.ExecuteNonQuery() |> ignore
 
-type private Fixture(postgres: string option, ?readJournalOverride: string) =
+/// Two databases, the journal's and the read model's: SQLite files, or databases on `server`. With
+/// `snapshotReads`, a SQL Server read takes the last committed version of a row instead of waiting
+/// for its writer, as a PostgreSQL read does.
+type private Fixture(server: TestDatabases.Server option, ?readJournalOverride: string, ?snapshotReads: bool) =
     let suffix = Guid.NewGuid().ToString("N")
     let journalPath = Path.Combine(Path.GetTempPath(), $"fcqrs-catchup-journal-{suffix}.db")
     let projectionPath = Path.Combine(Path.GetTempPath(), $"fcqrs-catchup-read-{suffix}.db")
     let journalDatabase = "catchup_j_" + suffix
     let projectionDatabase = "catchup_p_" + suffix
     let connectionString database =
-        match postgres with
-        | Some root ->
-            let builder = NpgsqlConnectionStringBuilder(root)
-            builder.Database <- database
-            builder.ConnectionString
+        match server with
+        | Some server -> TestDatabases.connectionString server database
         | None -> $"Data Source={database};Pooling=False;Default Timeout=5"
-    let journalString = connectionString (if postgres.IsSome then journalDatabase else journalPath)
-    let projectionString = connectionString (if postgres.IsSome then projectionDatabase else projectionPath)
+    let journalString = connectionString (if server.IsSome then journalDatabase else journalPath)
+    let projectionString = connectionString (if server.IsSome then projectionDatabase else projectionPath)
     let connection (text: string) : DbConnection =
-        if postgres.IsSome then new NpgsqlConnection(text) else new SqliteConnection(text)
+        match server with
+        | Some server -> server.Kind.Connect text
+        | None -> new SqliteConnection(text)
     do
-        match postgres with
+        match server with
         | None -> ()
-        | Some root ->
-            use admin = new NpgsqlConnection(root)
-            admin.Open()
-            execute admin None $"CREATE DATABASE {journalDatabase}" []
-            execute admin None $"CREATE DATABASE {projectionDatabase}" []
+        | Some server ->
+            TestDatabases.createDatabase server journalDatabase (defaultArg snapshotReads false)
+            TestDatabases.createDatabase server projectionDatabase (defaultArg snapshotReads false)
     let api =
         let configuration = VerifySerialization.configuration()
         readJournalOverride |> Option.iter (fun value ->
@@ -84,7 +83,7 @@ type private Fixture(postgres: string option, ?readJournalOverride: string) =
             |> ignore)
         Fcqrs.actor (configuration.Build()) NullLoggerFactory.Instance
             (Some(Fcqrs.connect
-                (if postgres.IsSome then FCQRS.Actor.DBType.PostgreSQL15 else FCQRS.Actor.DBType.Sqlite)
+                (match server with Some server -> server.Kind.DBType | None -> FCQRS.Actor.DBType.Sqlite)
                 journalString)) ("CatchUp" + suffix)
     let counter =
         Fcqrs.aggregate api
@@ -99,7 +98,7 @@ type private Fixture(postgres: string option, ?readJournalOverride: string) =
         use read = connection projectionString
         read.Open()
         execute read None
-            "CREATE TABLE applied_events (persistence_id TEXT NOT NULL, sequence_nr BIGINT NOT NULL, amount INTEGER NOT NULL)" []
+            $"CREATE TABLE applied_events (persistence_id {TestDatabases.textType (server |> Option.map _.Kind)} NOT NULL, sequence_nr BIGINT NOT NULL, amount INTEGER NOT NULL)" []
     let capturesGate = obj ()
     let mutable capturesClosed = 0
     let captureWaiters = ResizeArray<int * TaskCompletionSource>()
@@ -116,7 +115,7 @@ type private Fixture(postgres: string option, ?readJournalOverride: string) =
         journal
     let store =
         SqlProjectionStore(
-            (if postgres.IsSome then ProjectionSqlDialect.PostgreSql else ProjectionSqlDialect.Sqlite),
+            (match server with Some server -> server.Kind.Dialect | None -> ProjectionSqlDialect.Sqlite),
             Func<DbConnection>(journalConnection),
             Func<DbConnection>(fun () -> connection projectionString))
     member _.Api = api
@@ -132,6 +131,36 @@ type private Fixture(postgres: string option, ?readJournalOverride: string) =
         let journal = connection journalString
         journal.Open()
         journal
+    /// Opens a journal transaction that copies one journal row as sequence number 2 of its
+    /// persistence ID and leaves it uncommitted: the copy takes a journal number now and commits
+    /// whenever the caller commits the transaction. The copied real payload keeps the plugin's
+    /// serializer and manifest. `filter` selects the copied row: a condition, or "" for any row.
+    member _.HoldInsert(filter: string) : DbConnection * DbTransaction =
+        let kind =
+            match server with
+            | Some server -> server.Kind
+            | None -> invalidOp "Holding a journal insert needs a database server."
+        let journal = connection journalString
+        journal.Open()
+        let transaction = journal.BeginTransaction()
+        let schema, quoteName = match kind with TestDatabases.PostgreSql -> "public", (fun name -> "\"" + name + "\"") | TestDatabases.SqlServer -> "dbo", (fun name -> "[" + name + "]")
+        use columnsCommand = journal.CreateCommand()
+        columnsCommand.Transaction <- transaction
+        // A binary collation makes SQL Server's catalog names case-sensitive, and they are upper case.
+        columnsCommand.CommandText <- $"SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = '{schema}' AND TABLE_NAME = 'journal' AND COLUMN_NAME <> 'ordering' ORDER BY ORDINAL_POSITION"
+        let columns = ResizeArray<string>()
+        do
+            use reader = columnsCommand.ExecuteReader()
+            while reader.Read() do columns.Add(reader.GetString 0)
+        let quoted = columns |> Seq.map quoteName |> String.concat ", "
+        let values = columns |> Seq.map (function "sequence_number" -> "2" | name -> quoteName name) |> String.concat ", "
+        let where = if filter = "" then "" else " WHERE " + filter
+        let insert =
+            match kind with
+            | TestDatabases.PostgreSql -> $"INSERT INTO journal ({quoted}) SELECT {values} FROM journal{where} LIMIT 1"
+            | TestDatabases.SqlServer -> $"INSERT INTO journal ({quoted}) SELECT TOP 1 {values} FROM journal{where}"
+        execute journal (Some transaction) insert []
+        journal, transaction
     member _.Send(id, amount) =
         counter.Send (Fcqrs.newCid()) (Fcqrs.aggregateId id) amount (fun _ -> true)
         |> fun work -> Async.RunSynchronously(work, 20000)
@@ -160,20 +189,17 @@ type private Fixture(postgres: string option, ?readJournalOverride: string) =
     interface IDisposable with
         member _.Dispose() =
             wait (api.Stop())
-            match postgres with
+            match server with
             | None ->
                 for database in [ journalPath; projectionPath ] do
                     for path in [ database; database + "-wal"; database + "-shm" ] do
                         if File.Exists path then File.Delete path
-            | Some root ->
-                NpgsqlConnection.ClearAllPools()
-                use admin = new NpgsqlConnection(root)
-                admin.Open()
-                execute admin None $"DROP DATABASE {journalDatabase} WITH (FORCE)" []
-                execute admin None $"DROP DATABASE {projectionDatabase} WITH (FORCE)" []
+            | Some server ->
+                TestDatabases.dropDatabase server journalDatabase
+                TestDatabases.dropDatabase server projectionDatabase
 
-let private allAggregates postgres =
-    use fixture = new Fixture(postgres)
+let private allAggregates server =
+    use fixture = new Fixture(server)
     fixture.Send("first", 2)
     fixture.Send("second", 3)
     fixture.Send("first", 5)
@@ -903,8 +929,8 @@ let private nullCorrelationId =
             Thread.Sleep 20
         Expect.equal received.Value 1 "the subscriber without a correlation ID receives it"
 
-let private concurrentInstances postgres =
-    use fixture = new Fixture(postgres)
+let private concurrentInstances server =
+    use fixture = new Fixture(server)
     for amount in 1..8 do fixture.Send("shared", amount)
     use first = Fcqrs.transactionalProjection fixture.Api (fixture.Options "shared-name") fixture.Apply
     use second = Fcqrs.transactionalProjection fixture.Api (fixture.Options "shared-name") fixture.Apply
@@ -912,28 +938,14 @@ let private concurrentInstances postgres =
     Expect.equal (fixture.Scalar "SELECT COUNT(*) FROM applied_events") 8L "same-name instances fence checkpoint advancement and apply each event once"
     Expect.equal (fixture.Scalar "SELECT SUM(amount) FROM applied_events") 36L "competing workers cannot duplicate read-model effects"
 
-let private postgresCommitInversion connectionString =
-    use fixture = new Fixture(Some connectionString)
+let private commitInversion server =
+    use fixture = new Fixture(Some server, snapshotReads = true)
     fixture.Send("template", 1)
     use projection = Fcqrs.transactionalProjection fixture.Api (fixture.Options "commit-inversion") fixture.Apply
     wait (projection.CatchUpAsync())
-    use delayed = fixture.OpenJournal()
-    use transaction = delayed.BeginTransaction()
-    // Allocate an ordering number and leave that transaction open. The copied
-    // real payload preserves the plugin's serializer/manifest representation.
-    use columnsCommand = delayed.CreateCommand()
-    columnsCommand.Transaction <- transaction
-    columnsCommand.CommandText <- "SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'journal' AND column_name <> 'ordering' ORDER BY ordinal_position"
-    let columns = ResizeArray<string>()
-    do
-        use reader = columnsCommand.ExecuteReader()
-        while reader.Read() do columns.Add(reader.GetString 0)
-    let quoted = columns |> Seq.map (fun name -> "\"" + name + "\"") |> String.concat ", "
-    let values =
-        columns
-        |> Seq.map (function "sequence_number" -> "2" | name -> "\"" + name + "\"")
-        |> String.concat ", "
-    execute delayed (Some transaction) $"INSERT INTO journal ({quoted}) SELECT {values} FROM journal LIMIT 1" []
+    let delayed, transaction = fixture.HoldInsert ""
+    use _delayed = delayed
+    use transaction = transaction
     fixture.Send("commits-first", 2)
     wait (projection.CatchUpAsync())
     Expect.equal (fixture.Scalar "SELECT COUNT(*) FROM applied_events") 2L "an uncommitted lower ordering does not block the committed snapshot"
@@ -941,8 +953,8 @@ let private postgresCommitInversion connectionString =
     wait (projection.CatchUpAsync())
     Expect.equal (fixture.Scalar "SELECT COUNT(*) FROM applied_events") 3L "the lower ordering that commits later is never skipped"
 
-let private postgresAmbientSnapshot connectionString =
-    use fixture = new Fixture(Some connectionString)
+let private postgresAmbientSnapshot server =
+    use fixture = new Fixture(Some server)
     fixture.Send("ambient", 1)
     let options = fixture.Options "ambient"
     options.PollInterval <- TimeSpan.FromHours 1.0
@@ -977,8 +989,8 @@ let private postgresAmbientSnapshot connectionString =
 
 // A projection started with Fcqrs.projection tracks each aggregate's sequence numbers, so an
 // event that commits after later-numbered events still reaches its handler.
-let private postgresLateCommitProjection connectionString =
-    use fixture = new Fixture(Some connectionString)
+let private lateCommitProjection server =
+    use fixture = new Fixture(Some server, snapshotReads = true)
     let seen = Collections.Concurrent.ConcurrentQueue<string * int64>()
     use projection =
         Fcqrs.projection fixture.Api
@@ -988,19 +1000,10 @@ let private postgresLateCommitProjection connectionString =
                 | _ -> ()))
     fixture.Send("template", 1)
     wait (projection.CatchUpAsync())
-    use delayed = fixture.OpenJournal()
-    use transaction = delayed.BeginTransaction()
-    use columnsCommand = delayed.CreateCommand()
-    columnsCommand.Transaction <- transaction
-    columnsCommand.CommandText <- "SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'journal' AND column_name <> 'ordering' ORDER BY ordinal_position"
-    let columns = ResizeArray<string>()
-    do
-        use reader = columnsCommand.ExecuteReader()
-        while reader.Read() do columns.Add(reader.GetString 0)
-    let quoted = columns |> Seq.map (fun name -> "\"" + name + "\"") |> String.concat ", "
-    let values = columns |> Seq.map (function "sequence_number" -> "2" | name -> "\"" + name + "\"") |> String.concat ", "
     // Takes a journal number and holds its commit while a later-numbered event commits.
-    execute delayed (Some transaction) $"INSERT INTO journal ({quoted}) SELECT {values} FROM journal LIMIT 1" []
+    let delayed, transaction = fixture.HoldInsert ""
+    use _delayed = delayed
+    use transaction = transaction
     fixture.Send("commits-first", 2)
     wait (projection.CatchUpAsync())
     // Longer than Akka's global-offset reader waits for a missing number before skipping it.
@@ -1234,27 +1237,18 @@ let private heldAcrossRetry =
 
 // Most queries read only writes numbered above what was handled a LateWriteWindow ago. A write that
 // takes longer than the window to commit is found by the next full scan instead of being skipped.
-let private postgresVeryLateCommit connectionString =
-    use fixture = new Fixture(Some connectionString)
+let private veryLateCommit server =
+    use fixture = new Fixture(Some server, snapshotReads = true)
     fixture.Send("template", 1)
     let options = fixture.Options "very-late"
     options.LateWriteWindow <- TimeSpan.FromSeconds 1.0
     options.FullScanInterval <- TimeSpan.FromSeconds 6.0
     use projection = Fcqrs.transactionalProjection fixture.Api options fixture.Apply
     wait (projection.CatchUpAsync())
-    use delayed = fixture.OpenJournal()
-    use transaction = delayed.BeginTransaction()
-    use columnsCommand = delayed.CreateCommand()
-    columnsCommand.Transaction <- transaction
-    columnsCommand.CommandText <- "SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'journal' AND column_name <> 'ordering' ORDER BY ordinal_position"
-    let columns = ResizeArray<string>()
-    do
-        use reader = columnsCommand.ExecuteReader()
-        while reader.Read() do columns.Add(reader.GetString 0)
-    let quoted = columns |> Seq.map (fun name -> "\"" + name + "\"") |> String.concat ", "
-    let values = columns |> Seq.map (function "sequence_number" -> "2" | name -> "\"" + name + "\"") |> String.concat ", "
     // Takes a journal number now and commits after the window, behind later-numbered writes.
-    execute delayed (Some transaction) $"INSERT INTO journal ({quoted}) SELECT {values} FROM journal LIMIT 1" []
+    let delayed, transaction = fixture.HoldInsert ""
+    use _delayed = delayed
+    use transaction = transaction
     fixture.Send("commits-first", 2)
     wait (projection.CatchUpAsync())
     Thread.Sleep 3000
@@ -1319,8 +1313,8 @@ let private entityFilterReadsOnlyItsTypes =
             wait (api.Stop())
             deleteDatabases [ journalPath; projectionPath ]
 
-let private entityFilterTransactional postgres =
-    use fixture = new Fixture(postgres)
+let private entityFilterTransactional server =
+    use fixture = new Fixture(server)
     let keep, skip = filterTallies fixture.Api
     interleavedFilterEvents keep skip
     let options = fixture.Options "entity-filter"
@@ -1493,10 +1487,44 @@ let private unfilteredSqlitePlans =
             Expect.stringContains since sqliteByNumber "the incremental capture reads the rows above its journal number"
             Expect.isFalse (since.Contains "journal_uq") $"the incremental capture does not read the persistence-ID index: {since}")
 
+// The same choice on SQL Server, whose planner seeks the persistence-ID index from a LIKE prefix
+// when it estimates that cheaper, and keeps a cached plan for later values. The queries bounded by
+// the journal number read Akka's clustered index on it, PK_journal; the full scan seeks the
+// entity's range of the persistence-ID index, UQ_journal, which a binary collation orders by code.
+let private sqlServerPlans server =
+    use fixture = new Fixture(Some server)
+    let keep, skip = filterTallies fixture.Api
+    interleavedFilterEvents keep skip
+    let entities = validateEntities "entities" [ "FilterKeep" ]
+    // The actual plan, which SQL Server returns as a result set after the query's own.
+    let plan (command: Data.Common.DbConnection -> Data.Common.DbCommand) =
+        use connection = fixture.OpenJournal()
+        execute connection None "SET STATISTICS XML ON" []
+        use command = command connection
+        use reader = command.ExecuteReader()
+        let mutable xml = ""
+        let mutable reading = true
+        while reading do
+            while reader.Read() do
+                if reader.FieldCount = 1 && reader.GetName 0 = "Microsoft SQL Server 2005 XML Showplan" then
+                    xml <- reader.GetString 0
+            reading <- reader.NextResult()
+        Expect.isNotEmpty xml "SQL Server returned the plan"
+        xml
+    let byNumber (what: string) (xml: string) =
+        Expect.stringContains xml "Index=\"[PK_journal]\"" $"{what} reads the clustered index on the journal number"
+        Expect.isFalse (xml.Contains "Index=\"[UQ_journal]\"") $"{what} does not read the persistence-ID index"
+    byNumber "the listing" (plan (fun connection -> fixture.Store.ListCommand(connection, 0L, 500L, entities)))
+    byNumber "the incremental capture" (plan (fun connection -> fixture.Store.CaptureSinceCommand(connection, 0L, entities)))
+    byNumber "the unfiltered incremental capture" (plan (fun connection -> fixture.Store.CaptureSinceCommand(connection, 0L, [])))
+    let all = plan (fun connection -> fixture.Store.CaptureAllCommand(connection, entities))
+    Expect.stringContains all "Index=\"[UQ_journal]\"" "the full scan reads the persistence-ID index"
+    Expect.stringContains all "<SeekPredicates>" "the full scan seeks the entity's range of it"
+
 // A FilterKeep event that takes its journal number before later-numbered events and commits after
 // them reaches a filtered projection in a later pass.
-let private postgresEntityFilterLateCommit connectionString =
-    use fixture = new Fixture(Some connectionString)
+let private entityFilterLateCommit server =
+    use fixture = new Fixture(Some server, snapshotReads = true)
     let keep, skip = filterTallies fixture.Api
     let seen = Collections.Concurrent.ConcurrentQueue<int>()
     use projection =
@@ -1505,19 +1533,10 @@ let private postgresEntityFilterLateCommit connectionString =
              |> Projection.ofEntities [ "FilterKeep" ])
     tallyOn keep "template" 1
     wait (projection.CatchUpAsync())
-    use delayed = fixture.OpenJournal()
-    use transaction = delayed.BeginTransaction()
-    use columnsCommand = delayed.CreateCommand()
-    columnsCommand.Transaction <- transaction
-    columnsCommand.CommandText <- "SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'journal' AND column_name <> 'ordering' ORDER BY ordinal_position"
-    let columns = ResizeArray<string>()
-    do
-        use reader = columnsCommand.ExecuteReader()
-        while reader.Read() do columns.Add(reader.GetString 0)
-    let quoted = columns |> Seq.map (fun name -> "\"" + name + "\"") |> String.concat ", "
-    let values = columns |> Seq.map (function "sequence_number" -> "2" | name -> "\"" + name + "\"") |> String.concat ", "
     // Takes a journal number and holds its commit while later-numbered events commit.
-    execute delayed (Some transaction) $"INSERT INTO journal ({quoted}) SELECT {values} FROM journal WHERE persistence_id LIKE 'FilterKeep/%%' LIMIT 1" []
+    let delayed, transaction = fixture.HoldInsert "persistence_id LIKE 'FilterKeep/%'"
+    use _delayed = delayed
+    use transaction = transaction
     tallyOn skip "skip" 101
     tallyOn keep "commits-first" 2
     wait (projection.CatchUpAsync())
@@ -1529,10 +1548,6 @@ let private postgresEntityFilterLateCommit connectionString =
     Expect.equal (envelopesRead projection) 3L "the projection read no FilterSkip event"
 
 let tests =
-    let postgres =
-        match Environment.GetEnvironmentVariable "FCQRS_TEST_POSTGRES" with
-        | null | "" -> None
-        | value -> Some value
     testSequenced (
         testList "transactional projection catch-up"
             [ testCase "SQLite: catch-up spans all aggregate histories" (fun _ -> allAggregates None)
@@ -1564,15 +1579,20 @@ let tests =
               entityFilterEscapedNames
               entityFilterSqlitePlans
               unfilteredSqlitePlans
-              match postgres with
-              | Some connection ->
-                  testCase "PostgreSQL: a transactional projection with an entity filter applies and stores only its types" (fun _ -> entityFilterTransactional postgres)
-                  testCase "PostgreSQL: an entity filter receives its event that commits after later-numbered ones" (fun _ -> postgresEntityFilterLateCommit connection)
-                  testCase "PostgreSQL: catch-up spans all aggregate histories" (fun _ -> allAggregates postgres)
-                  testCase "PostgreSQL: competing projection instances do not double-apply" (fun _ -> concurrentInstances postgres)
-                  testCase "PostgreSQL: a late commit below the previous global offset is processed" (fun _ -> postgresCommitInversion connection)
-                  testCase "PostgreSQL: a projection receives an event that commits after later-numbered ones" (fun _ -> postgresLateCommitProjection connection)
-                  testCase "PostgreSQL: a write that commits after the late-write window is handled by the next full scan" (fun _ -> postgresVeryLateCommit connection)
-                  testCase "PostgreSQL: an older ambient snapshot cannot weaken catch-up" (fun _ -> postgresAmbientSnapshot connection)
-              | None ->
-                  ptestCase "PostgreSQL integration: set FCQRS_TEST_POSTGRES to run" ignore ])
+              for server, variable in [ TestDatabases.postgres, "FCQRS_TEST_POSTGRES"; TestDatabases.sqlServer, "FCQRS_TEST_SQLSERVER" ] do
+                  match server with
+                  | Some server ->
+                      let name = server.Kind.Name
+                      testCase $"{name}: a transactional projection with an entity filter applies and stores only its types" (fun _ -> entityFilterTransactional (Some server))
+                      testCase $"{name}: an entity filter receives its event that commits after later-numbered ones" (fun _ -> entityFilterLateCommit server)
+                      testCase $"{name}: catch-up spans all aggregate histories" (fun _ -> allAggregates (Some server))
+                      testCase $"{name}: competing projection instances do not double-apply" (fun _ -> concurrentInstances (Some server))
+                      testCase $"{name}: a late commit below the previous global offset is processed" (fun _ -> commitInversion server)
+                      testCase $"{name}: a projection receives an event that commits after later-numbered ones" (fun _ -> lateCommitProjection server)
+                      testCase $"{name}: a write that commits after the late-write window is handled by the next full scan" (fun _ -> veryLateCommit server)
+                      if server.Kind = TestDatabases.SqlServer then
+                          testCase "SQL Server: the journal-number queries read by journal number, and the full scan reads the entity's range" (fun _ -> sqlServerPlans server)
+                      if server.Kind = TestDatabases.PostgreSql then
+                          testCase "PostgreSQL: an older ambient snapshot cannot weaken catch-up" (fun _ -> postgresAmbientSnapshot server)
+                  | None ->
+                      ptestCase $"{variable}: set it to run the integration tests on that server" ignore ])

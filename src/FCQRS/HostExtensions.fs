@@ -423,7 +423,7 @@ type FcqrsBuilder internal (services: IServiceCollection, connectionString: stri
     /// await all database work. FCQRS commits updates with durable contiguous progress.
     /// Resolve FCQRS.Projections.IProjection from DI to wait after an aggregate reply.
     /// Each pass applies events in journal order: per persistence ID in sequence order, and across
-    /// persistence IDs in write order on SQLite; on PostgreSQL an event that commits late is applied
+    /// persistence IDs in write order on SQLite; on PostgreSQL and SQL Server an event that commits late is applied
     /// in a later pass. Set `options.Entities` to read only some entities' events. Unprocessed
     /// journal history must be retained. On SQLite the handler runs while the transaction holds
     /// the database's single writer lock, so it must not wait for a journal write such as a
@@ -550,7 +550,8 @@ type FcqrsServiceCollectionExtensions =
         FcqrsServiceCollectionExtensions.AddFcqrs(services, connectionString, clusterName, Actor.DBType.Sqlite)
 
     /// Register FCQRS with the selected SQL journal provider and startup wiring.
-    /// Install the application's ADO.NET provider, such as Npgsql for PostgreSQL.
+    /// Install the application's ADO.NET provider, such as Npgsql for PostgreSQL or
+    /// Microsoft.Data.SqlClient for SQL Server.
     [<Extension>]
     static member AddFcqrs(services: IServiceCollection, connectionString: string, clusterName: string, databaseType: Actor.DBType) : FcqrsBuilder =
         let builder = FcqrsBuilder(services, connectionString, clusterName)

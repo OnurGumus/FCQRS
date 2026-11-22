@@ -1245,7 +1245,10 @@ type internal HoconStringConfigurationSource(hoconString: string) =
 type DBType =
     /// SQLite using Microsoft.Data.Sqlite provider
     | Sqlite
-    /// Microsoft SQL Server 2012
+    /// Microsoft SQL Server 2012. On every SQL Server version, the database needs a binary
+    /// collation, such as Latin1_General_100_BIN2_UTF8: the actor system refuses to start
+    /// otherwise. Projections and workflows need SQL Server 2016 (compatibility level 130) or
+    /// higher. Install Microsoft.Data.SqlClient in the application.
     | SqlServer2012
     /// Microsoft SQL Server 2014
     | SqlServer2014
@@ -1352,6 +1355,13 @@ let api (config: IConfiguration) (loggerFactory: ILoggerFactory) (connection: Co
     Akka.Persistence.Persistence.Instance.Apply(system) |> ignore
     Akka.Persistence.Sql.SqlPersistence.Get(system) |> ignore
     Akka.Cluster.Sharding.ClusterSharding.Get(system) |> ignore
+    // Before any actor writes: a SQL Server database whose collation equates different persistence
+    // IDs would mix aggregates' histories.
+    try
+        SqlServer.checkPersistence system
+    with _ ->
+        system.Terminate().Wait()
+        reraise ()
     let mediator = DistributedPubSub.Get(system).Mediator
     let mat = ActorMaterializer.Create system
 

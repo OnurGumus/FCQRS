@@ -4,7 +4,7 @@ module WorkflowBankInvariantTests
 // Processes are killed while transfers run, and a new process finishes them. The accounts together
 // must hold what they held at the start: no kill may create money, lose it, or move a transfer twice.
 //
-// FCQRS_TEST_POSTGRES names a server, as for the saga version of this test.
+// FCQRS_TEST_POSTGRES or FCQRS_TEST_SQLSERVER names a server, as for the saga version of this test.
 
 open System
 open System.Collections.Concurrent
@@ -19,7 +19,6 @@ open Expecto
 open Microsoft.Data.Sqlite
 open Microsoft.Extensions.Configuration
 open Microsoft.Extensions.Logging.Abstractions
-open Npgsql
 open FCQRS.Common
 open FCQRS.FSharp
 open FCQRS.Model.Data
@@ -42,16 +41,17 @@ let private total = opening * decimal accountNames.Length
 
 type private Journal =
     | Sqlite of path: string
-    | Postgres of connectionString: string
+    | OnServer of kind: TestDatabases.Kind * connectionString: string
 
     member journal.Argument =
         match journal with
         | Sqlite path -> "sqlite:" + path
-        | Postgres connectionString -> "postgres:" + connectionString
+        | OnServer(kind, connectionString) -> kind.Prefix + connectionString
 
     static member Parse(argument: string) =
-        if argument.StartsWith "postgres:" then Postgres(argument.Substring "postgres:".Length)
-        else Sqlite(argument.Substring "sqlite:".Length)
+        match TestDatabases.Kind.Parse argument with
+        | Some(kind, connectionString) -> OnServer(kind, connectionString)
+        | None -> Sqlite(argument.Substring "sqlite:".Length)
 
 /// An actor system on the journal, with no aggregate or workflow registered, so nothing recovers.
 let private actorOn (journal: Journal) =
@@ -62,7 +62,7 @@ let private actorOn (journal: Journal) =
     let connection =
         match journal with
         | Sqlite path -> Fcqrs.connect FCQRS.Actor.DBType.Sqlite $"Data Source={path};"
-        | Postgres connectionString -> Fcqrs.connect FCQRS.Actor.DBType.PostgreSQL15 connectionString
+        | OnServer(kind, connectionString) -> Fcqrs.connect kind.DBType connectionString
     Fcqrs.actor configuration NullLoggerFactory.Instance (Some connection) "WorkflowBank"
 
 let private start (journal: Journal) =
@@ -193,8 +193,8 @@ let private unfinishedIn (api: IActor) =
             | WorkflowRecord.Finished _ | WorkflowRecord.Faulted _ | WorkflowRecord.Cancelled _ -> ()
             | _ -> id ]
 
-let private withJournal (postgres: string option) (test: Journal -> unit) =
-    match postgres with
+let private withJournal (server: TestDatabases.Server option) (test: Journal -> unit) =
+    match server with
     | None ->
         let path = Path.Combine(Path.GetTempPath(), $"fcqrs_workflow_bank_{Guid.NewGuid():N}.db")
         try
@@ -203,22 +203,8 @@ let private withJournal (postgres: string option) (test: Journal -> unit) =
             SqliteConnection.ClearAllPools()
             for file in [ path; path + "-wal"; path + "-shm" ] do
                 if File.Exists file then File.Delete file
-    | Some root ->
-        let database = $"fcqrs_workflow_bank_{Guid.NewGuid():N}"
-        let admin (sql: string) =
-            use connection = new NpgsqlConnection(root)
-            connection.Open()
-            use command = connection.CreateCommand()
-            command.CommandText <- sql
-            command.ExecuteNonQuery() |> ignore
-        admin $"CREATE DATABASE {database}"
-        try
-            let builder = NpgsqlConnectionStringBuilder(root)
-            builder.Database <- database
-            test (Postgres builder.ConnectionString)
-        finally
-            NpgsqlConnection.ClearAllPools()
-            admin $"DROP DATABASE IF EXISTS {database} WITH (FORCE)"
+    | Some server ->
+        TestDatabases.withDatabase server "fcqrs_bank" (fun connectionString -> test (OnServer(server.Kind, connectionString)))
 
 let private killAndCheck (database: string) (rounds: int) (journal: Journal) =
     let seed = Random.Shared.Next 1_000_000
@@ -297,10 +283,10 @@ let private killAndCheck (database: string) (rounds: int) (journal: Journal) =
     finally
         api.Stop().Wait(TimeSpan.FromSeconds 30.0) |> ignore
 
-let private conserved (postgres: string option) (rounds: int) =
-    let database = if postgres.IsSome then "PostgreSQL" else "SQLite"
+let private conserved (server: TestDatabases.Server option) (rounds: int) =
+    let database = server |> Option.map _.Kind.Name |> Option.defaultValue "SQLite"
     testCase $"workflow bank invariant: transfers written as workflows keep the total across process kills ({database})"
-    <| fun _ -> withJournal postgres (killAndCheck database rounds)
+    <| fun _ -> withJournal server (killAndCheck database rounds)
 
 /// A repeated SendTransfer, as a workflow sends after a restart, gets the first verdict even when the
 /// first send spent the balance: a refusal would make the workflow end the transfer as refused.
@@ -331,14 +317,13 @@ let private repeatedSend =
         Expect.equal (fold (event (TransferSent("t1", "bob", 50m))) state).Balance 0m "folding the repeated reply moves no money"
 
 let tests =
-    let postgres =
-        match Environment.GetEnvironmentVariable "FCQRS_TEST_POSTGRES" with
-        | null | "" -> None
-        | value -> Some value
     testSequenced (
         testList "workflow bank invariant" [
             repeatedSend
             conserved None 6
-            match postgres with
-            | Some _ -> conserved postgres 10
-            | None -> ptestCase "workflow bank invariant on PostgreSQL: set FCQRS_TEST_POSTGRES to run" ignore ])
+            for server, variable in [ TestDatabases.postgres, "FCQRS_TEST_POSTGRES"; TestDatabases.sqlServer, "FCQRS_TEST_SQLSERVER" ] do
+                match server with
+                | Some _ -> conserved server 10
+                | None ->
+                    let kind = if variable = "FCQRS_TEST_POSTGRES" then "PostgreSQL" else "SQL Server"
+                    ptestCase $"workflow bank invariant on {kind}: set {variable} to run" ignore ])

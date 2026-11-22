@@ -141,8 +141,8 @@ module Projection =
     /// Reads only the events of the named entities: an aggregate's, saga's, or workflow's name, as
     /// registered. A name selects the persistence IDs that start with it, escaped as Akka escapes a
     /// sharding region's name (Uri.EscapeDataString), and "/". The journal queries select those
-    /// rows in SQL, so other entities' events are not fetched or deserialized. On SQLite the full
-    /// scan reads only the names' range of the journal's persistence-ID index, and the queries
+    /// rows in SQL, so other entities' events are not fetched or deserialized. On SQLite and SQL
+    /// Server the full scan reads only the names' range of the journal's persistence-ID index, and the queries
     /// bounded by a journal number read every row above it; PostgreSQL reads other entities' rows
     /// in every query. A pass reads each persistence ID's events with a query of its own.
     /// A pass hands the named entities' events to the handler in journal order, as without a
@@ -419,11 +419,11 @@ module Fcqrs =
     /// Starts a projection. It follows each aggregate's and saga's own sequence numbers, so it never
     /// skips a stored event. Each pass hands the events it found to the handler in journal order,
     /// so each aggregate's events arrive in sequence order; on SQLite, events of different
-    /// aggregates arrive in the order they were written, and on PostgreSQL an event that commits
+    /// aggregates arrive in the order they were written, and on PostgreSQL and SQL Server an event that commits
     /// late arrives in a later pass. With `Entities` (see Projection.ofEntities), it reads only
     /// those entities' events. With `Named` progress, a handler can see an event again
-    /// after a crash. A handler that throws terminates the process. Requires a SQLite or
-    /// PostgreSQL journal; an Akka event adapter must turn each journal row into one event.
+    /// after a crash. A handler that throws terminates the process. Requires a SQLite,
+    /// PostgreSQL, or SQL Server journal; an Akka event adapter must turn each journal row into one event.
     let projection (api: IActor) (p: Projection) : FCQRS.Projections.IProjection =
         let progress =
             match p.Progress with
@@ -436,7 +436,7 @@ module Fcqrs =
     /// commits those updates and contiguous per-persistence-ID progress together.
     /// Retain unprocessed journal history. Each pass applies events in journal order: per
     /// persistence ID in sequence order, and across persistence IDs in write order on SQLite; on
-    /// PostgreSQL an event that commits late is applied in a later pass. Set
+    /// PostgreSQL and SQL Server an event that commits late is applied in a later pass. Set
     /// `options.Entities` to read only some entities' events. On SQLite the handler runs while the
     /// transaction holds the database's single writer lock, so it must not wait for a journal write
     /// such as a workflow start; use `projection` with `Named` progress for that.

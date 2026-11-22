@@ -240,7 +240,14 @@ builder.Services.AddFcqrs(
     .AddTransactionalProjection(options, Handle);
 ```
 
-The snapshot and completion contract uses per-identity checkpoints on both databases.
+For SQL Server, add the Microsoft.Data.SqlClient package, choose `ProjectionSqlDialect.SqlServer` with
+a `SqlConnection` factory, and connect the Akka journal with a `SqlServer` `DBType`. The handler's SQL
+runs there unchanged. The database needs a binary collation and compatibility level 130 or higher:
+[Configure the database](configure-the-database.html#SQL-Server) explains both. Every command the
+handler runs must use the transaction FCQRS passes: SqlClient refuses a command without it on a
+connection that has a transaction open.
+
+The snapshot and completion contract uses per-identity checkpoints on every database.
 
 FCQRS owns the transaction and progress tables. Keep the handler's connection and transaction inside
 the handler, and let FCQRS commit or roll back. Dispose the F# projection handle when its runtime
@@ -311,7 +318,7 @@ var accountBalances = new TransactionalProjectionOptions("Balances", store)
 A name selects the persistence identities that start with the name, escaped as
 `Uri.EscapeDataString` escapes it, and `/`. Every query this projection runs, the full scan
 included, selects those rows in SQL, so other entities' events are not sent to the process or
-deserialized. On SQLite, the full scan uses the journal's persistence-identity index and skips other
+deserialized. On SQLite and SQL Server, the full scan uses the journal's persistence-identity index and skips other
 entities' rows, and the queries bounded by a journal number read every row above it. On PostgreSQL,
 the database reads other entities' rows in every query. A pass reads each persistence identity's
 events with a query of its own, so identities whose events interleave cost about one query for

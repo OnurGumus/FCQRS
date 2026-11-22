@@ -256,7 +256,7 @@ type PrefixConversions =
 /// C#-friendly Actor API
 type ActorApi =
     /// Create an actor system using the selected SQL journal provider.
-    /// Install that provider's ADO.NET driver in the application (for example Npgsql for PostgreSQL).
+    /// Install that provider's ADO.NET driver in the application (for example Npgsql for PostgreSQL, or Microsoft.Data.SqlClient for SQL Server).
     static member Create(
         configuration: Microsoft.Extensions.Configuration.IConfiguration,
         loggerFactory: Microsoft.Extensions.Logging.ILoggerFactory,

@@ -61,8 +61,57 @@ let connection =
         "Host=localhost;Database=app;Username=app;Password=…"
 ```
 
+Every provider stores aggregates and sagas. Projections, workflows started from a projection, and
+schedules also read the journal with their own SQL, which FCQRS writes for SQLite, PostgreSQL, and SQL
+Server. With another provider, registering a projection or starting the schedule dispatcher raises
+`ArgumentException`.
+
 Use SQLite for local development and deployments where one process owns the file. FCQRS runs on one
 node; [Scaling to a cluster](../configuration.html#Scaling-to-a-cluster) explains why.
+
+## SQL Server
+
+Create the database with a binary collation before the application starts:
+
+```sql
+CREATE DATABASE accounts COLLATE Latin1_General_100_BIN2_UTF8;
+```
+
+Then add the Microsoft.Data.SqlClient package to the application and connect with a `SqlServer` value:
+
+```fsharp isolated
+open FCQRS.FSharp
+
+let connectionString =
+    "Server=localhost;Database=accounts;User Id=app;Password=…;"
+    + "TrustServerCertificate=True"
+
+let connection =
+    Fcqrs.connect FCQRS.Actor.DBType.SqlServer2022 connectionString
+```
+
+Akka.NET creates the journal and snapshot tables without a collation of their own, so the persistence
+identity column takes the database's. A server's default collation usually ignores case, and under it
+`Account/0/abc` and `Account/0/ABC` are one journal key: one aggregate could recover the other's events,
+or fail to store its own. The actor system therefore refuses to start, with `InvalidOperationException`,
+when the database's default collation is not binary (`_BIN` or `_BIN2`), or when an existing journal or
+snapshot table's persistence identity column has a collation other than the database's.
+
+A binary collation also makes SQL Server compare the names of tables, columns, and catalog views
+exactly. Write a read model's SQL with the case its tables were created with, and write catalog views
+in upper case, such as `INFORMATION_SCHEMA.COLUMNS`. Like every SQL Server collation, a binary one
+ignores trailing spaces when it compares, so `abc` and `abc ` are still one key: do not end an
+aggregate ID with a space.
+
+Projections, workflows started from a projection, and schedules need SQL Server 2016 or later, with the
+database at compatibility level 130 or higher, because FCQRS reads JSON lists with `OPENJSON`. A
+projection refuses to start on an older level. Its name can be at most 128 characters.
+
+SQL Server's default read committed isolation makes a projection's journal query wait for a journal
+write that has not committed. With `READ_COMMITTED_SNAPSHOT` on, the default on Azure SQL Database, the
+query reads past that write instead, as it does on PostgreSQL, and a later pass applies the event after
+the write commits. Either way, a projection applies each aggregate's events in version order and skips
+none.
 
 Do not commit production credentials in HOCON or source code. Supply them through the application's
 secret provider or environment-specific configuration.

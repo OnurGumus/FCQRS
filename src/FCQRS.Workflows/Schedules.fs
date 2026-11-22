@@ -614,9 +614,11 @@ module internal ScheduleIndex =
     [<Literal>]
     let Table = "fcqrs_schedule_index"
 
-    /// The table's columns: the schedule's ID, and its entry as `encode` writes it.
-    [<Literal>]
-    let Columns = "schedule_id TEXT NOT NULL PRIMARY KEY, entry TEXT NOT NULL"
+    /// The table's columns: the schedule's ID, and its entry as `encode` writes it. On SQLite and
+    /// PostgreSQL both are TEXT; SQL Server's key needs a length, and a schedule ID with its
+    /// workflow's escaped name fits in 205 characters.
+    let columns (store: FCQRS.ProjectionStorage.SqlProjectionStore) =
+        $"schedule_id {store.TextType(Some 255)} NOT NULL PRIMARY KEY, entry {store.TextType None} NOT NULL"
 
     /// The projection that keeps the table. Its read positions are stored under this name.
     [<Literal>]
@@ -1218,7 +1220,7 @@ type internal Dispatcher
                             rowCommand
                                 connection
                                 transaction
-                                $"INSERT INTO {table} (schedule_id, entry) VALUES (@id, @entry) ON CONFLICT (schedule_id) DO UPDATE SET entry = excluded.entry"
+                                (store.UpsertSql(table, "schedule_id", "@id", "entry", "@entry"))
                                 id
 
                         parameter upsert "@entry" (ScheduleIndex.encode next)
@@ -1249,7 +1251,7 @@ type internal Dispatcher
             do! store.RebindProjectionAsync(ScheduleIndex.ProjectionName, token)
             use! connection = store.OpenProjectionAsync token
             use! transaction = connection.BeginTransactionAsync token
-            let! created = store.CreateOwnedTableAsync(connection, transaction, ScheduleIndex.Table, ScheduleIndex.Columns, token)
+            let! created = store.CreateOwnedTableAsync(connection, transaction, ScheduleIndex.Table, ScheduleIndex.columns store, token)
 
             let reset () =
                 task {
@@ -1563,7 +1565,8 @@ module Schedules =
     [<Literal>]
     let MaxIdLength = 200
 
-    /// The longest persistence ID: 255 characters, the size of the journal's column on PostgreSQL.
+    /// The longest persistence ID: 255 characters, the size of the journal's column on PostgreSQL and
+    /// SQL Server.
     /// A run journals as "<escaped workflow name>/default-shard/<escaped run ID>", which is 50
     /// characters besides the escaped workflow name and schedule ID, and a schedule as
     /// "fcqrs-schedule/default-shard/<escaped schedule ID>".

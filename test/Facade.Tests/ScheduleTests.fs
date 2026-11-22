@@ -15,7 +15,6 @@ open Expecto
 open Microsoft.Data.Sqlite
 open Microsoft.Extensions.Configuration
 open Microsoft.Extensions.Logging
-open Npgsql
 open FCQRS.Common
 open FCQRS.FSharp
 open FCQRS.Workflows
@@ -923,33 +922,18 @@ let private monthlyFires =
 /// Where a test's journal lives.
 type private Journal =
     | SqliteFile of string
-    | Postgres of string
+    | OnServer of TestDatabases.Kind * string
 
 let private connectionOf (journal: Journal) =
     match journal with
     | SqliteFile path -> Fcqrs.connect FCQRS.Actor.DBType.Sqlite $"Data Source={path};"
-    | Postgres text -> Fcqrs.connect FCQRS.Actor.DBType.PostgreSQL15 text
+    | OnServer(kind, text) -> Fcqrs.connect kind.DBType text
 
-/// Runs `test` on a new SQLite file, or on a new database of the PostgreSQL server `postgres` names.
-let private withJournal (postgres: string option) (test: Journal -> unit) =
-    match postgres with
+/// Runs `test` on a new SQLite file, or on a new database of `server`.
+let private withJournal (server: TestDatabases.Server option) (test: Journal -> unit) =
+    match server with
     | None -> withDb (SqliteFile >> test)
-    | Some root ->
-        let database = $"fcqrs_schedule_{Guid.NewGuid():N}"
-        let admin (sql: string) =
-            use connection = new NpgsqlConnection(root)
-            connection.Open()
-            use command = connection.CreateCommand()
-            command.CommandText <- sql
-            command.ExecuteNonQuery() |> ignore
-        admin $"CREATE DATABASE {database}"
-        try
-            let builder = NpgsqlConnectionStringBuilder(root)
-            builder.Database <- database
-            test (Postgres builder.ConnectionString)
-        finally
-            NpgsqlConnection.ClearAllPools()
-            admin $"DROP DATABASE IF EXISTS {database} WITH (FORCE)"
+    | Some server -> TestDatabases.withDatabase server "fcqrs_schedule" (fun text -> test (OnServer(server.Kind, text)))
 
 /// Opens the journal's database. A SQLite connection is not pooled: a pooled one that dropped a
 /// table can keep it out of its cached schema after another connection creates it again, and
@@ -958,7 +942,7 @@ let private openJournal (journal: Journal) : DbConnection =
     let connection: DbConnection =
         match journal with
         | SqliteFile path -> new SqliteConnection($"Data Source={path};Pooling=False")
-        | Postgres text -> new NpgsqlConnection(text)
+        | OnServer(kind, text) -> kind.Connect text
     connection.Open()
     connection
 
@@ -977,7 +961,8 @@ let private tableExists (journal: Journal) (table: string) =
     let sql =
         match journal with
         | SqliteFile _ -> "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = @name"
-        | Postgres _ -> "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_name = @name"
+        | OnServer(TestDatabases.PostgreSql, _) -> "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_name = @name"
+        | OnServer(TestDatabases.SqlServer, _) -> "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = 'dbo' AND TABLE_NAME = @name"
     use count = command connection sql [ "@name", table ]
     Convert.ToInt64(count.ExecuteScalar()) > 0L
 
@@ -1113,10 +1098,10 @@ let private storeWhileDown (journal: Journal) (id: string) (command: ScheduleCom
     let api, send = bareSchedules (connectionOf journal) "ScheduleWhileDown"
     try send id command |> ignore finally stopApi api
 
-let private restartReadsNewEvents (postgres: string option) =
-    let database = if postgres.IsSome then "PostgreSQL" else "SQLite"
+let private restartReadsNewEvents (server: TestDatabases.Server option) =
+    let database = server |> Option.map _.Kind.Name |> Option.defaultValue "SQLite"
     testCase $"schedules: a restart over 500 runs reads only the events stored since the index last read ({database})" <| fun _ ->
-        withJournal postgres <| fun journal ->
+        withJournal server <| fun journal ->
             let runs = 500
             let anchor = storeHistory journal "big" runs
             let last = anchor + TimeSpan.FromHours(float runs)
@@ -1141,10 +1126,10 @@ let private restartReadsNewEvents (postgres: string option) =
             finally
                 second.Stop()
 
-let private upgradeBuildsIndex (postgres: string option) =
-    let database = if postgres.IsSome then "PostgreSQL" else "SQLite"
+let private upgradeBuildsIndex (server: TestDatabases.Server option) =
+    let database = server |> Option.map _.Kind.Name |> Option.defaultValue "SQLite"
     testCase $"schedules: a journal without the index table fills it on the first start, fires the next due time once, and later starts read no old event ({database})" <| fun _ ->
-        withJournal postgres <| fun journal ->
+        withJournal server <| fun journal ->
             let runs = Runs()
             let connection = connectionOf journal
             let anchor =
@@ -1197,10 +1182,10 @@ let private execute (journal: Journal) (sql: string) =
 /// An hourly schedule "u" whose first run started; `damage` then breaks the stored index while the
 /// dispatcher is down. The restart must rebuild the index from the journal and run the next due
 /// time once. `logged` checks the restart's log lines.
-let private indexRecovers (postgres: string option) (what: string) (damage: Journal -> unit) (logged: Capture -> unit) =
-    let database = if postgres.IsSome then "PostgreSQL" else "SQLite"
+let private indexRecovers (server: TestDatabases.Server option) (what: string) (damage: Journal -> unit) (logged: Capture -> unit) =
+    let database = server |> Option.map _.Kind.Name |> Option.defaultValue "SQLite"
     testCase $"schedules: {what}, the restart rebuilds the index and fires the next due time once ({database})" <| fun _ ->
-        withJournal postgres <| fun journal ->
+        withJournal server <| fun journal ->
             let runs = Runs()
             let connection = connectionOf journal
             let anchor =
@@ -1235,9 +1220,9 @@ let private indexRecovers (postgres: string option) (what: string) (damage: Jour
             finally
                 second.Stop()
 
-let private unreadableRow (postgres: string option) =
+let private unreadableRow (server: TestDatabases.Server option) =
     indexRecovers
-        postgres
+        server
         "after a row was stored in a format this version cannot read"
         (fun journal -> execute journal "UPDATE fcqrs_schedule_index SET entry = REPLACE(entry, '\"format\":1', '\"format\":2')")
         (fun capture ->
@@ -1246,8 +1231,8 @@ let private unreadableRow (postgres: string option) =
                 |> List.filter (fun (level, _, text) -> level = LogLevel.Warning && text.Contains "fcqrs_schedule_index" && text.Contains "'u'")
             Expect.isNonEmpty warnings "a warning names the table and the row")
 
-let private droppedTable (postgres: string option) =
-    indexRecovers postgres "after the index table was dropped and its read positions kept" (fun journal -> execute journal "DROP TABLE fcqrs_schedule_index") ignore
+let private droppedTable (server: TestDatabases.Server option) =
+    indexRecovers server "after the index table was dropped and its read positions kept" (fun journal -> execute journal "DROP TABLE fcqrs_schedule_index") ignore
 
 // An actor system whose query journal reads the write journal's file through another connection
 // string, which the schedule index cannot use.
@@ -1467,14 +1452,15 @@ let tests =
             droppedTable None
             mismatchedReader
             mismatchedReaderAgain
-            match Environment.GetEnvironmentVariable "FCQRS_TEST_POSTGRES" with
-            | null | "" -> ptestCase "schedules: the stored index on PostgreSQL: set FCQRS_TEST_POSTGRES to run" ignore
-            | root ->
-                testList "schedules: the stored index on PostgreSQL" [
-                    restartReadsNewEvents (Some root)
-                    upgradeBuildsIndex (Some root)
-                    unreadableRow (Some root)
-                    droppedTable (Some root)
-                ]
+            for server, kind, variable in [ TestDatabases.postgres, "PostgreSQL", "FCQRS_TEST_POSTGRES"; TestDatabases.sqlServer, "SQL Server", "FCQRS_TEST_SQLSERVER" ] do
+                match server with
+                | None -> ptestCase $"schedules: the stored index on {kind}: set {variable} to run" ignore
+                | Some _ ->
+                    testList $"schedules: the stored index on {kind}" [
+                        restartReadsNewEvents server
+                        upgradeBuildsIndex server
+                        unreadableRow server
+                        droppedTable server
+                    ]
         ]
     )

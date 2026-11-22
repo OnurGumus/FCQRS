@@ -15,6 +15,9 @@ type ProjectionSqlDialect =
     | Sqlite = 0
     /// PostgreSQL with a provider such as Npgsql.
     | PostgreSql = 1
+    /// SQL Server 2016 or later (compatibility level 130 or higher) with Microsoft.Data.SqlClient,
+    /// on a database whose default collation is binary, such as Latin1_General_100_BIN2_UTF8.
+    | SqlServer = 2
 
 /// Whether a persistence ID holds Akka cluster sharding's own bookkeeping for remembered entities,
 /// such as sagas and workflows: a shard's is under "/sharding/", and a coordinator's is under
@@ -71,10 +74,16 @@ type SqlProjectionStore
         // PostgreSQL silently truncates longer identifiers, which can alias another table.
         if dialect = ProjectionSqlDialect.PostgreSql && Encoding.UTF8.GetByteCount value > 63 then
             invalidArg argument "PostgreSQL identifiers must not exceed 63 UTF-8 bytes."
+        if dialect = ProjectionSqlDialect.SqlServer && value.Length > 128 then
+            invalidArg argument "SQL Server identifiers must not exceed 128 characters."
         value
 
+    // SQL Server reads double quotes as identifiers only while QUOTED_IDENTIFIER is on; brackets
+    // always quote.
     let quote argument value =
-        "\"" + (validateIdentifier argument value).Replace("\"", "\"\"") + "\""
+        let value = validateIdentifier argument value
+        if dialect = ProjectionSqlDialect.SqlServer then "[" + value.Replace("]", "]]") + "]"
+        else "\"" + value.Replace("\"", "\"\"") + "\""
 
     let qualified argument schema name =
         match schema with
@@ -95,19 +104,21 @@ type SqlProjectionStore
         match schema with
         | Some value when not (String.IsNullOrWhiteSpace value) -> value
         | _ when dialect = ProjectionSqlDialect.PostgreSql -> "public"
+        | _ when dialect = ProjectionSqlDialect.SqlServer -> "dbo"
         | _ -> "main"
 
     let schemaIdentity schema =
         if dialect = ProjectionSqlDialect.Sqlite then
             Some(normalizedSchema schema)
         else
-            // PostgreSQL's unqualified lookup follows search_path, which can resolve
-            // to a different table from an explicitly qualified public schema.
+            // PostgreSQL's unqualified lookup follows search_path, and SQL Server's the user's
+            // default schema, either of which can resolve to a different table from an explicitly
+            // qualified public or dbo schema.
             schema |> Option.filter (String.IsNullOrWhiteSpace >> not)
 
     do
-        if dialect <> ProjectionSqlDialect.Sqlite && dialect <> ProjectionSqlDialect.PostgreSql then
-            invalidArg (nameof dialect) "Only SQLite and PostgreSQL are supported."
+        if dialect <> ProjectionSqlDialect.Sqlite && dialect <> ProjectionSqlDialect.PostgreSql && dialect <> ProjectionSqlDialect.SqlServer then
+            invalidArg (nameof dialect) "Only SQLite, PostgreSQL, and SQL Server are supported."
         if isNull (box journalConnectionFactory) then nullArg (nameof journalConnectionFactory)
         if isNull (box projectionConnectionFactory) then nullArg (nameof projectionConnectionFactory)
         if String.Equals(normalizedSchema journalSchema, normalizedSchema progressSchema, StringComparison.OrdinalIgnoreCase)
@@ -119,6 +130,46 @@ type SqlProjectionStore
 
     let validateName argument (value: string) =
         if String.IsNullOrWhiteSpace value then invalidArg argument "The name must be nonempty."
+
+    // The progress and lock tables' key column holds a projection name. On SQL Server it has a
+    // length, so that the progress table's key fits in an index.
+    let validateProjectionName argument (value: string) =
+        validateName argument value
+        if dialect = ProjectionSqlDialect.SqlServer && value.Length > 128 then
+            invalidArg argument "On SQL Server a projection name must not exceed 128 characters."
+
+    // A text column type: SQL Server needs a length for a key column, and has no TEXT type to use
+    // for a value.
+    let textType (length: int option) =
+        match dialect, length with
+        | ProjectionSqlDialect.SqlServer, Some length -> $"NVARCHAR({length})"
+        | ProjectionSqlDialect.SqlServer, None -> "NVARCHAR(MAX)"
+        | _ -> "TEXT"
+
+    // Columns and parameters as (column, parameter) pairs, the key's first.
+    let columnList (columns: (string * string) list) = columns |> List.map fst |> String.concat ", "
+    let parameterList (columns: (string * string) list) = columns |> List.map snd |> String.concat ", "
+    let keyCondition (key: (string * string) list) = key |> List.map (fun (column, parameter) -> $"{column} = {parameter}") |> String.concat " AND "
+
+    // SQL that inserts a row unless one with its key exists. SQL Server has no ON CONFLICT; UPDLOCK
+    // and HOLDLOCK keep the key range locked from the check to the insert, so two transactions
+    // cannot both insert it.
+    let insertMissingSql table (key: (string * string) list) (others: (string * string) list) =
+        let all = key @ others
+        if dialect = ProjectionSqlDialect.SqlServer then
+            $"IF NOT EXISTS (SELECT 1 FROM {table} WITH (UPDLOCK, HOLDLOCK) WHERE {keyCondition key}) INSERT INTO {table} ({columnList all}) VALUES ({parameterList all})"
+        else
+            $"INSERT INTO {table} ({columnList all}) VALUES ({parameterList all}) ON CONFLICT ({columnList key}) DO NOTHING"
+
+    // SQL that inserts a row, or replaces the other columns of the row with its key.
+    let upsertSql table (key: (string * string) list) (others: (string * string) list) =
+        let all = key @ others
+        if dialect = ProjectionSqlDialect.SqlServer then
+            let set = others |> List.map (fun (column, parameter) -> $"{column} = {parameter}") |> String.concat ", "
+            $"UPDATE {table} WITH (UPDLOCK, SERIALIZABLE) SET {set} WHERE {keyCondition key}; IF @@ROWCOUNT = 0 INSERT INTO {table} ({columnList all}) VALUES ({parameterList all})"
+        else
+            let set = others |> List.map (fun (column, _) -> $"{column} = excluded.{column}") |> String.concat ", "
+            $"INSERT INTO {table} ({columnList all}) VALUES ({parameterList all}) ON CONFLICT ({columnList key}) DO UPDATE SET {set}"
 
     let connectionIdentity (connectionString: string) =
         let builder = DbConnectionStringBuilder()
@@ -201,21 +252,25 @@ type SqlProjectionStore
     // whose persistence-ID column compares bytes, a range [name + "/", name + "0") beside it lets the
     // journal's persistence-ID index skip other entities' rows; '0' is the character after '/'. Only
     // the full scan takes the range: a query bounded by the journal number must read by that number,
-    // or each call reads the entity's whole history. PostgreSQL's default collation need not order
-    // '/' by its code, so it keeps LIKE alone. SQLite's LIKE ignores ASCII case, so callers also
-    // check each ID with selectsEntity.
+    // or each call reads the entity's whole history. SQL Server takes the range too: FCQRS requires
+    // its database to have a binary collation, which orders by code. PostgreSQL's default collation
+    // need not order '/' by its code, so it keeps LIKE alone. SQLite's LIKE ignores ASCII case, so
+    // callers also check each ID with selectsEntity. SQL Server's LIKE also reads '[' as the start
+    // of a character set, so it is escaped there.
     let entityCondition (command: DbCommand) (range: bool) (entities: string list) =
         match entities with
         | [] -> None
         | entities ->
-            let escape (name: string) = name.Replace("\\", "\\\\").Replace("%", "\\%").Replace("_", "\\_")
+            let escape (name: string) =
+                let escaped = name.Replace("\\", "\\\\").Replace("%", "\\%").Replace("_", "\\_")
+                if dialect = ProjectionSqlDialect.SqlServer then escaped.Replace("[", "\\[") else escaped
             let conditions =
                 entities
                 |> List.mapi (fun index name ->
                     let pattern = $"@entity{index}"
                     parameter command pattern DbType.String (escape name + "/%")
                     let matches = $"{persistenceIdSql} LIKE {pattern} ESCAPE '\\'"
-                    if range && dialect = ProjectionSqlDialect.Sqlite then
+                    if range && (dialect = ProjectionSqlDialect.Sqlite || dialect = ProjectionSqlDialect.SqlServer) then
                         parameter command $"@entityFrom{index}" DbType.String (name + "/")
                         parameter command $"@entityTo{index}" DbType.String (name + "0")
                         $"({persistenceIdSql} >= @entityFrom{index} AND {persistenceIdSql} < @entityTo{index}"
@@ -229,9 +284,15 @@ type SqlProjectionStore
     // column these queries read and lets a GROUP BY skip its sort, so each call costs as much as the
     // journal is long. With NOT INDEXED, a query starting far behind the journal's end reads and
     // sorts more rows than that index scan would; the projection starts these queries at recent
-    // writes.
+    // writes. SQL Server's planner can make the same choice for a filtered query, seeking the
+    // persistence-ID index from the LIKE prefix, and a cached plan keeps it for later values, so
+    // INDEX(1) holds it to the clustered index, which Akka.Persistence.Sql creates on the journal
+    // number.
     let journalByNumber =
-        if dialect = ProjectionSqlDialect.Sqlite then journalSql + " NOT INDEXED" else journalSql
+        match dialect with
+        | ProjectionSqlDialect.Sqlite -> journalSql + " NOT INDEXED"
+        | ProjectionSqlDialect.SqlServer -> journalSql + " WITH (INDEX(1))"
+        | _ -> journalSql
 
     let transactionCommand (connection: DbConnection) (transaction: DbTransaction) sql =
         if isNull (box transaction) || not (obj.ReferenceEquals(connection, transaction.Connection)) then
@@ -259,16 +320,30 @@ type SqlProjectionStore
             return positions
         }
 
-    // IF NOT EXISTS alone can still race on PostgreSQL catalog entries. This transaction-scoped,
-    // database-local lock only serializes FCQRS DDL.
+    // IF NOT EXISTS alone can still race on PostgreSQL catalog entries, and SQL Server's check of
+    // OBJECT_ID before CREATE TABLE races the same way. This transaction-scoped, database-local lock
+    // only serializes FCQRS DDL.
     let lockDefinitions (connection: DbConnection) (transaction: DbTransaction) (ct: CancellationToken) =
         task {
-            if dialect = ProjectionSqlDialect.PostgreSql then
+            match dialect with
+            | ProjectionSqlDialect.PostgreSql ->
                 use initializeLock = transactionCommand connection transaction "SELECT pg_advisory_xact_lock(@lock)"
                 parameter initializeLock "@lock" DbType.Int64 0x464351525350524AL
                 let! _ = initializeLock.ExecuteScalarAsync(ct)
                 ()
+            | ProjectionSqlDialect.SqlServer ->
+                use initializeLock =
+                    transactionCommand connection transaction
+                        "DECLARE @result int; EXEC @result = sp_getapplock @Resource = N'fcqrs-definitions', @LockMode = N'Exclusive', @LockOwner = N'Transaction'; SELECT @result"
+                let! result = initializeLock.ExecuteScalarAsync(ct)
+                if Convert.ToInt32 result < 0 then invalidOp $"SQL Server refused FCQRS's table-definition lock (sp_getapplock returned {result})."
+            | _ -> ()
         }
+
+    // Raises unless a SQL Server database can hold FCQRS data: see SqlServer.checkDatabase.
+    let checkSqlServer (connection: DbConnection) (columns: (string option * string * string) list) =
+        if dialect = ProjectionSqlDialect.SqlServer then
+            FCQRS.SqlServer.checkDatabase connection true columns
 
     /// Uses one database for both the journal and the transactional read model.
     new(dialect: ProjectionSqlDialect, connectionFactory: Func<DbConnection>) =
@@ -303,16 +378,31 @@ type SqlProjectionStore
         openConnection projectionConnectionFactory validateProjectionConnection ct
 
     /// Creates FCQRS-owned progress and locking tables without altering the journal.
+    /// On SQL Server, also checks that the journal's and the read model's databases can hold FCQRS
+    /// data: see `FCQRS.SqlServer.checkDatabase`.
     member internal _.InitializeAsync(ct: CancellationToken) : Task =
         task {
+            if dialect = ProjectionSqlDialect.SqlServer then
+                use! journal = openConnection journalConnectionFactory validateJournalConnection ct
+                checkSqlServer journal [ (journalSchema, journalName, defaultArg journalPersistenceIdColumn "persistence_id") ]
             use! connection = openConnection projectionConnectionFactory validateProjectionConnection ct
+            checkSqlServer connection [ (progressSchema, progressName, "persistence_id") ]
             use! transaction = connection.BeginTransactionAsync(ct)
             do! lockDefinitions connection transaction ct
-            use createProgress =
-                transactionCommand connection transaction ($"CREATE TABLE IF NOT EXISTS {progressSql} (projection_name TEXT NOT NULL, persistence_id TEXT NOT NULL, sequence_number BIGINT NOT NULL CHECK (sequence_number >= 0), PRIMARY KEY (projection_name, persistence_id))")
+            // The persistence ID's length is the journal's: 255 characters on SQL Server.
+            let progressColumns =
+                $"projection_name {textType (Some 128)} NOT NULL, persistence_id {textType (Some 255)} NOT NULL, sequence_number BIGINT NOT NULL CHECK (sequence_number >= 0), PRIMARY KEY (projection_name, persistence_id)"
+            let lockColumns = $"projection_name {textType (Some 128)} NOT NULL PRIMARY KEY, source_fingerprint {textType (Some 128)} NOT NULL"
+            let create table columns =
+                if dialect = ProjectionSqlDialect.SqlServer then
+                    let command = transactionCommand connection transaction ($"IF OBJECT_ID(@table, N'U') IS NULL CREATE TABLE {table} ({columns})")
+                    parameter command "@table" DbType.String table
+                    command
+                else
+                    transactionCommand connection transaction ($"CREATE TABLE IF NOT EXISTS {table} ({columns})")
+            use createProgress = create progressSql progressColumns
             let! _ = createProgress.ExecuteNonQueryAsync(ct)
-            use createLock =
-                transactionCommand connection transaction ($"CREATE TABLE IF NOT EXISTS {lockSql} (projection_name TEXT NOT NULL PRIMARY KEY, source_fingerprint TEXT NOT NULL)")
+            use createLock = create lockSql lockColumns
             let! _ = createLock.ExecuteNonQueryAsync(ct)
             do! transaction.CommitAsync(ct)
         }
@@ -320,6 +410,15 @@ type SqlProjectionStore
     /// The SQL name of a table FCQRS owns: `name` in the progress table's schema, quoted as the
     /// progress table is.
     member internal _.OwnedTable(name: string) : string = qualified "ownedTable" progressSchema name
+
+    /// A text column type for a table FCQRS owns: TEXT on SQLite and PostgreSQL; on SQL Server,
+    /// NVARCHAR of `length`, which a key column needs, or NVARCHAR(MAX) without one.
+    member internal _.TextType(length: int option) : string = textType length
+
+    /// SQL that inserts the row with key `keyColumn` and value `valueColumn`, both unquoted names
+    /// given with their parameters, or replaces the value of the row with that key.
+    member internal _.UpsertSql(table: string, keyColumn: string, keyParameter: string, valueColumn: string, valueParameter: string) : string =
+        upsertSql table [ (keyColumn, keyParameter) ] [ (valueColumn, valueParameter) ]
 
     /// Creates a table FCQRS owns in the progress table's schema, unless it exists, inside the
     /// caller's transaction on a connection from `OpenProjectionAsync`, which must not have run
@@ -333,6 +432,10 @@ type SqlProjectionStore
                 match dialect with
                 | ProjectionSqlDialect.PostgreSql ->
                     let command = transactionCommand connection transaction "SELECT CASE WHEN to_regclass(CAST(@table AS text)) IS NULL THEN 0 ELSE 1 END"
+                    parameter command "@table" DbType.String table
+                    command
+                | ProjectionSqlDialect.SqlServer ->
+                    let command = transactionCommand connection transaction "SELECT CASE WHEN OBJECT_ID(@table, N'U') IS NULL THEN 0 ELSE 1 END"
                     parameter command "@table" DbType.String table
                     command
                 | _ ->
@@ -357,7 +460,7 @@ type SqlProjectionStore
     /// same transaction.
     member internal _.ResetProjectionAsync(connection: DbConnection, transaction: DbTransaction, projectionName: string, ct: CancellationToken) : Task =
         task {
-            validateName (nameof projectionName) projectionName
+            validateProjectionName (nameof projectionName) projectionName
             use delete = transactionCommand connection transaction ($"DELETE FROM {progressSql} WHERE projection_name = @projection")
             parameter delete "@projection" DbType.String projectionName
             let! _ = delete.ExecuteNonQueryAsync(ct)
@@ -370,11 +473,11 @@ type SqlProjectionStore
     /// `InitializeAsync` first.
     member internal _.RebindProjectionAsync(projectionName: string, ct: CancellationToken) : Task =
         task {
-            validateName (nameof projectionName) projectionName
+            validateProjectionName (nameof projectionName) projectionName
             use! connection = openConnection projectionConnectionFactory validateProjectionConnection ct
             use! transaction = connection.BeginTransactionAsync(ct)
             use bind =
-                transactionCommand connection transaction ($"INSERT INTO {lockSql} (projection_name, source_fingerprint) VALUES (@projection, @source) ON CONFLICT (projection_name) DO UPDATE SET source_fingerprint = excluded.source_fingerprint")
+                transactionCommand connection transaction (upsertSql lockSql [ ("projection_name", "@projection") ] [ ("source_fingerprint", "@source") ])
             parameter bind "@projection" DbType.String projectionName
             parameter bind "@source" DbType.String sourceFingerprint.Value
             let! _ = bind.ExecuteNonQueryAsync(ct)
@@ -408,7 +511,10 @@ type SqlProjectionStore
         let command = connection.CreateCommand()
         let selected = entityCondition command false entities |> Option.map ((+) " AND ") |> Option.defaultValue ""
         command.CommandText <-
-            $"SELECT {persistenceIdSql}, {sequenceNumberSql}, {orderingSql} FROM {journalByNumber} WHERE {orderingSql} > @after{selected} ORDER BY {orderingSql} LIMIT @count"
+            if dialect = ProjectionSqlDialect.SqlServer then
+                $"SELECT TOP (@count) {persistenceIdSql}, {sequenceNumberSql}, {orderingSql} FROM {journalByNumber} WHERE {orderingSql} > @after{selected} ORDER BY {orderingSql}"
+            else
+                $"SELECT {persistenceIdSql}, {sequenceNumberSql}, {orderingSql} FROM {journalByNumber} WHERE {orderingSql} > @after{selected} ORDER BY {orderingSql} LIMIT @count"
         parameter command "@after" DbType.Int64 after
         parameter command "@count" DbType.Int64 count
         command
@@ -506,6 +612,10 @@ type SqlProjectionStore
                 match dialect with
                 | ProjectionSqlDialect.PostgreSql ->
                     $"jsonb_array_elements(CAST(@events AS jsonb)) AS pending ON {persistenceIdSql} = pending.value->>0 AND {sequenceNumberSql} = CAST(pending.value->>1 AS BIGINT)"
+                // The parsed persistence ID takes the database's collation, which the journal
+                // column must have: see SqlServer.checkDatabase.
+                | ProjectionSqlDialect.SqlServer ->
+                    $"OPENJSON(@events) WITH (pending_id NVARCHAR(255) '$[0]', pending_sequence BIGINT '$[1]') AS pending ON {persistenceIdSql} = pending.pending_id AND {sequenceNumberSql} = pending.pending_sequence"
                 | _ ->
                     $"json_each(@events) AS pending ON {persistenceIdSql} = json_extract(pending.value, '$[0]') AND {sequenceNumberSql} = json_extract(pending.value, '$[1]')"
             let mutable earliest = None
@@ -528,7 +638,7 @@ type SqlProjectionStore
     /// Recheck an individual position under the lock before applying an event.
     member internal this.ReadPositionsAsync(projectionName: string, persistenceIds: string list option, ct: CancellationToken) : Task<Map<string, int64>> =
         task {
-            validateName (nameof projectionName) projectionName
+            validateProjectionName (nameof projectionName) projectionName
             use! connection = openConnection projectionConnectionFactory validateProjectionConnection ct
             use! transaction = connection.BeginTransactionAsync(ct)
             // Bind before trusting existing progress, even if there are no new events to apply.
@@ -538,6 +648,7 @@ type SqlProjectionStore
                 | None, _ -> ""
                 // One JSON array parameter, however many persistence IDs a batch names.
                 | Some _, ProjectionSqlDialect.PostgreSql -> " AND persistence_id IN (SELECT jsonb_array_elements_text(CAST(@ids AS jsonb)))"
+                | Some _, ProjectionSqlDialect.SqlServer -> " AND persistence_id IN (SELECT id FROM OPENJSON(@ids) WITH (id NVARCHAR(255) '$'))"
                 | Some _, _ -> " AND persistence_id IN (SELECT value FROM json_each(@ids))"
             use command =
                 transactionCommand connection transaction ($"SELECT persistence_id, sequence_number FROM {progressSql} WHERE projection_name = @projection{selected}")
@@ -552,13 +663,13 @@ type SqlProjectionStore
     /// Acquire the lock before reading a position or invoking the read-model handler.
     member internal _.LockProjectionAsync(connection: DbConnection, transaction: DbTransaction, projectionName: string, ct: CancellationToken) : Task =
         task {
-            validateName (nameof projectionName) projectionName
+            validateProjectionName (nameof projectionName) projectionName
             use insert =
-                transactionCommand connection transaction ($"INSERT INTO {lockSql} (projection_name, source_fingerprint) VALUES (@projection, @source) ON CONFLICT (projection_name) DO NOTHING")
+                transactionCommand connection transaction (insertMissingSql lockSql [ ("projection_name", "@projection") ] [ ("source_fingerprint", "@source") ])
             parameter insert "@projection" DbType.String projectionName
             parameter insert "@source" DbType.String sourceFingerprint.Value
             let! _ = insert.ExecuteNonQueryAsync(ct)
-            // PostgreSQL obtains a row lock; SQLite obtains its single writer lock.
+            // PostgreSQL and SQL Server obtain a row lock; SQLite obtains its single writer lock.
             use acquire =
                 transactionCommand connection transaction ($"UPDATE {lockSql} SET projection_name = @projection WHERE projection_name = @projection AND source_fingerprint = @source")
             parameter acquire "@projection" DbType.String projectionName
@@ -570,7 +681,7 @@ type SqlProjectionStore
     /// Reads one position inside the transaction that will apply its next event.
     member internal _.ReadPositionAsync(connection: DbConnection, transaction: DbTransaction, projectionName: string, persistenceId: string, ct: CancellationToken) : Task<int64> =
         task {
-            validateName (nameof projectionName) projectionName
+            validateProjectionName (nameof projectionName) projectionName
             validateName (nameof persistenceId) persistenceId
             use command =
                 transactionCommand connection transaction ($"SELECT sequence_number FROM {progressSql} WHERE projection_name = @projection AND persistence_id = @persistenceId")
@@ -589,12 +700,12 @@ type SqlProjectionStore
     /// A changed or noncontiguous position fails the transaction instead of certifying an incomplete prefix.
     member internal _.WritePositionAsync(connection: DbConnection, transaction: DbTransaction, projectionName: string, persistenceId: string, expected: int64, sequenceNumber: int64, ct: CancellationToken) : Task =
         task {
-            validateName (nameof projectionName) projectionName
+            validateProjectionName (nameof projectionName) projectionName
             validateName (nameof persistenceId) persistenceId
             if expected < 0L || expected = Int64.MaxValue || sequenceNumber <> expected + 1L then
                 invalidArg (nameof sequenceNumber) "A projection position must advance by exactly one event."
             use insert =
-                transactionCommand connection transaction ($"INSERT INTO {progressSql} (projection_name, persistence_id, sequence_number) VALUES (@projection, @persistenceId, 0) ON CONFLICT (projection_name, persistence_id) DO NOTHING")
+                transactionCommand connection transaction (insertMissingSql progressSql [ ("projection_name", "@projection"); ("persistence_id", "@persistenceId") ] [ ("sequence_number", "0") ])
             parameter insert "@projection" DbType.String projectionName
             parameter insert "@persistenceId" DbType.String persistenceId
             let! _ = insert.ExecuteNonQueryAsync(ct)

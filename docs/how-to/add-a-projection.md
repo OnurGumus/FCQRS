@@ -11,7 +11,7 @@ A projection hands each stored event to a handler that updates data shaped for q
 keeps each account's balance for a list of accounts. FCQRS follows each aggregate's versions, so the
 handler receives every stored event, including one whose write committed after later writes.
 [The read side](../concepts/read-models.html#Track-progress-per-aggregate) explains why that matters.
-Projections require a SQLite or PostgreSQL journal.
+Projections require a SQLite, PostgreSQL, or SQL Server journal.
 
 ## Choose where the read model lives
 
@@ -86,7 +86,7 @@ builder.Services.AddFcqrs(connectionString, "accounts")
 ```
 
 The handler runs for one event at a time. It receives events in the order the journal numbered them,
-so one account's events arrive in version order. On PostgreSQL, an event whose write commits late can
+so one account's events arrive in version order. On PostgreSQL and SQL Server, an event whose write commits late can
 arrive after higher-numbered events of other accounts. With its progress in
 memory, the projection reads the whole journal each time it starts, so start-up takes longer as the
 journal grows. Keep the read model somewhere durable when that time matters.
@@ -149,7 +149,7 @@ Akka escapes an entity name in its persistence identities as `Uri.EscapeDataStri
 the same way. A name selects the persistence identities that start with the escaped name and `/`,
 which is how aggregates, sagas, and workflows are journaled. The projection's journal queries select
 those rows in SQL, so another aggregate's events or many workflow runs are not sent to the process
-or deserialized. They still cost the database a read. On SQLite, the full scan, which runs when the
+or deserialized. They still cost the database a read. On SQLite and SQL Server, the full scan, which runs when the
 projection starts and then every five minutes by default, uses the journal's persistence-identity
 index and skips other entities' rows. The queries that find recent writes and list the next events read every
 row above their journal number, as without a filter: reading the index there would read the
