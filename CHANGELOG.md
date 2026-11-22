@@ -1,5 +1,31 @@
 # Changelog
 
+## 7.6.0 (FCQRS core) and 7.16.0 (FCQRS.Workflows)
+
+- **Oracle works, including projections and schedules.** `ProjectionSqlDialect.Oracle` runs
+  projections, workflows started from a projection, and the schedule index on Oracle 19c or later
+  with Oracle.ManagedDataAccess.Core. FCQRS's kill tests, projection tests, and schedule tests run
+  on Oracle as on PostgreSQL and SQL Server.
+- **An application on Oracle starts a second time.** Akka.Persistence.Sql's own table creation
+  recreated the journal's identity sequence and failed with ORA-00955 at every start after the
+  first, so recovery timed out. With `DBType.Oracle`, FCQRS now creates the journal and snapshot
+  tables itself and turns Akka's creation off. The actor system refuses an Oracle plugin whose
+  configuration turns `auto-initialize` back on.
+- **The Oracle journal has a unique key on each persistence ID's sequence numbers.** Akka created
+  none on Oracle, so nothing stopped two writers from storing the same event number of one
+  aggregate. FCQRS adds it, with Akka's indexes, also to a journal that exists. A journal that
+  already holds an event number twice cannot take the key, and the start fails with ORA-02299.
+- **Reading an Oracle journal no longer returns events twice.** With a tag table, Akka's read
+  journal wrapped each ordered page in a query that Oracle could return out of order, so
+  `CurrentEventsByPersistenceId` and `CurrentAllEvents` repeated events. Aggregate recovery was not
+  affected. FCQRS now stores tags in the journal's column (tag mode `Csv`) on Oracle and refuses a
+  tag table. FCQRS writes no tags.
+- The documentation said every listed provider stores aggregates. MySQL, Firebird, and Db2 are not
+  tested, and on Firebird and Db2 Akka creates no unique key on sequence numbers; the database page
+  now says so.
+- FCQRS.Workflows 7.16.0 needs core 7.6.0: the schedule index uses the store's new members. Nothing
+  stored changes on SQLite, PostgreSQL, or SQL Server.
+
 ## 7.5.1 (FCQRS core) and 7.15.1 (FCQRS.Workflows)
 
 - **An application that installs FCQRS 7.4.0 or later from NuGet starts again.** FCQRS is compiled

@@ -8,14 +8,16 @@ config {
                          class = "Akka.Persistence.Sql.Journal.SqlWriteJournal, Akka.Persistence.Sql"
                          connection-string = "${connection-string}"
                          provider-name = "${db-type}"
-                         auto-initialize = true
+                         auto-initialize = "${auto-initialize}"
+                         tag-write-mode = "${tag-mode}"
                     }
                }
                query.journal.sql {
                     class = "Akka.Persistence.Sql.Query.SqlReadJournalProvider, Akka.Persistence.Sql"
                     connection-string = "${connection-string}"
                     provider-name = "${db-type}"
-                    auto-initialize = true
+                    auto-initialize = "${auto-initialize}"
+                    tag-read-mode = "${tag-mode}"
                     refresh-interval = 100ms
                     max-buffer-size = 50
                     query-timeout = 30s
@@ -30,7 +32,7 @@ config {
                          class = "Akka.Persistence.Sql.Snapshot.SqlSnapshotStore, Akka.Persistence.Sql"
                          connection-string = "${connection-string}"
                          provider-name = "${db-type}"
-                         auto-initialize = true
+                         auto-initialize = "${auto-initialize}"
                     }
                }
           }

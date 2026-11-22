@@ -18,6 +18,9 @@ type ProjectionSqlDialect =
     /// SQL Server 2016 or later (compatibility level 130 or higher) with Microsoft.Data.SqlClient,
     /// on a database whose default collation is binary, such as Latin1_General_100_BIN2_UTF8.
     | SqlServer = 2
+    /// Oracle Database 19c or later with Oracle.ManagedDataAccess.Core, on a session whose string
+    /// comparisons are binary (NLS_COMP BINARY, Oracle's default).
+    | Oracle = 3
 
 /// Whether a persistence ID holds Akka cluster sharding's own bookkeeping for remembered entities,
 /// such as sagas and workflows: a shard's is under "/sharding/", and a coordinator's is under
@@ -76,6 +79,12 @@ type SqlProjectionStore
             invalidArg argument "PostgreSQL identifiers must not exceed 63 UTF-8 bytes."
         if dialect = ProjectionSqlDialect.SqlServer && value.Length > 128 then
             invalidArg argument "SQL Server identifiers must not exceed 128 characters."
+        if dialect = ProjectionSqlDialect.Oracle then
+            if Encoding.UTF8.GetByteCount value > 128 then
+                invalidArg argument "Oracle identifiers must not exceed 128 bytes."
+            // FCQRS writes Oracle's :name bind variables from @name in its SQL.
+            if value.Contains '@' then
+                invalidArg argument "On Oracle a SQL identifier cannot contain '@'."
         value
 
     // SQL Server reads double quotes as identifiers only while QUOTED_IDENTIFIER is on; brackets
@@ -105,6 +114,7 @@ type SqlProjectionStore
         | Some value when not (String.IsNullOrWhiteSpace value) -> value
         | _ when dialect = ProjectionSqlDialect.PostgreSql -> "public"
         | _ when dialect = ProjectionSqlDialect.SqlServer -> "dbo"
+        | _ when dialect = ProjectionSqlDialect.Oracle -> "(session schema)"
         | _ -> "main"
 
     let schemaIdentity schema =
@@ -117,8 +127,9 @@ type SqlProjectionStore
             schema |> Option.filter (String.IsNullOrWhiteSpace >> not)
 
     do
-        if dialect <> ProjectionSqlDialect.Sqlite && dialect <> ProjectionSqlDialect.PostgreSql && dialect <> ProjectionSqlDialect.SqlServer then
-            invalidArg (nameof dialect) "Only SQLite, PostgreSQL, and SQL Server are supported."
+        if dialect <> ProjectionSqlDialect.Sqlite && dialect <> ProjectionSqlDialect.PostgreSql && dialect <> ProjectionSqlDialect.SqlServer
+           && dialect <> ProjectionSqlDialect.Oracle then
+            invalidArg (nameof dialect) "Only SQLite, PostgreSQL, SQL Server, and Oracle are supported."
         if isNull (box journalConnectionFactory) then nullArg (nameof journalConnectionFactory)
         if isNull (box projectionConnectionFactory) then nullArg (nameof projectionConnectionFactory)
         if String.Equals(normalizedSchema journalSchema, normalizedSchema progressSchema, StringComparison.OrdinalIgnoreCase)
@@ -135,16 +146,48 @@ type SqlProjectionStore
     // length, so that the progress table's key fits in an index.
     let validateProjectionName argument (value: string) =
         validateName argument value
-        if dialect = ProjectionSqlDialect.SqlServer && value.Length > 128 then
-            invalidArg argument "On SQL Server a projection name must not exceed 128 characters."
+        if (dialect = ProjectionSqlDialect.SqlServer || dialect = ProjectionSqlDialect.Oracle) && value.Length > 128 then
+            let database = if dialect = ProjectionSqlDialect.Oracle then "Oracle" else "SQL Server"
+            invalidArg argument $"On {database} a projection name must not exceed 128 characters."
 
-    // A text column type: SQL Server needs a length for a key column, and has no TEXT type to use
-    // for a value.
+    // A text column type: SQL Server and Oracle need a length for a key column, and have no TEXT
+    // type to use for a value. Oracle's length counts characters, as the others' do.
     let textType (length: int option) =
         match dialect, length with
         | ProjectionSqlDialect.SqlServer, Some length -> $"NVARCHAR({length})"
         | ProjectionSqlDialect.SqlServer, None -> "NVARCHAR(MAX)"
+        | ProjectionSqlDialect.Oracle, Some length -> $"VARCHAR2({length} CHAR)"
+        | ProjectionSqlDialect.Oracle, None -> "CLOB"
         | _ -> "TEXT"
+
+    let bigintType = if dialect = ProjectionSqlDialect.Oracle then "NUMBER(19)" else "BIGINT"
+
+    // FCQRS's SQL names parameters @name. Oracle's bind variables are :name, matched by position
+    // unless the command binds by name; the p_ prefix keeps a name off Oracle's reserved words.
+    let isOracle = dialect = ProjectionSqlDialect.Oracle
+    let bindName (name: string) = if isOracle then "p_" + name.TrimStart '@' else name
+    let sqlText (sql: string) =
+        if isOracle then RegularExpressions.Regex.Replace(sql, "@([A-Za-z_][A-Za-z0-9_]*)", ":p_$1") else sql
+
+    // Sets the command's text, and on Oracle makes it bind parameters by name. FCQRS does not
+    // reference the Oracle provider, so the property is set by name.
+    let setText (command: DbCommand) (sql: string) =
+        command.CommandText <- sqlText sql
+        if isOracle then
+            match command.GetType().GetProperty "BindByName" with
+            | null -> invalidOp $"The Oracle command type {command.GetType().FullName} has no BindByName property."
+            | property -> property.SetValue(command, true)
+
+    let newCommand (connection: DbConnection) (sql: string) =
+        let command = connection.CreateCommand()
+        setText command sql
+        command
+
+    // Runs Oracle DDL unless the object exists (ORA-00955). Oracle commits the open transaction
+    // before and after any DDL.
+    let oracleDdl (ddl: string) =
+        let escaped = ddl.Replace("'", "''")
+        $"BEGIN EXECUTE IMMEDIATE '{escaped}'; EXCEPTION WHEN OTHERS THEN IF SQLCODE <> -955 THEN RAISE; END IF; END;"
 
     // Columns and parameters as (column, parameter) pairs, the key's first.
     let columnList (columns: (string * string) list) = columns |> List.map fst |> String.concat ", "
@@ -156,7 +199,11 @@ type SqlProjectionStore
     // cannot both insert it.
     let insertMissingSql table (key: (string * string) list) (others: (string * string) list) =
         let all = key @ others
-        if dialect = ProjectionSqlDialect.SqlServer then
+        // On Oracle a second transaction's insert waits for the first to commit, then fails on the
+        // key, which the block ignores.
+        if isOracle then
+            $"BEGIN INSERT INTO {table} ({columnList all}) VALUES ({parameterList all}); EXCEPTION WHEN DUP_VAL_ON_INDEX THEN NULL; END;"
+        elif dialect = ProjectionSqlDialect.SqlServer then
             $"IF NOT EXISTS (SELECT 1 FROM {table} WITH (UPDLOCK, HOLDLOCK) WHERE {keyCondition key}) INSERT INTO {table} ({columnList all}) VALUES ({parameterList all})"
         else
             $"INSERT INTO {table} ({columnList all}) VALUES ({parameterList all}) ON CONFLICT ({columnList key}) DO NOTHING"
@@ -164,7 +211,10 @@ type SqlProjectionStore
     // SQL that inserts a row, or replaces the other columns of the row with its key.
     let upsertSql table (key: (string * string) list) (others: (string * string) list) =
         let all = key @ others
-        if dialect = ProjectionSqlDialect.SqlServer then
+        if isOracle then
+            let set = others |> List.map (fun (column, parameter) -> $"{column} = {parameter}") |> String.concat ", "
+            $"BEGIN INSERT INTO {table} ({columnList all}) VALUES ({parameterList all}); EXCEPTION WHEN DUP_VAL_ON_INDEX THEN UPDATE {table} SET {set} WHERE {keyCondition key}; END;"
+        elif dialect = ProjectionSqlDialect.SqlServer then
             let set = others |> List.map (fun (column, parameter) -> $"{column} = {parameter}") |> String.concat ", "
             $"UPDATE {table} WITH (UPDLOCK, SERIALIZABLE) SET {set} WHERE {keyCondition key}; IF @@ROWCOUNT = 0 INSERT INTO {table} ({columnList all}) VALUES ({parameterList all})"
         else
@@ -241,10 +291,19 @@ type SqlProjectionStore
 
     let parameter (command: DbCommand) name dbType value =
         let parameter = command.CreateParameter()
-        parameter.ParameterName <- name
+        parameter.ParameterName <- bindName name
         parameter.DbType <- dbType
         parameter.Value <- value
         command.Parameters.Add parameter |> ignore
+
+    // A JSON list parameter. On Oracle it is a CLOB: a VARCHAR2 bind holds at most 4000 bytes in SQL.
+    let jsonParameter (command: DbCommand) name (value: string) =
+        parameter command name DbType.String value
+        if isOracle then
+            let added = command.Parameters[command.Parameters.Count - 1]
+            match added.GetType().GetProperty "OracleDbType" with
+            | null -> invalidOp $"The Oracle parameter type {added.GetType().FullName} has no OracleDbType property."
+            | property -> property.SetValue(added, Enum.Parse(property.PropertyType, "Clob"))
 
     // A condition selecting the named entities' persistence IDs (names as validateEntities returns
     // them), with its parameters added to the command, or None for every entity. LIKE keeps other
@@ -292,14 +351,19 @@ type SqlProjectionStore
         match dialect with
         | ProjectionSqlDialect.Sqlite -> journalSql + " NOT INDEXED"
         | ProjectionSqlDialect.SqlServer -> journalSql + " WITH (INDEX(1))"
+        | ProjectionSqlDialect.Oracle -> journalSql + " j"
         | _ -> journalSql
+
+    // On Oracle the same choice is held by a hint, which follows SELECT: read the journal by the
+    // index on its number.
+    let byNumberHint = if isOracle then $"/*+ INDEX(j ({orderingSql})) */ " else ""
 
     let transactionCommand (connection: DbConnection) (transaction: DbTransaction) sql =
         if isNull (box transaction) || not (obj.ReferenceEquals(connection, transaction.Connection)) then
             invalidArg (nameof transaction) "An active transaction on the supplied connection is required."
         let command = connection.CreateCommand()
         command.Transaction <- transaction
-        command.CommandText <- sql
+        setText command sql
         command
 
     let readPositions (command: DbCommand) (ct: CancellationToken) =
@@ -345,6 +409,17 @@ type SqlProjectionStore
         if dialect = ProjectionSqlDialect.SqlServer then
             FCQRS.SqlServer.checkDatabase connection true columns
 
+    // Raises unless an Oracle session compares strings by their bytes. With linguistic comparison
+    // (NLS_COMP LINGUISTIC and a case-insensitive NLS_SORT) FCQRS's queries could take
+    // "Account/0/abc" for "Account/0/ABC".
+    let checkOracle (connection: DbConnection) =
+        if isOracle then
+            use command = newCommand connection "SELECT value FROM NLS_SESSION_PARAMETERS WHERE parameter = 'NLS_COMP'"
+            match command.ExecuteScalar() with
+            | :? string as comparison when not (comparison.Equals("BINARY", StringComparison.OrdinalIgnoreCase)) ->
+                invalidOp $"The Oracle session compares strings with NLS_COMP {comparison}, which can treat different persistence IDs as equal. FCQRS needs NLS_COMP BINARY."
+            | _ -> ()
+
     /// Uses one database for both the journal and the transactional read model.
     new(dialect: ProjectionSqlDialect, connectionFactory: Func<DbConnection>) =
         SqlProjectionStore(dialect, connectionFactory, connectionFactory)
@@ -382,22 +457,26 @@ type SqlProjectionStore
     /// data: see `FCQRS.SqlServer.checkDatabase`.
     member internal _.InitializeAsync(ct: CancellationToken) : Task =
         task {
-            if dialect = ProjectionSqlDialect.SqlServer then
+            if dialect = ProjectionSqlDialect.SqlServer || isOracle then
                 use! journal = openConnection journalConnectionFactory validateJournalConnection ct
                 checkSqlServer journal [ (journalSchema, journalName, defaultArg journalPersistenceIdColumn "persistence_id") ]
+                checkOracle journal
             use! connection = openConnection projectionConnectionFactory validateProjectionConnection ct
             checkSqlServer connection [ (progressSchema, progressName, "persistence_id") ]
+            checkOracle connection
             use! transaction = connection.BeginTransactionAsync(ct)
             do! lockDefinitions connection transaction ct
             // The persistence ID's length is the journal's: 255 characters on SQL Server.
             let progressColumns =
-                $"projection_name {textType (Some 128)} NOT NULL, persistence_id {textType (Some 255)} NOT NULL, sequence_number BIGINT NOT NULL CHECK (sequence_number >= 0), PRIMARY KEY (projection_name, persistence_id)"
+                $"projection_name {textType (Some 128)} NOT NULL, persistence_id {textType (Some 255)} NOT NULL, sequence_number {bigintType} NOT NULL CHECK (sequence_number >= 0), PRIMARY KEY (projection_name, persistence_id)"
             let lockColumns = $"projection_name {textType (Some 128)} NOT NULL PRIMARY KEY, source_fingerprint {textType (Some 128)} NOT NULL"
             let create table columns =
                 if dialect = ProjectionSqlDialect.SqlServer then
                     let command = transactionCommand connection transaction ($"IF OBJECT_ID(@table, N'U') IS NULL CREATE TABLE {table} ({columns})")
                     parameter command "@table" DbType.String table
                     command
+                elif isOracle then
+                    transactionCommand connection transaction (oracleDdl $"CREATE TABLE {table} ({columns})")
                 else
                     transactionCommand connection transaction ($"CREATE TABLE IF NOT EXISTS {table} ({columns})")
             use createProgress = create progressSql progressColumns
@@ -411,6 +490,14 @@ type SqlProjectionStore
     /// progress table is.
     member internal _.OwnedTable(name: string) : string = qualified "ownedTable" progressSchema name
 
+    /// A command in the caller's transaction, with FCQRS's @name parameters written for the dialect.
+    member internal _.Command(connection: DbConnection, transaction: DbTransaction, sql: string) : DbCommand =
+        transactionCommand connection transaction sql
+
+    /// Adds a text parameter named as in FCQRS's SQL, @name, to a command from `Command`.
+    member internal _.AddText(command: DbCommand, name: string, value: string) : unit =
+        parameter command name DbType.String value
+
     /// A text column type for a table FCQRS owns: TEXT on SQLite and PostgreSQL; on SQL Server,
     /// NVARCHAR of `length`, which a key column needs, or NVARCHAR(MAX) without one.
     member internal _.TextType(length: int option) : string = textType length
@@ -420,11 +507,11 @@ type SqlProjectionStore
     member internal _.UpsertSql(table: string, keyColumn: string, keyParameter: string, valueColumn: string, valueParameter: string) : string =
         upsertSql table [ (keyColumn, keyParameter) ] [ (valueColumn, valueParameter) ]
 
-    /// Creates a table FCQRS owns in the progress table's schema, unless it exists, inside the
-    /// caller's transaction on a connection from `OpenProjectionAsync`, which must not have run
-    /// anything yet. `columns` is the SQL between CREATE TABLE's parentheses. On PostgreSQL it takes
-    /// the lock that serializes FCQRS's other table creation. Returns whether the table was created.
-    member internal this.CreateOwnedTableAsync(connection: DbConnection, transaction: DbTransaction, name: string, columns: string, ct: CancellationToken) : Task<bool> =
+    /// Whether a table FCQRS owns exists in the progress table's schema, read inside the caller's
+    /// transaction on a connection from `OpenProjectionAsync`, which must not have run anything yet.
+    /// On PostgreSQL and SQL Server it first takes the lock that serializes FCQRS's table creation,
+    /// which `CreateOwnedTableAsync` takes again.
+    member internal this.OwnedTableExistsAsync(connection: DbConnection, transaction: DbTransaction, name: string, ct: CancellationToken) : Task<bool> =
         task {
             do! lockDefinitions connection transaction ct
             let table = this.OwnedTable name
@@ -438,6 +525,13 @@ type SqlProjectionStore
                     let command = transactionCommand connection transaction "SELECT CASE WHEN OBJECT_ID(@table, N'U') IS NULL THEN 0 ELSE 1 END"
                     parameter command "@table" DbType.String table
                     command
+                | ProjectionSqlDialect.Oracle ->
+                    // Quoted names are stored as written; an unqualified table is the session schema's.
+                    let owner = if progressSchema.IsSome then "@owner" else "SYS_CONTEXT('USERENV', 'CURRENT_SCHEMA')"
+                    let command = transactionCommand connection transaction ($"SELECT COUNT(*) FROM ALL_TABLES WHERE OWNER = {owner} AND TABLE_NAME = @name")
+                    progressSchema |> Option.iter (fun schema -> parameter command "@owner" DbType.String schema)
+                    parameter command "@name" DbType.String name
+                    command
                 | _ ->
                     let catalog =
                         match progressSchema with
@@ -447,11 +541,24 @@ type SqlProjectionStore
                     parameter command "@name" DbType.String name
                     command
             let! found = exists.ExecuteScalarAsync(ct)
-            if Convert.ToInt64 found > 0L then
+            return Convert.ToInt64 found > 0L
+        }
+
+    /// Creates a table FCQRS owns in the progress table's schema, unless it exists, inside the
+    /// caller's transaction on a connection from `OpenProjectionAsync`. `columns` is the SQL between
+    /// CREATE TABLE's parentheses. On PostgreSQL and SQL Server it takes the lock that serializes
+    /// FCQRS's other table creation. On Oracle the creation commits the caller's transaction, with
+    /// whatever it has written so far, so a caller that resets data for a new table resets it first.
+    /// Returns whether the table was created.
+    member internal this.CreateOwnedTableAsync(connection: DbConnection, transaction: DbTransaction, name: string, columns: string, ct: CancellationToken) : Task<bool> =
+        task {
+            let! found = this.OwnedTableExistsAsync(connection, transaction, name, ct)
+            if found then
                 return false
             else
-                use create = transactionCommand connection transaction ($"CREATE TABLE {table} ({columns})")
-                let! _ = create.ExecuteNonQueryAsync(ct)
+                let create = $"CREATE TABLE {this.OwnedTable name} ({columns})"
+                use command = transactionCommand connection transaction (if isOracle then oracleDdl create else create)
+                let! _ = command.ExecuteNonQueryAsync(ct)
                 return true
         }
 
@@ -490,7 +597,7 @@ type SqlProjectionStore
     member internal _.CaptureAllCommand(connection: DbConnection, entities: string list) : DbCommand =
         let command = connection.CreateCommand()
         let selected = entityCondition command true entities |> Option.map ((+) " WHERE ") |> Option.defaultValue ""
-        command.CommandText <- $"SELECT {persistenceIdSql}, MAX({sequenceNumberSql}) FROM {journalSql}{selected} GROUP BY {persistenceIdSql}"
+        setText command $"SELECT {persistenceIdSql}, MAX({sequenceNumberSql}) FROM {journalSql}{selected} GROUP BY {persistenceIdSql}"
         command
 
     /// The main query of `CaptureSinceAsync` on an open journal connection: each persistence ID of
@@ -500,8 +607,8 @@ type SqlProjectionStore
     member internal _.CaptureSinceCommand(connection: DbConnection, after: int64, entities: string list) : DbCommand =
         let command = connection.CreateCommand()
         let selected = entityCondition command false entities |> Option.map ((+) " AND ") |> Option.defaultValue ""
-        command.CommandText <-
-            $"SELECT {persistenceIdSql}, MAX({sequenceNumberSql}), MAX({orderingSql}) FROM {journalByNumber} WHERE {orderingSql} > @after{selected} GROUP BY {persistenceIdSql}"
+        setText command
+            $"SELECT {byNumberHint}{persistenceIdSql}, MAX({sequenceNumberSql}), MAX({orderingSql}) FROM {journalByNumber} WHERE {orderingSql} > @after{selected} GROUP BY {persistenceIdSql}"
         parameter command "@after" DbType.Int64 after
         command
 
@@ -510,11 +617,13 @@ type SqlProjectionStore
     member internal _.ListCommand(connection: DbConnection, after: int64, count: int64, entities: string list) : DbCommand =
         let command = connection.CreateCommand()
         let selected = entityCondition command false entities |> Option.map ((+) " AND ") |> Option.defaultValue ""
-        command.CommandText <-
+        setText command (
             if dialect = ProjectionSqlDialect.SqlServer then
                 $"SELECT TOP (@count) {persistenceIdSql}, {sequenceNumberSql}, {orderingSql} FROM {journalByNumber} WHERE {orderingSql} > @after{selected} ORDER BY {orderingSql}"
+            elif isOracle then
+                $"SELECT {byNumberHint}{persistenceIdSql}, {sequenceNumberSql}, {orderingSql} FROM {journalByNumber} WHERE {orderingSql} > @after{selected} ORDER BY {orderingSql} FETCH FIRST @count ROWS ONLY"
             else
-                $"SELECT {persistenceIdSql}, {sequenceNumberSql}, {orderingSql} FROM {journalByNumber} WHERE {orderingSql} > @after{selected} ORDER BY {orderingSql} LIMIT @count"
+                $"SELECT {persistenceIdSql}, {sequenceNumberSql}, {orderingSql} FROM {journalByNumber} WHERE {orderingSql} > @after{selected} ORDER BY {orderingSql} LIMIT @count")
         parameter command "@after" DbType.Int64 after
         parameter command "@count" DbType.Int64 count
         command
@@ -528,8 +637,7 @@ type SqlProjectionStore
     member internal this.CaptureAllAsync(entities: string list, ct: CancellationToken) : Task<Map<string, int64> * int64> =
         task {
             use! connection = openConnection journalConnectionFactory validateJournalConnection ct
-            use highest = connection.CreateCommand()
-            highest.CommandText <- $"SELECT COALESCE(MAX({orderingSql}), 0) FROM {journalSql}"
+            use highest = newCommand connection $"SELECT COALESCE(MAX({orderingSql}), 0) FROM {journalSql}"
             let! top = highest.ExecuteScalarAsync(ct)
             use command = this.CaptureAllCommand(connection, entities)
             let! positions = readPositions command ct
@@ -551,8 +659,7 @@ type SqlProjectionStore
             let! highest = task {
                 if entities.IsEmpty then return after
                 else
-                    use highest = connection.CreateCommand()
-                    highest.CommandText <- $"SELECT COALESCE(MAX({orderingSql}), 0) FROM {journalSql} WHERE {orderingSql} > @after"
+                    use highest = newCommand connection $"SELECT COALESCE(MAX({orderingSql}), 0) FROM {journalSql} WHERE {orderingSql} > @after"
                     parameter highest "@after" DbType.Int64 after
                     let! top = highest.ExecuteScalarAsync(ct)
                     return max after (Convert.ToInt64 top)
@@ -614,16 +721,18 @@ type SqlProjectionStore
                     $"jsonb_array_elements(CAST(@events AS jsonb)) AS pending ON {persistenceIdSql} = pending.value->>0 AND {sequenceNumberSql} = CAST(pending.value->>1 AS BIGINT)"
                 // The parsed persistence ID takes the database's collation, which the journal
                 // column must have: see SqlServer.checkDatabase.
+                // Oracle takes no AS before a table alias.
+                | ProjectionSqlDialect.Oracle ->
+                    $"JSON_TABLE(@events, '$[*]' COLUMNS (pending_id VARCHAR2(255 CHAR) PATH '$[0]', pending_sequence NUMBER(19) PATH '$[1]')) pending ON {persistenceIdSql} = pending.pending_id AND {sequenceNumberSql} = pending.pending_sequence"
                 | ProjectionSqlDialect.SqlServer ->
                     $"OPENJSON(@events) WITH (pending_id NVARCHAR(255) '$[0]', pending_sequence BIGINT '$[1]') AS pending ON {persistenceIdSql} = pending.pending_id AND {sequenceNumberSql} = pending.pending_sequence"
                 | _ ->
                     $"json_each(@events) AS pending ON {persistenceIdSql} = json_extract(pending.value, '$[0]') AND {sequenceNumberSql} = json_extract(pending.value, '$[1]')"
             let mutable earliest = None
             for chunk in List.chunkBySize 10000 events do
-                use command = connection.CreateCommand()
-                command.CommandText <- $"SELECT MIN({orderingSql}) FROM {journalSql} JOIN {pairs}"
+                use command = newCommand connection $"SELECT MIN({orderingSql}) FROM {journalSql} JOIN {pairs}"
                 let json = chunk |> List.map (fun (persistenceId, sequenceNumber) -> [| box persistenceId; box sequenceNumber |])
-                parameter command "@events" DbType.String (Text.Json.JsonSerializer.Serialize json)
+                jsonParameter command "@events" (Text.Json.JsonSerializer.Serialize json)
                 let! value = command.ExecuteScalarAsync(ct)
                 match value with
                 | null -> ()
@@ -649,11 +758,12 @@ type SqlProjectionStore
                 // One JSON array parameter, however many persistence IDs a batch names.
                 | Some _, ProjectionSqlDialect.PostgreSql -> " AND persistence_id IN (SELECT jsonb_array_elements_text(CAST(@ids AS jsonb)))"
                 | Some _, ProjectionSqlDialect.SqlServer -> " AND persistence_id IN (SELECT id FROM OPENJSON(@ids) WITH (id NVARCHAR(255) '$'))"
+                | Some _, ProjectionSqlDialect.Oracle -> " AND persistence_id IN (SELECT id FROM JSON_TABLE(@ids, '$[*]' COLUMNS (id VARCHAR2(255 CHAR) PATH '$')))"
                 | Some _, _ -> " AND persistence_id IN (SELECT value FROM json_each(@ids))"
             use command =
                 transactionCommand connection transaction ($"SELECT persistence_id, sequence_number FROM {progressSql} WHERE projection_name = @projection{selected}")
             parameter command "@projection" DbType.String projectionName
-            persistenceIds |> Option.iter (fun ids -> parameter command "@ids" DbType.String (Text.Json.JsonSerializer.Serialize ids))
+            persistenceIds |> Option.iter (fun ids -> jsonParameter command "@ids" (Text.Json.JsonSerializer.Serialize ids))
             let! positions = readPositions command ct
             do! transaction.CommitAsync(ct)
             return positions

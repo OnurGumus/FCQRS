@@ -947,14 +947,7 @@ let private openJournal (journal: Journal) : DbConnection =
     connection
 
 let private command (connection: DbConnection) (sql: string) (parameters: (string * string) list) =
-    let command = connection.CreateCommand()
-    command.CommandText <- sql
-    for name, value in parameters do
-        let parameter = command.CreateParameter()
-        parameter.ParameterName <- name
-        parameter.Value <- value
-        command.Parameters.Add parameter |> ignore
-    command
+    TestDatabases.command connection None sql [ for name, value in parameters -> name, box value ]
 
 let private tableExists (journal: Journal) (table: string) =
     use connection = openJournal journal
@@ -963,6 +956,7 @@ let private tableExists (journal: Journal) (table: string) =
         | SqliteFile _ -> "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = @name"
         | OnServer(TestDatabases.PostgreSql, _) -> "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_name = @name"
         | OnServer(TestDatabases.SqlServer, _) -> "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = 'dbo' AND TABLE_NAME = @name"
+        | OnServer(TestDatabases.Oracle, _) -> "SELECT COUNT(*) FROM USER_TABLES WHERE TABLE_NAME = @name"
     use count = command connection sql [ "@name", table ]
     Convert.ToInt64(count.ExecuteScalar()) > 0L
 
@@ -1452,7 +1446,7 @@ let tests =
             droppedTable None
             mismatchedReader
             mismatchedReaderAgain
-            for server, kind, variable in [ TestDatabases.postgres, "PostgreSQL", "FCQRS_TEST_POSTGRES"; TestDatabases.sqlServer, "SQL Server", "FCQRS_TEST_SQLSERVER" ] do
+            for server, kind, variable in [ TestDatabases.postgres, "PostgreSQL", "FCQRS_TEST_POSTGRES"; TestDatabases.sqlServer, "SQL Server", "FCQRS_TEST_SQLSERVER"; TestDatabases.oracle, "Oracle", "FCQRS_TEST_ORACLE" ] do
                 match server with
                 | None -> ptestCase $"schedules: the stored index on {kind}: set {variable} to run" ignore
                 | Some _ ->

@@ -1170,17 +1170,10 @@ type internal Dispatcher
 
         signal ()
 
-    let parameter (command: Data.Common.DbCommand) (name: string) (value: string) =
-        let parameter = command.CreateParameter()
-        parameter.ParameterName <- name
-        parameter.DbType <- Data.DbType.String
-        parameter.Value <- value
-        command.Parameters.Add parameter |> ignore
+    let parameter (command: Data.Common.DbCommand) (name: string) (value: string) = store.AddText(command, name, value)
 
     let rowCommand (connection: Data.Common.DbConnection) (transaction: Data.Common.DbTransaction) (sql: string) (id: string) =
-        let command = connection.CreateCommand()
-        command.Transaction <- transaction
-        command.CommandText <- sql
+        let command = store.Command(connection, transaction, sql)
         parameter command "@id" id
         command
 
@@ -1251,26 +1244,26 @@ type internal Dispatcher
             do! store.RebindProjectionAsync(ScheduleIndex.ProjectionName, token)
             use! connection = store.OpenProjectionAsync token
             use! transaction = connection.BeginTransactionAsync token
-            let! created = store.CreateOwnedTableAsync(connection, transaction, ScheduleIndex.Table, ScheduleIndex.columns store, token)
-
             let reset () =
                 task {
-                    use delete = connection.CreateCommand()
-                    delete.Transaction <- transaction
-                    delete.CommandText <- $"DELETE FROM {table}"
+                    use delete = store.Command(connection, transaction, $"DELETE FROM {table}")
                     let! _ = delete.ExecuteNonQueryAsync token
                     do! store.ResetProjectionAsync(connection, transaction, ScheduleIndex.ProjectionName, token)
                 }
 
+            // The read positions are deleted before the table is created: on Oracle the creation
+            // commits the transaction, so a crash after it must not leave a new table with old
+            // positions.
+            let! exists = store.OwnedTableExistsAsync(connection, transaction, ScheduleIndex.Table, token)
+
             let! stored =
                 task {
-                    if created then
-                        do! reset ()
+                    if not exists then
+                        do! store.ResetProjectionAsync(connection, transaction, ScheduleIndex.ProjectionName, token)
+                        let! _ = store.CreateOwnedTableAsync(connection, transaction, ScheduleIndex.Table, ScheduleIndex.columns store, token)
                         return []
                     else
-                        use select = connection.CreateCommand()
-                        select.Transaction <- transaction
-                        select.CommandText <- $"SELECT schedule_id, entry FROM {table}"
+                        use select = store.Command(connection, transaction, $"SELECT schedule_id, entry FROM {table}")
                         use! reader = select.ExecuteReaderAsync token
                         let rows = ResizeArray<string * string>()
                         let mutable reading = true

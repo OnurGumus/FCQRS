@@ -277,9 +277,9 @@ let tests =
         testList "bank invariant" [
             conserved None 8
             // More kills on a server: each one lands while more transfers run at once than on SQLite.
-            for server, variable in [ TestDatabases.postgres, "FCQRS_TEST_POSTGRES"; TestDatabases.sqlServer, "FCQRS_TEST_SQLSERVER" ] do
+            for server, variable in [ TestDatabases.postgres, "FCQRS_TEST_POSTGRES"; TestDatabases.sqlServer, "FCQRS_TEST_SQLSERVER"; TestDatabases.oracle, "FCQRS_TEST_ORACLE" ] do
                 match server with
                 | Some _ -> conserved server 15
                 | None ->
-                    let kind = if variable = "FCQRS_TEST_POSTGRES" then "PostgreSQL" else "SQL Server"
+                    let kind = match variable with "FCQRS_TEST_POSTGRES" -> "PostgreSQL" | "FCQRS_TEST_SQLSERVER" -> "SQL Server" | _ -> "Oracle"
                     ptestCase $"bank invariant on {kind}: set {variable} to run" ignore ])

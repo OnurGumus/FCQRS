@@ -103,7 +103,7 @@ Keep these distinctions intact in code comments and documentation.
 - A projection follows each aggregate's and saga's own sequence numbers, never a global journal
   number, so it cannot skip an event that commits after later-numbered ones. Each pass applies the
   events it found in journal order across aggregates: on SQLite, the order they were written. On
-  PostgreSQL, and on SQL Server with `READ_COMMITTED_SNAPSHOT`, an event that commits after
+  PostgreSQL, on Oracle, and on SQL Server with `READ_COMMITTED_SNAPSHOT`, an event that commits after
   later-numbered ones is applied in a later pass, after them. SQL Server's default read committed
   makes the journal query wait for that write instead.
 - Commit a read-model update and its progress in the same transaction when they share a store. A
@@ -116,9 +116,10 @@ Keep these distinctions intact in code comments and documentation.
   as Akka escapes a sharding region's name): its SQL selects those rows, so other entities' events
   are never fetched or deserialized. On SQLite and SQL Server the full scan reads only the names'
   range of the persistence-ID index; the queries bounded by a journal number read every row above
-  it (`NOT INDEXED` on SQLite, `INDEX(1)`, the clustered journal-number key, on SQL Server),
-  because the index range would make each call read the entity's whole history. PostgreSQL reads
-  other rows in every query. A filtered pass reads each persistence ID's events with its own query, so
+  it (`NOT INDEXED` on SQLite, `INDEX(1)`, the clustered journal-number key, on SQL Server, a
+  `/*+ INDEX(j ("ordering")) */` hint on Oracle), because the index range would make each call read
+  the entity's whole history. PostgreSQL and Oracle select with LIKE alone in the full scan.
+  PostgreSQL reads other rows in every query. A filtered pass reads each persistence ID's events with its own query, so
   interleaved identities cost about one query per one or two events at startup. A pass still
   applies the named entities' events in journal order. An event of an entity it does not name never
   reaches it. An unnamed projection in an application that has schedules also receives
@@ -277,16 +278,28 @@ Keep these distinctions intact in code comments and documentation.
 
 ### Databases
 
-- Every Akka.Persistence.Sql provider stores aggregates, sagas, and workflows. Projections and
-  schedules run their own SQL (`ProjectionStorage.fs`, the schedule index), written for SQLite,
-  PostgreSQL, and SQL Server; another provider raises `ArgumentException` when one is registered.
-  The SQL for SQLite and PostgreSQL must stay byte-for-byte what it was when a dialect is added.
+- Aggregates, sagas, and workflows are tested on SQLite, PostgreSQL, SQL Server, and Oracle. MySQL,
+  Firebird, and Db2 are untested; on Firebird and Db2 Akka creates no unique key on a persistence
+  ID's sequence numbers. Projections and schedules run their own SQL (`ProjectionStorage.fs`, the
+  schedule index), written for the four tested databases; another provider raises
+  `ArgumentException` when one is registered. The SQL for the existing dialects must stay
+  byte-for-byte what it was when a dialect is added.
 - On SQL Server the database's default collation must be binary, and existing journal and snapshot
   persistence-ID columns must use it: Akka creates them without a collation, and a case-insensitive
   one makes `Account/0/abc` and `Account/0/ABC` one journal key. `SqlServer.checkPersistence`
   refuses to start the actor system otherwise. Projections also need compatibility level 130 for
   `OPENJSON`. A binary collation makes catalog names case-sensitive, so tests and docs write
   `INFORMATION_SCHEMA` in upper case.
+- On Oracle, Akka.Persistence.Sql's own table creation fails at the second start (linq2db recreates
+  the identity sequence: ORA-00955), adds no unique key or index, and its read journal in tag-table
+  mode returns pages out of order, so readers get events twice (the write journal's replay is a
+  single ordered query and is safe). `Oracle.preparePersistence` therefore creates the tables
+  under linq2db's names (sequence and trigger for `ordering`, `UQ_journal`, Akka's indexes, a
+  `tags` column) and refuses `auto-initialize` on or a tag table; the embedded HOCON sets both for
+  `DBType.Oracle`. The projection SQL writes `@name` as `:p_name` and binds by name through
+  reflection, inserts with PL/SQL that ignores `DUP_VAL_ON_INDEX`, and binds JSON lists as CLOBs.
+  Oracle DDL commits the open transaction, so the schedule index resets its read positions before
+  it creates its table. A projection refuses an `NLS_COMP` other than `BINARY`.
 
 ### Deployment
 
@@ -313,6 +326,7 @@ Keep these distinctions intact in code comments and documentation.
   project (C#). `test/Analyzers.Tests` runs both on the same cases; `scripts/check-analyzers.py`
   runs them over the samples and fails on any warning, because the samples are correct.
 - `src/FCQRS/SqlServer.fs`: the startup check of a SQL Server database's collation and level.
+- `src/FCQRS/Oracle.fs`: creates Akka.Persistence.Sql's Oracle tables at startup.
 - `src/FCQRS/ProjectionStorage.fs`: the projection store's SQL for each dialect, its progress and
   lock tables, and the tables FCQRS owns, such as the schedule index.
 - `src/FCQRS/Projections.fs`: projections, their per-aggregate progress, catch-up, and retries.
@@ -366,8 +380,11 @@ Keep these distinctions intact in code comments and documentation.
   `TransferSaga`, and `WorkflowBankInvariantTests.fs` step 5's `Account.fs` and
   workflow `Transfer.fs`. Both kill processes during transfers and check that the total balance is
   unchanged, on SQLite and, when `FCQRS_TEST_POSTGRES` or `FCQRS_TEST_SQLSERVER` is set as in CI,
-  on PostgreSQL or SQL Server. `TestDatabases.fs` makes and drops each test's database on those
-  servers; `SqlServerTests.fs` checks the collation refusal and IDs that differ only in case.
+  on PostgreSQL, SQL Server, or Oracle when `FCQRS_TEST_ORACLE` is set too. `TestDatabases.fs`
+  makes and drops each test's database on those servers (an Oracle database is a user), and its
+  `command` rewrites a test's SQL for Oracle; `SqlServerTests.fs` checks the collation refusal and
+  IDs that differ only in case, and `OracleTests.fs` the Oracle tables' keys, restarts, and
+  refusals.
 
 ## Development workflow
 

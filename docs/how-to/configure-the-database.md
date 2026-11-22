@@ -41,17 +41,17 @@ through configuration as shown in the [configuration reference](../configuration
 
 `DBType` supports these provider families:
 
-| FCQRS value | Database |
-|---|---|
-| `Sqlite` | SQLite through Microsoft.Data.Sqlite |
-| `PostgreSQL`, `PostgreSQL15` | PostgreSQL |
-| `SqlServer2012` through `SqlServer2022` | Microsoft SQL Server |
-| `MySql` | MySQL through MySqlConnector |
-| `Oracle` | Oracle Database |
-| `Firebird` | Firebird |
-| `DB2` | IBM Db2 |
+| FCQRS value | Database | Tested by FCQRS | Projections and schedules |
+|---|---|---|---|
+| `Sqlite` | SQLite through Microsoft.Data.Sqlite | yes | yes |
+| `PostgreSQL`, `PostgreSQL15` | PostgreSQL | yes | yes |
+| `SqlServer2012` through `SqlServer2022` | Microsoft SQL Server | yes | yes |
+| `Oracle` | Oracle Database 19c or later | yes | yes |
+| `MySql` | MySQL through MySqlConnector | no | no |
+| `Firebird` | Firebird | no | no |
+| `DB2` | IBM Db2 | no | no |
 
-Changing the F# `DBType` configures all three persistence stores and enables table initialization:
+Changing the F# `DBType` configures all three persistence stores and creates their tables:
 
 ```fsharp isolated
 open FCQRS.FSharp
@@ -61,10 +61,15 @@ let connection =
         "Host=localhost;Database=app;Username=app;Password=…"
 ```
 
-Every provider stores aggregates and sagas. Projections, workflows started from a projection, and
-schedules also read the journal with their own SQL, which FCQRS writes for SQLite, PostgreSQL, and SQL
-Server. With another provider, registering a projection or starting the schedule dispatcher raises
-`ArgumentException`.
+FCQRS's tests store aggregates, sagas, and workflows on the first four, kill the process while
+they write, and check the recovered state. They do not run on MySQL, Firebird, or Db2. On Firebird
+and Db2, Akka.Persistence.Sql creates the journal without a unique key on a persistence ID's sequence
+numbers, the key that stops two writers from storing the same event number of one aggregate; add it
+before you use either.
+
+Projections, workflows started from a projection, and schedules also read the journal with their
+own SQL, which FCQRS writes for SQLite, PostgreSQL, SQL Server, and Oracle. With another provider,
+registering a projection or starting the schedule dispatcher raises `ArgumentException`.
 
 Use SQLite for local development and deployments where one process owns the file. FCQRS runs on one
 node; [Scaling to a cluster](../configuration.html#Scaling-to-a-cluster) explains why.
@@ -112,6 +117,41 @@ write that has not committed. With `READ_COMMITTED_SNAPSHOT` on, the default on 
 query reads past that write instead, as it does on PostgreSQL, and a later pass applies the event after
 the write commits. Either way, a projection applies each aggregate's events in version order and skips
 none.
+
+## Oracle
+
+Add the Oracle.ManagedDataAccess.Core package to the application and connect with the `Oracle`
+value. The connection string names the user whose schema holds the tables:
+
+```fsharp isolated
+open FCQRS.FSharp
+
+let connection =
+    Fcqrs.connect FCQRS.Actor.DBType.Oracle
+        "User Id=accounts;Password=…;Data Source=dbhost:1521/ACCOUNTS"
+```
+
+The user needs the CREATE SESSION, CREATE TABLE, CREATE SEQUENCE, and CREATE TRIGGER privileges
+and a quota on its tablespace.
+
+Akka.Persistence.Sql cannot create its Oracle tables safely: its creation fails with ORA-00955 at
+the second start, and it adds no unique key on a persistence ID's sequence numbers. FCQRS therefore
+creates the journal and snapshot tables itself before any actor writes, with that key and Akka's
+indexes, and turns Akka's own creation off. On a journal that exists, it adds the key and indexes
+the journal lacks. A journal that already holds one event number twice cannot take the key, and the
+start fails with ORA-02299.
+
+FCQRS also stores tags in the journal's own column, Akka's `tag-write-mode` and `tag-read-mode`
+`Csv`, and never in a tag table. With a tag table, Akka's read journal wraps each ordered page of
+events in a query that Oracle can return out of order, and a reader receives some events twice. The
+actor system refuses to start when configuration turns `auto-initialize` on or sets a tag table for
+an Oracle plugin.
+
+Oracle compares strings by their bytes by default, so `Account/0/abc` and `Account/0/ABC` are two
+journal keys. A projection refuses to start on a session whose `NLS_COMP` is not `BINARY`. Like
+PostgreSQL, Oracle lets a projection's journal query read past a write that has not committed, and
+a later pass applies the event after the write commits. A projection's name can be at most 128
+characters.
 
 Do not commit production credentials in HOCON or source code. Supply them through the application's
 secret provider or environment-specific configuration.

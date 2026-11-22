@@ -19,6 +19,7 @@
     <Compile Include="ProjectionSubscriptionTests.fs" />
     <Compile Include="ProjectionCatchUpTests.fs" />
     <Compile Include="SqlServerTests.fs" />
+    <Compile Include="OracleTests.fs" />
     <Compile Include="ExpectedVersionTests.fs" />
     <Compile Include="ConditionalCommandSerializationTests.fs" />
     <Compile Include="EventUpcastingTests.fs" />
@@ -65,6 +66,7 @@
     <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.*" />
     <PackageReference Include="Npgsql" Version="10.0.3" />
     <PackageReference Include="Microsoft.Data.SqlClient" Version="6.1.4" />
+    <PackageReference Include="Oracle.ManagedDataAccess.Core" Version="23.*" />
   </ItemGroup>
 
 </Project>

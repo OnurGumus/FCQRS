@@ -247,6 +247,14 @@ runs there unchanged. The database needs a binary collation and compatibility le
 handler runs must use the transaction FCQRS passes: SqlClient refuses a command without it on a
 connection that has a transaction open.
 
+For Oracle, add the Oracle.ManagedDataAccess.Core package, choose `ProjectionSqlDialect.Oracle` with
+an `OracleConnection` factory, and connect the Akka journal with the `Oracle` `DBType`:
+[Configure the database](configure-the-database.html#Oracle) explains what FCQRS creates there.
+The handler's SQL needs Oracle's syntax: bind variables are written `:name`, and an `OracleCommand`
+matches them by position unless its `BindByName` is set. Oracle commits the open transaction before
+and after any DDL, so a handler must not create a table, or its read-model write and its progress
+would commit separately.
+
 The snapshot and completion contract uses per-identity checkpoints on every database.
 
 FCQRS owns the transaction and progress tables. Keep the handler's connection and transaction inside

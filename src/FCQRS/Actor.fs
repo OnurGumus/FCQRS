@@ -1264,13 +1264,21 @@ type DBType =
     | PostgreSQL
     /// PostgreSQL 15+
     | PostgreSQL15
-    /// MySQL using MySqlConnector
+    /// MySQL using MySqlConnector. FCQRS's tests do not run on MySQL, and projections and
+    /// schedules do not support it.
     | MySql
-    /// Oracle Database
+    /// Oracle Database 19c or later. Install Oracle.ManagedDataAccess.Core in the application.
+    /// FCQRS creates the journal and snapshot tables itself, with a unique key on each persistence
+    /// ID's sequence numbers, and turns Akka.Persistence.Sql's own creation off: Akka's fails at
+    /// the second start and adds no such key. Tags are stored in the journal's column, not in a
+    /// tag table. The session must compare strings by their bytes (NLS_COMP BINARY).
     | Oracle
-    /// Firebird
+    /// Firebird. Akka.Persistence.Sql creates no unique key on a persistence ID's sequence
+    /// numbers here, FCQRS's tests do not run on it, and projections and schedules do not
+    /// support it.
     | Firebird
-    /// IBM DB2
+    /// IBM DB2. Akka.Persistence.Sql creates no unique key on a persistence ID's sequence numbers
+    /// here, FCQRS's tests do not run on it, and projections and schedules do not support it.
     | DB2
 
 /// Represents a database connection configuration.
@@ -1325,6 +1333,10 @@ let api (config: IConfiguration) (loggerFactory: ILoggerFactory) (connection: Co
                 hoconTemplate
                     .Replace("${connection-string}", hoconSafeConnectionString)
                     .Replace("${db-type}", dbTypeString)
+                    // Akka cannot create its Oracle tables at a second start; Oracle.preparePersistence does.
+                    .Replace("${auto-initialize}", (if conn.DBType = Oracle then "false" else "true"))
+                    // Akka's tag-table reads page events in an order Oracle does not keep.
+                    .Replace("${tag-mode}", (if conn.DBType = Oracle then "Csv" else "TagTable"))
 
             // Create new configuration builder with hocon string merged with existing config
             // Add embedded HOCON first, then user config to allow overrides
@@ -1356,9 +1368,10 @@ let api (config: IConfiguration) (loggerFactory: ILoggerFactory) (connection: Co
     Akka.Persistence.Sql.SqlPersistence.Get(system) |> ignore
     Akka.Cluster.Sharding.ClusterSharding.Get(system) |> ignore
     // Before any actor writes: a SQL Server database whose collation equates different persistence
-    // IDs would mix aggregates' histories.
+    // IDs would mix aggregates' histories, and Akka does not create Oracle's tables safely.
     try
         SqlServer.checkPersistence system
+        Oracle.preparePersistence system
     with _ ->
         system.Terminate().Wait()
         reraise ()

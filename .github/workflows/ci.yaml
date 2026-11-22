@@ -40,6 +40,18 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 20
+      # Each Oracle test database is a user, which the tests create as SYSTEM.
+      oracle:
+        image: gvenzl/oracle-free:23-slim
+        env:
+          ORACLE_PASSWORD: Fcqrs-test-1
+        ports:
+          - 1521:1521
+        options: >-
+          --health-cmd healthcheck.sh
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
@@ -53,6 +65,7 @@ jobs:
         env:
           FCQRS_TEST_POSTGRES: "Host=localhost;Port=5432;Database=fcqrs_test;Username=fcqrs;Password=fcqrs-test"
           FCQRS_TEST_SQLSERVER: "Server=localhost,1433;User Id=sa;Password=Fcqrs-test-1;TrustServerCertificate=True"
+          FCQRS_TEST_ORACLE: "User Id=system;Password=Fcqrs-test-1;Data Source=localhost:1521/FREEPDB1"
         run: dotnet run --project test/Facade.Tests -c Release
       - name: C# workflow tests
         run: dotnet run --project test/Workflows.CSharp.Tests -c Release

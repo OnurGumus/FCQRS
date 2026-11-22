@@ -587,11 +587,12 @@ let private gap name (envelope: EventEnvelope) (position: int64) =
         raise (JournalHistoryException $"Projection '{name}' found a journal gap for '{envelope.PersistenceId}' after sequence {position}. Retain or restore its journal history, and make every event adapter return exactly one event.")
 
 // The projection store dialect of a linq2db provider name, such as "SQLite.MS", "PostgreSQL.15", or
-// "SqlServer.2022", or None for a provider projections do not support.
+// "SqlServer.2022", or "Oracle.Managed", or None for a provider projections do not support.
 let private dialectOf (provider: string) =
     if provider.StartsWith("SQLite", StringComparison.OrdinalIgnoreCase) then Some ProjectionSqlDialect.Sqlite
     elif provider.StartsWith("PostgreSQL", StringComparison.OrdinalIgnoreCase) then Some ProjectionSqlDialect.PostgreSql
     elif provider.StartsWith("SqlServer", StringComparison.OrdinalIgnoreCase) then Some ProjectionSqlDialect.SqlServer
+    elif provider.StartsWith("Oracle", StringComparison.OrdinalIgnoreCase) then Some ProjectionSqlDialect.Oracle
     else None
 
 // The journal settings, after checking that `store` addresses the journal that Akka's reader and
@@ -678,7 +679,7 @@ let private startWith
 /// handler must not wait for a journal write, such as a workflow start: that write waits for the
 /// lock until the projection times out. Start workflows from `Fcqrs.projection` instead.
 /// Each pass applies the events it found in journal order: per persistence ID in sequence
-/// order, and across persistence IDs in write order on SQLite; on PostgreSQL and SQL Server an event that
+/// order, and across persistence IDs in write order on SQLite; on PostgreSQL, SQL Server, and Oracle an event that
 /// commits late is applied in a later pass. Retain journal history until it has been processed.
 /// With `options.Entities`, it reads and stores progress for only those entities' persistence IDs.
 /// Configured Akka event adapters are currently unsupported by this projection reader.
@@ -711,13 +712,13 @@ type internal TrackedProgress =
 
 /// A projection store over the actor's SQL journal, with the read models and progress in the same
 /// database: the provider, connection string, table, schema, and columns Akka's journal reader uses
-/// from HOCON. The journal must be SQLite, PostgreSQL, or SQL Server.
+/// from HOCON. The journal must be SQLite, PostgreSQL, SQL Server, or Oracle.
 let internal journalStore (actor: IActor) : SqlProjectionStore =
     let settings = journalSettings actor true
     let dialect =
         match dialectOf settings.Provider with
         | Some dialect -> dialect
-        | None -> invalidArg (nameof actor) $"Projections require a SQLite, PostgreSQL, or SQL Server journal; this one uses '{settings.Provider}'."
+        | None -> invalidArg (nameof actor) $"Projections require a SQLite, PostgreSQL, SQL Server, or Oracle journal; this one uses '{settings.Provider}'."
     // The connections Akka.Persistence.Sql makes: the same provider and connection string.
     let provider =
         match LinqToDB.Data.DataConnection.GetDataProvider(settings.Provider, settings.ConnectionString) with
@@ -736,7 +737,7 @@ let internal journalStore (actor: IActor) : SqlProjectionStore =
 /// Creates a projection that follows each persistence ID's own sequence numbers, so it never skips
 /// an event that commits after later-numbered ones, and hands each event to `handler`. Each pass
 /// hands over the events it found in journal order: per persistence ID in sequence order, and
-/// across persistence IDs in write order on SQLite; on PostgreSQL and SQL Server an event that commits late
+/// across persistence IDs in write order on SQLite; on PostgreSQL, SQL Server, and Oracle an event that commits late
 /// arrives in a later pass. With `entities`, it reads only those entities' events: the journal
 /// queries select their persistence IDs, so other entities' rows stay in the database. Empty reads
 /// every entity.
@@ -744,7 +745,7 @@ let internal journalStore (actor: IActor) : SqlProjectionStore =
 /// after the handler returns. The handler runs outside the transaction that stores the position, so
 /// it can wait for a journal write, such as a workflow start, also on SQLite. A handler that throws
 /// terminates the process. The journal must be
-/// SQLite, PostgreSQL, or SQL Server, configured through HOCON.
+/// SQLite, PostgreSQL, SQL Server, or Oracle, configured through HOCON.
 let internal startTracked (actor: IActor) (progress: TrackedProgress) (entities: string list) (handler: obj -> IMessageWithCID list) : IProjection =
     if isNull (box handler) then nullArg (nameof handler)
     let entities = validateEntities (nameof entities) entities

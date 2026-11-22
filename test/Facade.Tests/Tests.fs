@@ -2700,6 +2700,7 @@ let main argv =
                 ProjectionSubscriptionTests.tests
                 ProjectionCatchUpTests.tests
                 SqlServerTests.tests
+                OracleTests.tests
                 ExpectedVersionTests.tests
                 ConditionalCommandSerializationTests.tests
                 EventUpcastingTests.tests

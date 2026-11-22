@@ -11,7 +11,7 @@ A projection hands each stored event to a handler that updates data shaped for q
 keeps each account's balance for a list of accounts. FCQRS follows each aggregate's versions, so the
 handler receives every stored event, including one whose write committed after later writes.
 [The read side](../concepts/read-models.html#Track-progress-per-aggregate) explains why that matters.
-Projections require a SQLite, PostgreSQL, or SQL Server journal.
+Projections require a SQLite, PostgreSQL, SQL Server, or Oracle journal.
 
 ## Choose where the read model lives
 
@@ -86,7 +86,7 @@ builder.Services.AddFcqrs(connectionString, "accounts")
 ```
 
 The handler runs for one event at a time. It receives events in the order the journal numbered them,
-so one account's events arrive in version order. On PostgreSQL and SQL Server, an event whose write commits late can
+so one account's events arrive in version order. On PostgreSQL, SQL Server, and Oracle, an event whose write commits late can
 arrive after higher-numbered events of other accounts. With its progress in
 memory, the projection reads the whole journal each time it starts, so start-up takes longer as the
 journal grows. Keep the read model somewhere durable when that time matters.

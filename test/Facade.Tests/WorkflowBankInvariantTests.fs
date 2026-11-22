@@ -4,7 +4,7 @@ module WorkflowBankInvariantTests
 // Processes are killed while transfers run, and a new process finishes them. The accounts together
 // must hold what they held at the start: no kill may create money, lose it, or move a transfer twice.
 //
-// FCQRS_TEST_POSTGRES or FCQRS_TEST_SQLSERVER names a server, as for the saga version of this test.
+// FCQRS_TEST_POSTGRES, FCQRS_TEST_SQLSERVER, or FCQRS_TEST_ORACLE names a server, as for the saga version of this test.
 
 open System
 open System.Collections.Concurrent
@@ -321,9 +321,9 @@ let tests =
         testList "workflow bank invariant" [
             repeatedSend
             conserved None 6
-            for server, variable in [ TestDatabases.postgres, "FCQRS_TEST_POSTGRES"; TestDatabases.sqlServer, "FCQRS_TEST_SQLSERVER" ] do
+            for server, variable in [ TestDatabases.postgres, "FCQRS_TEST_POSTGRES"; TestDatabases.sqlServer, "FCQRS_TEST_SQLSERVER"; TestDatabases.oracle, "FCQRS_TEST_ORACLE" ] do
                 match server with
                 | Some _ -> conserved server 10
                 | None ->
-                    let kind = if variable = "FCQRS_TEST_POSTGRES" then "PostgreSQL" else "SQL Server"
+                    let kind = match variable with "FCQRS_TEST_POSTGRES" -> "PostgreSQL" | "FCQRS_TEST_SQLSERVER" -> "SQL Server" | _ -> "Oracle"
                     ptestCase $"workflow bank invariant on {kind}: set {variable} to run" ignore ])

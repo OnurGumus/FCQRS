@@ -40,14 +40,7 @@ let private wait (work: Task) =
 let private signal () = TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously)
 
 let private execute (connection: DbConnection) (transaction: DbTransaction option) sql parameters =
-    use command = connection.CreateCommand()
-    command.CommandText <- sql
-    transaction |> Option.iter (fun tx -> command.Transaction <- tx)
-    for name, value in parameters do
-        let parameter = command.CreateParameter()
-        parameter.ParameterName <- name
-        parameter.Value <- value
-        command.Parameters.Add parameter |> ignore
+    use command = TestDatabases.command connection transaction sql parameters
     command.ExecuteNonQuery() |> ignore
 
 /// Two databases, the journal's and the read model's: SQLite files, or databases on `server`. With
@@ -98,7 +91,7 @@ type private Fixture(server: TestDatabases.Server option, ?readJournalOverride: 
         use read = connection projectionString
         read.Open()
         execute read None
-            $"CREATE TABLE applied_events (persistence_id {TestDatabases.textType (server |> Option.map _.Kind)} NOT NULL, sequence_nr BIGINT NOT NULL, amount INTEGER NOT NULL)" []
+            $"CREATE TABLE applied_events (persistence_id {TestDatabases.textType (server |> Option.map _.Kind)} NOT NULL, sequence_nr {TestDatabases.bigintType (server |> Option.map _.Kind)} NOT NULL, amount INTEGER NOT NULL)" []
     let capturesGate = obj ()
     let mutable capturesClosed = 0
     let captureWaiters = ResizeArray<int * TaskCompletionSource>()
@@ -143,11 +136,16 @@ type private Fixture(server: TestDatabases.Server option, ?readJournalOverride: 
         let journal = connection journalString
         journal.Open()
         let transaction = journal.BeginTransaction()
-        let schema, quoteName = match kind with TestDatabases.PostgreSql -> "public", (fun name -> "\"" + name + "\"") | TestDatabases.SqlServer -> "dbo", (fun name -> "[" + name + "]")
+        let quoteName name = match kind with TestDatabases.SqlServer -> "[" + name + "]" | _ -> "\"" + name + "\""
         use columnsCommand = journal.CreateCommand()
         columnsCommand.Transaction <- transaction
         // A binary collation makes SQL Server's catalog names case-sensitive, and they are upper case.
-        columnsCommand.CommandText <- $"SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = '{schema}' AND TABLE_NAME = 'journal' AND COLUMN_NAME <> 'ordering' ORDER BY ORDINAL_POSITION"
+        columnsCommand.CommandText <-
+            match kind with
+            | TestDatabases.Oracle -> "SELECT COLUMN_NAME FROM USER_TAB_COLUMNS WHERE TABLE_NAME = 'journal' AND COLUMN_NAME <> 'ordering' ORDER BY COLUMN_ID"
+            | _ ->
+                let schema = match kind with TestDatabases.SqlServer -> "dbo" | _ -> "public"
+                $"SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = '{schema}' AND TABLE_NAME = 'journal' AND COLUMN_NAME <> 'ordering' ORDER BY ORDINAL_POSITION"
         let columns = ResizeArray<string>()
         do
             use reader = columnsCommand.ExecuteReader()
@@ -159,6 +157,7 @@ type private Fixture(server: TestDatabases.Server option, ?readJournalOverride: 
             match kind with
             | TestDatabases.PostgreSql -> $"INSERT INTO journal ({quoted}) SELECT {values} FROM journal{where} LIMIT 1"
             | TestDatabases.SqlServer -> $"INSERT INTO journal ({quoted}) SELECT TOP 1 {values} FROM journal{where}"
+            | TestDatabases.Oracle -> $"INSERT INTO journal ({quoted}) SELECT {values} FROM journal{where} FETCH FIRST 1 ROWS ONLY"
         execute journal (Some transaction) insert []
         journal, transaction
     member _.Send(id, amount) =
@@ -183,8 +182,7 @@ type private Fixture(server: TestDatabases.Server option, ?readJournalOverride: 
     member _.Scalar(sql: string) =
         use read = connection projectionString
         read.Open()
-        use command = read.CreateCommand()
-        command.CommandText <- sql
+        use command = TestDatabases.command read None sql []
         Convert.ToInt64(command.ExecuteScalar())
     interface IDisposable with
         member _.Dispose() =
@@ -1521,6 +1519,32 @@ let private sqlServerPlans server =
     Expect.stringContains all "Index=\"[UQ_journal]\"" "the full scan reads the persistence-ID index"
     Expect.stringContains all "<SeekPredicates>" "the full scan seeks the entity's range of it"
 
+// The same choice on Oracle, held by a hint: the queries bounded by the journal number read the
+// index on it, PK_journal, and not the persistence-ID index, UQ_journal.
+let private oraclePlans server =
+    use fixture = new Fixture(Some server)
+    let keep, skip = filterTallies fixture.Api
+    interleavedFilterEvents keep skip
+    let entities = validateEntities "entities" [ "FilterKeep" ]
+    // The objects EXPLAIN PLAN says the query reads, with the parameters it has.
+    let plan (command: Data.Common.DbConnection -> Data.Common.DbCommand) =
+        use connection = fixture.OpenJournal()
+        use command = command connection
+        let statement = Guid.NewGuid().ToString("N").Substring(0, 30)
+        command.CommandText <- $"EXPLAIN PLAN SET STATEMENT_ID = '{statement}' FOR {command.CommandText}"
+        command.ExecuteNonQuery() |> ignore
+        use read = TestDatabases.command connection None "SELECT operation || ' ' || options || ' ' || object_name FROM PLAN_TABLE WHERE statement_id = @statement ORDER BY id" [ "@statement", box statement ]
+        use reader = read.ExecuteReader()
+        let steps = [ while reader.Read() do reader.GetString 0 ]
+        Expect.isNonEmpty steps "Oracle returned the plan"
+        String.concat "; " steps
+    let byNumber (what: string) (steps: string) =
+        Expect.stringContains steps "PK_journal" $"{what} reads the index on the journal number: {steps}"
+        Expect.isFalse (steps.Contains "UQ_journal") $"{what} does not read the persistence-ID index: {steps}"
+    byNumber "the listing" (plan (fun connection -> fixture.Store.ListCommand(connection, 0L, 500L, entities)))
+    byNumber "the incremental capture" (plan (fun connection -> fixture.Store.CaptureSinceCommand(connection, 0L, entities)))
+    byNumber "the unfiltered incremental capture" (plan (fun connection -> fixture.Store.CaptureSinceCommand(connection, 0L, [])))
+
 // A FilterKeep event that takes its journal number before later-numbered events and commits after
 // them reaches a filtered projection in a later pass.
 let private entityFilterLateCommit server =
@@ -1579,7 +1603,7 @@ let tests =
               entityFilterEscapedNames
               entityFilterSqlitePlans
               unfilteredSqlitePlans
-              for server, variable in [ TestDatabases.postgres, "FCQRS_TEST_POSTGRES"; TestDatabases.sqlServer, "FCQRS_TEST_SQLSERVER" ] do
+              for server, variable in [ TestDatabases.postgres, "FCQRS_TEST_POSTGRES"; TestDatabases.sqlServer, "FCQRS_TEST_SQLSERVER"; TestDatabases.oracle, "FCQRS_TEST_ORACLE" ] do
                   match server with
                   | Some server ->
                       let name = server.Kind.Name
@@ -1592,6 +1616,8 @@ let tests =
                       testCase $"{name}: a write that commits after the late-write window is handled by the next full scan" (fun _ -> veryLateCommit server)
                       if server.Kind = TestDatabases.SqlServer then
                           testCase "SQL Server: the journal-number queries read by journal number, and the full scan reads the entity's range" (fun _ -> sqlServerPlans server)
+                      if server.Kind = TestDatabases.Oracle then
+                          testCase "Oracle: the journal-number queries read by journal number" (fun _ -> oraclePlans server)
                       if server.Kind = TestDatabases.PostgreSql then
                           testCase "PostgreSQL: an older ambient snapshot cannot weaken catch-up" (fun _ -> postgresAmbientSnapshot server)
                   | None ->
