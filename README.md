@@ -70,6 +70,10 @@ An application built on FCQRS has three parts:
 dotnet add package FCQRS
 ```
 
+FCQRS.Analyzers warns about a workflow body or an aggregate fold that reads the clock, makes a GUID,
+or reads an environment variable, which would give a different result on recovery:
+[Check bodies and folds for nondeterminism](https://onurgumus.github.io/FCQRS/how-to/check-for-nondeterminism.html).
+
 The [F#](samples/accounts/1-open-an-account/fsharp/) and [C#](samples/accounts/1-open-an-account/csharp/)
 samples use the published package on .NET 11; the C# one uses C# 15. Copy either folder to start a
 standalone project.

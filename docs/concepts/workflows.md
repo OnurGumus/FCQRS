@@ -218,6 +218,16 @@ for attempt in Workflows.running api do
         attempt.Started attempt.CancellationRequested
 ```
 
+<div class="cs-alt"></div>
+
+```csharp
+foreach (var attempt in WorkflowHost.Running(actor))
+    Console.WriteLine(
+        $"{attempt.Workflow} {attempt.Instance} {attempt.Step} " +
+        $"attempt {attempt.Attempt} since {attempt.Started}, " +
+        $"cancelled: {attempt.CancellationRequested}");
+```
+
 An attempt stays listed until its call returns. An attempt whose `CancellationRequested` is true
 and that stays listed is a call that ignores its token, after a timeout, an abandoned branch, or a
 stop.

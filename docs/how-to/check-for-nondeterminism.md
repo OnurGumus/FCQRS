@@ -20,6 +20,20 @@ let reminder =
     })
 ```
 
+<div class="cs-alt"></div>
+
+```csharp
+public sealed class Reminder() : Workflow<string, string>("reminder")
+{
+    public override async WorkflowTask<string> Run(
+        WorkflowContext ctx, string name)
+    {
+        var sentAt = DateTime.UtcNow;
+        return $"{name} reminded at {sentAt}";
+    }
+}
+```
+
 The body runs again every time the instance recovers, and each run reads a different time. A body
 that branches on that value can take another path on replay, and the instance is
 [parked](../concepts/workflows.html#Change-a-workflow-while-instances-are-running) or does the wrong
@@ -41,7 +55,8 @@ recovery and must take the same path: read the time with `now`, make IDs with `n
 random numbers with `random`, or move the call into an activity.
 ```
 
-Read the time with `now`, which stores the value so that replay returns it:
+The C# message names `ctx.Now()`, `ctx.NewGuid()`, and `ctx.Random()` instead. Read the time with
+`now` (C#: `ctx.Now()`), which stores the value so that replay returns it:
 
 ```fsharp isolated
 open System
@@ -52,6 +67,20 @@ let reminder =
         let! sentAt = now
         return $"{name} reminded at {sentAt}"
     })
+```
+
+<div class="cs-alt"></div>
+
+```csharp
+public sealed class Reminder() : Workflow<string, string>("reminder")
+{
+    public override async WorkflowTask<string> Run(
+        WorkflowContext ctx, string name)
+    {
+        var sentAt = await ctx.Now();
+        return $"{name} reminded at {sentAt}";
+    }
+}
 ```
 
 ## Run the analyzers

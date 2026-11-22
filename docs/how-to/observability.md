@@ -133,6 +133,18 @@ use that context as their parent, so a resumed workflow continues the same trace
 A faulted workflow is final, and a parked one runs nothing until matching code is deployed. Alert on
 both.
 
+`fcqrs.workflow.running` counts instances. To see which steps are running now, and for how long,
+call `Workflows.running api` (C#: `WorkflowHost.Running(actor)`) from a diagnostics endpoint: it
+lists each activity call, command waiting for its reply, and child start, oldest first, with its
+workflow, instance, step, attempt, and start time. A step that has run far longer than its timeout,
+with `CancellationRequested` true, is a call that ignores its cancellation token.
+
+A shutdown waits up to `akka.fcqrs.workflow-drain-timeout` for the calls it cancelled, then logs a
+`Warning` in the `FCQRS.Workflows.Shutdown` category for each one still running, naming its
+workflow, instance, step, and attempt. Such a call can still reach the external system, and the step
+runs again after the restart. [See what is running, and what a shutdown waits
+for](../concepts/workflows.html#See-what-is-running-and-what-a-shutdown-waits-for) explains both.
+
 ### Workflow logs
 
 A workflow writes its progress to the `FCQRS.MessageFlow` category at `Information`. These are the
