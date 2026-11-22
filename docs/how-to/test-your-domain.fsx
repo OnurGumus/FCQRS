@@ -7,7 +7,7 @@ index: 17
 ---
 *)
 (*** hide ***)
-#r "nuget: FCQRS, 6.14.0"
+#r "nuget: FCQRS, 7.5.1"
 #r "nuget: Expecto, 10.2.3"
 #load "../../samples/accounts/2-withdraw-money/fsharp/Account.fs"
 

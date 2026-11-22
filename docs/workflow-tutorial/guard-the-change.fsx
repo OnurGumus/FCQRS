@@ -7,7 +7,7 @@ index: 9
 ---
 *)
 (*** hide ***)
-#r "nuget: FCQRS.Workflows, 7.9.0"
+#r "nuget: FCQRS.Workflows, 7.15.1"
 #load "../../samples/orders/9-guard-the-change/fsharp/Account.fs"
 #load "../../samples/orders/9-guard-the-change/fsharp/Order.fs"
 

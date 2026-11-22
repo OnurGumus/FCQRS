@@ -7,8 +7,8 @@ index: 5
 ---
 *)
 (*** hide ***)
-#r "nuget: FCQRS, 7.3.0"
-#r "nuget: FCQRS.Workflows, 7.13.0"
+#r "nuget: FCQRS, 7.5.1"
+#r "nuget: FCQRS.Workflows, 7.15.1"
 #load "../../samples/accounts/5-transfer-money/fsharp/Account.fs"
 #load "../../samples/accounts/5-transfer-money/fsharp/Transfer.fs"
 

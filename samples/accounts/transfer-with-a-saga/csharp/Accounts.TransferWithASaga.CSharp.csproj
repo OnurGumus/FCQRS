@@ -10,7 +10,7 @@
     <!-- The account and statement of step 5, which a workflow and a saga can both drive. -->
     <Compile Include="../../5-transfer-money/csharp/Account.cs" Link="Account.cs" />
     <Compile Include="../../5-transfer-money/csharp/Statement.cs" Link="Statement.cs" />
-    <PackageReference Include="FCQRS" Version="7.3.0" />
+    <PackageReference Include="FCQRS" Version="7.5.1" />
     <PackageReference Include="Dapper" Version="2.1.66" />
     <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="3.0.2" />
     <PackageReference Include="SourceGear.sqlite3" Version="3.50.4.5" />

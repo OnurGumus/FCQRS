@@ -7,7 +7,7 @@ index: 3
 ---
 *)
 (*** hide ***)
-#r "nuget: FCQRS.Workflows, 7.9.0"
+#r "nuget: FCQRS.Workflows, 7.15.1"
 #load "../../samples/orders/3-read-the-clock/fsharp/Order.fs"
 
 (**

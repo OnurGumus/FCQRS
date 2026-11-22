@@ -7,7 +7,7 @@ index: 4
 ---
 *)
 (*** hide ***)
-#r "nuget: FCQRS.Workflows, 7.9.0"
+#r "nuget: FCQRS.Workflows, 7.15.1"
 #load "../../samples/orders/4-wait-for-approval/fsharp/Order.fs"
 
 (**
