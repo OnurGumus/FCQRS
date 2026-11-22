@@ -1,5 +1,31 @@
 # Changelog
 
+## 7.15.0 (FCQRS.Workflows)
+
+- **See what is running.** `Workflows.running api` (C#: `WorkflowHost.Running(actor)`) lists the
+  step attempts the process is running, oldest first: each activity call, command waiting for its
+  reply, and child start, with its workflow, instance, step, attempt, start time, and whether its
+  token was cancelled. An attempt stays listed until its call returns, so a cancelled one that
+  stays listed is a call that ignores its token.
+- **A shutdown waits for cancelled activities.** Stopping the actor system stops every workflow,
+  which cancels each running attempt's token, as before. It now also waits up to
+  `akka.fcqrs.workflow-drain-timeout` (three seconds) for those calls to return, so an activity
+  that observes its token can finish its cleanup, and logs a warning naming each call still
+  running when the time is up. Above five seconds, raise
+  `akka.coordinated-shutdown.phases.before-actor-system-terminate.timeout` too.
+- A test now checks that an abandoned branch's running activity, a race's loser or a failed `all`
+  block's sibling, sees its token cancelled. That was already the behaviour; the documentation now
+  says so.
+- Nothing stored changes.
+
+## 1.0.0 (FCQRS.Analyzers)
+
+- **New package: determinism analyzers.** `FCQRS001` reports a workflow body that reads the clock, a
+  GUID generator, a random source, or an environment variable, and `FCQRS002` an aggregate's fold
+  that does. An activity's call and a decision are not checked. In C# the compiler runs the analyzer
+  in every build; in F#, run the `fsharp-analyzers` tool after a build, or use Ionide. New guide:
+  "Check bodies and folds for nondeterminism".
+
 ## 7.5.0 (FCQRS core)
 
 - **Projections on SQL Server.** `ProjectionSqlDialect.SqlServer` joins SQLite and PostgreSQL:

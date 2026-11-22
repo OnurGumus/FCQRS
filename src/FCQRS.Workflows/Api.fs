@@ -81,6 +81,14 @@ module Workflows =
         if id.Contains '#' then
             invalidArg (nameof id) $"Workflow ID '{id}' contains '#', which FCQRS uses to name a workflow's later runs."
 
+    /// The step attempts this process is running, oldest first: each activity call, command
+    /// waiting for its reply, and child start, with its workflow, instance, step, attempt, and
+    /// start time. An attempt stays listed until its call returns, also after its token was
+    /// cancelled, so a long-cancelled entry names a call that ignores its token. When the actor
+    /// system shuts down, it waits up to `akka.fcqrs.workflow-drain-timeout` (three seconds) for
+    /// these calls, and logs a warning for each one still running.
+    let running (api: IActor) : RunningAttempt list = (RunningAttempts.forSystem api).Snapshot()
+
     /// Registers the workflow and returns its handle. Instances that were running when the
     /// process last stopped resume as soon as this is called.
     let register (api: IActor) (definition: WorkflowDefinition<'Input, 'Result>) : WorkflowHandle<'Input, 'Result> =

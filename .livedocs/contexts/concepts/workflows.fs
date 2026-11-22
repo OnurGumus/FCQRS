@@ -14,7 +14,9 @@ type ReservationEvent =
     | Reserved of id: string
     | Confirmed of id: string
 // snippet: 1
-// snippet: 2
+let showRunning (api: IActor) =
+    // snippet: 2
 // snippet: 3
 // snippet: 4
 // snippet: 5
+// snippet: 6

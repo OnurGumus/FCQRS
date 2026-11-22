@@ -401,6 +401,13 @@ type WorkflowHost =
         // Each run of the body gets a state machine of its own.
         Workflow.define workflow.Name (fun input -> Lazy(fun () -> workflow.Run(context, input).AsWorkflow()))
 
+    /// The step attempts this process is running, oldest first, as `Workflows.running` lists them.
+    /// An attempt stays listed until its call returns, also after its token was cancelled. When the
+    /// actor system shuts down, it waits up to `akka.fcqrs.workflow-drain-timeout` (three seconds)
+    /// for these calls, and logs a warning for each one still running.
+    static member Running(actor: IActor) : System.Collections.Generic.IReadOnlyList<RunningAttempt> =
+        FCQRS.Workflows.Workflows.running actor |> List.toArray :> _
+
     /// Registers the workflow with the actor system and returns its client. Instances that were
     /// running when the process last stopped resume as soon as this is called.
     static member Register<'TInput, 'TResult>(actor: IActor, workflow: Workflow<'TInput, 'TResult>) : IWorkflowClient<'TInput, 'TResult> =

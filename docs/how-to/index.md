@@ -21,6 +21,7 @@ Choose the task you need. For a first working application, start with [the tutor
 | Wait until a projection has processed a journal snapshot | [Catch up projections](catch-up-projections.html) |
 | Run durable steps that call external systems | [Write a workflow](write-a-workflow.html) |
 | Test a workflow's steps, timeouts, failures, and replay in memory | [Test a workflow](test-a-workflow.html) |
+| Find a workflow body or a fold that reads the clock or makes a GUID | [Check bodies and folds for nondeterminism](check-for-nondeterminism.html) |
 | Find the workflows that wait for an approval or another signal | [Find workflows that wait for a signal](find-waiting-workflows.html) |
 | Apply only the newest of the changes that arrive while one is applied | [Apply only the newest change](apply-the-newest-change.html) |
 | Start a workflow when an aggregate stores an event | [Start a workflow from an aggregate event](start-a-workflow-from-an-event.html) |

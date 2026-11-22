@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Version>1.0.0</Version>
+    <PackageId>FCQRS.Analyzers</PackageId>
+    <Description>Warns when an FCQRS workflow body or aggregate fold reads the clock, a GUID generator, a random source, or the environment. F# analyzers for fsharp-analyzers and Ionide, and a Roslyn analyzer for C#.</Description>
+    <Authors>Onur Gumus</Authors>
+    <PackageTags>fcqrs;analyzers;fsharp-analyzers;workflow;determinism</PackageTags>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <RepositoryUrl>https://github.com/onurgumus/FCQRS</RepositoryUrl>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <!-- An analyzer package: nothing goes to lib, so a project that references it gets no assembly. -->
+    <IncludeBuildOutput>false</IncludeBuildOutput>
+    <DevelopmentDependency>true</DevelopmentDependency>
+    <SuppressDependenciesWhenPacking>true</SuppressDependenciesWhenPacking>
+    <NoWarn>$(NoWarn);NU5128</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="Determinism.fs" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- fsharp-analyzers and Ionide load the SDK and the compiler service themselves. -->
+    <PackageReference Include="FSharp.Analyzers.SDK" Version="0.43.0" PrivateAssets="all" />
+    <PackageReference Update="FSharp.Core" Version="10.1.404" PrivateAssets="all" />
+    <ProjectReference Include="..\FCQRS.Analyzers.CSharp\FCQRS.Analyzers.CSharp.csproj" ReferenceOutputAssembly="false" PrivateAssets="all" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="\" />
+    <None Include="$(OutputPath)FCQRS.Analyzers.dll" Pack="true" PackagePath="analyzers/dotnet/fs" Visible="false" />
+    <None Include="..\FCQRS.Analyzers.CSharp\bin\$(Configuration)\netstandard2.0\FCQRS.Analyzers.CSharp.dll" Pack="true" PackagePath="analyzers/dotnet/cs" Visible="false" />
+  </ItemGroup>
+</Project>

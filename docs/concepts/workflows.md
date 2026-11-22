@@ -172,9 +172,11 @@ Replay only works if the body takes the same path every time it is given the sam
 - Create identifiers with `newGuid` and random numbers with `random`.
 - Do all I/O inside an activity.
 
-`now`, `newGuid`, and `random` store their value, so replay returns the first value. FCQRS cannot
-detect a body that reads the clock directly: the body takes a different path on replay, and the
-instance is parked or does the wrong thing.
+`now`, `newGuid`, and `random` store their value, so replay returns the first value. A body that
+reads the clock directly takes a different path on replay, and the instance is parked or does the
+wrong thing. FCQRS does not detect that at run time. The FCQRS.Analyzers package reports a direct
+read of the clock, a GUID generator, a random source, or the environment in a body:
+[Check bodies and folds for nondeterminism](../how-to/check-for-nondeterminism.html).
 
 ## Retries belong to the step
 
@@ -202,6 +204,32 @@ never the original one.
 An activity's result is stored as JSON and read back on replay. A result that the serializer can
 write and cannot read back, such as a record with an interface-typed field, fails the step as
 `NotRetryable` after the call was made.
+
+## See what is running, and what a shutdown waits for
+
+`Workflows.running api` (C#: `WorkflowHost.Running(actor)`) lists the step attempts the process is
+running, oldest first: each activity call, command waiting for its reply, and child start, with its
+workflow, instance, step, attempt, and start time.
+
+```fsharp
+for attempt in Workflows.running api do
+    printfn "%s %s %s attempt %d since %O, cancelled: %b"
+        attempt.Workflow attempt.Instance attempt.Step attempt.Attempt
+        attempt.Started attempt.CancellationRequested
+```
+
+An attempt stays listed until its call returns. An attempt whose `CancellationRequested` is true
+and that stays listed is a call that ignores its token, after a timeout, an abandoned branch, or a
+stop.
+
+When the actor system shuts down, it stops every workflow, which cancels each running attempt's
+token, and then waits for the calls to return, for up to `akka.fcqrs.workflow-drain-timeout`
+(three seconds). An activity that observes its token can finish its cleanup in that time. The
+shutdown logs a warning naming each call still running when the time is up, and ends without it.
+Akka.NET gives the shutdown phase five seconds by default: a longer drain timeout needs
+`akka.coordinated-shutdown.phases.before-actor-system-terminate.timeout` raised too. A call that
+outlives the shutdown can still reach the external system, and the step runs again after the
+restart, as for a crash.
 
 ## Return an expected failure as a value
 

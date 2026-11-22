@@ -2,7 +2,7 @@
 title: Find workflows that wait for a signal
 category: Apply
 categoryindex: 5
-index: 10
+index: 11
 ---
 
 # Find workflows that wait for a signal

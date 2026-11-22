@@ -110,6 +110,8 @@ static async WorkflowTask<string?> TimedOut(WorkflowContext ctx)
   fails, the other branches are abandoned.
 - `race` takes the first branch to finish and abandons the rest. The winner is stored, so replay
   selects the same branch.
+- An abandoned branch's running activity has its cancellation token cancelled. A call that ignores
+  the token keeps running, and its result is ignored.
 - `allAtMost 4 items body` runs `body` for each item, four at a time.
 
 `and!` runs a fixed set of steps together when their results have different types. In C#,

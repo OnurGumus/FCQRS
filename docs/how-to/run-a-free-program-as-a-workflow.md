@@ -2,7 +2,7 @@
 title: Run a free-monad program as a workflow
 category: Apply
 categoryindex: 5
-index: 15
+index: 16
 ---
 
 # Run a free-monad program as a workflow

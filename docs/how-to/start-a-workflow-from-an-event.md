@@ -2,7 +2,7 @@
 title: Start a workflow from an aggregate event
 category: Apply
 categoryindex: 5
-index: 12
+index: 13
 ---
 
 # Start a workflow from an aggregate event

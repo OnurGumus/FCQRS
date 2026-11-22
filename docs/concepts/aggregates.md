@@ -71,7 +71,10 @@ fold   : event + current state   -> next state
 ```
 
 `decide` contains the business rule. `fold` contains no decision: it applies an outcome that has
-already happened.
+already happened. Recovery folds every stored event again, so `fold` must give the same state each
+time: a value such as the current time is read in `decide` and stored in the event.
+[Check bodies and folds for nondeterminism](../how-to/check-for-nondeterminism.html) shows the
+analyzer that reports a fold that reads the clock.
 
 For example:
 

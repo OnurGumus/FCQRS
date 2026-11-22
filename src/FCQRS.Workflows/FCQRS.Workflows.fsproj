@@ -2,7 +2,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <TargetFrameworks>net10.0</TargetFrameworks>
-    <Version>7.14.0</Version>
+    <Version>7.15.0</Version>
     <Nullable>enable</Nullable>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <PackageId>FCQRS.Workflows</PackageId>
@@ -22,6 +22,7 @@
     <Compile Include="Free.fs" />
     <Compile Include="Machine.fs" />
     <Compile Include="Messages.fs" />
+    <Compile Include="Running.fs" />
     <Compile Include="WorkflowActor.fs" />
     <Compile Include="Api.fs" />
     <Compile Include="Children.fs" />

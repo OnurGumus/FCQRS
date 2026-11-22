@@ -56,6 +56,10 @@ jobs:
         run: dotnet run --project test/Facade.Tests -c Release
       - name: C# workflow tests
         run: dotnet run --project test/Workflows.CSharp.Tests -c Release
+      - name: Determinism analyzers
+        run: |
+          dotnet run --project test/Analyzers.Tests -c Release
+          python3 scripts/check-analyzers.py
       - name: Workflow samples
         run: |
           dotnet run --project samples/workflows/fsharp -c Release
@@ -130,7 +134,7 @@ jobs:
         run: dotnet tool restore
       - name: Pack
         run: |
-          for proj in src/FCQRS.Model src/FCQRS.Serialization src/FCQRS.SQLProvider src/FCQRS src/FCQRS.Workflows src/FCQRS.ExpectoTickSpec; do
+          for proj in src/FCQRS.Model src/FCQRS.Serialization src/FCQRS.SQLProvider src/FCQRS src/FCQRS.Workflows src/FCQRS.ExpectoTickSpec src/FCQRS.Analyzers; do
             dotnet pack "$proj" -c Release -o ./nupkgs
           done
       # Trusted Publishing: exchanges the workflow's OIDC identity for a
@@ -145,7 +149,7 @@ jobs:
       - name: Push (dependency order, skip already-published versions)
         run: |
           shopt -s nullglob
-          for id in FCQRS.Model FCQRS.Serialization FCQRS.SqlProvider FCQRS FCQRS.Workflows FCQRS.ExpectoTickSpec; do
+          for id in FCQRS.Model FCQRS.Serialization FCQRS.SqlProvider FCQRS FCQRS.Workflows FCQRS.ExpectoTickSpec FCQRS.Analyzers; do
             for pkg in ./nupkgs/$id.[0-9]*.nupkg; do
               case "$pkg" in *symbols*) continue ;; esac
               echo "pushing $pkg"

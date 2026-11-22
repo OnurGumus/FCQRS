@@ -143,6 +143,8 @@ module internal WorkflowActor =
 
         let history = History()
         let running = Dictionary<string, RunningStep>()
+        /// The actor system's running attempts, which a shutdown waits for.
+        let attempts = RunningAttempts.forSystem api
         /// The timers armed for each step, by step path and by the kind of message they send.
         let timers = Dictionary<string, Dictionary<Type, ICancelable>>()
         /// The askers waiting for this instance's result, each with the time its wait ends, in
@@ -531,6 +533,19 @@ module internal WorkflowActor =
                                             match stepSpan with
                                             | null -> None
                                             | span -> Some(traceparentOf span.Context) }
+
+                                // The call, not this attempt: one that timed out ends here while
+                                // its call may run on, and a shutdown waits for the call.
+                                attempts.Track(
+                                    definition.Name,
+                                    runKey (),
+                                    path,
+                                    step.Leaf.Name,
+                                    step.Leaf.Kind,
+                                    attempt,
+                                    attemptCancellation.Token,
+                                    call
+                                )
 
                                 match policy.AttemptTimeout with
                                 | Some timeout ->

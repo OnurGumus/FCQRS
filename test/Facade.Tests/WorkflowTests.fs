@@ -78,6 +78,109 @@ let private startTest =
             Expect.throwsT<ArgumentException> (fun () -> sync (greet.Start "a~b" "x") |> ignore) "an ID with '~' is refused"
             Expect.throwsT<InvalidOperationException> (fun () -> sync (greet.Result "nobody" wait) |> ignore) "a result needs a started workflow"
 
+/// A block that no longer needs a branch cancels the token of the activity that branch runs: the
+/// loser of a race, and the sibling of a branch that failed inside `all`. The activity here waits
+/// only for its token, so it ends when the token is cancelled.
+let private abandonedActivityTest =
+    testCase "workflow: an abandoned branch's running activity sees its token cancelled" <| fun _ ->
+        withSystem "WorkflowAbandon" <| fun api ->
+            let cancelled = ConcurrentDictionary<string, bool>()
+            let waitForCancel (name: string) =
+                activity name (Retry.once (TimeSpan.FromSeconds 30.0)) (fun context -> task {
+                    try
+                        do! Task.Delay(Timeout.InfiniteTimeSpan, context.Cancellation)
+                    with :? OperationCanceledException ->
+                        cancelled[name] <- true
+                    return 0
+                })
+            let raced =
+                Workflows.register api (Workflow.define "abandon-race" (fun (_: unit) -> workflow {
+                    return! race [ waitForCancel "slow"; activity "quick" (Retry.once (TimeSpan.FromSeconds 30.0)) (fun _ -> task {
+                        do! Task.Delay 100
+                        return 1 }) ]
+                }))
+            sync (raced.Start "r1" ()) |> ignore
+            Expect.equal (sync (raced.Result "r1" wait)) (WorkflowOutcome.Finished 1) "the quick branch wins"
+            eventually "the race's losing activity sees its token cancelled" (fun () -> cancelled.ContainsKey "slow")
+
+            let failed =
+                Workflows.register api (Workflow.define "abandon-all" (fun (_: unit) -> workflow {
+                    let! values = all [ waitForCancel "sibling"; activity "failing" (Retry.once (TimeSpan.FromSeconds 30.0)) (fun _ -> task {
+                        do! Task.Delay 100
+                        return failwith "declined" }) ]
+                    return List.sum values
+                }))
+            sync (failed.Start "a1" ()) |> ignore
+            match sync (failed.Result "a1" wait) with
+            | WorkflowOutcome.Faulted _ -> ()
+            | other -> failtest $"expected the failure to end the workflow, found {other}"
+            eventually "the failed branch's sibling sees its token cancelled" (fun () -> cancelled.ContainsKey "sibling")
+
+/// `Workflows.running` lists an activity while its call runs, and not after it returns.
+let private runningListTest =
+    testCase "workflow: the running attempts list an activity while its call runs" <| fun _ ->
+        withSystem "WorkflowRunning" <| fun api ->
+            use release = new ManualResetEventSlim(false)
+            let held =
+                Workflows.register api (Workflow.define "held" (fun (_: unit) -> workflow {
+                    let! (_: DateTime) = now
+                    return! activity "hold" (Retry.once (TimeSpan.FromSeconds 30.0)) (fun _ -> task {
+                        do! Task.Run(fun () -> release.Wait(TimeSpan.FromSeconds 20.0) |> ignore)
+                        return 7 })
+                }))
+            sync (held.Start "h1" ()) |> ignore
+            eventually "the activity is listed" (fun () -> not (Workflows.running api).IsEmpty)
+            match Workflows.running api with
+            | [ attempt ] ->
+                Expect.equal (attempt.Workflow, attempt.Instance, attempt.Path, attempt.Step, attempt.Attempt) ("held", "h1", attempt.Path, "hold", 1)
+                    "it names the workflow, the instance, the step, and the attempt"
+                Expect.equal attempt.Kind StepKind.Activity "it is an activity"
+                Expect.isFalse attempt.CancellationRequested "nothing cancelled it"
+            | other -> failtest $"expected one running attempt, found %A{other}"
+            Expect.equal (FCQRS.Workflows.CSharp.WorkflowHost.Running api).Count 1 "the C# call lists it too"
+            release.Set()
+            Expect.equal (sync (held.Result "h1" wait)) (WorkflowOutcome.Finished 7) "the workflow finishes"
+            eventually "the returned call is no longer listed" (fun () -> (Workflows.running api).IsEmpty)
+
+/// A shutdown cancels running activities and waits for their calls to return, for up to
+/// `akka.fcqrs.workflow-drain-timeout`. One activity cleans up after its cancellation and is waited
+/// for; another ignores its token, and the shutdown ends after the timeout without it.
+let private drainTest =
+    testCase "workflow: a shutdown waits for cancelled activities to return, up to the drain timeout" <| fun _ ->
+        let db = newDb ()
+        try
+            let api = boot db "WorkflowDrain" [ "config:akka:fcqrs:workflow-drain-timeout", "4s" ]
+            let cleaned = ref false
+            let stuck = new ManualResetEventSlim(false)
+            let draining =
+                Workflows.register api (Workflow.define "draining" (fun (kind: string) -> workflow {
+                    let! (_: DateTime) = now
+                    return! activity "work" (Retry.once (TimeSpan.FromMinutes 5.0)) (fun context -> task {
+                        if kind = "polite" then
+                            try
+                                do! Task.Delay(Timeout.InfiniteTimeSpan, context.Cancellation)
+                            with :? OperationCanceledException ->
+                                // Cleanup that outlasts the rest of the shutdown.
+                                Thread.Sleep 2000
+                                cleaned.Value <- true
+                        else
+                            // Ignores its token.
+                            do! Task.Run(fun () -> stuck.Wait(TimeSpan.FromSeconds 30.0) |> ignore)
+                        return 1 })
+                }))
+            sync (draining.Start "polite" "polite") |> ignore
+            sync (draining.Start "stuck" "stuck") |> ignore
+            eventually "both activities run" (fun () -> (Workflows.running api).Length = 2)
+            let watch = Stopwatch.StartNew()
+            stop api
+            watch.Stop()
+            Expect.isTrue cleaned.Value "the shutdown waited for the cancelled activity's cleanup"
+            Expect.isGreaterThanOrEqual watch.Elapsed (TimeSpan.FromSeconds 3.5) "it waited for the call that ignores its token"
+            Expect.isLessThan watch.Elapsed (TimeSpan.FromSeconds 15.0) "and stopped waiting after the drain timeout"
+            stuck.Set()
+        finally
+            deleteDb db
+
 let private faultTest =
     testCase "workflow: a body that throws ends as faulted" <| fun _ ->
         withSystem "WorkflowFault" <| fun api ->
@@ -2100,7 +2203,7 @@ let private lateReplyTest =
 let tests =
     testSequenced (
         testList "workflow"
-            [ startTest; faultTest; retryTest; shortTimerTest; restartTest; timerTest; tracingTest; startRaceTest; concurrentStartTest
+            [ startTest; abandonedActivityTest; runningListTest; drainTest; faultTest; retryTest; shortTimerTest; restartTest; timerTest; tracingTest; startRaceTest; concurrentStartTest
               signalTest; signalRestartTest; commandTest; projectionStartTest; parallelCommandTest; commandRestartTest; commandRecoveryTest; unknownOutcomeTest
               cancelTest; childTest; childRestartTest; cancelChildStartTest; cancelChildStartRestartTest; cancelChildRecoveryTest
               cancelParkedChildTest; cancelParkedBranchesTest; awaitRoundsTest; zeroWaitResultTest; parkingTest; removedStepsParkTest; streamTest; metricsTest

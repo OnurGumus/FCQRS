@@ -29,6 +29,13 @@
         "fable"
       ],
       "rollForward": false
+    },
+    "fsharp-analyzers": {
+      "version": "0.43.0",
+      "commands": [
+        "fsharp-analyzers"
+      ],
+      "rollForward": false
     }
   }
 }

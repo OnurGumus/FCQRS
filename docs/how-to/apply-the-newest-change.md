@@ -2,7 +2,7 @@
 title: Apply only the newest change
 category: Apply
 categoryindex: 5
-index: 11
+index: 12
 ---
 
 # Apply only the newest change

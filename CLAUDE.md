@@ -161,7 +161,9 @@ Keep these distinctions intact in code comments and documentation.
 - A step that was running when the process stopped runs again. An activity runs at least once, and
   the external system must honour its idempotency key.
 - The body must be deterministic. It reads time, GUIDs, and random numbers through steps and does
-  I/O only in activities. FCQRS cannot detect a body that breaks this.
+  I/O only in activities. FCQRS cannot detect a body that breaks this at run time; the
+  FCQRS.Analyzers package (`FCQRS001`, and `FCQRS002` for an aggregate's fold) reports direct reads
+  of the clock, GUIDs, random sources, and environment variables at build time.
 - A workflow starts by ID, with no aggregate event. A second start with the same ID stores nothing,
   unless the instance faulted or was cancelled and the start passes `WorkflowIdReuse.AfterFailure`:
   then it begins a new run, a second `Started` record in the same journal. A run replays none of the
@@ -191,6 +193,12 @@ Keep these distinctions intact in code comments and documentation.
   in flight, including a start re-run after a restart. A child it started and does not wait for
   keeps running. The parent sends these cancels again whenever it recovers after the cancel was
   stored; an ended parent recovers only when a request reaches it.
+- An abandoned branch's running activity (a race's loser, a failed `all` block's sibling) has its
+  token cancelled; a call that ignores it runs on and its result is ignored.
+- `Workflows.running` lists each running step attempt until its call returns (`Running.fs`). A
+  shutdown stops the workflows, which cancels their attempts, then waits up to
+  `akka.fcqrs.workflow-drain-timeout` for the calls in `PhaseBeforeActorSystemTerminate` and logs
+  each one still running. A call that outlives it runs again after the restart.
 - An activity result is read back before it is stored. One that cannot be read fails the step as
   `NotRetryable` after the call was made.
 - A signal is stored before it is acknowledged. A race stores its winner.
@@ -299,6 +307,11 @@ Keep these distinctions intact in code comments and documentation.
 - `src/FCQRS/Actor.fs`: aggregate persistence, replay, snapshots, and command delivery.
 - `src/FCQRS/Saga.fs`: saga state machines, recovery, and command dispatch.
 - `src/FCQRS/Query.fs`: correlation subscriptions and projection notifications.
+- `src/FCQRS.Analyzers/` and `src/FCQRS.Analyzers.CSharp/`: the determinism analyzers, one package
+  with the F# analyzer for `fsharp-analyzers` (`analyzers/dotnet/fs`) and the Roslyn analyzer
+  (`analyzers/dotnet/cs`). Both apply the same rules and follow calls into the same file (F#) or
+  project (C#). `test/Analyzers.Tests` runs both on the same cases; `scripts/check-analyzers.py`
+  runs them over the samples and fails on any warning, because the samples are correct.
 - `src/FCQRS/SqlServer.fs`: the startup check of a SQL Server database's collation and level.
 - `src/FCQRS/ProjectionStorage.fs`: the projection store's SQL for each dialect, its progress and
   lock tables, and the tables FCQRS owns, such as the schedule index.

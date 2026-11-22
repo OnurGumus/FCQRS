@@ -2,7 +2,7 @@
 title: Configure the database
 category: Apply
 categoryindex: 5
-index: 20
+index: 21
 ---
 
 # Configure the database
